@@ -9,6 +9,9 @@ pub enum Consumable {
     LiquidHydrogen,
     LiquidOxygen,
 
+    Uranium235,
+    Plutonium239,
+
     ElectricJoules,
 }
 
@@ -19,8 +22,10 @@ impl Consumable {
             Consumable::Water => 1_000.0,
             Consumable::LiquidHydrogen => 70.85,
             Consumable::LiquidOxygen => 1_141.0,
-
             Consumable::ElectricJoules => 0.0,
+
+            Consumable::Uranium235 => todo!(),
+            Consumable::Plutonium239 => todo!(),
         }
     }
 }

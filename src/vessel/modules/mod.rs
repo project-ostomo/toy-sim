@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 
+pub mod reactor;
 pub mod thruster;
 pub mod torquer;
 

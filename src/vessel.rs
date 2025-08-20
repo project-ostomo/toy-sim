@@ -11,7 +11,6 @@ use crate::{
     vessel::{
         modules::{thruster, torquer},
         part_cfg::PartCfg,
-        spawn::SpawnVesselEvent,
         vessel_cfg::VesselCfg,
     },
 };
@@ -43,7 +42,7 @@ impl Plugin for VesselsPlugin {
         .add_plugins((
             spawn::run_spawn,
             thruster::run_thrusters,
-            torquer::run_torquers,
+            torquer::start_torquers,
             controls::run_controls,
         ));
     }

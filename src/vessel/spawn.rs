@@ -17,6 +17,7 @@ use crate::{
         load_vessels,
         modules::{
             Module,
+            reactor::NuclearReactor,
             thruster::{ElectricFan, MagicThruster, SimpleThrusterFlame, Thruster},
             torquer::{MagicTorquer, Torquer},
         },
@@ -201,6 +202,13 @@ fn handle_spawn_vessel(
                         capacity,
                     } => {
                         *consumable_tanks.0.entry(consumable).or_default() += capacity;
+                    }
+                    PartModuleCfgInner::NuclearReactor(config) => {
+                        mod_entity.insert(NuclearReactor {
+                            config,
+                            current_throttle: 0.0,
+                            desired_throttle: 1.0,
+                        });
                     }
                 }
             }

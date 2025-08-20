@@ -11,7 +11,7 @@ use bevy_egui::{
 
 use crate::{
     camera::{CameraFocus, MainCamera},
-    gui::hud::hud,
+    gui::hud::{bottom_hud, overlay_hud},
     physics::AeroParams,
     precision::{FloatingOrigin, PreciseTransform},
     vessel::{ConsumableTanks, Thruster, VesselControls},
@@ -23,7 +23,14 @@ impl Plugin for GuiPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(
             EguiPrimaryContextPass,
-            (flight, consumables, diagnostics, thrusters, hud),
+            (
+                flight,
+                consumables,
+                diagnostics,
+                thrusters,
+                overlay_hud,
+                bottom_hud,
+            ),
         );
     }
 }

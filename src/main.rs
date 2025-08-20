@@ -14,9 +14,6 @@ use bevy::{
 use bevy_asset_loader::loading_state::{LoadingState, LoadingStateAppExt};
 use bevy_egui::{EguiGlobalSettings, EguiPlugin};
 
-use bevy_inspector_egui::quick::WorldInspectorPlugin;
-use bevy_transform_interpolation::prelude::TransformInterpolationPlugin;
-
 use crate::{
     camera::MainCameraPlugin, gui::GuiPlugin, orrery::OrreryPlugin, physics::PhysicsPlugin,
     precision::PrecisionPlugin, vessel::VesselsPlugin,
@@ -64,7 +61,7 @@ fn main() {
             VesselsPlugin,
             GuiPlugin,
         ))
-        .add_plugins(WorldInspectorPlugin::new())
+        // .add_plugins(WorldInspectorPlugin::new())
         // .add_plugins(TransformInterpolationPlugin::interpolate_all())
         .run();
 }

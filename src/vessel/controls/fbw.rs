@@ -1,5 +1,4 @@
 use bevy::math::{DQuat, DVec3};
-use bevy::prelude::*;
 
 pub trait DirectionalFbw {
     fn dir_to_rot(&mut self, current: DQuat, target: DQuat, dt: f64) -> DVec3;
