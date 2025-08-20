@@ -2,7 +2,7 @@ use std::cmp::Reverse;
 
 use bevy::{
     core_pipeline::{
-        auto_exposure::AutoExposure, bloom::Bloom, fxaa::Fxaa, smaa::Smaa, tonemapping::Tonemapping,
+        bloom::Bloom, smaa::Smaa, tonemapping::Tonemapping,
     },
     input::mouse::MouseWheel,
     pbr::{Atmosphere, AtmosphereSettings, CascadeShadowConfigBuilder},

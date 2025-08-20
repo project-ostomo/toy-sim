@@ -2,7 +2,7 @@ use bevy::{math::DVec3, prelude::*};
 
 use crate::{physics::AccumulatedTorque, precision::PreciseTransform};
 
-pub fn run_torquers(app: &mut App) {
+pub fn start_torquers(app: &mut App) {
     app.add_systems(FixedUpdate, (apply_torquers, magic_torquers));
 }
 

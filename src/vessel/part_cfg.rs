@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::vessel::consumable::Consumable;
+use crate::vessel::modules::reactor::NuclearReactorCfg;
 
 #[derive(Asset, TypePath, Clone, Debug, Serialize, Deserialize)]
 pub struct PartCfg {
@@ -50,6 +51,7 @@ pub enum PartModuleCfgInner {
         consumable: Consumable,
         capacity: f64,
     },
+    NuclearReactor(NuclearReactorCfg),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

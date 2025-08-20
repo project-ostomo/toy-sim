@@ -12,11 +12,12 @@ bevy = { version = "0.16.1", features = [
     "embedded_watcher",
     "jpeg",
 ] }
-bevy-inspector-egui = "0.32.0"
+
 bevy_asset_loader = "0.23.0"
-bevy_egui = "0.35.1"
+bevy_egui = "0.36"
 bevy_framepace = "0.19.1"
 bevy_transform_interpolation = "0.2.0"
+egui_flex = "0.4.0"
 hifitime = "4.1.2"
 kiddo = "5.2.2"
 ordered-float = "5.0.0"

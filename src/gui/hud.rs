@@ -4,8 +4,9 @@ use bevy::{
 };
 use bevy_egui::{
     EguiContexts,
-    egui::{self, Id},
+    egui::{self, Align2, Id},
 };
+use egui_flex::{Flex, item};
 
 use crate::{
     camera::{CameraFocus, MainCamera},
@@ -13,7 +14,21 @@ use crate::{
     precision::PreciseTransform,
 };
 
-pub fn hud(
+pub fn bottom_hud(mut contexts: EguiContexts) {
+    let ctx = contexts.ctx_mut().unwrap();
+
+    egui::Area::new("bottom_hud".into())
+        .anchor(Align2::CENTER_BOTTOM, egui::vec2(0., 0.))
+        .show(ctx, |ui| {
+            Flex::horizontal().show(ui, |flex| {
+                flex.add(item(), egui::Label::new("Hello world"));
+                flex.add(item(), egui::Label::new("Hello world"));
+                flex.add(item(), egui::Label::new("Hello world"));
+            })
+        });
+}
+
+pub fn overlay_hud(
     mut contexts: EguiContexts,
     camera: Single<(&PreciseTransform, &Projection), With<MainCamera>>,
     focus: Single<&PreciseTransform, With<CameraFocus>>,
@@ -38,7 +53,8 @@ pub fn hud(
         projection,
         screen_rect,
     );
-    egui::Area::new(Id::new("crosshair"))
+
+    egui::Area::new(Id::new("middle"))
         .interactable(false)
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -68,7 +84,7 @@ pub fn hud(
 
     // Optional debug window
     egui::Window::new("Camera").show(ctx, |ui| {
-        ui.label(format!("Direction (world): {:?}", dir_to_focus));
+        ui.label(format!("Direction (world): {dir_to_focus:?}"));
     });
 }
 
