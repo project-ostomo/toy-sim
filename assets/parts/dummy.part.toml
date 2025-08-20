@@ -1,0 +1,22 @@
+name = "dummy"
+empty_mass = 10000
+model = "cuboid"
+dimensions_dm = [20, 10, 100]
+
+[[modules]]
+class = "electric_fan"
+power = 10e9
+direction = [0.0, 0.0, -1.0]
+efficiency = 0.7
+diameter = 2.0
+
+
+[[modules]]
+class = "magic_torquer"
+torque = 100.0
+offset = [0.0, 0.0, 0.0]
+
+[[modules]]
+class = "tank"
+consumable = "ElectricJoules"
+capacity = 3e20

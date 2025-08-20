@@ -1,0 +1,10 @@
+name = "dummy"
+
+[[parts]]
+id = "a"
+proto = "dummy"
+
+[[parts]]
+id = "b"
+proto = "cube"
+position_dm = [0, 0, 102]

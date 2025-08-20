@@ -1,0 +1,4 @@
+name = "cube"
+empty_mass = 100
+model = "cuboid"
+dimensions_dm = [1, 1, 1]

@@ -1,0 +1,164 @@
+name = "Sol"
+
+[[bodies]]
+name = "Sun"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = 6.957e8
+rotation_period = "25.38 d"
+obliquity = 7.25
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Mercury"
+class = "planet"
+parent = "Sun"
+mass = "0.0553 massEarth"
+radius = 2.4397e6
+semi_major = "0.38709893 au"
+period = "87.9691 d"
+eccentricity = 0.20563069
+inclination = 7.00487
+ascending_node = 48.33167
+arg_of_pericenter = 29.12478
+mean_anomaly = 174.79588
+epoch = 51544.5
+rotation_period = "58.646 d"
+obliquity = 0.034
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Venus"
+class = "planet"
+parent = "Sun"
+mass = "0.815 massEarth"
+radius = 6.0518e6
+semi_major = "0.72333199 au"
+period = "224.70069 d"
+eccentricity = 0.00677323
+inclination = 3.39471
+ascending_node = 76.68069
+arg_of_pericenter = 54.85229
+mean_anomaly = 50.115
+epoch = 51544.5
+rotation_period = "-243.025 d"
+obliquity = 177.36
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Earth"
+class = "planet"
+parent = "Sun"
+mass = "1 massEarth"
+radius = 6.378e6
+semi_major = "1 au"
+period = "365.256363004 d"
+eccentricity = 0.01671123
+inclination = 0.00005
+ascending_node = -11.26064
+arg_of_pericenter = 102.93768193
+mean_anomaly = 100.46457166
+epoch = 51544.5
+rotation_period = "23.75 h"
+obliquity = 23.439281
+rotation_epoch = 51544.5
+
+# [[bodies]]
+# name = "PeriEarth"
+# class = "planet"
+# parent = "Earth"
+# mass = "0.107 massEarth"
+# radius = 3.3895e6
+# semi_major = 12e6
+# period = 10.0
+
+[[bodies]]
+name = "Mars"
+class = "planet"
+parent = "Sun"
+mass = "0.107 massEarth"
+radius = 3.3895e6
+semi_major = "1.52366231 au"
+period = "686.97959 d"
+eccentricity = 0.09341233
+inclination = 1.85061
+ascending_node = 49.57854
+arg_of_pericenter = 286.4623
+mean_anomaly = 19.41248
+epoch = 51544.5
+rotation_period = "24.6229 h"
+obliquity = 25.19
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Jupiter"
+class = "planet"
+parent = "Sun"
+mass = "317.828 massEarth"
+radius = 6.9911e7
+semi_major = "5.20336301 au"
+period = "4332.8201 d"
+eccentricity = 0.04839266
+inclination = 1.30530
+ascending_node = 100.55615
+arg_of_pericenter = 273.8777
+mean_anomaly = 20.0202
+epoch = 51544.5
+rotation_period = "9.925 h"
+obliquity = 3.12
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Saturn"
+class = "planet"
+parent = "Sun"
+mass = "95.159 massEarth"
+radius = 5.8232e7
+semi_major = "9.53707032 au"
+period = "10759.221 d"
+eccentricity = 0.05415060
+inclination = 2.48446
+ascending_node = 113.71504
+arg_of_pericenter = 339.392
+mean_anomaly = 317.0207
+epoch = 51544.5
+rotation_period = "10.656 h"
+obliquity = 26.73
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Uranus"
+class = "planet"
+parent = "Sun"
+mass = "14.536 massEarth"
+radius = 2.5362e7
+semi_major = "19.19126393 au"
+period = "30688.5 d"
+eccentricity = 0.04716771
+inclination = 0.76986
+ascending_node = 74.22988
+arg_of_pericenter = 96.73436
+mean_anomaly = 142.2386
+epoch = 51544.5
+rotation_period = "-17.24 h"
+obliquity = 97.77
+rotation_epoch = 51544.5
+
+[[bodies]]
+name = "Neptune"
+class = "planet"
+parent = "Sun"
+mass = "17.147 massEarth"
+radius = 2.4622e7
+semi_major = "30.06896348 au"
+period = "60182.0 d"
+eccentricity = 0.00858587
+inclination = 1.76917
+ascending_node = 131.72169
+arg_of_pericenter = 272.8461
+mean_anomaly = 256.228
+epoch = 51544.5
+rotation_period = "16.11 h"
+obliquity = 28.32
+rotation_epoch = 51544.5
