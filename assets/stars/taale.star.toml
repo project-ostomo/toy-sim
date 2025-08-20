@@ -1,0 +1,96 @@
+name = "Taale"
+
+[[bodies]]
+name = "Taale"           # 大亮
+class = "star"
+lumens = 1.15e28         # 0.31 L☉
+mass = "0.746 massSol"
+radius = 5.07861e8       # 0.73 R☉
+rotation_period = "30 d"
+
+[[bodies]]
+name = "Pannea"             # 宽大.海洋
+class = "planet"
+parent = "Taale"
+mass = "12 massEarth"
+radius = 1.65800e7          # Impassible “surface” at ~1 GPa level
+semi_major = "0.600 au"
+eccentricity = 0.02
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+rotation_period = "23.95 h"
+obliquity = 18.0
+
+# -- Moons of Pannea --
+
+[[bodies]]
+name = "Wexole"
+class = "planet"
+parent = "Pannea"
+mass = "1.09e-6 massEarth"
+radius = 1.20e5            # 120 km
+semi_major = "75000 km"
+eccentricity = 0.00
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+# Latin: Lucina ("she who brings light"); suitable for bright ring-shepherding moon.
+
+[[bodies]]
+name = "Nivalis"
+class = "planet"
+parent = "Pannea"
+mass = "6.14e-5 massEarth"
+radius = 4.30e5            # 430 km
+semi_major = "220000 km"
+eccentricity = 0.001
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+# Latin: Nivalis ("snowy"); fitting for a moon with icy composition and plumes.
+
+[[bodies]]
+name = "Navigator"
+class = "planet"
+parent = "Pannea"
+mass = "4.00e-4 massEarth"
+radius = 7.60e5            # 760 km
+semi_major = "450000 km"
+eccentricity = 0.005
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+# Latin: Navigator ("navigator"); suitable as a prime navigation reference moon.
+
+[[bodies]]
+name = "Imbrex"
+class = "planet"
+parent = "Pannea"
+mass = "1.58e-4 massEarth"
+radius = 5.20e5            # 520 km
+semi_major = "900000 km"
+eccentricity = 0.020
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+# Latin: Imbrex ("rain-bearing, stormy"); outer captured body influencing atmospheric tides.
+
+[[bodies]]
+name = "Farrago"
+class = "planet"
+parent = "Pannea"
+mass = "4.00e-7 massEarth"
+radius = 8.00e4            # 80 km
+semi_major = "150000 km"
+eccentricity = 0.010
+inclination = 0.0
+ascending_node = 0.0
+arg_of_pericenter = 0.0
+mean_anomaly = 0.0
+# Latin: Farrago ("mixed grain, medley"); suitable for a small inner body composed of mixed icy materials.
