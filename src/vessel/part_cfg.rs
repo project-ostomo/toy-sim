@@ -50,6 +50,7 @@ pub enum PartModuleCfgInner {
     Tank {
         consumable: Consumable,
         capacity: f64,
+        fraction: f64,
     },
     NuclearReactor(NuclearReactorCfg),
 }

@@ -8,7 +8,7 @@ use crate::{
     vessel::consumable::{Consumable, ConsumableTanks},
 };
 
-pub fn run_thrusters(app: &mut App) {
+pub fn start_thrusters(app: &mut App) {
     app.add_systems(Startup, load_flame_model);
     app.add_systems(
         FixedUpdate,
