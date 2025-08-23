@@ -10,7 +10,7 @@ use egui_flex::{Flex, item};
 
 use crate::{
     camera::{CameraFocus, MainCamera},
-    physics::AeroParams,
+    physics::AeroEnv,
     precision::PreciseTransform,
 };
 
@@ -32,7 +32,7 @@ pub fn overlay_hud(
     mut contexts: EguiContexts,
     camera: Single<(&PreciseTransform, &Projection), With<MainCamera>>,
     focus: Single<&PreciseTransform, With<CameraFocus>>,
-    aero: Single<&AeroParams, With<CameraFocus>>,
+    aero: Single<&AeroEnv, With<CameraFocus>>,
 ) {
     let aero = aero.into_inner();
     let (cam_xform, projection) = camera.into_inner();

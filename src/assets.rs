@@ -43,6 +43,3 @@ impl<T: Asset + DeserializeOwned> AssetLoader for TomlAssetLoader<T> {
         &self.ext
     }
 }
-
-#[derive(Asset, TypePath)]
-pub struct TomlAsset(pub toml::Value);

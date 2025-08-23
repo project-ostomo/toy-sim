@@ -3,7 +3,7 @@ use std::f64::consts::PI;
 use bevy::{math::DVec3, prelude::*};
 
 use crate::{
-    physics::{AccumulatedForce, AccumulatedTorque, AeroParams},
+    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv},
     precision::PreciseTransform,
     vessel::consumable::{Consumable, ConsumableTanks},
 };
@@ -138,7 +138,7 @@ pub struct ElectricFan {
 
 fn electric_fans(
     fans: Query<(&mut Thruster, &ElectricFan, &ChildOf)>,
-    mut ships: Query<(&mut ConsumableTanks, &AeroParams)>,
+    mut ships: Query<(&mut ConsumableTanks, &AeroEnv)>,
     time: Res<Time>,
 ) {
     let dt = time.delta_secs_f64();
