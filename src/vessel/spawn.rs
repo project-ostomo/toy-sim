@@ -200,8 +200,9 @@ fn handle_spawn_vessel(
                     PartModuleCfgInner::Tank {
                         consumable,
                         capacity,
+                        fraction,
                     } => {
-                        *consumable_tanks.0.entry(consumable).or_default() += capacity;
+                        consumable_tanks.add_tank(consumable, capacity * fraction, capacity);
                     }
                     PartModuleCfgInner::NuclearReactor(config) => {
                         mod_entity.insert(NuclearReactor {
@@ -233,13 +234,13 @@ fn spawn_vessels(
     let spawn_offset_mm = (dir * altitude_m).to_millimeters();
     let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
 
-    for i in 0..1000 {
+    for i in 0..100 {
         spawn.write(SpawnVesselEvent {
             cfg: vessels.vessels.get("dummy").unwrap().clone(),
             name: "Dummy".into(),
             location: PreciseTransform {
                 translation_mm: spawn_pos_mm
-                    + (DVec3::new(rand::random(), rand::random(), rand::random()) * 1000.0)
+                    + (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0)
                         .to_millimeters(),
                 rotation: DQuat::default(),
             },

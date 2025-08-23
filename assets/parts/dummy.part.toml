@@ -5,7 +5,7 @@ dimensions_dm = [20, 10, 100]
 
 [[modules]]
 class = "electric_fan"
-power = 10e9
+power = 1e8
 direction = [0.0, 0.0, -1.0]
 efficiency = 0.7
 diameter = 2.0
@@ -19,4 +19,20 @@ offset = [0.0, 0.0, 0.0]
 [[modules]]
 class = "tank"
 consumable = "ElectricJoules"
-capacity = 3e20
+capacity = 3e8
+fraction = 1.0
+
+[[modules]]
+class = "tank"
+consumable = "Uranium235"
+capacity = 3.0
+fraction = 1.0
+
+[[modules]]
+class = "nuclear_reactor"
+thermal_power = 1e9
+hot_side = 1200
+efficiency = 0.2
+fuel_util_frac = 0.1
+cycle = "U235"
+throttle_lag = 10.0

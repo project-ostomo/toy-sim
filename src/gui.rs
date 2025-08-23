@@ -94,7 +94,7 @@ fn consumables(
     let tanks = tanks.into_inner();
     let ctx = contexts.ctx_mut()?;
     egui::Window::new("Consumables").show(ctx, |ui| {
-        for (cs, val) in tanks.0.iter() {
+        for (cs, (val, _)) in tanks.iter() {
             ui.label(format!("{cs:?}: {val:.2}"));
         }
     });

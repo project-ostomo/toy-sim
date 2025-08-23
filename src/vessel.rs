@@ -9,7 +9,6 @@ use crate::{
     assets::TomlAssetLoader,
     physics::RigidBody,
     vessel::{
-        modules::{thruster, torquer},
         part_cfg::PartCfg,
         vessel_cfg::VesselCfg,
     },
@@ -41,8 +40,7 @@ impl Plugin for VesselsPlugin {
         .add_systems(OnEnter(GameState::Game), load_vessels)
         .add_plugins((
             spawn::run_spawn,
-            thruster::run_thrusters,
-            torquer::start_torquers,
+            modules::start_modules,
             controls::run_controls,
         ));
     }
