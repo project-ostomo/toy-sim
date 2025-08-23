@@ -17,7 +17,7 @@ use crate::{
     precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
 };
 
-pub use aerodynamics::AeroParams;
+pub use aerodynamics::AeroEnv;
 
 pub struct PhysicsPlugin;
 
@@ -86,7 +86,7 @@ fn apply_forces(
     AccumulatedForce,
     AccumulatedTorque,
     PreviousAcceleration,
-    AeroParams
+    AeroEnv
 )]
 pub struct RigidBody;
 

@@ -12,7 +12,7 @@ use bevy_egui::{
 use crate::{
     camera::{CameraFocus, MainCamera},
     gui::hud::{bottom_hud, overlay_hud},
-    physics::AeroParams,
+    physics::AeroEnv,
     precision::{FloatingOrigin, PreciseTransform},
     vessel::{ConsumableTanks, Thruster, VesselControls},
 };
@@ -37,7 +37,7 @@ impl Plugin for GuiPlugin {
 
 fn flight(
     mut contexts: EguiContexts,
-    vessel: Single<(&VesselControls, &AeroParams), With<CameraFocus>>,
+    vessel: Single<(&VesselControls, &AeroEnv), With<CameraFocus>>,
 ) -> Result {
     let (ctrl, aero) = vessel.into_inner();
     let ctx = contexts.ctx_mut()?;
