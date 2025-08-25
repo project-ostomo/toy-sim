@@ -1,12 +1,14 @@
 mod aero_env;
 pub use aero_env::*;
 mod aero_model;
+pub use aero_model::*;
 
 use std::f64::consts::PI;
 
 use bevy::prelude::*;
 
 use crate::GameState;
+use crate::physics::aerodynamics::aero_model::calc_aerodynamics;
 
 use crate::physics::{AccumulatedForce, AccumulatedTorque, AngularVelocity};
 

@@ -4,7 +4,7 @@ use bevy::{math::DVec3, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv, AngularVelocity},
+    physics::{AccumulatedForce, AccumulatedTorque, AngularVelocity, aerodynamics::AeroEnv},
     precision::{PreciseTransform, ToMetersExt},
 };
 
@@ -23,6 +23,7 @@ pub(crate) fn calc_aerodynamics(
         let airspeed_local = rot_inv * env.airspeed;
         let angvel_local = rot_inv * angvel.0;
         let out = model.relative_force(airspeed_local, angvel_local, env);
+
         force.0 += ptf.rotation * out.force;
         torque.0 += ptf.rotation * out.torque;
     }

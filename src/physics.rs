@@ -1,4 +1,4 @@
-mod aerodynamics;
+pub mod aerodynamics;
 pub mod docking;
 
 use bevy::{
@@ -11,13 +11,11 @@ use crate::{
     GameState,
     orrery::{Celestial, Orrery},
     physics::{
-        aerodynamics::run_aero,
+        aerodynamics::{AeroEnv, run_aero},
         docking::{DockChild, run_docking},
     },
     precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
 };
-
-pub use aerodynamics::AeroEnv;
 
 pub struct PhysicsPlugin;
 
