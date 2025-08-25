@@ -1,20 +1,14 @@
 mod aero_env;
 pub use aero_env::*;
+mod aero_model;
 
 use std::f64::consts::PI;
 
-use bevy::math::DVec3;
 use bevy::prelude::*;
-use serde::{Deserialize, Serialize};
-use smol_str::SmolStr;
 
 use crate::GameState;
 
-use crate::orrery::{Celestial, Orrery};
-use crate::physics::{
-    AccumulatedForce, AccumulatedTorque, AngularVelocity, Velocity, WithinSoi, sim_time,
-};
-use crate::precision::{PreciseTransform, ToMetersExt, ToMillimetersExt};
+use crate::physics::{AccumulatedForce, AccumulatedTorque, AngularVelocity};
 
 pub(super) fn run_aero(app: &mut App) {
     app.add_systems(
