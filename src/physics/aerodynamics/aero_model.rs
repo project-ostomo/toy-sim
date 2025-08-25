@@ -3,11 +3,38 @@ use std::f64::consts::PI;
 use bevy::{math::DVec3, prelude::*};
 use serde::{Deserialize, Serialize};
 
-use crate::precision::PreciseTransform;
+use crate::{
+    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv},
+    precision::{PreciseTransform, ToMetersExt},
+};
 
+pub(crate) fn calc_aerodynamics(
+    planes: Query<(
+        &AeroEnv,
+        &AeroModel,
+        &PreciseTransform,
+        &mut AccumulatedForce,
+        &mut AccumulatedTorque,
+    )>,
+) {
+    for (env, model, ptf, force, torque) in planes {
+        todo!()
+    }
+}
+
+#[derive(Component)]
 pub struct AeroModel {
     pub main: MainBodyModel,
     pub wings: Vec<(PreciseTransform, Wing)>,
+}
+
+impl Default for AeroModel {
+    fn default() -> Self {
+        Self {
+            main: MainBodyModel::Sphere(100.0),
+            wings: vec![],
+        }
+    }
 }
 
 impl AeroModel {
@@ -16,15 +43,59 @@ impl AeroModel {
         &self,
         relative_airspeed: DVec3,
         relative_angvel: DVec3,
+        env: &AeroEnv,
     ) -> AeroModelOutput {
-        todo!()
+        let make_flow = |speed: f64| -> Flow {
+            let mach = (speed / env.speed_of_sound).abs();
+            let q = 0.5 * env.density * speed * speed;
+            Flow { mach, q }
+        };
+
+        let mut total_force = DVec3::ZERO;
+        let mut total_torque = DVec3::ZERO;
+
+        let v_body = relative_airspeed;
+        let speed_body = v_body.length();
+        if speed_body > 0.0 {
+            let flow_body = make_flow(speed_body);
+            let drag_mag = self.main.drag(flow_body);
+            total_force += -v_body / speed_body * drag_mag;
+        }
+
+        for (wing_tf, wing) in &self.wings {
+            let r = wing_tf.translation_mm.to_meters_64();
+            let v_local_body = v_body - relative_angvel.cross(r);
+
+            let v_local_wing = wing_tf.rotation.inverse() * v_local_body;
+            let speed_wing = v_local_wing.length();
+
+            let flow = make_flow(speed_wing);
+            let aoa = v_local_wing.y.atan2(-v_local_wing.z);
+            let WingForces { lift, drag } = wing.eval_forces(aoa, flow);
+            let v_dir = v_local_wing / speed_wing;
+            let drag_dir_local = -v_dir;
+            let span_axis_local = DVec3::X;
+            let lift_dir_local = (v_dir.cross(span_axis_local).cross(v_dir))
+                .try_normalize()
+                .unwrap_or(DVec3::Y);
+            let f_local = drag_dir_local * drag + lift_dir_local * lift;
+            let f_body = wing_tf.rotation * f_local;
+
+            total_force += f_body;
+            total_torque += r.cross(f_body);
+        }
+
+        AeroModelOutput {
+            torque: total_torque,
+            force: total_force,
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct AeroModelOutput {
-    pub torque: f64,
-    pub force: f64,
+    pub torque: DVec3,
+    pub force: DVec3,
 }
 
 pub enum MainBodyModel {
