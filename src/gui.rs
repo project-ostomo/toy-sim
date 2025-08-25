@@ -12,7 +12,7 @@ use bevy_egui::{
 use crate::{
     camera::{CameraFocus, MainCamera},
     gui::hud::{bottom_hud, overlay_hud},
-    physics::AeroEnv,
+    physics::aerodynamics::AeroEnv,
     precision::{FloatingOrigin, PreciseTransform},
     vessel::{ConsumableTanks, Thruster, VesselControls},
 };
@@ -44,6 +44,10 @@ fn flight(
     egui::Window::new("Flight").show(ctx, |ui| {
         ui.label(format!("Altitude: {:.1} m", aero.altitude));
         ui.label(format!("True airspeed: {:.1} m/s", aero.airspeed.length()));
+        ui.label(format!(
+            "Mach: {:.2}",
+            aero.airspeed.length() / aero.speed_of_sound
+        ));
         ui.add(
             ProgressBar::new(ctrl.raw_throttle as f32)
                 .text("Throttle")

@@ -1,9 +1,7 @@
 use std::cmp::Reverse;
 
 use bevy::{
-    core_pipeline::{
-        bloom::Bloom, smaa::Smaa, tonemapping::Tonemapping,
-    },
+    core_pipeline::{bloom::Bloom, smaa::Smaa, tonemapping::Tonemapping},
     input::mouse::MouseWheel,
     pbr::{Atmosphere, AtmosphereSettings, CascadeShadowConfigBuilder},
     prelude::*,
@@ -43,7 +41,7 @@ impl Plugin for MainCameraPlugin {
                 },
                 Tonemapping::TonyMcMapface,
                 PreciseTransform::default(),
-                Smaa::default(),
+                // Smaa::default(),
                 Msaa::Off,
                 // ClusterConfig::Single, // NECESSARY FOR DISTANT LIGHTING
                 // MotionBlur {

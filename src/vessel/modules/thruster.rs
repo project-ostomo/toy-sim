@@ -3,7 +3,7 @@ use std::f64::consts::PI;
 use bevy::{math::DVec3, prelude::*};
 
 use crate::{
-    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv},
+    physics::{AccumulatedForce, AccumulatedTorque, aerodynamics::AeroEnv},
     precision::PreciseTransform,
     vessel::consumable::{Consumable, ConsumableTanks},
 };

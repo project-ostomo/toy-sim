@@ -9,7 +9,7 @@ use crate::{
     GameState,
     camera::CameraFocus,
     orrery::Orrery,
-    physics::{MassProps, sim_time},
+    physics::{MassProps, aerodynamics::AeroModel, sim_time},
     precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
     vessel::{
         LoadedVessels, Vessel, VesselControls,
@@ -94,6 +94,7 @@ fn handle_spawn_vessel(
                 spawn_evt.location,
                 VesselControls::default(),
                 Visibility::default(),
+                AeroModel::default(),
             ))
             .id();
 
@@ -234,7 +235,7 @@ fn spawn_vessels(
     let spawn_offset_mm = (dir * altitude_m).to_millimeters();
     let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
 
-    for i in 0..100 {
+    for i in 0..1000 {
         spawn.write(SpawnVesselEvent {
             cfg: vessels.vessels.get("dummy").unwrap().clone(),
             name: "Dummy".into(),
@@ -244,7 +245,7 @@ fn spawn_vessels(
                         .to_millimeters(),
                 rotation: DQuat::default(),
             },
-            camera_focus: i == 10,
+            camera_focus: i == 0,
         });
     }
 }

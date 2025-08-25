@@ -10,7 +10,7 @@ use egui_flex::{Flex, item};
 
 use crate::{
     camera::{CameraFocus, MainCamera},
-    physics::AeroEnv,
+    physics::aerodynamics::AeroEnv,
     precision::PreciseTransform,
 };
 
