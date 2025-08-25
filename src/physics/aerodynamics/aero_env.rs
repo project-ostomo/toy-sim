@@ -18,6 +18,7 @@ pub struct AeroEnv {
     pub pressure: f64,
     pub density: f64,
     pub temperature: f64,
+    pub speed_of_sound: f64,
 
     pub airspeed: DVec3,
 }
@@ -28,6 +29,9 @@ pub(super) fn update_aero_env(
     planets: Query<(&Celestial, &PreciseTransform)>,
     time: Res<Time>,
 ) {
+    const R_SPECIFIC: f64 = 252.0;
+    const GAMMA: f64 = 1.4;
+
     let epoch = sim_time(&time);
     obj.par_iter_mut()
         .for_each(|(ptf, velocity, soi, mut params)| {
@@ -61,6 +65,7 @@ pub(super) fn update_aero_env(
             params.planet_rel.translation_mm =
                 (planet_rot_inverse * rel_translation.to_meters_64()).to_millimeters();
             params.planet_rel.rotation = planet_rot_inverse * ptf.rotation;
+            params.speed_of_sound = (GAMMA * R_SPECIFIC * params.temperature).sqrt().max(1e-6);
         });
 }
 
