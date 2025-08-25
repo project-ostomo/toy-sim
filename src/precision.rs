@@ -16,7 +16,7 @@ impl Plugin for PrecisionPlugin {
 
 fn float_origin(
     origin: Res<FloatingOrigin>,
-    mut precise: Query<(&PreciseTransform, &mut Transform)>,
+    mut precise: Query<(&PreciseTransform, &mut Transform), Without<ChildOf>>,
 ) {
     let origin_transform = &origin.0;
     let origin_rotation_inverse = origin_transform.rotation.inverse();
