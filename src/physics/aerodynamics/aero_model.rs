@@ -4,21 +4,27 @@ use bevy::{math::DVec3, prelude::*};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv},
+    physics::{AccumulatedForce, AccumulatedTorque, AeroEnv, AngularVelocity},
     precision::{PreciseTransform, ToMetersExt},
 };
 
 pub(crate) fn calc_aerodynamics(
-    planes: Query<(
+    mut planes: Query<(
         &AeroEnv,
+        &AngularVelocity,
         &AeroModel,
         &PreciseTransform,
         &mut AccumulatedForce,
         &mut AccumulatedTorque,
     )>,
 ) {
-    for (env, model, ptf, force, torque) in planes {
-        todo!()
+    for (env, angvel, model, ptf, mut force, mut torque) in planes.iter_mut() {
+        let rot_inv = ptf.rotation.inverse();
+        let airspeed_local = rot_inv * env.airspeed;
+        let angvel_local = rot_inv * angvel.0;
+        let out = model.relative_force(airspeed_local, angvel_local, env);
+        force.0 += ptf.rotation * out.force;
+        torque.0 += ptf.rotation * out.torque;
     }
 }
 
@@ -31,7 +37,7 @@ pub struct AeroModel {
 impl Default for AeroModel {
     fn default() -> Self {
         Self {
-            main: MainBodyModel::Sphere(100.0),
+            main: MainBodyModel::Sphere(1.0),
             wings: vec![],
         }
     }
