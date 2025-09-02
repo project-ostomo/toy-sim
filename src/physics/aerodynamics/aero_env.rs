@@ -39,20 +39,12 @@ pub(super) fn update_aero_env(
             let body = orrery.get_body(&planet.0).unwrap();
             let rel_translation = ptf.translation_mm - planet_ptf.translation_mm;
             let r_vec = (ptf.translation_mm - planet_ptf.translation_mm).to_meters_64();
-            let spin_period = body.rotation.rotation_period;
-            // calculate the local atmospheric velocity
-            let mut v_atm: DVec3;
 
-            if spin_period > 0.0 {
-                let spin_rate = 2.0 * PI / spin_period;
-                let spin_axis = planet_ptf.rotation * DVec3::new(0.0, 0.0, 1.0);
-                v_atm = spin_axis.cross(r_vec) * spin_rate;
-            } else {
-                v_atm = DVec3::ZERO;
-            }
-            if let Some(v_orb) = orrery.solve_velocity(&planet.0, epoch) {
-                v_atm += v_orb;
-            }
+            // Atmospheric velocity at the object's world position (inertial frame)
+            let v_atm = orrery
+                .atmospheric_velocity_at_point(&planet.0, ptf.translation_mm, epoch)
+                .unwrap_or(DVec3::ZERO);
+
             // calculate the params
             params.altitude = r_vec.length() - body.radius;
             params.airspeed = velocity.0 - v_atm;

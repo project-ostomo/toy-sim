@@ -8,8 +8,8 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use crate::{
     GameState,
     camera::CameraFocus,
-    orrery::Orrery,
-    physics::{MassProps, aerodynamics::AeroModel, sim_time},
+    orrery::{Celestial, Orrery},
+    physics::{MassProps, Velocity, aerodynamics::AeroModel, sim_time},
     precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
     vessel::{
         LoadedVessels, Vessel, VesselControls,
@@ -31,6 +31,7 @@ pub struct SpawnVesselEvent {
     pub cfg: VesselCfg,
     pub name: SmolStr,
     pub location: PreciseTransform,
+    pub velocity: DVec3,
     pub camera_focus: bool,
 }
 
@@ -64,6 +65,7 @@ fn handle_spawn_vessel(
             .collect::<Vec<_>>();
 
         let mut consumable_tanks = ConsumableTanks::default();
+        let mut aero_model = AeroModel::default();
 
         // first, we compute the COG for the whole ship
         let center_of_gravity = {
@@ -71,7 +73,7 @@ fn handle_spawn_vessel(
             let mut divisor = 0.0;
             for (part, proto) in parts.iter() {
                 let part_cog = dm_to_meters(part.position_dm);
-                accum += part_cog * proto.empty_mass as f32;
+                accum += part_cog * (proto.empty_mass as f32);
                 divisor += proto.empty_mass as f32;
             }
             accum /= divisor;
@@ -94,7 +96,7 @@ fn handle_spawn_vessel(
                 spawn_evt.location,
                 VesselControls::default(),
                 Visibility::default(),
-                AeroModel::default(),
+                Velocity(spawn_evt.velocity),
             ))
             .id();
 
@@ -129,32 +131,38 @@ fn handle_spawn_vessel(
             if angle != 0.0 {
                 rotation = Quat::from_axis_angle(face_up, angle) * rotation;
             }
-            let child_tf = Transform {
+            let part_tf = Transform {
                 translation,
                 rotation,
                 ..default()
             };
-            let mut ent = commands.spawn((ChildOf(vessel), child_tf));
+            let mut part = commands.spawn((ChildOf(vessel), part_tf));
             if proto.model == "cuboid" {
                 let cuboid = Mesh3d(meshes.add(Cuboid::new(
                     proto.dimensions_dm.x as f32 / 10.0,
                     proto.dimensions_dm.y as f32 / 10.0,
                     proto.dimensions_dm.z as f32 / 10.0,
                 )));
-                ent.insert((cuboid, gray.clone()));
+                part.insert((cuboid, gray.clone()));
             } else {
                 let model: Handle<Scene> = loader.load(format!("models/{}", proto.model));
-                ent.insert(SceneRoot(model));
+                part.insert(SceneRoot(model));
             }
 
             for module in &proto.modules {
                 // TODO compute offset correctly with respect to the SHIP!
+                let module_tf = Transform {
+                    translation: module.offset,
+                    rotation: dir_twist_to_quat(module.direction, module.twist),
+                    ..default()
+                };
+                let module_tf = part_tf * module_tf;
                 let mut mod_entity = commands.spawn((Module, ChildOf(vessel)));
                 match module.kind.clone() {
                     PartModuleCfgInner::MagicTorquer { torque } => {
                         mod_entity.insert((
                             Torquer {
-                                offset: module.offset,
+                                offset: module.offset.as_dvec3(),
                                 ..default()
                             },
                             MagicTorquer { torque },
@@ -163,8 +171,8 @@ fn handle_spawn_vessel(
                     PartModuleCfgInner::MagicThruster { thrust, flame } => {
                         mod_entity.insert((
                             Thruster {
-                                offset: module.offset,
-                                direction: module.direction,
+                                offset: module.offset.as_dvec3(),
+                                direction: module.direction.as_dvec3(),
                                 ..default()
                             },
                             MagicThruster { thrust },
@@ -187,8 +195,8 @@ fn handle_spawn_vessel(
                     } => {
                         mod_entity.insert((
                             Thruster {
-                                offset: module.offset,
-                                direction: module.direction,
+                                offset: module.offset.as_dvec3(),
+                                direction: module.direction.as_dvec3(),
                                 ..default()
                             },
                             ElectricFan {
@@ -212,10 +220,21 @@ fn handle_spawn_vessel(
                             desired_throttle: 1.0,
                         });
                     }
+                    PartModuleCfgInner::Wing(wing) => {
+                        aero_model.wings.push((
+                            PreciseTransform {
+                                translation_mm: module_tf.translation.to_millimeters(),
+                                rotation: module_tf.rotation.as_dquat(),
+                            },
+                            wing,
+                        ));
+                    }
                 }
             }
         }
-        commands.entity(vessel).insert(consumable_tanks);
+        commands
+            .entity(vessel)
+            .insert((consumable_tanks, aero_model));
     }
 }
 
@@ -235,16 +254,22 @@ fn spawn_vessels(
     let spawn_offset_mm = (dir * altitude_m).to_millimeters();
     let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
 
-    for i in 0..1000 {
+    for i in 0..1 {
+        let jitter_mm =
+            (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0).to_millimeters();
+        let translation_mm = spawn_pos_mm + jitter_mm;
+        let v_atm = orrery
+            .atmospheric_velocity_at_point("Pannea", translation_mm, epoch)
+            .unwrap();
+
         spawn.write(SpawnVesselEvent {
             cfg: vessels.vessels.get("dummy").unwrap().clone(),
             name: "Dummy".into(),
             location: PreciseTransform {
-                translation_mm: spawn_pos_mm
-                    + (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0)
-                        .to_millimeters(),
+                translation_mm,
                 rotation: DQuat::default(),
             },
+            velocity: v_atm,
             camera_focus: i == 0,
         });
     }
@@ -256,4 +281,11 @@ fn dm_to_meters(dm: IVec3) -> Vec3 {
         y: dm.y as f32 / 10.0,
         z: dm.z as f32 / 10.0,
     }
+}
+
+fn dir_twist_to_quat(dir: Vec3, twist: f32) -> Quat {
+    let f = dir.normalize();
+    let align = Quat::from_rotation_arc(-Vec3::Z, f);
+    let twist = Quat::from_axis_angle(f, -twist);
+    twist * align
 }

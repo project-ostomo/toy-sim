@@ -25,7 +25,7 @@ pub(crate) fn calc_aerodynamics(
         let out = model.relative_force(airspeed_local, angvel_local, env);
 
         force.0 += ptf.rotation * out.force;
-        torque.0 += ptf.rotation * out.torque;
+        // torque.0 += ptf.rotation * out.torque;
     }
 }
 
@@ -45,13 +45,24 @@ impl Default for AeroModel {
 }
 
 impl AeroModel {
-    /// Computes a force and torque, based on a *relative* airspeed (forward is -Z, as usual) and angular velocity.
+    /// Computes aerodynamic force and torque, given the body-frame
+    /// airspeed and angular velocity.
+    ///
+    /// Coordinate convention: forward is -Z; hence for forward flight the
+    /// relative airspeed points along -Z in body axes.
     pub fn relative_force(
         &self,
         relative_airspeed: DVec3,
         relative_angvel: DVec3,
         env: &AeroEnv,
     ) -> AeroModelOutput {
+        if relative_airspeed == DVec3::ZERO {
+            return AeroModelOutput {
+                torque: DVec3::ZERO,
+                force: DVec3::ZERO,
+            };
+        }
+
         let make_flow = |speed: f64| -> Flow {
             let mach = (speed / env.speed_of_sound).abs();
             let q = 0.5 * env.density * speed * speed;
@@ -61,35 +72,25 @@ impl AeroModel {
         let mut total_force = DVec3::ZERO;
         let mut total_torque = DVec3::ZERO;
 
-        let v_body = relative_airspeed;
-        let speed_body = v_body.length();
-        if speed_body > 0.0 {
-            let flow_body = make_flow(speed_body);
-            let drag_mag = self.main.drag(flow_body);
-            total_force += -v_body / speed_body * drag_mag;
-        }
+        // main body drag
+        let main_drag = self.main.drag(make_flow(relative_airspeed.length()));
+        total_force += -relative_airspeed.normalize() * main_drag;
 
         for (wing_tf, wing) in &self.wings {
             let r = wing_tf.translation_mm.to_meters_64();
-            let v_local_body = v_body - relative_angvel.cross(r);
-
-            let v_local_wing = wing_tf.rotation.inverse() * v_local_body;
-            let speed_wing = v_local_wing.length();
-
-            let flow = make_flow(speed_wing);
-            let aoa = v_local_wing.y.atan2(-v_local_wing.z);
-            let WingForces { lift, drag } = wing.eval_forces(aoa, flow);
-            let v_dir = v_local_wing / speed_wing;
-            let drag_dir_local = -v_dir;
-            let span_axis_local = DVec3::X;
-            let lift_dir_local = (v_dir.cross(span_axis_local).cross(v_dir))
-                .try_normalize()
-                .unwrap_or(DVec3::Y);
-            let f_local = drag_dir_local * drag + lift_dir_local * lift;
-            let f_body = wing_tf.rotation * f_local;
-
-            total_force += f_body;
-            total_torque += r.cross(f_body);
+            // Rigid-body kinematics: local point velocity = v_com + ω × r
+            let v_local = relative_airspeed + relative_angvel.cross(r);
+            let aoa = (-v_local.y).atan2(-v_local.z);
+            let wing_force = wing.eval_forces(aoa, make_flow(v_local.length()));
+            let local_force = DVec3::new(0.0, wing_force.lift, wing_force.drag);
+            info!(
+                aoa,
+                v_local = debug(v_local),
+                local_force = debug(local_force),
+                "local params computed"
+            );
+            let projected_force = wing_tf.rotation * local_force;
+            total_force += projected_force;
         }
 
         AeroModelOutput {
@@ -232,10 +233,10 @@ impl Wing {
     #[inline]
     pub fn eval_forces(&self, aoa: f64, flow: Flow) -> WingForces {
         let c = self.eval_coeffs(aoa, flow);
-        let qS = flow.q * self.area;
+        let q_s = flow.q * self.area;
         WingForces {
-            lift: c.cl * qS,
-            drag: c.cd * qS,
+            lift: c.cl * q_s,
+            drag: c.cd * q_s,
         }
     }
 }
@@ -268,7 +269,10 @@ pub struct ControlSurface {
 
 #[cfg(test)]
 mod tests {
-    use crate::physics::aerodynamics::aero_model::{Flow, Wing};
+    use super::{AeroEnv, AeroModel, Flow, MainBodyModel, Wing, WingDetails};
+    use crate::precision::PreciseTransform;
+    use crate::precision::ToMillimetersExt;
+    use bevy::math::{DQuat, DVec3};
 
     #[test]
     fn simple_wing() {
@@ -288,5 +292,109 @@ mod tests {
             );
             eprintln!("{:.4} / {:.4}", forces.lift, forces.drag)
         }
+    }
+
+    #[test]
+    fn lift_direction_forward_flight() {
+        // Wing at origin, no angular velocity, forward flight
+        let wing = Wing {
+            area: 10.0,
+            span: 10.0,
+            details: WingDetails {
+                aoa0: (-5.0_f64).to_radians(),
+                ..Default::default()
+            },
+            control: None,
+        };
+
+        let wing_tf = PreciseTransform {
+            translation_mm: DVec3::ZERO.to_millimeters(),
+            rotation: DQuat::IDENTITY,
+        };
+
+        let model = AeroModel {
+            main: MainBodyModel::Sphere(0.1),
+            wings: vec![(wing_tf, wing)],
+        };
+
+        let env = AeroEnv {
+            density: 1.225,
+            speed_of_sound: 340.0,
+            ..Default::default()
+        };
+
+        // Relative wind along +Z (oncoming flow), forward flight
+        let rel_wind = DVec3::new(0.0, 0.0, 100.0);
+        let out = model.relative_force(rel_wind, DVec3::ZERO, &env);
+
+        // Expect: positive lift (+Y), drag along +Z, no spanwise (+X) force
+        assert!(
+            out.force.y > 0.0,
+            "lift should be positive (got {:?})",
+            out.force
+        );
+        assert!(
+            out.force.z > 0.0,
+            "drag should be positive Z (got {:?})",
+            out.force
+        );
+        assert!(
+            out.force.x.abs() < 1e-9,
+            "no spanwise force expected (got {:?})",
+            out.force
+        );
+
+        // At origin, torque should be ~0
+        assert!(
+            out.torque.length() < 1e-9,
+            "no torque expected at origin (got {:?})",
+            out.torque
+        );
+    }
+
+    #[test]
+    fn torque_about_z_from_outboard_wing() {
+        // Wing offset along +X; upward lift should create +Z torque (yaw)
+        let wing = Wing {
+            area: 10.0,
+            span: 10.0,
+            details: WingDetails {
+                aoa0: (-5.0_f64).to_radians(),
+                ..Default::default()
+            },
+            control: None,
+        };
+
+        let wing_tf = PreciseTransform {
+            translation_mm: DVec3::new(2.0, 0.0, 0.0).to_millimeters(),
+            rotation: DQuat::IDENTITY,
+        };
+
+        let model = AeroModel {
+            main: MainBodyModel::Sphere(0.1),
+            wings: vec![(wing_tf, wing)],
+        };
+
+        let env = AeroEnv {
+            density: 1.225,
+            speed_of_sound: 340.0,
+            ..Default::default()
+        };
+
+        let rel_wind = DVec3::new(0.0, 0.0, 100.0);
+        let out = model.relative_force(rel_wind, DVec3::ZERO, &env);
+
+        // Positive yaw torque due to r=(+X) and F_y>0  => τ_z = r_x * F_y > 0
+        assert!(
+            out.torque.z > 0.0,
+            "expected +Z torque (got {:?})",
+            out.torque
+        );
+        // No roll torque expected from symmetric setup
+        assert!(
+            out.torque.x.abs() < 1e-6,
+            "unexpected roll torque (got {:?})",
+            out.torque
+        );
     }
 }

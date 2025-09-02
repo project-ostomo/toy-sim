@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
-use crate::vessel::consumable::Consumable;
 use crate::vessel::modules::reactor::NuclearReactorCfg;
+use crate::{physics::aerodynamics::Wing, vessel::consumable::Consumable};
 
 #[derive(Asset, TypePath, Clone, Debug, Serialize, Deserialize)]
 pub struct PartCfg {
@@ -25,9 +25,11 @@ pub struct PartCfg {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartModuleCfg {
     #[serde(default)]
-    pub offset: DVec3,
+    pub offset: Vec3,
     #[serde(default)]
-    pub direction: DVec3,
+    pub direction: Vec3,
+    #[serde(default)]
+    pub twist: f32,
     #[serde(flatten)]
     pub kind: PartModuleCfgInner,
 }
@@ -53,6 +55,7 @@ pub enum PartModuleCfgInner {
         fraction: f64,
     },
     NuclearReactor(NuclearReactorCfg),
+    Wing(Wing),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

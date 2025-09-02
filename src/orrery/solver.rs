@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::precision::ToMillimetersExt;
+use crate::precision::{ToMetersExt, ToMillimetersExt};
 use bevy::{
     ecs::resource::Resource,
     math::{DQuat, DVec3, I64Vec3},
@@ -171,6 +171,48 @@ impl Orrery {
         Some(rot * vel_orb)
     }
 
+    /// Computes the atmospheric velocity (m/s) at a given world-space point,
+    /// accounting for the planet's spin and the body's orbital velocity.
+    ///
+    /// - `body`: name of the celestial body (with atmosphere)
+    /// - `point_world_m`: world-space point in meters
+    /// - `epoch`: time at which to evaluate
+    ///
+    /// Returns the inertial-frame velocity of the atmosphere at that point, or None
+    /// if the body is not found.
+    pub fn atmospheric_velocity_at_point(
+        &self,
+        body: &str,
+        point_world_mm: I64Vec3,
+        epoch: Epoch,
+    ) -> Option<DVec3> {
+        let cfg = self.bodies.get(body)?;
+
+        // Body centre position (m) at epoch
+        let body_center_mm = self.solve_position(body, epoch)?;
+
+        // Vector from body centre to the point (m)
+        let r_vec = point_world_mm - body_center_mm;
+
+        // Spin-induced atmospheric velocity (m/s)
+        let mut v_atm = DVec3::ZERO;
+        let spin_period = cfg.rotation.rotation_period;
+        if spin_period > 0.0 {
+            let spin_rate = 2.0 * PI / spin_period; // rad/s
+            // Spin axis is +Z in body frame; rotate into inertial frame
+            let body_rot = self.solve_rotation(body, epoch).unwrap_or(DQuat::IDENTITY);
+            let spin_axis = body_rot * DVec3::Z;
+            v_atm += spin_axis.cross(r_vec.to_meters_64()) * spin_rate;
+        }
+
+        // Add orbital velocity of the body (air mass moves with the body)
+        if let Some(v_orb) = self.solve_velocity(body, epoch) {
+            v_atm += v_orb;
+        }
+
+        Some(v_atm)
+    }
+
     /// Solves for the rotation quaternion of a body at a given epoch.
     /// Rotation parameters (eq_ascend_node, obliquity, rotation_epoch) are defined in the body's orbital frame,
     /// so we first orient the equator in inertial space via the orbit plane, then apply the body spin.
@@ -213,8 +255,11 @@ mod tests {
 name: "sun-earth"
 bodies:
   - name: "Sun"
+    class: star
+    lumens: 3.8e26
     mass: "1 massSol"
   - name: "Earth"
+    class: planet
     parent: "Sun"
     mass: "1 massEarth"
     semi_major: "1 au"
@@ -241,6 +286,7 @@ bodies:
 name: "test"
 bodies:
   - name: "A"
+    class: planet
     mass: "1 massEarth"
 "#;
         let cfg: OrreryCfg = serde_yml::from_str(yaml)?;

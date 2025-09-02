@@ -51,6 +51,21 @@ pub struct PreciseTransform {
 }
 
 impl PreciseTransform {
+    /// Compose this transform (as parent) with a local/child transform,
+    /// producing the child expressed in the parent's reference frame.
+    ///
+    /// Equivalent to typical transform propagation: `world = parent * local`.
+    pub fn compose(&self, local: &PreciseTransform) -> PreciseTransform {
+        let rotated_local_m = self.rotation * local.translation_mm.to_meters_64();
+        let translation_mm = self
+            .translation_mm
+            .saturating_add(rotated_local_m.to_millimeters());
+
+        PreciseTransform {
+            translation_mm,
+            rotation: (self.rotation * local.rotation).normalize(),
+        }
+    }
     pub fn look_at(&mut self, target: I64Vec3, up: DVec3) {
         self.look_to(
             (target - self.translation_mm).to_meters_64().normalize(),
@@ -69,6 +84,17 @@ impl PreciseTransform {
         let up = back.cross(right);
 
         self.rotation = DQuat::from_mat3(&DMat3::from_cols(right, up, back)).normalize();
+    }
+}
+
+use core::ops::Mul;
+
+impl Mul<PreciseTransform> for PreciseTransform {
+    type Output = PreciseTransform;
+
+    /// Compose transforms as `parent * local` to get the child in world/parent space.
+    fn mul(self, rhs: PreciseTransform) -> Self::Output {
+        self.compose(&rhs)
     }
 }
 

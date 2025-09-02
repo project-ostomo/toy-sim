@@ -4,6 +4,12 @@ model = "cuboid"
 dimensions_dm = [20, 10, 100]
 
 [[modules]]
+class = "wing"
+direction = [0.0, 0.0, -1.0]
+span = 10.0
+area = 100.0
+
+[[modules]]
 class = "electric_fan"
 power = 1e8
 direction = [0.0, 0.0, -1.0]
