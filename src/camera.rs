@@ -119,8 +119,8 @@ pub struct CameraParams {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
-    Orbit,
     #[default]
+    Orbit,
     WarThunderLike,
 }
 

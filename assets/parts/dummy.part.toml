@@ -6,6 +6,7 @@ dimensions_dm = [20, 10, 100]
 [[modules]]
 class = "wing"
 direction = [0.0, 0.0, -1.0]
+offset = [0.0, 0.0, 1.0]
 span = 10.0
 area = 100.0
 
