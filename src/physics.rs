@@ -36,7 +36,6 @@ fn apply_forces(
         (
             &MassProps,
             &mut PreciseTransform,
-            &Transform,
             &mut Velocity,
             &mut AccumulatedForce,
             &mut AngularVelocity,
@@ -52,7 +51,7 @@ fn apply_forces(
 
     // currently, we use velocity-verlet for motion + symplectic Euler for rotation, this might change in the future
     objects.par_iter_mut().for_each(
-        |(mass, mut ptf, tf, mut vel, mut force, mut ang_vel, mut torque, mut acc_prev)| {
+        |(mass, mut ptf, mut vel, mut force, mut ang_vel, mut torque, mut acc_prev)| {
             // deal with force
             ptf.translation_mm += (vel.0 * dt + acc_prev.0 * half_dt2).to_millimeters();
             let acc_new = force.0 / mass.mass;
@@ -61,7 +60,7 @@ fn apply_forces(
 
             // deal with torques
             let rot = DMat3::from_quat(ptf.rotation);
-            // let i_world = rot * mass.inertia * rot.transpose();
+
             let inv_world = rot * mass.inertia_inv * rot.transpose();
             let ang_accel = inv_world * torque.0;
             ang_vel.0 += ang_accel * dt;

@@ -48,6 +48,7 @@ fn flight(
             "Mach: {:.2}",
             aero.airspeed.length() / aero.speed_of_sound
         ));
+        ui.label(format!("Pressure: {:.2} atm", aero.pressure / 101.3e3));
         ui.add(
             ProgressBar::new(ctrl.raw_throttle as f32)
                 .text("Throttle")
