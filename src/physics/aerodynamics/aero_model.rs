@@ -23,7 +23,11 @@ pub(crate) fn calc_aerodynamics(
         let airspeed_local = rot_inv * env.airspeed;
         let angvel_local = rot_inv * angvel.0;
         let out = model.relative_force(airspeed_local, angvel_local, env);
-        info!(torque = debug(out.torque), "torque applying");
+        info!(
+            torque = debug(out.torque.length()),
+            force = debug(out.force.length()),
+            "aero model calculated"
+        );
         force.0 += ptf.rotation * out.force;
         torque.0 += ptf.rotation * out.torque;
     }
@@ -387,10 +391,22 @@ mod tests {
 
         // Expect a yawing moment about +Y (sign depends on force direction). With +X sideslip
         // and rearward lever (r_z>0), lift acts roughly along -X, giving τ_y = r_z * F_x < 0.
-        assert!(out.torque.y < 0.0, "expected negative yaw torque, got {:?}", out.torque);
+        assert!(
+            out.torque.y < 0.0,
+            "expected negative yaw torque, got {:?}",
+            out.torque
+        );
 
         // No significant roll/pitch in this symmetric setup
-        assert!(out.torque.x.abs() < 1e-5, "unexpected pitch torque: {:?}", out.torque);
-        assert!(out.torque.z.abs() < 1e-5, "unexpected roll torque: {:?}", out.torque);
+        assert!(
+            out.torque.x.abs() < 1e-5,
+            "unexpected pitch torque: {:?}",
+            out.torque
+        );
+        assert!(
+            out.torque.z.abs() < 1e-5,
+            "unexpected roll torque: {:?}",
+            out.torque
+        );
     }
 }
