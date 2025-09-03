@@ -29,7 +29,7 @@ pub struct PartModuleCfg {
     #[serde(default)]
     pub direction: Vec3,
     #[serde(default)]
-    pub twist: f32,
+    pub twist_deg: f32,
     #[serde(flatten)]
     pub kind: PartModuleCfgInner,
 }

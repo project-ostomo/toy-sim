@@ -23,8 +23,9 @@ pub(crate) fn calc_aerodynamics(
         let airspeed_local = rot_inv * env.airspeed;
         let angvel_local = rot_inv * angvel.0;
         let out = model.relative_force(airspeed_local, angvel_local, env);
+        info!(torque = debug(out.torque), "torque applying");
         force.0 += ptf.rotation * out.force;
-        // torque.0 += ptf.rotation * out.torque * 0.001;
+        torque.0 += ptf.rotation * out.torque;
     }
 }
 
@@ -81,13 +82,22 @@ impl AeroModel {
             let r = wing_tf.translation_mm.to_meters_64();
             // Rigid-body kinematics: local point velocity = v_com + ω × r
             let v_local = relative_airspeed + relative_angvel.cross(r);
-            let drag_dir = -v_local.normalize();
-            let aoa = (-v_local.y).atan2(-v_local.z);
-            let wing_force = wing.eval_forces(aoa, make_flow(v_local.length()));
+            let v_hat = v_local.normalize();
+
+            // Compute AoA in the wing's LOCAL frame so twist/orientation are respected.
+            // In wing-local axes: forward = -Z, lift axis = +Y, span = +X.
+            let v_local_wing = wing_tf.rotation.conjugate() * v_local;
+            let aoa = (-v_local_wing.y).atan2(-v_local_wing.z);
+
+            let flow = make_flow(v_local.length());
+            let wing_force = wing.eval_forces(aoa, flow);
+
+            // Directions in WORLD frame
+            let drag_dir = -v_hat;
             // We assume the wing's span is along its local X-axis.
             let wing_span_dir = wing_tf.rotation * DVec3::X;
-            let lift_dir = wing_span_dir.cross(v_local.normalize()).normalize();
-            info!(aoa, v_local = debug(v_local), "local params computed");
+            let lift_dir = wing_span_dir.cross(v_hat).normalize();
+
             let projected_force = lift_dir * wing_force.lift + drag_dir * wing_force.drag;
             total_force += projected_force;
             total_torque += r.cross(projected_force);
@@ -160,7 +170,7 @@ impl Default for WingDetails {
             efficiency: 0.85,
             cdrag0: 0.012,
             clift_max: 1.4,
-            clift_min: -1.2,
+            clift_min: -1.4,
         }
     }
 }
@@ -338,5 +348,49 @@ mod tests {
             "unexpected roll torque (got {:?})",
             out.torque
         );
+    }
+
+    #[test]
+    fn vertical_fin_produces_yaw_from_sideslip() {
+        // A vertical fin (90° twist about Z) at the tail should create a yawing moment
+        // under a small positive sideslip (v_x > 0, forward v_z < 0).
+        let wing = Wing {
+            area: 10.0,
+            span: 10.0,
+            details: WingDetails {
+                aoa0: 0.0,
+                ..Default::default()
+            },
+            control: None,
+        };
+
+        // Place the fin 2 m behind the CoM, and rotate it 90° about Z so the span is vertical.
+        let wing_tf = PreciseTransform {
+            translation_mm: DVec3::new(0.0, 0.0, 2.0).to_millimeters(),
+            rotation: DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2),
+        };
+
+        let model = AeroModel {
+            main: MainBodyModel::Sphere(0.1),
+            wings: vec![(wing_tf, wing)],
+        };
+
+        let env = AeroEnv {
+            density: 1.225,
+            speed_of_sound: 340.0,
+            ..Default::default()
+        };
+
+        // Forward flight with slight +X sideslip
+        let rel_wind = DVec3::new(10.0, 0.0, -100.0);
+        let out = model.relative_force(rel_wind, DVec3::ZERO, &env);
+
+        // Expect a yawing moment about +Y (sign depends on force direction). With +X sideslip
+        // and rearward lever (r_z>0), lift acts roughly along -X, giving τ_y = r_z * F_x < 0.
+        assert!(out.torque.y < 0.0, "expected negative yaw torque, got {:?}", out.torque);
+
+        // No significant roll/pitch in this symmetric setup
+        assert!(out.torque.x.abs() < 1e-5, "unexpected pitch torque: {:?}", out.torque);
+        assert!(out.torque.z.abs() < 1e-5, "unexpected roll torque: {:?}", out.torque);
     }
 }
