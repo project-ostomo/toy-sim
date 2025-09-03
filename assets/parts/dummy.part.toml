@@ -6,13 +6,21 @@ dimensions_dm = [20, 10, 100]
 [[modules]]
 class = "wing"
 direction = [0.0, 0.0, -1.0]
-offset = [0.0, 0.0, 1.0]
+offset = [0.0, 0.0, 10.0]
 span = 10.0
 area = 100.0
 
 [[modules]]
+class = "wing"
+direction = [0.0, 0.0, -1.0]
+offset = [0.0, 0.0, 10.0]
+twist_deg = 90.0
+span = 10.0
+area = 10.0
+
+[[modules]]
 class = "electric_fan"
-power = 1e8
+power = 1e9
 direction = [0.0, 0.0, -1.0]
 efficiency = 0.7
 diameter = 2.0
@@ -20,7 +28,7 @@ diameter = 2.0
 
 [[modules]]
 class = "magic_torquer"
-torque = 100.0
+torque = 1e8
 offset = [0.0, 0.0, 0.0]
 
 [[modules]]
@@ -37,7 +45,7 @@ fraction = 1.0
 
 [[modules]]
 class = "nuclear_reactor"
-thermal_power = 1e9
+thermal_power = 10e9
 hot_side = 1200
 efficiency = 0.2
 fuel_util_frac = 0.1

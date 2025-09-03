@@ -81,6 +81,11 @@ fn handle_spawn_vessel(
         };
 
         let total_mass = parts.iter().map(|p| p.1.empty_mass).sum::<f64>();
+        // Hardcode a large diagonal inertia to stabilize rotation for now.
+        // This avoids unrealistically large angular accelerations until
+        // a proper inertia aggregation model is implemented.
+        let inertia_val = 1.0e7_f64; // kg·m² (tuned large for stability)
+        let fixed_inertia = DMat3::from_diagonal(DVec3::splat(inertia_val));
 
         let vessel = commands
             .spawn((
@@ -90,8 +95,8 @@ fn handle_spawn_vessel(
                 },
                 MassProps {
                     mass: total_mass,
-                    inertia: DMat3::IDENTITY,
-                    inertia_inv: DMat3::IDENTITY,
+                    inertia: fixed_inertia,
+                    inertia_inv: fixed_inertia.inverse(),
                 },
                 spawn_evt.location,
                 VesselControls::default(),
@@ -153,7 +158,7 @@ fn handle_spawn_vessel(
                 // TODO compute offset correctly with respect to the SHIP!
                 let module_tf = Transform {
                     translation: module.offset,
-                    rotation: dir_twist_to_quat(module.direction, module.twist),
+                    rotation: dir_twist_to_quat(module.direction, module.twist_deg.to_radians()),
                     ..default()
                 };
                 let module_tf = part_tf * module_tf;
