@@ -1,7 +1,7 @@
 name = "dummy"
 empty_mass = 10000
 model = "cuboid"
-dimensions_dm = [20, 10, 100]
+dimensions_dm = [100, 10, 100]
 
 [[modules]]
 class = "wing"
@@ -28,7 +28,7 @@ diameter = 2.0
 
 [[modules]]
 class = "magic_torquer"
-torque = 1e8
+torque = 0e9
 offset = [0.0, 0.0, 0.0]
 
 [[modules]]

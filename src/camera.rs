@@ -101,7 +101,7 @@ impl Plugin for MainCameraPlugin {
         });
 
         app.add_systems(
-            FixedPostUpdate,
+            FixedUpdate,
             (camera_controls, atmo_and_float_origin, camera_lighting)
                 .chain()
                 .run_if(in_state(GameState::Game)),

@@ -36,7 +36,7 @@ impl Default for VesselControls {
             dir_fbw_target: None,
             dir_fbw_impl: Box::new(PidDirectionalFbw::new(2.0, 0.00, 0.0, 0.1)),
             rot_fbw_target: None,
-            rot_fbw_impl: Box::new(PidRotationalFbw::new(1.0, 1.0, 0.00, 0.5)),
+            rot_fbw_impl: Box::new(PidRotationalFbw::new(0.005, 0.05, 0.000, 100.0)),
             raw_throttle: 0.0,
             raw_steering: DVec3::ZERO,
         }
