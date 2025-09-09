@@ -24,7 +24,10 @@ impl Plugin for PhysicsPlugin {
         app.add_systems(Update, gizmos);
         app.add_plugins((run_aero, run_docking));
         app.add_systems(FixedUpdate, gravity.run_if(in_state(GameState::Game)));
-        app.add_systems(FixedUpdate, apply_forces.run_if(in_state(GameState::Game)));
+        app.add_systems(
+            FixedPostUpdate,
+            apply_forces.run_if(in_state(GameState::Game)),
+        );
     }
 }
 
@@ -50,21 +53,21 @@ fn apply_forces(
     // currently, we use velocity-verlet for motion + symplectic Euler for rotation, this might change in the future
     objects.iter_mut().for_each(
         |(mass, mut ptf, mut vel, mut force, mut ang_vel, mut torque, mut acc_prev)| {
-            // // deal with force (velocity-verlet)
-            // {
-            //     ptf.translation_mm += (vel.0 * dt + acc_prev.0 * half_dt2).to_millimeters();
-            //     let acc_new = force.0 / mass.mass;
-            //     vel.0 += 0.5 * (acc_prev.0 + acc_new) * dt;
-            //     acc_prev.0 = acc_new;
-            // }
-
-            // deal with force (symplectic Euler: kick -> drift)
+            // deal with force (velocity-verlet)
             {
-                let acc = force.0 * (1.0 / mass.mass);
-                info!(acc = debug(acc.length()), "acc applying");
-                vel.0 += acc * dt;
-                ptf.translation_mm += (vel.0 * dt).to_millimeters();
+                ptf.translation_mm += (vel.0 * dt + acc_prev.0 * half_dt2).to_millimeters();
+                let acc_new = force.0 / mass.mass;
+                vel.0 += 0.5 * (acc_prev.0 + acc_new) * dt;
+                acc_prev.0 = acc_new;
             }
+
+            // // deal with force (symplectic Euler: kick -> drift)
+            // {
+            //     let acc = force.0 * (1.0 / mass.mass);
+            //     info!(acc = debug(acc.length()), "acc applying");
+            //     vel.0 += acc * dt;
+            //     ptf.translation_mm += (vel.0 * dt).to_millimeters();
+            // }
 
             // deal with torques (Euler's equations with gyroscopic term in body frame)
             let rot = DMat3::from_quat(ptf.rotation);
@@ -73,7 +76,7 @@ fn apply_forces(
             let j_omega = mass.inertia * omega_b;
             let gyro = omega_b.cross(j_omega);
             let domega_b = mass.inertia_inv * (tau_b - gyro);
-            info!(ang_acc = debug(domega_b.length()), "ang_acc applying");
+            // info!(ang_acc = debug(domega_b.length()), "ang_acc applying");
             let omega_b_new = omega_b + domega_b * dt;
             let omega_world_new = rot * omega_b_new;
             let delta_q = DQuat::from_scaled_axis(omega_world_new * dt);

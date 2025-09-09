@@ -101,7 +101,7 @@ impl Plugin for MainCameraPlugin {
         });
 
         app.add_systems(
-            FixedUpdate,
+            Update,
             (camera_controls, atmo_and_float_origin, camera_lighting)
                 .chain()
                 .run_if(in_state(GameState::Game)),
@@ -119,8 +119,8 @@ pub struct CameraParams {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum CameraMode {
-    Orbit,
     #[default]
+    Orbit,
     WarThunderLike,
 }
 
