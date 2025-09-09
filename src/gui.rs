@@ -1,5 +1,7 @@
 mod hud;
 
+use std::time::Instant;
+
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -30,9 +32,26 @@ impl Plugin for GuiPlugin {
                 thrusters,
                 overlay_hud,
                 bottom_hud,
+                time,
             ),
         );
     }
+}
+
+fn time(
+    mut contexts: EguiContexts,
+    fixed_time: Res<Time<Fixed>>,
+    mut wall_time: Local<Option<Instant>>,
+) {
+    let wall_time = wall_time.get_or_insert_with(Instant::now);
+    let ctx = contexts.ctx_mut().unwrap();
+    egui::Window::new("Time").show(ctx, |ui| {
+        ui.label(format!("Sim time: {:.2} s", fixed_time.elapsed_secs_f64()));
+        ui.label(format!(
+            "Wall time: {:.2} s",
+            wall_time.elapsed().as_secs_f64()
+        ));
+    });
 }
 
 fn flight(

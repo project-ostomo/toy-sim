@@ -17,17 +17,13 @@ pub(crate) fn calc_aerodynamics(
         &mut AccumulatedForce,
         &mut AccumulatedTorque,
     )>,
+    time: Res<Time>,
 ) {
     for (env, angvel, model, ptf, mut force, mut torque) in planes.iter_mut() {
         let rot_inv = ptf.rotation.inverse();
         let airspeed_local = rot_inv * env.airspeed;
         let angvel_local = rot_inv * angvel.0;
         let out = model.relative_force(airspeed_local, angvel_local, env);
-        info!(
-            torque = debug(out.torque.length()),
-            force = debug(out.force.length()),
-            "aero model calculated"
-        );
         force.0 += ptf.rotation * out.force;
         torque.0 += ptf.rotation * out.torque;
     }

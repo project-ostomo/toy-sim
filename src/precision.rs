@@ -10,11 +10,11 @@ pub struct PrecisionPlugin;
 impl Plugin for PrecisionPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(FloatingOrigin(PreciseTransform::default()));
-        app.add_systems(FixedPreUpdate, float_origin);
+        app.add_systems(PreUpdate, precise_to_imprecise);
     }
 }
 
-fn float_origin(
+fn precise_to_imprecise(
     origin: Res<FloatingOrigin>,
     mut precise: Query<(&PreciseTransform, &mut Transform), Without<ChildOf>>,
 ) {
