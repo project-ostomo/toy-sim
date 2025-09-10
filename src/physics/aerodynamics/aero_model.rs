@@ -78,6 +78,7 @@ impl AeroModel {
         let drag_dir = -vel_dir;
         total_force += drag_dir * main_drag;
 
+        let flow = make_flow(relative_airspeed.length());
         for (wing_tf, wing) in &self.wings {
             let r = wing_tf.translation_mm.to_meters_64();
             // Rigid-body kinematics: local point velocity = v_com + ω × r
@@ -89,7 +90,6 @@ impl AeroModel {
             let v_local_wing = wing_tf.rotation.conjugate() * v_local;
             let aoa = (-v_local_wing.y).atan2(-v_local_wing.z);
 
-            let flow = make_flow(v_local.length());
             let wing_force = wing.eval_forces(aoa, flow);
 
             // Directions in WORLD frame

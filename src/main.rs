@@ -41,7 +41,7 @@ fn main() {
         }))
         .insert_non_send_resource(NonSendMarker)
         .insert_resource(ClearColor(Color::BLACK))
-        .insert_resource(Time::from_hz(499.0)) // a prime number
+        .insert_resource(Time::from_hz(317.0)) // a prime number
         .init_state::<GameState>()
         .add_loading_state(LoadingState::new(GameState::Loading).continue_to_state(GameState::Game))
         .add_plugins((
