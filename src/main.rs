@@ -8,7 +8,7 @@ mod precision;
 mod vessel;
 
 use bevy::{
-    core_pipeline::auto_exposure::AutoExposurePlugin, diagnostic::FrameTimeDiagnosticsPlugin,
+    diagnostic::FrameTimeDiagnosticsPlugin, post_process::auto_exposure::AutoExposurePlugin,
     prelude::*, window::PresentMode,
 };
 use bevy_asset_loader::loading_state::{LoadingState, LoadingStateAppExt};

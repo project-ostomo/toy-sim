@@ -144,8 +144,8 @@ fn apply_quarter_turn(base: Quat, up_axis: Vec3, turn: QuarterTurn) -> Quat {
     }
 }
 
-#[derive(Event, Clone)]
-pub struct SpawnVesselEvent {
+#[derive(Message, Clone)]
+pub struct SpawnVesselMsg {
     pub cfg: VesselCfg,
     pub name: SmolStr,
     pub location: PreciseTransform,
@@ -154,7 +154,7 @@ pub struct SpawnVesselEvent {
 }
 
 pub fn run_spawn(app: &mut App) {
-    app.add_event::<SpawnVesselEvent>()
+    app.add_message::<SpawnVesselMsg>()
         .add_systems(OnEnter(GameState::Game), spawn_vessels.after(load_vessels))
         .add_systems(
             FixedUpdate,
@@ -166,7 +166,7 @@ pub fn run_spawn(app: &mut App) {
 
 fn handle_spawn_vessel(
     mut commands: Commands,
-    mut evts: EventReader<SpawnVesselEvent>,
+    mut evts: EventReader<SpawnVesselMsg>,
     vessels: Res<LoadedVessels>,
     loader: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -333,7 +333,7 @@ fn spawn_vessels(
     time: Res<Time>,
     orrery: Res<Orrery>,
     vessels: Res<LoadedVessels>,
-    mut spawn: EventWriter<SpawnVesselEvent>,
+    mut spawn: EventWriter<SpawnVesselMsg>,
 ) {
     let epoch = sim_time(&time);
 
@@ -353,7 +353,7 @@ fn spawn_vessels(
             .atmospheric_velocity_at_point("Pannea", translation_mm, epoch)
             .unwrap();
 
-        spawn.write(SpawnVesselEvent {
+        spawn.write(SpawnVesselMsg {
             cfg: vessels.vessels.get("dummy").unwrap().clone(),
             name: "Dummy".into(),
             location: PreciseTransform {
