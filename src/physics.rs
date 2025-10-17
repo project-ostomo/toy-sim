@@ -157,7 +157,7 @@ fn gravity(
     )>,
 ) {
     objects
-        .par_iter_mut()
+        .iter_mut()
         .for_each(|(object_ent, props, obj_ptf, mut force, soi)| {
             const GEE: f64 = 6.6473e-11;
             let mut closest_celestial = None;

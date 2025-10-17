@@ -1,7 +1,6 @@
 use bevy::{math::DVec3, prelude::*};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
-use std::f64::consts::PI;
 
 use crate::{
     orrery::{Celestial, Orrery},

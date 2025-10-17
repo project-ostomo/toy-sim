@@ -21,7 +21,7 @@ fn precise_to_imprecise(
     let origin_transform = &origin.0;
     let origin_rotation_inverse = origin_transform.rotation.inverse();
 
-    precise.par_iter_mut().for_each(|(loc, mut tf)| {
+    precise.iter_mut().for_each(|(loc, mut tf)| {
         // Calculate relative translation in millimeters
         let rel_translation_mm = loc
             .translation_mm
