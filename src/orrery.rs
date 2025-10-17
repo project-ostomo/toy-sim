@@ -11,7 +11,7 @@ pub use orrery_cfg::BodyClass;
 pub use solver::Orrery;
 mod solver;
 
-use bevy::{pbr::NotShadowCaster, prelude::*};
+use bevy::{light::NotShadowCaster, prelude::*};
 use hifitime::Epoch;
 use smol_str::SmolStr;
 

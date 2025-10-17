@@ -1,11 +1,14 @@
 use std::cmp::Reverse;
 
 use bevy::{
-    core_pipeline::{bloom::Bloom, smaa::Smaa, tonemapping::Tonemapping},
+    camera::Exposure,
+    core_pipeline::tonemapping::Tonemapping,
     input::mouse::MouseWheel,
-    pbr::{Atmosphere, AtmosphereSettings, CascadeShadowConfigBuilder},
+    light::CascadeShadowConfigBuilder,
+    pbr::{Atmosphere, AtmosphereSettings},
+    post_process::bloom::Bloom,
     prelude::*,
-    render::camera::Exposure,
+    render::view::Hdr,
 };
 
 use ordered_float::OrderedFloat;
@@ -33,12 +36,10 @@ impl Plugin for MainCameraPlugin {
             let k = (10_000.0f32).ln() / 144_000.0; // ≈ 6.14e-5
             commands.spawn((
                 MainCamera,
+                Hdr,
                 CameraParams::default(),
                 Camera3d::default(),
-                Camera {
-                    hdr: true,
-                    ..default()
-                },
+                Camera { ..default() },
                 Tonemapping::TonyMcMapface,
                 PreciseTransform::default(),
                 // Smaa::default(),
@@ -132,9 +133,9 @@ fn camera_controls(
         (With<CameraFocus>, Without<MainCamera>),
     >,
     celestials: Query<&PreciseTransform, (With<Celestial>, Without<MainCamera>)>,
-    mut mouse_evs: EventReader<bevy::input::mouse::MouseMotion>,
+    mut mouse_evs: MessageReader<bevy::input::mouse::MouseMotion>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
-    mut scroll_evs: EventReader<MouseWheel>,
+    mut scroll_evs: MessageReader<MouseWheel>,
 ) {
     const SENS: f64 = 0.01;
     const ZOOM_SENS: f64 = 100.0;
