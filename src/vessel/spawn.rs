@@ -166,7 +166,7 @@ pub fn run_spawn(app: &mut App) {
 
 fn handle_spawn_vessel(
     mut commands: Commands,
-    mut evts: EventReader<SpawnVesselMsg>,
+    mut evts: MessageReader<SpawnVesselMsg>,
     vessels: Res<LoadedVessels>,
     loader: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -333,7 +333,7 @@ fn spawn_vessels(
     time: Res<Time>,
     orrery: Res<Orrery>,
     vessels: Res<LoadedVessels>,
-    mut spawn: EventWriter<SpawnVesselMsg>,
+    mut spawn: MessageWriter<SpawnVesselMsg>,
 ) {
     let epoch = sim_time(&time);
 
@@ -345,7 +345,7 @@ fn spawn_vessels(
     let spawn_offset_mm = (dir * altitude_m).to_millimeters();
     let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
 
-    for i in 0..1000 {
+    for i in 0..10 {
         let jitter_mm =
             (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0).to_millimeters();
         let translation_mm = spawn_pos_mm + jitter_mm;

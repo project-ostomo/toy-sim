@@ -1,11 +1,10 @@
 mod aero_env;
-use std::time::Duration;
 
 pub use aero_env::*;
 mod aero_model;
 pub use aero_model::*;
 
-use bevy::{prelude::*, time::common_conditions::on_timer};
+use bevy::prelude::*;
 
 use crate::GameState;
 use crate::physics::aerodynamics::aero_model::calc_aerodynamics;

@@ -5,7 +5,7 @@ use bevy::{
     core_pipeline::tonemapping::Tonemapping,
     input::mouse::MouseWheel,
     light::CascadeShadowConfigBuilder,
-    pbr::{Atmosphere, AtmosphereSettings},
+    pbr::{Atmosphere, AtmosphereMode, AtmosphereSettings},
     post_process::bloom::Bloom,
     prelude::*,
     render::view::Hdr,
@@ -75,6 +75,7 @@ impl Plugin for MainCameraPlugin {
                     // how far we integrate fog from the camera
                     aerial_view_lut_max_distance: 4.0e6, // 4 000 km
                     scene_units_to_m: 100.0,
+                    rendering_method: AtmosphereMode::LookupTexture,
                     ..default()
                 },
                 // AutoExposure::default(),
@@ -199,14 +200,14 @@ struct CameraLight;
 /// Computes the stars lighting the main camera.
 fn camera_lighting(
     origin: Res<FloatingOrigin>,
-    camera: Single<(&PreciseTransform, &Transform), With<MainCamera>>,
+    camera: Single<&PreciseTransform, With<MainCamera>>,
     mut lights: Query<
         (&mut DirectionalLight, &mut Transform),
         (With<CameraLight>, Without<MainCamera>),
     >,
     stars: Query<(&Star, &PreciseTransform)>,
 ) {
-    let (camera_ptf, camera_tf) = camera.into_inner();
+    let camera_ptf = camera.into_inner();
     // we assign lights to stars from brightest to least brightest
     // TODO relative brightness instead of absolute
     for ((star, star_ptf), (mut light, mut light_tf)) in stars
@@ -225,10 +226,8 @@ fn camera_lighting(
             star.lumens as f32 / (4.0 * std::f32::consts::PI * star_to_camera.length_squared());
         light.color = Color::WHITE;
         light.shadows_enabled = true;
-        // light_tf.translation = camera_tf.translation; // this centers the shadow-enabled area properly
+
         light_tf.look_at(star_to_camera, Vec3::Y);
-        // dbg!(light_tf);
-        // }
     }
 }
 

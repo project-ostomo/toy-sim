@@ -28,7 +28,7 @@ diameter = 2.0
 
 [[modules]]
 class = "magic_torquer"
-torque = 0e9
+torque = 1e9
 offset = [0.0, 0.0, 0.0]
 
 [[modules]]
