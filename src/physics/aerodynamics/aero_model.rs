@@ -17,7 +17,6 @@ pub(crate) fn calc_aerodynamics(
         &mut AccumulatedForce,
         &mut AccumulatedTorque,
     )>,
-    time: Res<Time>,
 ) {
     for (env, angvel, model, ptf, mut force, mut torque) in planes.iter_mut() {
         let rot_inv = ptf.rotation.inverse();

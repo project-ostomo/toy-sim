@@ -1,6 +1,6 @@
 mod assets;
 mod camera;
-mod game_logic;
+
 mod gui;
 mod orrery;
 mod physics;

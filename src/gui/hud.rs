@@ -39,7 +39,7 @@ pub fn overlay_hud(
     let focus = focus.into_inner();
 
     let ctx = contexts.ctx_mut().unwrap();
-    let screen_rect = ctx.screen_rect();
+    let screen_rect = ctx.content_rect();
     let centre = screen_rect.center();
 
     // Any world-space direction you like:
