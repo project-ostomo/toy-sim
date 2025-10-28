@@ -10,13 +10,13 @@ offset = [0.0, 0.0, 10.0]
 span = 10.0
 area = 100.0
 
-[[modules]]
-class = "wing"
-direction = [0.0, 0.0, -1.0]
-offset = [0.0, 0.0, 10.0]
-twist_deg = 90.0
-span = 10.0
-area = 10.0
+# [[modules]]
+# class = "wing"
+# direction = [0.0, 0.0, -1.0]
+# offset = [0.0, 0.0, 10.0]
+# twist_deg = 90.0
+# span = 10.0
+# area = 10.0
 
 [[modules]]
 class = "electric_fan"
@@ -28,7 +28,7 @@ diameter = 2.0
 
 [[modules]]
 class = "magic_torquer"
-torque = 1e9
+torque = 1e8
 offset = [0.0, 0.0, 0.0]
 
 [[modules]]

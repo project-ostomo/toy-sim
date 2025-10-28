@@ -345,7 +345,7 @@ fn spawn_vessels(
     let spawn_offset_mm = (dir * altitude_m).to_millimeters();
     let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
 
-    for i in 0..10 {
+    for i in 0..1 {
         let jitter_mm =
             (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0).to_millimeters();
         let translation_mm = spawn_pos_mm + jitter_mm;

@@ -88,7 +88,7 @@ impl AeroModel {
             // In wing-local axes: forward = -Z, lift axis = +Y, span = +X.
             let v_local_wing = wing_tf.rotation.conjugate() * v_local;
             let aoa = (-v_local_wing.y).atan2(-v_local_wing.z);
-
+            info!("r: {r}; aoa: {}", aoa.to_degrees());
             let wing_force = wing.eval_forces(aoa, flow);
 
             // Directions in WORLD frame
@@ -99,7 +99,9 @@ impl AeroModel {
 
             let projected_force = lift_dir * wing_force.lift + drag_dir * wing_force.drag;
             total_force += projected_force;
-            total_torque += r.cross(projected_force);
+            let local_torque = r.cross(projected_force);
+            info!("local_torque: {local_torque}");
+            total_torque += local_torque;
         }
 
         AeroModelOutput {
