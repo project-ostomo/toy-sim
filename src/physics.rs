@@ -70,18 +70,22 @@ fn apply_forces(
             // }
 
             // deal with torques (Euler's equations with gyroscopic term in body frame)
+            // Work in body frame for dynamics, then update orientation and world ω consistently.
             let rot = DMat3::from_quat(ptf.rotation);
             let omega_b = rot.transpose() * ang_vel.0;
             let tau_b = rot.transpose() * torque.0;
             let j_omega = mass.inertia * omega_b;
             let gyro = omega_b.cross(j_omega);
             let domega_b = mass.inertia_inv * (tau_b - gyro);
-            // info!(ang_acc = debug(domega_b.length()), "ang_acc applying");
             let omega_b_new = omega_b + domega_b * dt;
-            let omega_world_new = rot * omega_b_new;
-            let delta_q = DQuat::from_scaled_axis(omega_world_new * dt);
-            ptf.rotation = (delta_q * ptf.rotation).normalize();
-            ang_vel.0 = omega_world_new;
+
+            // Update orientation using body-frame incremental rotation (right-multiply for local axes)
+            let delta_q_body = DQuat::from_scaled_axis(omega_b_new * dt);
+            ptf.rotation = (ptf.rotation * delta_q_body).normalize();
+
+            // After updating orientation, update world-frame angular velocity consistently
+            let rot_new = DMat3::from_quat(ptf.rotation);
+            ang_vel.0 = rot_new * omega_b_new;
 
             // clear
             force.0 = DVec3::ZERO;
