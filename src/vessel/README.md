@@ -9,4 +9,10 @@ Vessels are controlled through a rather intricate control pipeline:
 
 ### Representation
 
-Instead of using a constellation of related components, we simply have a unified VesselControls component that fully encapsulates the state of the contrlls of a particular vessel.
+Each vessel root carries lightweight control state components:
+
+- `VesselControlState` holds the instantaneous throttle/steering commands.
+- `ControlTargets` stores high-level goals (direction quaternions, angular rates).
+- `ControlTelemetry` caches the attitude and rate data that controllers consume.
+
+Individual control computers live on their own module entities (e.g. `DirectionalPidController`, `RotationalPidController`) and update those components during the `ControlSystemSet::Modules` phase, mirroring how other ship modules (thrusters, torquers, etc.) integrate with the vessel.

@@ -1,9 +1,5 @@
 use bevy::math::{DQuat, DVec3};
 
-pub trait DirectionalFbw {
-    fn dir_to_rot(&mut self, current: DQuat, target: DQuat, dt: f64) -> DVec3;
-}
-
 /// Simple PID directional controller.
 #[derive(Debug, Clone)]
 pub struct PidDirectionalFbw {
@@ -47,12 +43,10 @@ impl PidDirectionalFbw {
     }
 }
 
-impl DirectionalFbw for PidDirectionalFbw {
-    fn dir_to_rot(&mut self, current: DQuat, target: DQuat, dt: f64) -> DVec3 {
-        // 1. Compute error in body frame
+impl PidDirectionalFbw {
+    pub fn step(&mut self, current: DQuat, target: DQuat, dt: f64) -> DVec3 {
         let error = Self::body_error_vec(current, target);
 
-        // 2. Integrate with clamping to prevent wind-u
         self.integral += error * dt;
         self.integral = self
             .integral
@@ -70,12 +64,6 @@ impl DirectionalFbw for PidDirectionalFbw {
 
         output
     }
-}
-
-pub trait RotationalFbw {
-    fn rot_to_raw(&mut self, current: DVec3, target: DVec3, dt: f64) -> DVec3;
-
-    fn rot_limits(&self) -> DVec3;
 }
 
 /// A PID-based rotational fly-by-wire.
@@ -102,35 +90,25 @@ impl PidRotationalFbw {
     }
 }
 
-impl RotationalFbw for PidRotationalFbw {
-    fn rot_to_raw(&mut self, current: DVec3, target: DVec3, dt: f64) -> DVec3 {
-        // Calculate error
+impl PidRotationalFbw {
+    pub fn step(&mut self, current: DVec3, target: DVec3, dt: f64) -> DVec3 {
         let error = target - current;
 
-        // Update integral with windup protection
         self.integral += error * dt;
         self.integral = self
             .integral
             .clamp(DVec3::splat(-self.i_limit), DVec3::splat(self.i_limit));
 
-        // Calculate derivative
         let derivative = if dt > 0.0 {
             (error - self.last_err) / dt
         } else {
             DVec3::ZERO
         };
 
-        // PID output
         let output = self.p * error + self.i * self.integral + self.d * derivative;
 
-        // Store error for next iteration
         self.last_err = error;
 
         output
-    }
-
-    fn rot_limits(&self) -> DVec3 {
-        // Typical rotational rate limits (rad/s) for roll, pitch, yaw
-        DVec3::new(5.0, 5.0, 0.0)
     }
 }

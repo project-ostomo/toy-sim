@@ -23,7 +23,7 @@ mod controls;
 mod vessel_cfg;
 
 pub use consumable::ConsumableTanks;
-pub use controls::VesselControls;
+pub use controls::{ControlTargets, ControlTelemetry, VesselControlState};
 pub use modules::thruster::Thruster;
 
 pub struct VesselsPlugin;
@@ -66,7 +66,7 @@ fn load_vessels(
 }
 
 #[derive(Component)]
-#[require(RigidBody, ConsumableTanks, VesselControls)]
+#[require(RigidBody, ConsumableTanks, VesselControlState, ControlTargets, ControlTelemetry)]
 pub struct Vessel {
     pub class_name: SmolStr,
     pub vessel_name: SmolStr,

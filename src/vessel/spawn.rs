@@ -12,10 +12,15 @@ use crate::{
     physics::{MassProps, Velocity, aerodynamics::AeroModel, sim_time},
     precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
     vessel::{
-        LoadedVessels, Vessel, VesselControls,
+        LoadedVessels, Vessel,
         consumable::ConsumableTanks,
+        controls::{
+            ControlTargets, ControlTelemetry, VesselControlState,
+            fbw::{PidDirectionalFbw, PidRotationalFbw},
+        },
         load_vessels,
         modules::{
+            control::{DirectionalPidController, RotationalPidController},
             Module,
             reactor::NuclearReactor,
             thruster::{ElectricFan, MagicThruster, SimpleThrusterFlame, Thruster},
@@ -198,7 +203,9 @@ fn handle_spawn_vessel(
                     inertia_inv: inertia.inverse(),
                 },
                 spawn_evt.location,
-                VesselControls::default(),
+                VesselControlState::default(),
+                ControlTargets::default(),
+                ControlTelemetry::default(),
                 Visibility::default(),
                 Velocity(spawn_evt.velocity),
             ))
@@ -296,6 +303,16 @@ fn handle_spawn_vessel(
                                 diameter,
                             },
                         ));
+                    }
+                    PartModuleCfgInner::DirectionalPidController { p, i, d, i_limit } => {
+                        mod_entity.insert(DirectionalPidController {
+                            controller: PidDirectionalFbw::new(p, i, d, i_limit),
+                        });
+                    }
+                    PartModuleCfgInner::RotationalPidController { p, i, d, i_limit } => {
+                        mod_entity.insert(RotationalPidController {
+                            controller: PidRotationalFbw::new(p, i, d, i_limit),
+                        });
                     }
                     PartModuleCfgInner::Tank {
                         consumable,

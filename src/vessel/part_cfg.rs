@@ -1,4 +1,4 @@
-use bevy::math::{DVec3, UVec3};
+use bevy::math::UVec3;
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -48,6 +48,18 @@ pub enum PartModuleCfgInner {
         power: f64,
         efficiency: f64,
         diameter: f64,
+    },
+    DirectionalPidController {
+        p: f64,
+        i: f64,
+        d: f64,
+        i_limit: f64,
+    },
+    RotationalPidController {
+        p: f64,
+        i: f64,
+        d: f64,
+        i_limit: f64,
     },
     Tank {
         consumable: Consumable,

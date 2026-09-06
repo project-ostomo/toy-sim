@@ -25,6 +25,20 @@ direction = [0.0, 0.0, -1.0]
 efficiency = 0.7
 diameter = 2.0
 
+[[modules]]
+class = "directional_pid_controller"
+p = 2.0
+i = 0.0
+d = 0.0
+i_limit = 0.1
+
+[[modules]]
+class = "rotational_pid_controller"
+p = 0.01
+i = 0.0
+d = 0.0
+i_limit = 100.0
+
 
 [[modules]]
 class = "magic_torquer"

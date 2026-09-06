@@ -16,7 +16,7 @@ use crate::{
     gui::hud::{bottom_hud, overlay_hud},
     physics::aerodynamics::AeroEnv,
     precision::{FloatingOrigin, PreciseTransform},
-    vessel::{ConsumableTanks, Thruster, VesselControls},
+    vessel::{ConsumableTanks, Thruster, VesselControlState},
 };
 
 pub struct GuiPlugin;
@@ -56,7 +56,7 @@ fn time(
 
 fn flight(
     mut contexts: EguiContexts,
-    vessel: Single<(&VesselControls, &AeroEnv), With<CameraFocus>>,
+    vessel: Single<(&VesselControlState, &AeroEnv), With<CameraFocus>>,
 ) -> Result {
     let (ctrl, aero) = vessel.into_inner();
     let ctx = contexts.ctx_mut()?;
