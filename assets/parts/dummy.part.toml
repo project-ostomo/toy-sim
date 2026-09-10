@@ -4,45 +4,13 @@ model = "cuboid"
 dimensions_dm = [100, 10, 100]
 
 [[modules]]
-class = "wing"
+class = "magic_thruster"
+thrust = 200000.0
 direction = [0.0, 0.0, -1.0]
-offset = [0.0, 0.0, 10.0]
-span = 10.0
-area = 100.0
-
-# [[modules]]
-# class = "wing"
-# direction = [0.0, 0.0, -1.0]
-# offset = [0.0, 0.0, 10.0]
-# twist_deg = 90.0
-# span = 10.0
-# area = 10.0
-
-[[modules]]
-class = "electric_fan"
-power = 1e9
-direction = [0.0, 0.0, -1.0]
-efficiency = 0.7
-diameter = 2.0
-
-[[modules]]
-class = "directional_pid_controller"
-p = 2.0
-i = 0.0
-d = 0.0
-i_limit = 0.1
-
-[[modules]]
-class = "rotational_pid_controller"
-p = 0.01
-i = 0.0
-d = 0.0
-i_limit = 100.0
-
 
 [[modules]]
 class = "magic_torquer"
-torque = 1e8
+torque = 20000.0
 offset = [0.0, 0.0, 0.0]
 
 [[modules]]

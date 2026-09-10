@@ -3,138 +3,183 @@ use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
 use crate::{
-    orrery::{Celestial, Orrery},
+    orrery::{Celestial, Universe},
     physics::{Velocity, WithinSoi, sim_time},
-    precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
+    precision::{PreciseTransform, ToMicrometersExt},
 };
 
 #[derive(Component, Default, Serialize, Deserialize)]
 pub struct AeroEnv {
     pub planet: SmolStr,
     pub planet_rel: PreciseTransform,
-
     pub altitude: f64,
     pub pressure: f64,
     pub density: f64,
     pub temperature: f64,
     pub speed_of_sound: f64,
-
     pub airspeed: DVec3,
 }
 
 pub(super) fn update_aero_env(
-    orrery: Res<Orrery>,
-    mut obj: Query<(&PreciseTransform, &Velocity, &WithinSoi, &mut AeroEnv)>,
-    planets: Query<(&Celestial, &PreciseTransform)>,
+    orrery: Res<Universe>,
+    mut objects: Query<(
+        &PreciseTransform,
+        &Velocity,
+        Option<&WithinSoi>,
+        &mut AeroEnv,
+    )>,
+    bodies: Query<(
+        Entity,
+        &Celestial,
+        &PreciseTransform,
+        Option<&crate::orrery::activity::CelestialState>,
+    )>,
     time: Res<Time>,
 ) {
-    const R_SPECIFIC: f64 = 252.0;
-    const GAMMA: f64 = 1.4;
-
     let epoch = sim_time(&time);
-    obj.par_iter_mut()
-        .for_each(|(ptf, velocity, soi, mut params)| {
-            let (planet, planet_ptf) = planets.get(soi.0).unwrap();
-            let body = orrery.get_body(&planet.0).unwrap();
-            let rel_translation = ptf.translation_mm - planet_ptf.translation_mm;
-            let r_vec = (ptf.translation_mm - planet_ptf.translation_mm).to_meters_64();
-
-            // Atmospheric velocity at the object's world position (inertial frame)
-            let v_atm = orrery
-                .atmospheric_velocity_at_point(&planet.0, ptf.translation_mm, epoch)
-                .unwrap_or(DVec3::ZERO);
-
-            // calculate the params
-            params.altitude = r_vec.length() - body.radius;
-            params.airspeed = velocity.0 - v_atm;
-            let data = pannea_atm(params.altitude - 144_000.0);
-            params.density = data.density;
-            params.pressure = data.pressure;
-            params.temperature = data.temperature;
-            params.planet = planet.0.clone();
-            let planet_rot_inverse = planet_ptf.rotation.inverse();
-            params.planet_rel.translation_mm =
-                (planet_rot_inverse * rel_translation.to_meters_64()).to_millimeters();
-            params.planet_rel.rotation = planet_rot_inverse * ptf.rotation;
-            params.speed_of_sound = (GAMMA * R_SPECIFIC * params.temperature).sqrt().max(1e-6);
-        });
+    for (ptf, velocity, soi, mut env) in &mut objects {
+        // Atmosphere membership is geometric, independent of gravitational SOI.
+        let mut selected = soi.and_then(|s| bodies.get(s.0).ok());
+        let mut density = 0.0;
+        for candidate @ (_, celestial, body_tf, state) in &bodies {
+            let body = state.map_or_else(|| orrery.get_body(&celestial.0).unwrap(), |s| &s.body);
+            if let Some(atmosphere) = &body.atmosphere {
+                let altitude = (ptf.translation_um - body_tf.translation_um)
+                    .to_meters_64()
+                    .length()
+                    - body.radius;
+                let candidate_density = atmosphere.density(altitude);
+                if candidate_density > density {
+                    density = candidate_density;
+                    selected = Some(candidate);
+                }
+            }
+        }
+        // Reset gas properties each tick so exiting an atmosphere cannot retain drag.
+        *env = AeroEnv {
+            airspeed: velocity.0,
+            ..default()
+        };
+        let Some((_, celestial, body_tf, state)) = selected else {
+            continue;
+        };
+        let body = state.map_or_else(|| orrery.get_body(&celestial.0).unwrap(), |s| &s.body);
+        let relative = (ptf.translation_um - body_tf.translation_um).to_meters_64();
+        env.planet = celestial.0.clone();
+        env.altitude = relative.length() - body.radius;
+        env.airspeed = velocity.0
+            - state.map_or_else(
+                || {
+                    orrery
+                        .atmospheric_velocity_at_point(&celestial.0, ptf.translation_um, epoch)
+                        .unwrap_or(DVec3::ZERO)
+                },
+                |s| {
+                    let spin = if body.rotation.rotation_period != 0.0 {
+                        (body_tf.rotation * DVec3::Z).cross(relative) * std::f64::consts::TAU
+                            / body.rotation.rotation_period
+                    } else {
+                        DVec3::ZERO
+                    };
+                    s.velocity + spin
+                },
+            );
+        let inverse = body_tf.rotation.inverse();
+        env.planet_rel = PreciseTransform {
+            translation_um: (inverse * relative).to_micrometers(),
+            rotation: inverse * ptf.rotation,
+        };
+        if let Some(atmosphere) = &body.atmosphere {
+            env.density = atmosphere.density(env.altitude);
+            if env.density > 0.0 {
+                env.temperature = atmosphere.temperature;
+                env.pressure = env.density * atmosphere.specific_gas_constant * env.temperature;
+                env.speed_of_sound = (atmosphere.heat_capacity_ratio
+                    * atmosphere.specific_gas_constant
+                    * env.temperature)
+                    .sqrt();
+            }
+        }
+    }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct PanneaDatum {
-    pub pressure: f64,    // Pa
-    pub density: f64,     // kg m⁻³
-    pub temperature: f64, // K
-    pub opacity: f64,     // 0‥1  (fraction of sunlight transmitted)
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Simple “standard-atmosphere” model for the sky-world **Pannea**.
-///
-/// * `altitude` — metres **above the 1-bar layer** (positive = higher, negative = deeper).  
-///   The 1-bar datum is ≈ 285 K and ρ ≈ 1.39 kg m⁻³.
-///
-/// The model is piece-wise:
-/// * Troposphere: linear lapse-rate **L = 6 K km⁻¹** down to the 1 GPa “death-zone”
-///
-/// * Tropopause: at **hₜ = 10 000 m** the temperature bottoms at **Tₜ = 225 K**  
-///   Above this, an isothermal stratosphere (≈ 220 K) is assumed.
-///
-/// * Pressure in the lapse region uses the standard ideal-gas/hydrostatic relation;  
-///   above the tropopause, pressure decays exponentially with scale-height
-///   **H_iso = Rᵣₛ·T_iso / g ≈ 5 500 m**.
-///
-/// * “Opacity” is a toy optical-depth model:
-///   `opacity = exp( −k · P )` with *k* = 1.5 × 10⁻⁵ Pa⁻¹.  
-///   → About **22 %** of solar flux reaches the 1-bar deck (matching the
-///   “bright overcast” description) and ≳80 % reaches the top of broken-cloud
-///   layers at ~0.4 bar.
-///
-/// > **Caveat** Real weather on Pannea varies ±20 K and ±30 % pressure inside
-/// > cyclones; this routine is only a background reference.
-fn pannea_atm(altitude: f64) -> PanneaDatum {
-    // ---------- constants ----------
-    const G: f64 = 10.0; // m s⁻²  (surface gravity)
-    const R_UNIV: f64 = 8.314_462_618; // J mol⁻¹ K⁻¹
-    const MU: f64 = 0.033; // kg mol⁻¹  (mean mol. mass 33 g)
-    const R_SPEC: f64 = R_UNIV / MU; // J kg⁻¹ K⁻¹ ≈ 252
-    const T0: f64 = 285.0; // K  (1-bar layer)
-    const P0: f64 = 1.0e5; // Pa
-    const LAPSE: f64 = 0.006; // K m⁻¹ (6 K km⁻¹)
-    const HTROP: f64 = 10_000.0; // m  (tropopause above 1 bar)
-    const T_TROP: f64 = 225.0; // K  bottom-out temperature
-    const T_ISO: f64 = 220.0; // K  isothermal stratosphere
-    const K_OPA: f64 = 1.5e-5; // Pa⁻¹  (opacity coefficient)
-
-    // exponent used in the Poisson formula (g / (R*L))
-    const EXPONENT: f64 = G / (R_SPEC * LAPSE);
-
-    // ---------- temperature profile ----------
-    let (temp, pressure) = if altitude <= HTROP {
-        // Linear lapse region (handles negative altitude too)
-        let t = T0 - LAPSE * altitude;
-        let t_clamped = t.max(150.0); // keep numeric sanity deep down
-        let p = P0 * (t_clamped / T0).powf(EXPONENT);
-        (t_clamped, p)
-    } else {
-        // Isothermal upper layer
-        // First: conditions at tropopause
-        let p_trop = P0 * (T_TROP / T0).powf(EXPONENT);
-        let h = altitude - HTROP;
-        let h_scale = (R_SPEC * T_ISO) / G; // ≈ 5.5 km
-        let p = p_trop * (-h / h_scale).exp();
-        (T_ISO, p)
-    };
-
-    // ---------- density ----------
-    let density = pressure / (R_SPEC * temp);
-
-    // ---------- toy optical-depth / opacity ----------
-    let opacity = (-K_OPA * pressure).exp().clamp(0.0, 1.0);
-
-    PanneaDatum {
-        pressure,
-        density,
-        temperature: temp,
-        opacity,
+    #[test]
+    fn atmosphere_is_geometric_and_leaving_it_clears_gas_properties() {
+        let system = Universe::init(crate::orrery::example_config()).unwrap();
+        let planet = system
+            .iter()
+            .find(|b| b.atmosphere.is_some())
+            .unwrap()
+            .clone();
+        let moon = system
+            .iter()
+            .find(|b| b.parent.as_deref() == Some(planet.name.as_str()))
+            .unwrap()
+            .clone();
+        let epoch = sim_time(&Time::<Fixed>::default());
+        let centre = system.solve_position(&planet.name, epoch).unwrap();
+        let mut app = App::new();
+        app.insert_resource(system)
+            .insert_resource(Time::<()>::default())
+            .add_systems(Update, update_aero_env);
+        app.world_mut().spawn((
+            Celestial(planet.name.clone()),
+            PreciseTransform {
+                translation_um: centre,
+                ..default()
+            },
+        ));
+        // Deliberately stale SOI: geometry must still select the planet's atmosphere.
+        let moon_centre = app
+            .world()
+            .resource::<Universe>()
+            .solve_position(&moon.name, epoch)
+            .unwrap();
+        let moon_entity = app
+            .world_mut()
+            .spawn((
+                Celestial(moon.name.clone()),
+                PreciseTransform {
+                    translation_um: moon_centre,
+                    ..default()
+                },
+            ))
+            .id();
+        let ship = app
+            .world_mut()
+            .spawn((
+                PreciseTransform {
+                    translation_um: centre + (DVec3::Z * (planet.radius + 1000.0)).to_micrometers(),
+                    ..default()
+                },
+                Velocity(DVec3::X * 100.0),
+                WithinSoi(moon_entity),
+                AeroEnv::default(),
+            ))
+            .id();
+        app.update();
+        let env = app.world().get::<AeroEnv>(ship).unwrap();
+        assert_eq!(env.planet, planet.name);
+        assert!(env.density > 0.0 && env.pressure > 0.0 && env.speed_of_sound > 0.0);
+        app.world_mut()
+            .get_mut::<PreciseTransform>(ship)
+            .unwrap()
+            .translation_um = moon_centre + (DVec3::Z * (moon.radius + 1000.0)).to_micrometers();
+        app.update();
+        let env = app.world().get::<AeroEnv>(ship).unwrap();
+        assert_eq!(env.planet, moon.name);
+        assert_eq!(
+            (
+                env.density,
+                env.pressure,
+                env.temperature,
+                env.speed_of_sound
+            ),
+            (0.0, 0.0, 0.0, 0.0)
+        );
     }
 }

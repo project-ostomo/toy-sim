@@ -1,0 +1,113 @@
+name = "Helion system"
+
+# Inertial directions; orbital angles are radians. Simulation begins at MJD 0.
+[scenario]
+body = "Helion I Neris"
+vessel = "dummy"
+altitude = 30000000.0
+radial_direction = [0.0, 0.0, 1.0]
+orbit_normal = [0.0, 1.0, 0.0]
+camera_distance = 100.0
+camera_yaw = 0.0
+camera_pitch = 0.0
+
+[scenario.traffic]
+count = 500
+seed = 42
+min_altitude = 3000000.0
+max_altitude = 40000000.0
+
+[[bodies]]
+name = "Helion"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = "696000 km"
+rotation_period = "25 d"
+
+[[bodies]]
+name = "Helion I Neris"
+class = "planet"
+parent = "Helion"
+mass = "1 massEarth"
+radius = "6000 km"
+semi_major = "1 au"
+inclination = 1.5707963267948966
+mean_anomaly = -0.7853981633974483
+rotation_period = "24 h"
+surface_color = [0.16, 0.26, 0.36]
+
+# Metres, kg/m³, kelvin, J/(kg K), and optical coefficients in m⁻¹.
+[bodies.atmosphere]
+height = 160000.0
+surface_density = 1.2
+scale_height = 12000.0
+temperature = 270.0
+specific_gas_constant = 287.0
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [0.000005802, 0.000013558, 0.000033100]
+mie_scattering = 0.000003996
+mie_absorption = 0.000000444
+mie_scale_height = 1800.0
+mie_asymmetry = 0.8
+ground_albedo = [0.16, 0.26, 0.36]
+
+[[bodies]]
+name = "Helion I a Ione"
+class = "planet"
+parent = "Helion I Neris"
+mass = 7.634070148223196e+21
+radius = "900 km"
+semi_major = "12000000 m"
+mean_anomaly = 0.55
+rotation_period = "3 d"
+surface_color = [0.65, 0.54, 0.4]
+# No atmosphere section: this moon is airless.
+
+[[bodies]]
+name = "Helion I b Cinder"
+class = "planet"
+parent = "Helion I Neris"
+mass = 1.3938199406426714e+22
+radius = "1100 km"
+semi_major = "16000000 m"
+mean_anomaly = 3.3
+rotation_period = "3 d"
+surface_color = [0.35, 0.26, 0.23]
+# No atmosphere section: this moon is airless.
+
+[[bodies]]
+name = "Helion I c Vela"
+class = "planet"
+parent = "Helion I Neris"
+mass = 2.8735100804834636e+22
+radius = "1400 km"
+semi_major = "20000000 m"
+mean_anomaly = -0.5
+rotation_period = "3 d"
+surface_color = [0.56, 0.62, 0.68]
+# No atmosphere section: this moon is airless.
+
+[[bodies]]
+name = "Helion I d Rime"
+class = "planet"
+parent = "Helion I Neris"
+mass = 1.8095573684677207e+22
+radius = "1200 km"
+semi_major = "24000000 m"
+mean_anomaly = 3.5
+rotation_period = "3 d"
+surface_color = [0.7, 0.74, 0.78]
+# No atmosphere section: this moon is airless.
+
+[[bodies]]
+name = "Helion I e Orin"
+class = "planet"
+parent = "Helion I Neris"
+mass = 3.534291735288517e+22
+radius = "1500 km"
+semi_major = "25000000 m"
+mean_anomaly = 0.40
+rotation_period = "3 d"
+surface_color = [0.55, 0.43, 0.34]
+# No atmosphere section: this moon is airless.

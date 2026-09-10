@@ -1,11 +1,21 @@
 mod assets;
 mod camera;
+mod gaia;
 
 mod gui;
 mod orrery;
 mod physics;
 mod precision;
+mod sensors;
+mod simulation;
+mod spatial;
+mod starfield;
 mod vessel;
+
+// Force Bevy's dynamic linkage for native debug builds only.
+#[cfg(all(debug_assertions, not(target_family = "wasm")))]
+#[allow(unused_imports)]
+use bevy_dylib;
 
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin, post_process::auto_exposure::AutoExposurePlugin,
@@ -26,12 +36,20 @@ enum GameState {
     Game,
 }
 
-/// Dummy non-send resource
+/// Dummy non-send data
 struct NonSendMarker;
 
 fn main() {
+    let args: Vec<_> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|a| a == "--benchmark-gaia") {
+        let path = args
+            .get(2)
+            .expect("usage: toy-sim --benchmark-gaia DATABASE");
+        gaia::benchmark(std::path::Path::new(path)).expect("Gaia benchmark failed");
+        return;
+    }
     App::new()
-        .insert_resource(AmbientLight::NONE)
+        .insert_resource(GlobalAmbientLight::NONE)
         .add_plugins(DefaultPlugins.build().set(WindowPlugin {
             primary_window: Some(Window {
                 present_mode: PresentMode::AutoVsync,
@@ -39,9 +57,8 @@ fn main() {
             }),
             ..default()
         }))
-        .insert_non_send_resource(NonSendMarker)
+        .insert_non_send(NonSendMarker)
         .insert_resource(ClearColor(Color::BLACK))
-        .insert_resource(Time::from_hz(37.0)) // a prime number
         .init_state::<GameState>()
         .add_loading_state(LoadingState::new(GameState::Loading).continue_to_state(GameState::Game))
         .add_plugins((
@@ -54,9 +71,14 @@ fn main() {
             ..default()
         })
         .add_plugins((
+            simulation::SimulationPlugin,
+            spatial::SpatialPlugin,
+            sensors::SensorsPlugin,
             MainCameraPlugin,
+            gaia::GaiaPlugin,
             PrecisionPlugin,
             OrreryPlugin,
+            starfield::StarfieldPlugin,
             PhysicsPlugin,
             VesselsPlugin,
             GuiPlugin,

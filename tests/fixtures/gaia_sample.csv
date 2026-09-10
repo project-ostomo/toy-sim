@@ -1,0 +1,8 @@
+# Synthetic Gaia-shaped data for integration tests; these are not Gaia observations.
+source_id,ra,dec,parallax,parallax_error,phot_g_mean_mag,bp_rp,teff_gspphot,spectraltype_esphs,distance_pc,in_qso_candidates,in_galaxy_candidates
+1,0,0,100,1,5,0.8,5500,G,,false,false
+2,90,0,50,1,4,-0.2,15000,B,,false,false
+3,180,30,-1,2,8,1.5,,K,100,false,false
+4,270,-30,-1,2,10,0.5,,,,false,false
+5,20,20,100,1,3,0.0,,A,,true,false
+6,45,80,10,1,12,3.0,3000,M,,false,false

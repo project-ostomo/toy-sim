@@ -1,10 +1,7 @@
 use std::collections::BTreeMap;
 
-use crate::precision::{ToMetersExt, ToMillimetersExt};
-use bevy::{
-    ecs::resource::Resource,
-    math::{DQuat, DVec3, I64Vec3},
-};
+use crate::precision::{GalacticPosition, ToMicrometersExt};
+use bevy::math::{DQuat, DVec3};
 use hifitime::Epoch;
 use smol_str::SmolStr;
 use std::f64::consts::PI;
@@ -12,9 +9,10 @@ use std::f64::consts::PI;
 use crate::orrery::orrery_cfg::{Body, OrreryCfg};
 
 /// A solver for a whole star system
-#[derive(Resource)]
 pub struct Orrery {
-    name: SmolStr,
+    pub name: SmolStr,
+    pub anchor: GalacticPosition,
+    pub scenario: Option<super::atmosphere::ScenarioCfg>,
     bodies: BTreeMap<SmolStr, Body>,
 }
 
@@ -22,7 +20,20 @@ impl Orrery {
     /// Create a new star-system solver.
     pub fn init(cfg: OrreryCfg) -> anyhow::Result<Self> {
         let mut bodies: BTreeMap<SmolStr, Body> = BTreeMap::new();
-        for mut body in cfg.bodies {
+        let mut pending = cfg.bodies;
+        while !pending.is_empty() {
+            let index = pending
+                .iter()
+                .position(|body| body.parent.as_ref().is_none_or(|p| bodies.contains_key(p)))
+                .ok_or_else(|| anyhow::anyhow!("missing or cyclic parent in body configs"))?;
+            let mut body = pending.remove(index);
+            if let Some(atmosphere) = &body.atmosphere {
+                atmosphere.validate()?;
+                anyhow::ensure!(
+                    body.radius.is_finite() && body.radius > 0.0,
+                    "atmosphered body requires a positive radius"
+                );
+            }
             let name = body.name.clone();
             // ensure parent exists before computing period
             if let Some(parent) = body.parent.as_ref()
@@ -33,7 +44,7 @@ impl Orrery {
             // calculate missing orbital period via Kepler's third law if semi-major axis is non-zero
             if body.orbit.period == 0.0 && body.orbit.semi_major != 0.0 {
                 // gravitational constant [m^3 kg^-1 s^-2]
-                const G: f64 = 6.674e-11;
+                const G: f64 = crate::physics::GRAVITATIONAL_CONSTANT;
                 // semi-major axis is in meters
                 let a_m = body.orbit.semi_major;
                 // parent mass in kg if any
@@ -54,8 +65,35 @@ impl Orrery {
                 anyhow::bail!("duplicate name in star system: {name}");
             }
         }
+        if let Some(scenario) = &cfg.scenario {
+            let body = bodies
+                .get(scenario.body.as_str())
+                .ok_or_else(|| anyhow::anyhow!("unknown scenario body {}", scenario.body))?;
+            scenario.relative_state(body.radius, body.mass)?;
+            if let Some(traffic) = &scenario.traffic {
+                traffic.validate(
+                    body.radius,
+                    body.atmosphere.as_ref().map_or(0.0, |a| a.height),
+                )?;
+            }
+            anyhow::ensure!(
+                scenario.camera_distance.is_finite()
+                    && scenario.camera_distance > 0.0
+                    && scenario.camera_yaw.is_finite()
+                    && scenario.camera_pitch.is_finite(),
+                "invalid initial camera"
+            );
+            if let Some(atmosphere) = &body.atmosphere {
+                anyhow::ensure!(
+                    scenario.altitude > atmosphere.height,
+                    "starting orbit must be above the atmosphere"
+                );
+            }
+        }
         Ok(Self {
             name: cfg.name,
+            anchor: cfg.position_um,
+            scenario: cfg.scenario,
             bodies,
         })
     }
@@ -70,15 +108,15 @@ impl Orrery {
         self.bodies.get(name)
     }
 
-    /// Solves for the position, in millimeters, of a particular body in the system, at a particular time. Returns None if such a body does not exist in the system.
+    /// Solves for the position, in micrometers, of a particular body in the system, at a particular time. Returns None if such a body does not exist in the system.
     #[allow(non_snake_case)]
-    pub fn solve_position(&self, body: &str, epoch: Epoch) -> Option<I64Vec3> {
+    pub fn solve_position(&self, body: &str, epoch: Epoch) -> Option<GalacticPosition> {
         // Lookup body and compute parent position
         let body_cfg = self.bodies.get(body)?;
         let parent_pos = if let Some(parent) = &body_cfg.parent {
             self.solve_position(parent, epoch)?
         } else {
-            I64Vec3::ZERO
+            self.anchor
         };
         // Bodies with zero semi-major axis are fixed relative to their parent
         if body_cfg.orbit.semi_major == 0.0 {
@@ -119,8 +157,8 @@ impl Orrery {
             * DQuat::from_rotation_z(body_cfg.orbit.arg_of_pericenter);
         let pos_inertial = rot * pos_orb;
 
-        // Convert to millimeters and add parent offset
-        Some(parent_pos + pos_inertial.to_millimeters())
+        // Convert to micrometers and add parent offset
+        Some(parent_pos + pos_inertial.to_micrometers())
     }
 
     /// Solves for the orbital velocity (m/s) of a body at a given time, in inertial frame.
@@ -128,9 +166,14 @@ impl Orrery {
     #[allow(non_snake_case)]
     pub fn solve_velocity(&self, body: &str, epoch: Epoch) -> Option<DVec3> {
         let cfg = self.bodies.get(body)?;
-        // Static bodies have no orbital velocity
+        let parent_velocity = cfg
+            .parent
+            .as_ref()
+            .and_then(|p| self.solve_velocity(p, epoch))
+            .unwrap_or(DVec3::ZERO);
+        // Static offsets inherit their parent's motion.
         if cfg.orbit.semi_major == 0.0 {
-            return Some(DVec3::ZERO);
+            return Some(parent_velocity);
         }
         // Gravitational parameter µ from period: µ = 4π²a³ / T²
         let a = cfg.orbit.semi_major;
@@ -155,7 +198,6 @@ impl Orrery {
         // True anomaly
         let v = ((1.0 - e * e).sqrt() * sinE).atan2(cosE - e);
         // Radius
-        let r = a * (1.0 - e * cosE);
         // Specific angular momentum
         let h = (mu * a * (1.0 - e * e)).sqrt();
         // Radial and transverse velocity in orbital plane
@@ -168,7 +210,7 @@ impl Orrery {
         let rot = DQuat::from_rotation_z(cfg.orbit.ascending_node)
             * DQuat::from_rotation_x(cfg.orbit.inclination)
             * DQuat::from_rotation_z(cfg.orbit.arg_of_pericenter);
-        Some(rot * vel_orb)
+        Some(parent_velocity + rot * vel_orb)
     }
 
     /// Computes the atmospheric velocity (m/s) at a given world-space point,
@@ -183,21 +225,21 @@ impl Orrery {
     pub fn atmospheric_velocity_at_point(
         &self,
         body: &str,
-        point_world_mm: I64Vec3,
+        point_world_um: GalacticPosition,
         epoch: Epoch,
     ) -> Option<DVec3> {
         let cfg = self.bodies.get(body)?;
 
         // Body centre position (m) at epoch
-        let body_center_mm = self.solve_position(body, epoch)?;
+        let body_center_um = self.solve_position(body, epoch)?;
 
         // Vector from body centre to the point (m)
-        let r_vec = point_world_mm - body_center_mm;
+        let r_vec = point_world_um - body_center_um;
 
         // Spin-induced atmospheric velocity (m/s)
         let mut v_atm = DVec3::ZERO;
         let spin_period = cfg.rotation.rotation_period;
-        if spin_period > 0.0 {
+        if spin_period != 0.0 {
             let spin_rate = 2.0 * PI / spin_period; // rad/s
             // Spin axis is +Z in body frame; rotate into inertial frame
             let body_rot = self.solve_rotation(body, epoch).unwrap_or(DQuat::IDENTITY);
@@ -279,6 +321,21 @@ bodies:
             println!("day {day:3}: {pos:?}");
         }
         Ok(())
+    }
+    #[test]
+    fn moon_velocity_matches_global_position_derivative() {
+        let mut cfg = crate::orrery::example_config();
+        cfg.position_um = GalacticPosition::splat(1_i128 << 90);
+        let solver = Orrery::init(cfg).unwrap();
+        let epoch = Epoch::from_mjd_utc(0.0);
+        let delta = hifitime::Duration::from_seconds(0.1);
+        let name = "Helion I a Ione";
+        let finite_difference = solver
+            .solve_position(name, epoch + delta)
+            .unwrap()
+            .relative_to(solver.solve_position(name, epoch - delta).unwrap())
+            / 0.2;
+        assert!(finite_difference.distance(solver.solve_velocity(name, epoch).unwrap()) < 0.1);
     }
     #[test]
     fn default_solve_rotation_identity() -> Result<()> {

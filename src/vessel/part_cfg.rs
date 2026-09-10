@@ -3,8 +3,8 @@ use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 
+use crate::vessel::consumable::Consumable;
 use crate::vessel::modules::reactor::NuclearReactorCfg;
-use crate::{physics::aerodynamics::Wing, vessel::consumable::Consumable};
 
 #[derive(Asset, TypePath, Clone, Debug, Serialize, Deserialize)]
 pub struct PartCfg {
@@ -49,25 +49,12 @@ pub enum PartModuleCfgInner {
         efficiency: f64,
         diameter: f64,
     },
-    DirectionalPidController {
-        p: f64,
-        i: f64,
-        d: f64,
-        i_limit: f64,
-    },
-    RotationalPidController {
-        p: f64,
-        i: f64,
-        d: f64,
-        i_limit: f64,
-    },
     Tank {
         consumable: Consumable,
         capacity: f64,
         fraction: f64,
     },
     NuclearReactor(NuclearReactorCfg),
-    Wing(Wing),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

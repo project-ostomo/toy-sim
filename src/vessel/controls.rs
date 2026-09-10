@@ -1,14 +1,8 @@
-pub mod fbw;
-
-use bevy::{
-    math::{DQuat, DVec3},
-    prelude::*,
-};
+use bevy::{math::DVec3, prelude::*};
 
 use crate::{
-    camera::{CameraFocus, CameraMode, CameraParams, MainCamera},
-    physics::AngularVelocity,
-    precision::PreciseTransform,
+    GameState,
+    vessel::ControlledVessel,
     vessel::modules::{thruster::Thruster, torquer::Torquer},
 };
 
@@ -18,122 +12,37 @@ pub struct VesselControlState {
     pub raw_steering: DVec3,
 }
 
-#[derive(Component, Default)]
-pub struct ControlTargets {
-    pub desired_direction: Option<DQuat>,
-    pub desired_rate: Option<DVec3>,
-}
-
-#[derive(Component, Default, Clone, Copy)]
-pub struct ControlTelemetry {
-    pub orientation: DQuat,
-    pub angular_velocity_body: DVec3,
-}
-
-#[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ControlSystemSet {
-    Prepare,
-    Modules,
-    Apply,
-}
-
 pub fn run_controls(app: &mut App) {
-    app.configure_sets(
-        PreUpdate,
-        (
-            ControlSystemSet::Prepare,
-            ControlSystemSet::Modules,
-            ControlSystemSet::Apply,
-        )
-            .chain(),
-    );
-
     app.add_systems(
         PreUpdate,
-        (
-            reset_control_targets,
-            read_controls,
-            collect_control_telemetry,
-        )
+        (read_controls, control_thrusters, control_torquers)
             .chain()
-            .in_set(ControlSystemSet::Prepare),
+            .run_if(in_state(GameState::Game)),
     );
-
-    app.add_systems(
-        PreUpdate,
-        (control_thrusters, control_torquers).in_set(ControlSystemSet::Apply),
-    );
-}
-
-fn reset_control_targets(
-    mut query: Query<(&mut ControlTargets, &mut VesselControlState)>,
-) {
-    for (mut targets, mut state) in &mut query {
-        targets.desired_direction = None;
-        targets.desired_rate = None;
-        state.raw_steering = DVec3::ZERO;
-    }
 }
 
 fn read_controls(
-    mut focused: Single<(&mut VesselControlState, &mut ControlTargets), With<CameraFocus>>,
-    camera: Single<(&PreciseTransform, &CameraParams), With<MainCamera>>,
+    mut vessels: Query<(&mut VesselControlState, Has<ControlledVessel>)>,
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
 ) {
-    let (mut state, mut targets) = focused.into_inner();
-
-    let (camera_tf, camera_params) = camera.into_inner();
-    let throttle_sensitivity = time.delta_secs_f64() / 2.0;
-
-    if keys.pressed(KeyCode::ShiftLeft) {
-        state.raw_throttle += throttle_sensitivity;
-    } else if keys.pressed(KeyCode::ControlLeft) {
-        state.raw_throttle -= throttle_sensitivity;
-    }
-    state.raw_throttle = state.raw_throttle.clamp(0.0, 1.0);
-
-    match camera_params.mode {
-        CameraMode::WarThunderLike => {
-            targets.desired_direction = Some(camera_tf.rotation);
+    for (mut state, focused) in &mut vessels {
+        // Releasing a key (or switching controlled ships) stops commanding torque.
+        state.raw_steering = DVec3::ZERO;
+        if !focused {
+            continue;
         }
-        _ => {
-            let mut manual = DVec3::ZERO;
-            let rotation_sensitivity = 1.0;
-
-            if keys.pressed(KeyCode::KeyW) {
-                manual += -DVec3::X;
-            }
-            if keys.pressed(KeyCode::KeyS) {
-                manual += DVec3::X;
-            }
-            if keys.pressed(KeyCode::KeyA) {
-                manual += DVec3::Y;
-            }
-            if keys.pressed(KeyCode::KeyD) {
-                manual += -DVec3::Y;
-            }
-            if keys.pressed(KeyCode::KeyQ) {
-                manual += DVec3::Z;
-            }
-            if keys.pressed(KeyCode::KeyE) {
-                manual += -DVec3::Z;
-            }
-
-            manual *= rotation_sensitivity;
-            if manual != DVec3::ZERO {
-                state.raw_steering = manual.clamp(DVec3::splat(-1.0), DVec3::splat(1.0));
-            }
-        }
-    }
-}
-
-fn collect_control_telemetry(
-    mut vessels: Query<(&PreciseTransform, &AngularVelocity, &mut ControlTelemetry)>,
-) {
-    for (ptf, ang_vel, mut telemetry) in &mut vessels {
-        telemetry.orientation = ptf.rotation;
-        telemetry.angular_velocity_body = ptf.rotation.conjugate().mul_vec3(ang_vel.0);
+        let axis = |positive, negative| {
+            f64::from(keys.pressed(positive)) - f64::from(keys.pressed(negative))
+        };
+        state.raw_throttle = (state.raw_throttle
+            + axis(KeyCode::ShiftLeft, KeyCode::ControlLeft) * time.delta_secs_f64() / 2.0)
+            .clamp(0.0, 1.0);
+        state.raw_steering = DVec3::new(
+            axis(KeyCode::KeyS, KeyCode::KeyW),
+            axis(KeyCode::KeyA, KeyCode::KeyD),
+            axis(KeyCode::KeyQ, KeyCode::KeyE),
+        );
     }
 }
 
@@ -158,5 +67,69 @@ fn control_torquers(
         while let Some(mut torquer) = torquers.fetch_next() {
             torquer.throttle = state.raw_steering;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn manual_input_reaches_modules_and_releasing_keys_stops_steering() {
+        let mut app = App::new();
+        let mut time = Time::<()>::default();
+        time.advance_by(Duration::from_secs(2));
+        app.insert_resource(time)
+            .init_resource::<ButtonInput<KeyCode>>()
+            .add_systems(
+                Update,
+                (read_controls, control_thrusters, control_torquers).chain(),
+            );
+        let ship = app
+            .world_mut()
+            .spawn((VesselControlState::default(), ControlledVessel))
+            .id();
+        let engine = app
+            .world_mut()
+            .spawn((ChildOf(ship), Thruster::default(), Torquer::default()))
+            .id();
+        {
+            let mut keys = app.world_mut().resource_mut::<ButtonInput<KeyCode>>();
+            keys.press(KeyCode::KeyW);
+            keys.press(KeyCode::ShiftLeft);
+        }
+        app.update();
+        assert_eq!(app.world().get::<Thruster>(engine).unwrap().throttle, 1.0);
+        assert_eq!(
+            app.world().get::<Torquer>(engine).unwrap().throttle,
+            -DVec3::X
+        );
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .reset_all();
+        app.update();
+        assert_eq!(
+            app.world().get::<Torquer>(engine).unwrap().throttle,
+            DVec3::ZERO
+        );
+        assert_eq!(app.world().get::<Thruster>(engine).unwrap().throttle, 1.0);
+
+        app.world_mut()
+            .resource_mut::<ButtonInput<KeyCode>>()
+            .press(KeyCode::KeyA);
+        app.update();
+        assert_eq!(
+            app.world().get::<Torquer>(engine).unwrap().throttle,
+            DVec3::Y
+        );
+        app.world_mut()
+            .entity_mut(ship)
+            .remove::<ControlledVessel>();
+        app.update();
+        assert_eq!(
+            app.world().get::<Torquer>(engine).unwrap().throttle,
+            DVec3::ZERO
+        );
     }
 }

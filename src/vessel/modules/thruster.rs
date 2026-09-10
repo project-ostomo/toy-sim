@@ -5,19 +5,19 @@ use bevy::{math::DVec3, prelude::*};
 use crate::{
     physics::{AccumulatedForce, AccumulatedTorque, aerodynamics::AeroEnv},
     precision::PreciseTransform,
+    precision::PrecisionSystems,
+    simulation::SimulationSystems,
     vessel::consumable::{Consumable, ConsumableTanks},
 };
 
 pub fn start_thrusters(app: &mut App) {
     app.add_systems(Startup, load_flame_model);
+    app.add_systems(PostUpdate, render_flames.in_set(PrecisionSystems::Project));
     app.add_systems(
         FixedUpdate,
-        (
-            render_flames,
-            magic_thrusters,
-            electric_fans,
-            apply_thrusters,
-        ),
+        (magic_thrusters, electric_fans, apply_thrusters)
+            .chain()
+            .in_set(SimulationSystems::Forces),
     );
 }
 

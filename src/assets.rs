@@ -7,7 +7,7 @@ use bevy::{
 use serde::de::DeserializeOwned;
 
 /// Asset loader for TOML star system configuration files.
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct TomlAssetLoader<T: Asset> {
     ext: [&'static str; 1],
     _ph: PhantomData<T>,

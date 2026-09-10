@@ -1,4 +1,3 @@
-
 use serde::{Deserialize, Deserializer, Serialize};
 use smol_str::SmolStr;
 
@@ -6,9 +5,15 @@ use bevy::asset::Asset;
 use bevy::reflect::TypePath;
 
 #[derive(Asset, TypePath, Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OrreryCfg {
     pub name: SmolStr,
+    #[serde(default)]
+    pub position_um: crate::precision::GalacticPosition,
+    #[serde(default)]
     pub bodies: Vec<Body>,
+    #[serde(default)]
+    pub scenario: Option<super::atmosphere::ScenarioCfg>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -27,6 +32,46 @@ pub struct Body {
     pub mass: f64,
     #[serde(deserialize_with = "de_distance", default)]
     pub radius: f64,
+    #[serde(default)]
+    pub atmosphere: Option<super::atmosphere::AtmosphereCfg>,
+    #[serde(default = "default_surface_color")]
+    pub surface_color: [f32; 3],
+    /// Optional broad stellar class; subtype/temperature inference belongs to import.
+    #[serde(default)]
+    pub spectral_class: Option<SpectralClass>,
+}
+
+/// Broad spectral classes. Colours are a display approximation, not spectra.
+#[derive(Copy, Clone, Debug, Serialize, Deserialize)]
+pub enum SpectralClass {
+    O,
+    B,
+    A,
+    F,
+    G,
+    K,
+    M,
+}
+impl SpectralClass {
+    pub fn linear_rgb(self) -> [f32; 3] {
+        let rgb = match self {
+            Self::O => [0.60, 0.72, 1.0],
+            Self::B => [0.70, 0.80, 1.0],
+            Self::A => [0.86, 0.90, 1.0],
+            Self::F => [1.0, 0.97, 0.92],
+            Self::G => [1.0, 0.90, 0.76],
+            Self::K => [1.0, 0.75, 0.51],
+            Self::M => [1.0, 0.56, 0.30],
+        };
+        // Palette is specified in sRGB; all radiance calculations use linear RGB.
+        rgb.map(|v: f32| {
+            if v <= 0.04045 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        })
+    }
 }
 
 #[derive(Copy, Clone, Debug, Serialize, Deserialize, Default)]
@@ -229,4 +274,8 @@ where
     }
 
     deserializer.deserialize_any(TimeVisitor)
+}
+
+fn default_surface_color() -> [f32; 3] {
+    [0.4, 0.4, 0.4]
 }

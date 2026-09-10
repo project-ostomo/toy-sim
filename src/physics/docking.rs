@@ -5,7 +5,8 @@ use std::collections::HashMap;
 
 use crate::{
     physics::{AccumulatedForce, AccumulatedTorque, MassProps, RigidBody},
-    precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
+    precision::{PreciseTransform, ToMicrometersExt},
+    simulation::SimulationSystems,
 };
 
 #[derive(Component)]
@@ -23,7 +24,10 @@ pub struct DockChild {
 pub fn run_docking(app: &mut App) {
     app.add_systems(
         FixedUpdate,
-        (aggregate_dock_cog, aggregate_dock_forces).chain(),
+        (
+            aggregate_dock_cog.in_set(SimulationSystems::PrepareBodies),
+            aggregate_dock_forces.in_set(SimulationSystems::GatherForces),
+        ),
     );
 }
 
@@ -63,7 +67,7 @@ fn aggregate_dock_cog(
 
         for &c in child_list {
             let (_, c_mass, dock) = children_q.get(c).unwrap(); // immutable
-            let r_local_m = dock.rel_tf.translation_mm.to_meters_64();
+            let r_local_m = dock.rel_tf.translation_um.to_meters_64();
             m_sum += c_mass.mass;
             m_rsum_local_m += c_mass.mass * r_local_m;
         }
@@ -72,14 +76,14 @@ fn aggregate_dock_cog(
         }
 
         let cog_local_m = m_rsum_local_m / m_sum; // metres
-        let cog_local_mm = cog_local_m.to_millimeters(); // I64Vec3
+        let cog_local_um = cog_local_m.to_micrometers(); // GalacticPosition
 
         //------------------------------------------------------------------
         // 2-b  Move the parent marker *in world space* by R · Δ
         //------------------------------------------------------------------
         let delta_world_m = p_tf.rotation * cog_local_m; // metres
-        let delta_world_mm = delta_world_m.to_millimeters();
-        p_tf.translation_mm += delta_world_mm; // still I64Vec3
+        let delta_world_um = delta_world_m.to_micrometers();
+        p_tf.translation_um += delta_world_um; // still GalacticPosition
 
         //------------------------------------------------------------------
         // 2-c  Second pass over *this* child list (mutable borrow):
@@ -92,10 +96,10 @@ fn aggregate_dock_cog(
             let (_, c_mass, mut dock) = children_q.get_mut(c).unwrap();
 
             // 1. keep world pose
-            dock.rel_tf.translation_mm -= cog_local_mm;
+            dock.rel_tf.translation_um -= cog_local_um;
 
             // 2. inertia contribution  I_child + m (‖r‖²E − r rᵀ)
-            let r_m = dock.rel_tf.translation_mm.to_meters_64(); // after shift
+            let r_m = dock.rel_tf.translation_um.to_meters_64(); // after shift
             let rot = DMat3::from_quat(dock.rel_tf.rotation);
             let i_child_local = rot * c_mass.inertia * rot.transpose();
 
@@ -136,7 +140,7 @@ fn aggregate_dock_forces(
         let (mut f_parent, mut tau_parent, tf_parent) = parents.get_mut(dock.parent).unwrap();
 
         f_parent.0 += f_child.0;
-        let lever_m = tf_parent.rotation * dock.rel_tf.translation_mm.to_meters_64();
+        let lever_m = tf_parent.rotation * dock.rel_tf.translation_um.to_meters_64();
         tau_parent.0 += tau_child.0 + lever_m.cross(f_child.0);
 
         f_child.0 = DVec3::ZERO;

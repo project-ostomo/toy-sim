@@ -8,10 +8,7 @@ use crate::{
     GameState,
     assets::TomlAssetLoader,
     physics::RigidBody,
-    vessel::{
-        part_cfg::PartCfg,
-        vessel_cfg::VesselCfg,
-    },
+    vessel::{part_cfg::PartCfg, vessel_cfg::VesselCfg},
 };
 
 mod consumable;
@@ -23,8 +20,13 @@ mod controls;
 mod vessel_cfg;
 
 pub use consumable::ConsumableTanks;
-pub use controls::{ControlTargets, ControlTelemetry, VesselControlState};
+pub use controls::VesselControlState;
 pub use modules::thruster::Thruster;
+pub(crate) use modules::torquer::Torquer;
+
+/// The ship receiving manual input, independent of the camera target.
+#[derive(Component)]
+pub struct ControlledVessel;
 
 pub struct VesselsPlugin;
 
@@ -66,7 +68,7 @@ fn load_vessels(
 }
 
 #[derive(Component)]
-#[require(RigidBody, ConsumableTanks, VesselControlState, ControlTargets, ControlTelemetry)]
+#[require(RigidBody, ConsumableTanks, VesselControlState)]
 pub struct Vessel {
     pub class_name: SmolStr,
     pub vessel_name: SmolStr,

@@ -1,111 +1,139 @@
-use std::cmp::Reverse;
-
 use bevy::{
-    camera::Exposure,
+    camera::{Exposure, Hdr},
     core_pipeline::tonemapping::Tonemapping,
     input::mouse::MouseWheel,
     light::CascadeShadowConfigBuilder,
-    pbr::{Atmosphere, AtmosphereMode, AtmosphereSettings},
-    post_process::bloom::Bloom,
+    pbr::{AtmosphereMode, AtmosphereSettings},
+    post_process::{
+        auto_exposure::{AutoExposure, AutoExposureCompensationCurve},
+        bloom::Bloom,
+    },
     prelude::*,
-    render::view::Hdr,
 };
-
-use ordered_float::OrderedFloat;
 
 use crate::{
     GameState,
-    orrery::{BodyClass, Celestial, Orrery, Star},
-    physics::WithinSoi,
-    precision::{FloatingOrigin, PreciseTransform, ToMetersExt, ToMillimetersExt},
+    orrery::{Celestial, Universe},
+    physics::aerodynamics::AeroModel,
+    precision::{
+        FloatingOrigin, FloatingOriginAnchor, PreciseTransform, PrecisionSystems, PresentationPose,
+        ToMicrometersExt,
+    },
+    vessel::Vessel,
 };
-use bevy::math::{DQuat, DVec3};
+use bevy::math::{DQuat, DVec2, DVec3};
 
 pub struct MainCameraPlugin;
 
 #[derive(Component)]
-#[require(CameraParams)]
+#[require(CameraParams, FloatingOriginAnchor)]
 pub struct MainCamera;
 
 #[derive(Component)]
 pub struct CameraFocus;
 
+#[derive(Message)]
+pub struct FollowTarget(pub Entity);
+
 impl Plugin for MainCameraPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(GameState::Game), |mut commands: Commands| {
-            let k = (10_000.0f32).ln() / 144_000.0; // ≈ 6.14e-5
-            commands.spawn((
-                MainCamera,
-                Hdr,
-                CameraParams::default(),
-                Camera3d::default(),
-                Camera { ..default() },
-                Tonemapping::TonyMcMapface,
-                PreciseTransform::default(),
-                // Smaa::default(),
-                Msaa::Off,
-                // ClusterConfig::Single, // NECESSARY FOR DISTANT LIGHTING
-                // MotionBlur {
-                //     shutter_angle: 1.0,
-                //     samples: 10,
-                // },
-                Exposure::OVERCAST,
-                Bloom::ANAMORPHIC,
-                // AtmosphereCamera::default(),
-                Atmosphere {
-                    // hardcoded values for Taale,
-                    bottom_radius: 1.65800e7,
-                    top_radius: 1.65800e7 + 250e3,
-                    rayleigh_density_exp_scale: k,
-                    // mie_density_exp_scale: k * 0.95,
-                    ..Atmosphere::EARTH.with_density_multiplier(10000.0)
-                },
-                AtmosphereSettings {
-                    // transmittance_lut_size: UVec2::new(512, 128),
-                    // sky_view_lut_size: UVec2::new(768, 192),
-                    // aerial_view_lut_size: UVec3::new(160, 96, 96),
+        app.add_message::<FollowTarget>();
+        app.add_systems(
+            OnEnter(GameState::Game),
+            (|mut commands: Commands,
+              orrery: Res<Universe>,
+              mut curves: ResMut<Assets<AutoExposureCompensationCurve>>| {
+                let scenario = orrery.scenario.as_ref().expect("missing initial scenario");
+                let compensation_curve = curves.add(
+                    AutoExposureCompensationCurve::from_curve(
+                        bevy::math::cubic_splines::LinearSpline::new([
+                            // target exposure = compensation - metered log luminance.
+                            // Cap dark-scene gain at 16 stops, including an empty histogram.
+                            Vec2::new(-24.0, -8.0),
+                            Vec2::new(-18.0, -2.0),
+                            Vec2::new(24.0, -2.0),
+                        ]),
+                    )
+                    .expect("valid exposure compensation curve"),
+                );
+                commands.spawn((
+                    MainCamera,
+                    Hdr,
+                    CameraParams {
+                        zoom: (scenario.camera_distance / 100.0).ln(),
+                        yaw: scenario.camera_yaw,
+                        pitch: scenario.camera_pitch,
+                        ..default()
+                    },
+                    Camera3d::default(),
+                    Camera { ..default() },
+                    Tonemapping::TonyMcMapface,
+                    PreciseTransform::default(),
+                    // Smaa::default(),
+                    Msaa::Off,
+                    // ClusterConfig::Single, // NECESSARY FOR DISTANT LIGHTING
+                    // MotionBlur {
+                    //     shutter_angle: 1.0,
+                    //     samples: 10,
+                    // },
+                    // Exposure::exposure() = 2^-EV / 1.2; neutralize this stage.
+                    Exposure {
+                        ev100: -1.2_f32.log2(),
+                    },
+                    Bloom::NATURAL,
+                    AtmosphereSettings {
+                        rendering_method: AtmosphereMode::Raymarched,
+                        sky_max_samples: 64,
+                        ..default()
+                    },
+                    AutoExposure {
+                        range: -24.0..=24.0,
+                        // Black space counts toward percentile cutoffs. Never trim
+                        // the upper end: it may contain the entire visible planet.
+                        filter: 0.99..=1.0,
+                        compensation_curve,
+                        speed_brighten: 6.0,
+                        speed_darken: 2.0,
+                        ..default()
+                    },
+                    Projection::Perspective(PerspectiveProjection {
+                        near: 0.1,
+                        far: 1e15,
+                        ..default()
+                    }),
+                ));
 
-                    // // integration samples
-                    // transmittance_lut_samples: 512,
-                    // multiscattering_lut_dirs: 64,
-                    // multiscattering_lut_samples: 128,
-                    // sky_view_lut_samples: 256,
-                    // aerial_view_lut_samples: 128,
-
-                    // how far we integrate fog from the camera
-                    aerial_view_lut_max_distance: 4.0e6, // 4 000 km
-                    scene_units_to_m: 100.0,
-                    rendering_method: AtmosphereMode::LookupTexture,
-                    ..default()
-                },
-                // AutoExposure::default(),
-                Projection::Perspective(PerspectiveProjection {
-                    near: 0.1,
-                    far: 1e15,
-                    ..default()
-                }),
-            ));
-
-            commands.spawn((
-                CameraLight,
-                CascadeShadowConfigBuilder {
-                    num_cascades: 4,
-                    minimum_distance: 0.1,
-                    maximum_distance: 100000.0,
-                    ..default()
-                }
-                .build(),
-                DirectionalLight {
-                    shadows_enabled: true,
-                    ..default()
-                },
-            ));
-        });
+                commands.spawn((
+                    CameraLight,
+                    bevy::light::SunDisk::OFF,
+                    CascadeShadowConfigBuilder {
+                        num_cascades: 4,
+                        minimum_distance: 0.1,
+                        maximum_distance: 100000.0,
+                        ..default()
+                    }
+                    .build(),
+                    DirectionalLight {
+                        shadow_maps_enabled: true,
+                        ..default()
+                    },
+                ));
+            })
+            .after(crate::orrery::LoadOrrery),
+        );
 
         app.add_systems(
             Update,
-            (camera_controls, atmo_and_float_origin, camera_lighting)
+            (follow_target, camera_controls)
                 .chain()
+                .run_if(in_state(GameState::Game)),
+        );
+        app.add_systems(
+            PostUpdate,
+            (
+                camera_pose.in_set(PrecisionSystems::Camera),
+                camera_lighting.in_set(PrecisionSystems::Project),
+            )
                 .run_if(in_state(GameState::Game)),
         );
     }
@@ -116,61 +144,87 @@ pub struct CameraParams {
     pub zoom: f64,
     pub yaw: f64,
     pub pitch: f64,
-    pub mode: CameraMode,
+    smoothed_angles: Option<DVec2>,
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
-pub enum CameraMode {
-    #[default]
-    Orbit,
-    WarThunderLike,
+impl CameraParams {
+    fn smooth_angles(&mut self, dt: f64) -> DVec2 {
+        // A short exponential response: about 95% settled after 120 ms.
+        const RESPONSE_TIME: f64 = 0.04;
+        let target = DVec2::new(self.yaw, self.pitch);
+        let current = self.smoothed_angles.get_or_insert(target);
+        let blend = -(-dt / RESPONSE_TIME).exp_m1();
+        *current = current.lerp(target, blend);
+        *current
+    }
+}
+
+fn target_radius(
+    celestial: Option<&Celestial>,
+    model: Option<&AeroModel>,
+    orrery: &Universe,
+) -> f64 {
+    celestial
+        .and_then(|c| orrery.get_body(&c.0))
+        .map(|b| b.radius)
+        .or_else(|| model.map(|m| m.semi_axes.max_element()))
+        .unwrap_or(10.0)
+}
+
+fn follow_target(
+    mut requests: MessageReader<FollowTarget>,
+    debug: Option<ResMut<crate::orrery::activity::UniverseDebug>>,
+    mut commands: Commands,
+    targets: Query<
+        (Option<&Celestial>, Option<&AeroModel>),
+        (With<PreciseTransform>, Or<(With<Celestial>, With<Vessel>)>),
+    >,
+    focused: Query<Entity, With<CameraFocus>>,
+    camera: Single<&mut CameraParams, With<MainCamera>>,
+    orrery: Res<Universe>,
+) {
+    let Some(request) = requests.read().last() else {
+        return;
+    };
+    let Ok((celestial, model)) = targets.get(request.0) else {
+        return;
+    };
+    if let Some(mut debug) = debug {
+        debug.inspect = celestial.map(|c| c.0.clone());
+    }
+    if focused.iter().any(|entity| entity == request.0) {
+        return;
+    }
+    for entity in &focused {
+        commands.entity(entity).remove::<CameraFocus>();
+    }
+    commands.entity(request.0).insert(CameraFocus);
+    let radius = target_radius(celestial, model, &orrery);
+    camera.into_inner().zoom = ((radius * 3.0).max(30.0) / 100.0).ln();
 }
 
 /// Orbit camera relative to focused object
 fn camera_controls(
-    camera: Single<(&mut PreciseTransform, &mut CameraParams), With<MainCamera>>,
+    camera: Single<&mut CameraParams, With<MainCamera>>,
     focus: Single<
-        (&PreciseTransform, Option<&WithinSoi>),
+        (&PreciseTransform, Option<&Celestial>, Option<&AeroModel>),
         (With<CameraFocus>, Without<MainCamera>),
     >,
-    celestials: Query<&PreciseTransform, (With<Celestial>, Without<MainCamera>)>,
+    orrery: Res<Universe>,
     mut mouse_evs: MessageReader<bevy::input::mouse::MouseMotion>,
     mouse_buttons: Res<ButtonInput<MouseButton>>,
     mut scroll_evs: MessageReader<MouseWheel>,
 ) {
-    const SENS: f64 = 0.01;
+    const SENS: f64 = 0.0025;
     const ZOOM_SENS: f64 = 100.0;
 
-    let (focus_ptf, soi_opt) = focus.into_inner();
-    // Determine the "up" vector for the current local horizon.
-    let up: DVec3 = if let Some(WithinSoi(body_ent)) = soi_opt {
-        let cel_tf = celestials.get(*body_ent).unwrap();
-        let delta_m = (focus_ptf.translation_mm - cel_tf.translation_mm).to_meters_64();
-        delta_m.normalize()
-    } else {
-        DVec3::Y
-    };
+    let (_, celestial, model) = focus.into_inner();
+    let mut cam = camera.into_inner();
 
-    let (mut cam_ptf, mut cam) = camera.into_inner();
-
-    match cam.mode {
-        CameraMode::Orbit => {
-            if mouse_buttons.pressed(MouseButton::Left) {
-                for ev in mouse_evs.read() {
-                    let yaw = -(ev.delta.x as f64) * SENS;
-                    let pitch = (ev.delta.y as f64) * SENS;
-                    cam.yaw += yaw;
-                    cam.pitch += pitch;
-                }
-            }
-        }
-        CameraMode::WarThunderLike => {
-            for ev in mouse_evs.read() {
-                let yaw = -(ev.delta.x as f64) * SENS;
-                let pitch = (ev.delta.y as f64) * SENS;
-                cam.yaw += yaw;
-                cam.pitch += pitch;
-            }
+    for ev in mouse_evs.read() {
+        if mouse_buttons.pressed(MouseButton::Left) {
+            cam.yaw -= ev.delta.x as f64 * SENS;
+            cam.pitch -= ev.delta.y as f64 * SENS;
         }
     }
     cam.pitch = cam.pitch.clamp(-1.5, 1.5);
@@ -180,17 +234,37 @@ fn camera_controls(
         cam.zoom -= ev.y as f64 * 0.05;
     }
 
-    // Offset along forward based on zoom
-    let dist = cam.zoom.exp() * ZOOM_SENS;
+    let radius = target_radius(celestial, model, &orrery);
+    let min_distance = (radius * 1.01).max(1.0);
+    cam.zoom = cam
+        .zoom
+        .clamp((min_distance / ZOOM_SENS).ln(), (1e15 / ZOOM_SENS).ln());
+}
+
+/// Finalize the camera after input and simulation, before selecting the render origin.
+fn camera_pose(
+    camera: Single<(&mut PreciseTransform, &mut CameraParams), With<MainCamera>>,
+    focus: Single<
+        (&PreciseTransform, Option<&PresentationPose>),
+        (With<CameraFocus>, Without<MainCamera>),
+    >,
+    time: Res<Time>,
+) {
+    let (mut cam_ptf, mut cam) = camera.into_inner();
+    let (authoritative, presentation) = focus.into_inner();
+    let focus_ptf = presentation.map_or(authoritative, |pose| &pose.0);
+    let angles = cam.smooth_angles(time.delta_secs_f64());
+    let up = DVec3::Y;
+    let dist = cam.zoom.exp() * 100.0;
     let rotation = DQuat::from_rotation_arc(DVec3::Y, up);
     let dir = rotation
         * DVec3::new(
-            cam.yaw.sin() * cam.pitch.cos(),
-            cam.pitch.sin(),
-            cam.yaw.cos() * cam.pitch.cos(),
+            angles.x.sin() * angles.y.cos(),
+            angles.y.sin(),
+            angles.x.cos() * angles.y.cos(),
         );
-    cam_ptf.translation_mm = focus_ptf.translation_mm + (dir * dist).to_millimeters();
-    cam_ptf.look_at(focus_ptf.translation_mm, up);
+    cam_ptf.translation_um = focus_ptf.translation_um + (dir * dist).to_micrometers();
+    cam_ptf.look_at(focus_ptf.translation_um, up);
 }
 
 #[derive(Component)]
@@ -205,77 +279,189 @@ fn camera_lighting(
         (&mut DirectionalLight, &mut Transform),
         (With<CameraLight>, Without<MainCamera>),
     >,
-    stars: Query<(&Star, &PreciseTransform)>,
+    universe: Res<Universe>,
 ) {
-    let camera_ptf = camera.into_inner();
-    // we assign lights to stars from brightest to least brightest
-    // TODO relative brightness instead of absolute
-    for ((star, star_ptf), (mut light, mut light_tf)) in stars
-        .iter()
-        .sort_unstable_by_key::<(&Star, &PreciseTransform), _>(|s| {
-            Reverse(OrderedFloat(s.0.lumens))
-        })
-        .zip(lights.iter_mut())
-    {
-        // recompute lighting every once in a while
-        // if camera_tf.translation.distance(light_tf.translation) > 100.0 {
-        let camera_loc = origin.project_loc(camera_ptf.translation_mm);
-        let star_loc = origin.project_loc(star_ptf.translation_mm);
-        let star_to_camera = camera_loc - star_loc;
-        light.illuminance =
-            star.lumens as f32 / (4.0 * std::f32::consts::PI * star_to_camera.length_squared());
+    let position = camera.translation_um;
+    let brightest = universe
+        .tree
+        .brightest(position)
+        .map(|id| &universe.tree.entries[id]);
+    for (mut light, mut tf) in &mut lights {
+        let Some(star) = brightest else {
+            light.illuminance = 0.0;
+            continue;
+        };
+        let direction = origin.0.rotation.inverse() * position.relative_to(star.position);
+        light.illuminance = (star.luminosity
+            / (4.0 * std::f64::consts::PI * direction.length_squared().max(star.radius.powi(2))))
+            as f32;
         light.color = Color::WHITE;
-        light.shadows_enabled = true;
-
-        light_tf.look_at(star_to_camera, Vec3::Y);
+        if let Some(direction) = direction.try_normalize() {
+            tf.look_to(direction.as_vec3(), Vec3::Y);
+        }
     }
 }
 
-/// Compute the floating origin and spawn. Currently, it's always the closest planet's closest surface.
-fn atmo_and_float_origin(
-    star_sys: Res<Orrery>,
-    mut origin: ResMut<FloatingOrigin>,
-    camera: Single<&PreciseTransform, With<MainCamera>>,
-    cel: Query<(&Celestial, &PreciseTransform)>,
-) {
-    let camera_ptf = camera.into_inner();
-    // Find the planet whose surface is nearest the camera
-    let mut min_dist_surface = f64::MAX;
-    let mut best_origin = *camera_ptf;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vessel::ControlledVessel;
 
-    for (cel_body, body_pt) in cel.iter() {
-        let body = star_sys.get_body(&cel_body.0).unwrap();
-        if let BodyClass::Planet = body.class_params {
-            // Vector planet-centre → camera in metres.
-            let delta_m = (camera_ptf.translation_mm - body_pt.translation_mm).to_meters_64();
-            let dist_center = delta_m.length();
-            let radius = body.radius; // planet radius (m)
-            let dist_surface = (dist_center - radius).abs(); // camera altitude over surface
-
-            if dist_surface < min_dist_surface {
-                min_dist_surface = dist_surface;
-
-                // “Up” direction (unit vector, away from planet).
-                let up_dir = delta_m / dist_center;
-
-                // Choose altitude for the floating origin: 100x smaller than the real origin
-                let origin_alt_m = dist_surface * 0.99;
-
-                // Position = planet centre + up_dir * (radius + origin_alt_m)
-                let origin_mm = body_pt
-                    .translation_mm
-                    .saturating_add((up_dir * (radius + origin_alt_m)).to_millimeters());
-
-                // Align local Y to the up direction.
-                let rotation = DQuat::from_rotation_arc(DVec3::Y, up_dir);
-
-                best_origin = PreciseTransform {
-                    translation_mm: origin_mm,
-                    rotation,
-                };
-            }
-        }
+    #[test]
+    fn camera_tracks_presentation_without_modifying_simulation() {
+        let mut app = App::new();
+        app.init_resource::<Time>().add_systems(Update, camera_pose);
+        let authoritative = PreciseTransform {
+            translation_um: crate::precision::GalacticPosition::new(1_i128 << 90, 0, 0),
+            ..default()
+        };
+        let presentation = PreciseTransform {
+            translation_um: authoritative.translation_um
+                - crate::precision::GalacticPosition::new(5_000_000_000, 0, 0),
+            ..default()
+        };
+        let focus = app
+            .world_mut()
+            .spawn((CameraFocus, authoritative, PresentationPose(presentation)))
+            .id();
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, PreciseTransform::default()))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world()
+                .get::<PreciseTransform>(camera)
+                .unwrap()
+                .translation_um,
+            presentation.translation_um
+                + crate::precision::GalacticPosition::new(0, 0, 100_000_000)
+        );
+        assert_eq!(
+            app.world()
+                .get::<PreciseTransform>(focus)
+                .unwrap()
+                .translation_um,
+            authoritative.translation_um
+        );
     }
 
-    origin.0 = best_origin;
+    #[test]
+    fn orbit_smoothing_is_frame_rate_independent_and_preserves_initial_angles() {
+        let make_camera = || {
+            let mut camera = CameraParams {
+                yaw: 0.7,
+                pitch: 0.2,
+                ..default()
+            };
+            assert_eq!(camera.smooth_angles(0.0), DVec2::new(0.7, 0.2));
+            camera.yaw = 1.7;
+            camera.pitch = -0.3;
+            camera
+        };
+        let mut slow = make_camera();
+        let mut fast = make_camera();
+        for _ in 0..3 {
+            slow.smooth_angles(1.0 / 30.0);
+        }
+        for _ in 0..12 {
+            fast.smooth_angles(1.0 / 120.0);
+        }
+        let a = slow.smooth_angles(0.0);
+        let b = fast.smooth_angles(0.0);
+        assert!(a.abs_diff_eq(b, 1e-12));
+        assert!(a.x > 0.7 && a.x < 1.7 && a.y < 0.2 && a.y > -0.3);
+        assert!(
+            slow.smooth_angles(1.0)
+                .abs_diff_eq(DVec2::new(1.7, -0.3), 1e-10)
+        );
+    }
+
+    #[test]
+    fn camera_can_follow_planets_and_return_to_ship_without_changing_control() {
+        let orrery = Universe::init(crate::orrery::example_config()).unwrap();
+        let planet_cfg = orrery
+            .iter()
+            .find(|body| body.atmosphere.is_some())
+            .unwrap();
+        let radius = planet_cfg.radius;
+        let name = planet_cfg.name.clone();
+        let mut app = App::new();
+        app.insert_resource(orrery)
+            .init_resource::<Time>()
+            .add_message::<FollowTarget>()
+            .add_message::<bevy::input::mouse::MouseMotion>()
+            .add_message::<MouseWheel>()
+            .init_resource::<ButtonInput<MouseButton>>()
+            .add_systems(
+                Update,
+                (follow_target, camera_controls, camera_pose).chain(),
+            );
+        let camera = app
+            .world_mut()
+            .spawn((MainCamera, PreciseTransform::default()))
+            .id();
+        let ship = app
+            .world_mut()
+            .spawn((
+                Vessel {
+                    class_name: "test".into(),
+                    vessel_name: "Test ship".into(),
+                },
+                ControlledVessel,
+                CameraFocus,
+                PreciseTransform::default(),
+                AeroModel::new(DVec3::splat(5.0)),
+            ))
+            .id();
+        let planet = app
+            .world_mut()
+            .spawn((Celestial(name), PreciseTransform::default()))
+            .id();
+        app.world_mut().write_message(FollowTarget(planet));
+        app.update();
+        assert!(app.world().get::<CameraFocus>(planet).is_some());
+        assert!(app.world().get::<CameraFocus>(ship).is_none());
+        assert!(app.world().get::<ControlledVessel>(ship).is_some());
+        let distance = app
+            .world()
+            .get::<PreciseTransform>(camera)
+            .unwrap()
+            .translation_um
+            .to_meters_64()
+            .length();
+        assert!((distance - radius * 3.0).abs() < 0.01);
+
+        // A stale selection cannot clear the current target.
+        let stale = app.world_mut().spawn_empty().id();
+        app.world_mut().despawn(stale);
+        app.world_mut().write_message(FollowTarget(stale));
+        app.world_mut()
+            .get_mut::<CameraParams>(camera)
+            .unwrap()
+            .zoom = -100.0;
+        app.update();
+        assert!(app.world().get::<CameraFocus>(planet).is_some());
+        let distance = app
+            .world()
+            .get::<PreciseTransform>(camera)
+            .unwrap()
+            .translation_um
+            .to_meters_64()
+            .length();
+        assert!(distance > radius);
+
+        app.world_mut().write_message(FollowTarget(ship));
+        app.update();
+        assert!(app.world().get::<CameraFocus>(ship).is_some());
+        assert!(app.world().get::<CameraFocus>(planet).is_none());
+        let distance = app
+            .world()
+            .get::<PreciseTransform>(camera)
+            .unwrap()
+            .translation_um
+            .to_meters_64()
+            .length();
+        assert!((distance - 30.0).abs() < 0.01);
+    }
 }

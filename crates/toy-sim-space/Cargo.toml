@@ -1,0 +1,10 @@
+[package]
+name = "toy-sim-space"
+version = "0.1.0"
+edition = "2024"
+[dependencies]
+glam = "0.32.1"
+serde = { version = "1.0.229", features = ["derive"] }
+[dev-dependencies]
+toml = "1.1.5"
+serde_yml = "0.0.13"

@@ -1,0 +1,1 @@
+SELECT TOP 1000000 source_id,ra,dec,parallax,parallax_error,phot_g_mean_mag,bp_rp FROM gaiadr3.gaia_source WHERE phot_g_mean_mag < 12 AND parallax_over_error > 10 ORDER BY phot_g_mean_mag ASC, source_id ASC

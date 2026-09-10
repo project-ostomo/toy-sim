@@ -1,5 +1,5 @@
 use bevy::{
-    math::{DMat3, DQuat, DVec3},
+    math::{DMat3, DVec3},
     prelude::*,
 };
 use smol_str::SmolStr;
@@ -8,19 +8,15 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use crate::{
     GameState,
     camera::CameraFocus,
-    orrery::Orrery,
+    orrery::Universe,
     physics::{MassProps, Velocity, aerodynamics::AeroModel, sim_time},
-    precision::{PreciseTransform, ToMetersExt, ToMillimetersExt},
+    precision::{PreciseTransform, ToMicrometersExt},
     vessel::{
-        LoadedVessels, Vessel,
+        ControlledVessel, LoadedVessels, Vessel,
         consumable::ConsumableTanks,
-        controls::{
-            ControlTargets, ControlTelemetry, VesselControlState,
-            fbw::{PidDirectionalFbw, PidRotationalFbw},
-        },
+        controls::VesselControlState,
         load_vessels,
         modules::{
-            control::{DirectionalPidController, RotationalPidController},
             Module,
             reactor::NuclearReactor,
             thruster::{ElectricFan, MagicThruster, SimpleThrusterFlame, Thruster},
@@ -124,6 +120,34 @@ fn compute_inertia(parts: &[ResolvedPart], cog: Vec3) -> DMat3 {
     inertia
 }
 
+/// Enclose the ship-aligned bounding box in an ellipsoid. Multiplying its
+/// half-extents by sqrt(3) encloses even the box corners. The geometric centre
+/// need not match the CoM: only the silhouette is used, and drag has no torque.
+fn compute_aero_model(parts: &[ResolvedPart]) -> AeroModel {
+    if parts.is_empty() {
+        return AeroModel::new(DVec3::ZERO);
+    }
+    let mut min = DVec3::splat(f64::INFINITY);
+    let mut max = DVec3::splat(f64::NEG_INFINITY);
+    for part in parts {
+        let up = face_to_up(part.cfg.top_face);
+        let rotation =
+            apply_quarter_turn(Quat::from_rotation_arc(Vec3::Y, up), up, part.cfg.turn).as_dquat();
+        let half = part.dimensions_dm.as_dvec3() / 20.0;
+        let centre = part.cfg.position_dm.as_dvec3() / 10.0;
+        for x in [-1.0, 1.0] {
+            for y in [-1.0, 1.0] {
+                for z in [-1.0, 1.0] {
+                    let corner = centre + rotation * (half * DVec3::new(x, y, z));
+                    min = min.min(corner);
+                    max = max.max(corner);
+                }
+            }
+        }
+    }
+    AeroModel::new((max - min) * (0.5 * 3.0_f64.sqrt()))
+}
+
 fn face_to_up(face: Face) -> Vec3 {
     match face {
         Face::Top => Vec3::Y,
@@ -160,9 +184,14 @@ pub struct SpawnVesselMsg {
 
 pub fn run_spawn(app: &mut App) {
     app.add_message::<SpawnVesselMsg>()
-        .add_systems(OnEnter(GameState::Game), spawn_vessels.after(load_vessels))
         .add_systems(
-            FixedUpdate,
+            OnEnter(GameState::Game),
+            spawn_vessels
+                .after(load_vessels)
+                .after(crate::orrery::LoadOrrery),
+        )
+        .add_systems(
+            FixedPreUpdate,
             handle_spawn_vessel
                 .run_if(in_state(GameState::Game))
                 .run_if(resource_exists::<LoadedVessels>),
@@ -177,6 +206,8 @@ fn handle_spawn_vessel(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     already_focused: Query<Entity, With<CameraFocus>>,
+    already_controlled: Query<Entity, With<ControlledVessel>>,
+    mut cuboid_meshes: Local<ahash::AHashMap<[u32; 3], Handle<Mesh>>>,
 ) {
     let gray = MeshMaterial3d(materials.add(Color::srgb_u8(128, 128, 128)));
     for spawn_evt in evts.read() {
@@ -184,7 +215,7 @@ fn handle_spawn_vessel(
         let resolved = resolve_parts(vessel_cfg, &vessels);
 
         let mut consumable_tanks = ConsumableTanks::default();
-        let mut aero_model = AeroModel::default();
+        let aero_model = compute_aero_model(&resolved);
 
         let center_of_gravity = compute_center_of_gravity(&resolved);
 
@@ -203,9 +234,11 @@ fn handle_spawn_vessel(
                     inertia_inv: inertia.inverse(),
                 },
                 spawn_evt.location,
+                crate::spatial::SpatialBody {
+                    radius_m: aero_model.semi_axes.max_element(),
+                    occludes: false,
+                },
                 VesselControlState::default(),
-                ControlTargets::default(),
-                ControlTelemetry::default(),
                 Visibility::default(),
                 Velocity(spawn_evt.velocity),
             ))
@@ -215,7 +248,14 @@ fn handle_spawn_vessel(
             for ent in already_focused {
                 commands.entity(ent).remove::<CameraFocus>();
             }
-            commands.entity(vessel).insert(CameraFocus);
+            for ent in &already_controlled {
+                commands.entity(ent).remove::<ControlledVessel>();
+            }
+            commands.entity(vessel).insert((
+                CameraFocus,
+                ControlledVessel,
+                crate::sensors::Sensor::default(),
+            ));
         }
 
         for part in resolved {
@@ -236,25 +276,25 @@ fn handle_spawn_vessel(
             };
             let mut part_entity = commands.spawn((ChildOf(vessel), part_tf));
             if part.model == "cuboid" {
-                let cuboid = Mesh3d(meshes.add(Cuboid::new(
-                    part.dimensions_dm.x as f32 / 10.0,
-                    part.dimensions_dm.y as f32 / 10.0,
-                    part.dimensions_dm.z as f32 / 10.0,
-                )));
+                let cuboid = Mesh3d(
+                    cuboid_meshes
+                        .entry(part.dimensions_dm.to_array())
+                        .or_insert_with(|| {
+                            meshes.add(Cuboid::new(
+                                part.dimensions_dm.x as f32 / 10.0,
+                                part.dimensions_dm.y as f32 / 10.0,
+                                part.dimensions_dm.z as f32 / 10.0,
+                            ))
+                        })
+                        .clone(),
+                );
                 part_entity.insert((cuboid, gray.clone()));
             } else {
-                let model: Handle<Scene> = loader.load(format!("models/{}", part.model));
-                part_entity.insert(SceneRoot(model));
+                let model: Handle<WorldAsset> = loader.load(format!("models/{}", part.model));
+                part_entity.insert(WorldAssetRoot(model));
             }
 
             for module in part.modules {
-                // TODO compute offset correctly with respect to the SHIP!
-                let module_tf = Transform {
-                    translation: module.offset,
-                    rotation: dir_twist_to_quat(module.direction, module.twist_deg.to_radians()),
-                    ..default()
-                };
-                let module_tf = part_tf * module_tf;
                 let mut mod_entity = commands.spawn((Module, ChildOf(vessel)));
                 match module.kind.clone() {
                     PartModuleCfgInner::MagicTorquer { torque } => {
@@ -304,16 +344,6 @@ fn handle_spawn_vessel(
                             },
                         ));
                     }
-                    PartModuleCfgInner::DirectionalPidController { p, i, d, i_limit } => {
-                        mod_entity.insert(DirectionalPidController {
-                            controller: PidDirectionalFbw::new(p, i, d, i_limit),
-                        });
-                    }
-                    PartModuleCfgInner::RotationalPidController { p, i, d, i_limit } => {
-                        mod_entity.insert(RotationalPidController {
-                            controller: PidRotationalFbw::new(p, i, d, i_limit),
-                        });
-                    }
                     PartModuleCfgInner::Tank {
                         consumable,
                         capacity,
@@ -328,15 +358,6 @@ fn handle_spawn_vessel(
                             desired_throttle: 1.0,
                         });
                     }
-                    PartModuleCfgInner::Wing(wing) => {
-                        aero_model.wings.push((
-                            PreciseTransform {
-                                translation_mm: module_tf.translation.to_millimeters(),
-                                rotation: module_tf.rotation.as_dquat(),
-                            },
-                            wing,
-                        ));
-                    }
                 }
             }
         }
@@ -347,39 +368,63 @@ fn handle_spawn_vessel(
 }
 
 fn spawn_vessels(
-    time: Res<Time>,
-    orrery: Res<Orrery>,
+    time: Res<Time<Fixed>>,
+    orrery: Res<Universe>,
     vessels: Res<LoadedVessels>,
     mut spawn: MessageWriter<SpawnVesselMsg>,
 ) {
     let epoch = sim_time(&time);
 
-    let earth_center_mm = orrery.solve_position("Pannea", epoch).unwrap();
-    let sun_center_mm = orrery.solve_position("Taale", epoch).unwrap();
-    let dir = (sun_center_mm - earth_center_mm).to_meters_64().normalize();
-    let earth_radius_m = orrery.get_body("Pannea").unwrap().radius;
-    let altitude_m = earth_radius_m + 144_000.0;
-    let spawn_offset_mm = (dir * altitude_m).to_millimeters();
-    let spawn_pos_mm = earth_center_mm + spawn_offset_mm;
-
-    for i in 0..1 {
-        let jitter_mm =
-            (DVec3::new(rand::random(), rand::random(), rand::random()) * 100.0).to_millimeters();
-        let translation_mm = spawn_pos_mm + jitter_mm;
-        let v_atm = orrery
-            .atmospheric_velocity_at_point("Pannea", translation_mm, epoch)
-            .unwrap();
-
-        spawn.write(SpawnVesselMsg {
-            cfg: vessels.vessels.get("dummy").unwrap().clone(),
-            name: "Dummy".into(),
-            location: PreciseTransform {
-                translation_mm,
-                rotation: DQuat::default(),
-            },
-            velocity: v_atm,
-            camera_focus: i == 0,
-        });
+    let scenario = orrery.scenario.as_ref().expect("missing initial scenario");
+    let body = orrery
+        .get_body(&scenario.body)
+        .expect("unknown starting body");
+    let (relative_position, relative_velocity) =
+        scenario.relative_state(body.radius, body.mass).unwrap();
+    let translation_um =
+        orrery.solve_position(&scenario.body, epoch).unwrap() + relative_position.to_micrometers();
+    let velocity = orrery.solve_velocity(&scenario.body, epoch).unwrap() + relative_velocity;
+    let mut location = PreciseTransform {
+        translation_um,
+        ..default()
+    };
+    location.look_to(
+        relative_velocity.normalize(),
+        DVec3::from_array(scenario.orbit_normal),
+    );
+    let cfg = vessels
+        .vessels
+        .get(scenario.vessel.as_str())
+        .expect("unknown starting vessel")
+        .clone();
+    spawn.write(SpawnVesselMsg {
+        cfg: cfg.clone(),
+        name: "Orbital explorer".into(),
+        location,
+        velocity,
+        camera_focus: true,
+    });
+    if let Some(traffic) = &scenario.traffic {
+        let planet_position = orrery.solve_position(&scenario.body, epoch).unwrap();
+        let planet_velocity = orrery.solve_velocity(&scenario.body, epoch).unwrap();
+        for (index, (position, velocity)) in traffic
+            .relative_states(body.radius, body.mass)
+            .into_iter()
+            .enumerate()
+        {
+            let mut location = PreciseTransform {
+                translation_um: planet_position.offset_by(position),
+                ..default()
+            };
+            location.look_to(velocity.normalize(), position.normalize());
+            spawn.write(SpawnVesselMsg {
+                cfg: cfg.clone(),
+                name: format!("Traffic {:03}", index + 1).into(),
+                location,
+                velocity: planet_velocity + velocity,
+                camera_focus: false,
+            });
+        }
     }
 }
 
@@ -391,9 +436,63 @@ fn dm_to_meters(dm: IVec3) -> Vec3 {
     }
 }
 
-fn dir_twist_to_quat(dir: Vec3, twist: f32) -> Quat {
-    let f = dir.normalize();
-    let align = Quat::from_rotation_arc(-Vec3::Z, f);
-    let twist = Quat::from_axis_angle(f, -twist);
-    twist * align
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bounding_ellipsoid_accounts_for_part_rotation_and_separation() {
+        let mut cfg = VesselPartCfg {
+            id: "part".into(),
+            proto: "test".into(),
+            position_dm: IVec3::ZERO,
+            top_face: Face::Top,
+            turn: QuarterTurn::R90,
+        };
+        fn part(cfg: &VesselPartCfg) -> ResolvedPart<'_> {
+            ResolvedPart {
+                cfg,
+                empty_mass: 1.0,
+                model: "cuboid",
+                dimensions_dm: UVec3::new(20, 40, 60),
+                modules: &[],
+            }
+        }
+        let rotated = compute_aero_model(&[part(&cfg)]);
+        assert!(
+            rotated
+                .semi_axes
+                .abs_diff_eq(DVec3::new(3.0, 2.0, 1.0) * 3.0_f64.sqrt(), 1e-5)
+        );
+
+        cfg.turn = QuarterTurn::R0;
+        let mut other = cfg.clone();
+        other.position_dm.x = 100;
+        let separated = compute_aero_model(&[part(&cfg), part(&other)]);
+        assert!(
+            separated
+                .semi_axes
+                .abs_diff_eq(DVec3::new(6.0, 2.0, 3.0) * 3.0_f64.sqrt(), 1e-12)
+        );
+        // All corners fit within the ellipsoid centred at the bounds' midpoint.
+        let centre = DVec3::new(5.0, 0.0, 0.0);
+        for x in [-1.0, 1.0, 9.0, 11.0] {
+            for y in [-2.0, 2.0] {
+                for z in [-3.0, 3.0] {
+                    assert!(
+                        ((DVec3::new(x, y, z) - centre) / separated.semi_axes).length_squared()
+                            <= 1.0 + 1e-12
+                    );
+                }
+            }
+        }
+        cfg.position_dm += IVec3::splat(1000);
+        other.position_dm += IVec3::splat(1000);
+        assert!(
+            compute_aero_model(&[part(&cfg), part(&other)])
+                .semi_axes
+                .abs_diff_eq(separated.semi_axes, 1e-12)
+        );
+        assert_eq!(compute_aero_model(&[]).semi_axes, DVec3::ZERO);
+    }
 }
