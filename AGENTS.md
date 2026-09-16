@@ -1,0 +1,32 @@
+# Development policy
+
+This project is in early prototyping. Prefer clean changes to preserving old
+interfaces or behavior for compatibility.
+
+Do not add compatibility shims, compatibility layers, legacy adapters, or
+backward-compatibility paths unless the user explicitly requests them. Update
+callers, examples, tests, and bundled assets to the new interface directly.
+Remove obsolete interfaces instead of retaining them behind an adapter.
+
+# Code style
+
+Write readable code with normal spacing, blank lines between logical steps, and
+multi-line functions where appropriate. Do not write compressed code and rely on
+rustfmt to make it readable; rustfmt does not supply logical separation.
+
+# English documentation
+
+Codex must delegate writing or rewriting English documentation to Claude Code
+through the `claude` CLI, except for the credit-limit fallback below. This includes
+README files, guides, architecture notes, and English documentation added during
+code changes. Codex must not draft
+or rewrite that prose itself. Codex may inspect implementation details, give
+Claude Code requirements and factual corrections, and verify its output. Any
+prose corrections must also be delegated to Claude Code.
+
+If Claude Code reports that it is out of credits or has reached a spending limit,
+Codex must continue writing, rewriting, and correcting the documentation directly.
+No additional user approval is needed for this fallback. For other failures or
+unavailability, report the blocker instead of writing the documentation directly.
+This rule applies to repository documentation; ordinary conversation with the
+user is exempt.

@@ -1,0 +1,17 @@
+name = "Remote system"
+position_um = ["61713551629827340000000", "0", "0"]
+
+[[bodies]]
+name = "Remote"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = "696000 km"
+
+[[bodies]]
+name = "Remote I"
+class = "planet"
+parent = "Remote"
+mass = "1 massEarth"
+radius = "6000 km"
+semi_major = "1 au"

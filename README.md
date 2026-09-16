@@ -1,144 +1,146 @@
-# Roadmap
+# toy-sim
 
-- [ ] Make current architecture solid
-    - [x] Track down all numerical issues causing crashes
-    - [x] Test an extremely basic multipart airplane
-    - [ ] Figure out the right approach for modules and parts
-    - [x] Simplify controls to direct manual thrust and torque
-    - [ ] Region-based Rapier integration for collisions and such
-    - [ ] A basic framework for serializing save files
-- [ ] Very basic part library with graphics
-    - [ ] Nuclear reactors
-    - [ ] Electric fans (how would animations work?)
+toy-sim is a prototype space-flight simulator written in Rust with Bevy. Ships are built from box-shaped parts on a 0.1 m grid. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, a sky rendered from an embedded catalogue of one million Gaia DR3 stars, and an orbital navigation overlay.
 
-See [ship controls and drag model](src/vessel/README.md) for the current controls and physics approximations.
+The project is in early prototyping. Interfaces change without compatibility layers (see [AGENTS.md](AGENTS.md)).
 
-Run with `cargo run`. Native debug builds dynamically link Bevy for faster incremental linking;
-Cargo sets up the library search path automatically. `cargo build --release` produces a binary
-that does not require Bevy's shared library.
+## Workspace map
 
-The render origin shifts when the camera reaches 100 km from it. In `PostUpdate`,
-`PrecisionSystems` orders presentation interpolation, camera placement, rebasing,
-projection, Bevy transform propagation, then `WorldReady`. Schedule gizmos and tools that read current world
-transforms in `WorldReady`, using `GlobalTransform` for entities in hierarchies.
-Only roots with `PreciseTransform` are projected; ordinary `Transform`-only roots
-keep their Bevy coordinates across rebases.
+The Cargo workspace ([Cargo.toml](Cargo.toml)) includes every package under `apps/` and `crates/`. `cargo run` with no package flag runs `apps/toy-sim`.
 
-Simulation runs at 10 Hz; rendering interpolates the last two completed poses each
-frame, displaying the world one tick (100 ms) behind the virtual clock. Camera
-input remains per-frame. Diagnostics shows application frames and completed gameplay
-ticks separately; loading frames count as frames, but not gameplay ticks.
+### Applications
 
-`PreciseTransform` is authoritative. Ships and celestial bodies opt into interpolation
-through `InterpolatedTransform`; their `PresentationPose` is only for rendering and
-camera tracking. Never feed that pose back into physics. Interpolation uses absolute
-128-bit integer-micrometre positions and double-precision relative offsets before projection,
-so origin changes do not invalidate history. Ordinary local child transforms follow
-Bevy's normal hierarchy propagation.
+| Package | Path | Purpose |
+| --- | --- | --- |
+| `toy-sim` | [apps/toy-sim](apps/toy-sim) | The simulator: orrery, physics, collisions, sensors, ships, GUI and rendering. |
+| `toy-ship-editor` | [apps/toy-ship-editor](apps/toy-ship-editor) | Interactive ship editor that saves `.ship` files and can launch the simulator. |
+| `toy-ship-bench` | [apps/toy-ship-bench](apps/toy-ship-bench) | Headless benchmark of controller and hardware execution for a fleet. |
+| `toy-star-query` | [apps/toy-star-query](apps/toy-star-query) | Headless loader and query benchmark for the star catalogue. |
 
-New entities initialize both interpolation endpoints from their spawn pose. For a
-teleport, call `InterpolatedTransform::teleport(&mut authoritative, destination)`;
-this changes the authoritative pose and requests a history reset before rendering.
-Set velocity and other simulation state separately if the teleport requires it.
-The reset survives multiple fixed ticks in one frame. Camera target changes do not
-reset the target's history.
+### Libraries
 
-`GalacticPosition` stores three signed `i128` micrometre coordinates. Relative-vector
-conversion first subtracts the integer coordinates, then uses an `i64` conversion
-when each displacement fits; larger separations use a cold, out-of-line `i128`
-conversion. This retains exact local differences at galactic locations without
-putting wide float conversions in ordinary physical interactions. Physics still
-uses global positions and `f64` displacement vectors. Floating-point movement
-increments are rounded to micrometres without fractional-remainder state.
+| Package | Path | Purpose |
+| --- | --- | --- |
+| `toy-sim-space` | [crates/toy-sim-space](crates/toy-sim-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
+| `toy-sim-stars` | [crates/toy-sim-stars](crates/toy-sim-stars) | Star records, the flat `.stars` file format, luminosity-bucketed KD-tree queries and the embedded Gaia catalogue. |
+| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI version 11: fixed C records, constants, raw imports and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `toy-sim-ships` | [crates/toy-sim-ships](crates/toy-sim-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, hardware interpretation, thermal model and weapon mechanisms. |
+| `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, spatial publications and screen frames. |
+| `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy/egui presentation shared by the simulator and editor: part meshes, plumes, shield fields, tracers, explosions, instruments and programmable screens. |
+| `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, pursuit guidance, forecasts and weapons control. |
 
-Human-readable serialized positions are three decimal strings, preserving all
-128 bits even in formats or consumers with narrower numeric types. Legacy arrays
-of integer coordinates remain readable; binary serializers receive `i128` values.
+### Other directories
 
-The **Sensor debug** window controls the orbital explorer's omnidirectional sensor:
-range (kilometres, default 100,000), celestial occlusion, HUD visibility, object
-categories, labels, and minimum marker size. HUD squares follow interpolated
-objects; displayed distances are measured from the sensor ship at the last scan.
-All markers use exact perspective bounds of the object's enclosing sphere,
-expanded to a square with the configured minimum size. Spheres touching or
-crossing the camera's eye plane have no finite bounds and receive no marker.
-Selecting a different camera target does not move the sensor. Markers behind the
-camera or outside the viewport are not drawn. Dense labels can overlap; they can
-be toggled off without hiding the squares. The monitoring renderer still draws
-the authoritative scene; detection currently filters HUD contacts, not meshes.
+- [assets/](assets/README.md): runtime assets loaded by Bevy (universe and star system TOML files, the bundled starter ship, models).
+- [docs/](docs): topic guides, listed below.
+- [tools/](tools): Python scripts for Gaia downloads, Gaia conversion and ABI binding generation.
+- [tests/fixtures/](tests/fixtures): a remote star system used by tests and a synthetic Gaia-shaped CSV.
+- [.cargo/config.toml](.cargo/config.toml): linker arguments for `wasm32-unknown-unknown` builds (64 KiB guest stack, 1 MiB maximum memory).
 
-`SpatialBody` opts an object into the index. Target centres are stored in eight
-sparse spatial hashes from 1,000 km to 10 billion km cell widths. A radius query
-uses an appropriate level and exact centre-distance filtering. Negative cells
-use Euclidean division of integer coordinates. Extremely large queries traverse
-occupied cells rather than an unbounded grid of empty cells.
+## Setup
 
-Opaque celestial spheres are also centre-indexed in radius classes, each with
-its own multiresolution hashes. Each class is queried with `sensor range + class
-maximum radius`, then filtered against actual sphere extents. No global celestial
-list is scanned for occlusion. Blockers are gathered once per scan and tested
-against sensor-to-target segments. Tangency is transparent, surface observers
-can look outward, and targets never occlude themselves. This is geometric
-centre-point visibility: partial exposure of large targets, terrain, atmospheric
-attenuation, signatures, sensitivity and light-travel delay are not modelled yet.
+You need a Rust toolchain that supports edition 2024 and resolver 3. Bevy 0.19 is built with the `wayland`, `file_watcher`, `embedded_watcher` and `jpeg` features, so the usual Bevy system requirements for your platform apply. The renderer requests the `FLOAT32_FILTERABLE` wgpu feature for the HDR star skybox.
 
-Index rebuild and sensor scans run in ordered `FixedLast` sets after integration.
-`SensorContacts` holds the resulting authoritative detections. Only the original
-ship initially has a `Sensor`, but the scan supports multiple independent sensors.
-The egui HUD runs after transform propagation and camera projection updates.
+Native debug builds link Bevy dynamically through `bevy_dylib`. Release builds do not. The dev profile compiles workspace code at `opt-level = 1` and dependencies at `opt-level = 3`.
 
-The **Universe** window browses authored systems and any enabled synthetic
-systems. The default uses Helion plus the separate Gaia background catalogue. Select a celestial name to inspect it without moving a ship. **Relocate
-ship** moves only the orbital explorer into a circular orbit around that planet;
-the traffic fleet stays behind. Returning to a ship in **Camera target** releases
-the inspection pin. These are monitoring actions, independent of sensor visibility.
+Optional tools:
 
-System definitions and fixed galactic anchors remain in memory. Only systems
-containing ships (including their next-tick approach) or an explicit inspection
-have ticking celestial entities. Influence radii include the full orbital extent
-plus `sqrt(G * total_mass / gravity_cutoff)`. Gravity has a hard per-ship cutoff;
-interstellar ships coast or thrust without celestial gravity. Activation and
-visual thresholds have no hysteresis or grace periods. Inactive planets are not
-sensor contacts, although their stars remain available to the background renderer.
+- `python3` for the scripts in `tools/`. The `toy-sim-stars` integration test `python_converter_fixture_matches_portable_loader` runs `tools/import_gaia.py`.
+- The `wasm32-unknown-unknown` Rust target if you build controller firmware in Rust.
+- A C compiler that targets `wasm32` if you build C controllers against [ship.h](crates/toy-sim-ship-api/include/ship.h).
 
-A static median-split catalogue tree bounds stellar brightness, stellar radius,
-and system influence. It serves whole-sky magnitude queries, resolved-star
-selection, nearest unresolved distance, lighting selection, and ship proximity.
-Distant stars use a progressively CPU-baked HDR skybox: 512, 1024, 2048, then
-4096 pixels per cube face. One background worker splats the cached catalogue into
-linear-radiance textures, including flux-conserving mip levels. Camera rotation
-reuses the sky; translation refreshes it according to angular error. A completed
-level replaces the previous sky only after GPU preparation, and lower-resolution
-results do not replace a still-accurate sharper sky. Resolved stars remain spheres.
-The Universe GUI reports displayed/baking resolution, star count and bake time,
-and controls magnitude and display gain. Exposure and bloom remain live. The final
-4096 texture with mip levels occupies approximately 1 GiB; large texture uploads
-can still cause stalls. Atmospheric extinction of catalogue stars is not implemented.
+## Build and run
 
-Optional `spectral_class = "G"` on a star selects an approximate O/B/A/F/G/K/M colour
-preset, shared by the skybox and resolved stars. Without it, `surface_color` supplies
-the colour. Luminance normalization preserves the star's configured luminosity.
-Synthetic stars now have illustrative mass-based classes. See
-[the in-memory Gaia catalogue guide](docs/gaia-catalogue.md) for the flat-file converter,
-luminosity-bucket KD-tree queries, configuration and measurement limitations. A real 1,000,000-source
-Gaia DR3 bright-star catalogue is enabled; the full release is not bundled. Imported sources are
-background lights, not automatically generated simulation systems.
+```sh
+# Simulator with the built-in armed starter ship
+cargo run
 
-The camera uses a neutral fixed exposure multiplier of 1; automatic metering
-adjusts exposure across a -24 to +24 log-luminance range. Ship-axis gizmos are
-disabled. Stellar surface display emission is capped below the HDR framebuffer
-limit; catalogue luminosities and gravitational/lighting calculations are unchanged.
+# Simulator with a ship file
+cargo run -p toy-sim -- --ship assets/ships/starter.ship
 
-The camera uses Bevy’s global tone mapper and natural, non-anamorphic bloom.
+# Ship editor, optionally opening a file
+cargo run -p toy-ship-editor
+cargo run -p toy-ship-editor -- path/to/design.ship
 
-## Workspace
+# Editor command-line utilities
+cargo run -p toy-ship-editor -- --example starter.ship   # write the unarmed starter design
+cargo run -p toy-ship-editor -- --validate assets/ships/starter.ship
 
-The root package is the Bevy app. `crates/toy-sim-space` provides the shared
-`GalacticPosition` in i128 micrometres; `crates/toy-sim-stars` provides portable
-star files and immutable in-memory luminosity-bucket indexes without Bevy.
-Use `cargo test --workspace` for all tests. Run the standalone catalogue benchmark
-with `cargo run -p toy-sim-stars --release --example query -- assets/catalogues/gaia-dr3-earth-million.stars`.
+# Headless benchmarks (see docs/ship-step-profile.md)
+cargo run -p toy-ship-bench --release -- 500 100
+cargo run -p toy-star-query --release
 
-Authored system coordinates now use `position_um` (decimal integer strings).
-The previous `position_mm` field must be renamed and its values multiplied by
-1,000 when migrating external configurations. Render transforms remain in metres.
+# Tests
+cargo test --workspace
+```
+
+`toy-sim --ship <path>` loads the blueprint, compiles it against the built-in catalogue and validates its controller before the window opens. Both GUI applications read assets from the repository's `assets/` directory through a path fixed at compile time.
+
+## What happens at startup
+
+The initial scenario is defined in code ([scenario.rs](apps/toy-sim/src/scenario.rs)):
+
+- The universe is [assets/universe.toml](assets/universe.toml), which lists one system, [Helion](assets/stars/helion.star.toml).
+- The player ship, "Orbital explorer", starts in a circular orbit 40,000 km above the planet Helion I Neris. The orbit plane comes from a seeded sequence (seed 42). Without `--ship`, the design is the armed starter from `toy_sim_ships::armed_starter()`.
+- One traffic ship, "Traffic 001", spawns 100 km from the player on the same orbit. It uses the armed starter with the standard firmware. It is commanded to select the player as its target and engage navigation, so it begins pursuing the player.
+- Every ship receives a test loadout: a full battery, generator fuel, ammunition and propellant filling the remaining storage.
+- Each flight computer spends its first 5 simulated seconds booting (a 50-tick startup reserve) before it runs.
+
+## Controls
+
+### Simulator
+
+| Input | Effect |
+| --- | --- |
+| Left Shift / Left Ctrl (hold) | Raise / lower manual throttle at 50% per second of real time |
+| W / S | Pitch (S is the positive X steering axis) |
+| A / D | Yaw (A is the positive Y steering axis) |
+| Q / E | Roll (Q is the positive Z steering axis) |
+| Left mouse drag | Orbit the camera around its focus |
+| Mouse wheel | Zoom |
+| O | Toggle the orbital navigation overlay |
+| `+` or `=` / `-` | Exposure up / down by half a stop |
+
+Keyboard input is ignored while an egui widget has keyboard focus. Mouse drags that start over a window do not move the camera. Steering is relative to the ship's configured control orientation. Manual throttle and steering are sent to the flight computer as requests, and a change cancels active guidance ([docs/rendezvous.md](docs/rendezvous.md)).
+
+Main windows: Ship, Camera target, Exposure, Time (pause, 1×, 10×), Diagnostics, Inventory, Hardware diagnostics, Flight computer, Contacts, Weapons, Navigation, Ship systems, Sensor debug, Universe, and one window per programmable screen the firmware defines.
+
+### Ship editor
+
+Assembly mode: click to place or select a part, right-drag to orbit, middle-drag to pan, wheel to zoom, R to rotate the placement, Delete to remove the selected part, Esc to cancel placement. See [docs/ship-editor.md](docs/ship-editor.md).
+
+## Guides
+
+| Guide | Topic |
+| --- | --- |
+| [docs/ships.md](docs/ships.md) | Parts, the catalogue, blueprints, compiled designs, hardware simulation, avionics and the standard firmware |
+| [docs/ship-editor.md](docs/ship-editor.md) | Using the editor, its command-line modes and launching the simulator |
+| [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware against ABI version 11 |
+| [docs/mfds.md](docs/mfds.md) | Programmable screens, input events and the MFD renderer |
+| [docs/weapons.md](docs/weapons.md) | Weapon parts, charging, firing, interlocks and the engagement request |
+| [docs/collisions.md](docs/collisions.md) | Continuous collision detection, impacts, shields and destruction |
+| [docs/rendezvous.md](docs/rendezvous.md) | The navigation request contract, requirements, states and tests |
+| [docs/pursuit-trajectory-design.md](docs/pursuit-trajectory-design.md) | The pursuit guidance law and its forecast |
+| [docs/orbital-navigation.md](docs/orbital-navigation.md) | The two-body orbit overlay, camera framing and published paths |
+| [docs/gaia-catalogue.md](docs/gaia-catalogue.md) | The star catalogue format, import tools and sky rendering |
+| [docs/asset-workflow.md](docs/asset-workflow.md) | Editing universe, star system, catalogue, model and generated assets |
+| [docs/ship-step-profile.md](docs/ship-step-profile.md) | Built-in timing and reproducible profiling commands |
+
+Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [apps/toy-sim/src/vessel/README.md](apps/toy-sim/src/vessel/README.md), [crates/toy-sim-stars/data/README.md](crates/toy-sim-stars/data/README.md), [crates/toy-sim-ship-view/data/fonts/README.md](crates/toy-sim-ship-view/data/fonts/README.md).
+
+## Architecture overview
+
+- **Coordinates.** Authoritative positions are `GalacticPosition` values in integer micrometres ([toy-sim-space](crates/toy-sim-space/src/lib.rs)). Code subtracts positions before converting to `f64`. Rendering uses a floating origin ([precision.rs](apps/toy-sim/src/precision.rs)).
+- **Schedule.** `Time<Fixed>` runs at 10 Hz ([simulation.rs](apps/toy-sim/src/simulation.rs)). `FixedUpdate` runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`), then dock aggregation (`GatherForces`). `FixedPostUpdate` integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index and runs sensor scans.
+- **Orrery.** Each star system is a fixed star plus Keplerian bodies. Systems are activated when a ship's motion segment enters their gravitational influence radius ([orrery/](apps/toy-sim/src/orrery)). Gravity from a system applies only inside that radius.
+- **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([physics/rotation.rs](apps/toy-sim/src/physics/rotation.rs)). Ships, projectiles and dock parents are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
+- **Ships.** Hardware is simulated natively in `toy-sim-ships`. Firmware runs in Wasmtime with a gas budget and can only see its own flight state, device readings and sensor contacts ([docs/ship-abi.md](docs/ship-abi.md)).
+- **Presentation.** Hulls, the camera and effects use interpolated `PresentationPose` values between ticks. Instruments, overlays and screens are drawn by the client from records the firmware publishes.
+
+## Known limitations
+
+- There is no save-game format. The startup scenario is fixed in code.
+- Only one star system is listed in `assets/universe.toml`. [assets/stars/sol.star.toml](assets/stars/sol.star.toml) exists but is not loaded.
+- Navigation guidance flies a full-thrust pursuit pass. It does not match velocity or hold a stand-off distance ([docs/rendezvous.md](docs/rendezvous.md)).
+- Aerodynamic drag acts at the centre of mass with a constant coefficient and produces no lift or torque.
+- Sensors are omnidirectional, report exact relative position and velocity, and use sphere occlusion.

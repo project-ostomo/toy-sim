@@ -7,13 +7,16 @@ no SQLite runtime, database, persisted tree, or connection mutex.
 
 The bundled catalogue contains 1,000,000 real Gaia DR3 sources selected for bright
 views near Earth. Its binary file is 76,000,040 bytes. Default limiting magnitude
-is 6; max_stars limits the returned brightest matches, not the catalogue size.
+is 6; the app caps the returned brightest matches at 150,000. The crate embeds the
+binary with `include_bytes!`, so the executable needs no catalogue file at runtime.
+`StarCatalogue::embedded()` decodes those bytes and builds the in-memory index;
+`load(path)` and `from_bytes(bytes)` remain available for tools and other inputs.
 
 ## Conversion and configuration
 
 ```sh
-python3 tools/import_gaia.py assets/catalogues/gaia-dr3-earth-million.stars assets/catalogues/gaia-dr3-earth-million.csv
-cargo run -p toy-sim-stars --release --example query -- assets/catalogues/gaia-dr3-earth-million.stars
+python3 tools/import_gaia.py crates/toy-sim-stars/data/gaia-dr3-earth-million.stars crates/toy-sim-stars/data/gaia-dr3-earth-million.csv
+cargo run -p toy-star-query --release
 cargo test --workspace
 ```
 
@@ -21,18 +24,15 @@ The converter reads CSV or CSV.gz, validates measurements, skips unusable or
 nonstellar rows, deduplicates source IDs (first row wins), and writes to a temporary
 file before replacing the output. Re-running regenerates the same binary; no
 resumability bookkeeping is needed. A companion `.stars.json` records provenance,
-calibration, origin and conversion counts. Raw CSV and ADQL remain available for
-inspection. `--limit` limits input rows; `--origin-um X Y Z` supplies an integer
+calibration, origin and conversion counts. The raw CSV is ignored by Git and can
+be downloaded again with `tools/download_gaia_earth.py`; the ADQL and
+[source notes](../crates/toy-sim-stars/data/README.md) live alongside the embedded catalogue. `--limit` limits input rows; `--origin-um X Y Z` supplies an integer
 micrometre offset; `--min-parallax-snr` defaults to 10.
 
-```toml
-[gaia]
-path = "catalogues/gaia-dr3-earth-million.stars"
-max_stars = 150000
-exclude_source_ids = []
-```
-
-Paths are relative to assets, or absolute. The app loads and builds the index on
+The universe manifest contains only authored system paths. Rendering defaults live
+in `apps/toy-sim/src/starfield.rs` (magnitude 6, brightness 1) and `apps/toy-sim/src/gaia.rs` (150,000-star cap).
+The Universe GUI still adjusts magnitude and brightness live. Replacing the bundled
+catalogue requires rebuilding the executable. The app decodes and indexes it on
 one background task, then shares an immutable `Arc<StarCatalogue>`. Queries run
 on background tasks without a database or mutex. The existing 0.05 magnitude
 headroom, nearest-distance movement budget and keep-old-results refresh policy
@@ -97,41 +97,58 @@ measurements, not strict complexity guarantees. The contiguous star records occu
 about 91.6 MiB in Rust; ID lookup and KD-trees consume additional memory. The
 standalone loader/query process peaked at approximately 214 MiB resident memory.
 
-## Progressive sky rendering
+## Sky rendering
 
-The renderer uses Bevy's built-in skybox with CPU-baked RGBA16F cubemaps. A single
-background bake progresses through 512, 1024, 2048 and 4096 pixels per face from
-one immutable position/catalogue snapshot. Each level starts as soon as the previous
-texture is GPU-ready, with no added delay. Invalidation signals the CPU bake to
-stop, discards pending stale results, and restarts at 512 for the latest position.
-Cancellation is checked before allocation, between mip levels and every 256 stars.
-Rotation does not invalidate the cache.
-Each star deposits its flux into a
-minimal bilinear footprint, divided by the receiving texel's solid angle;
-edge taps wrap onto adjacent cube faces. Analytically splatted mip levels preserve
-flux when the texture is minified, without scanning the full image. Colours and
-radiance remain linear HDR.
-Exposure, brightness and bloom are applied live, not baked. Resolved authored
-stars remain physical spheres.
+The renderer uses Bevy's built-in skybox with CPU-baked RGBA32F cubemaps, always
+2048 pixels per face (`RESOLUTION` in `apps/toy-sim/src/starfield/bake.rs`). Radiance is stored
+without the former half-float brightness clamp; the renderer requires the GPU's
+`FLOAT32_FILTERABLE` feature for linear cubemap filtering. There are no coarse
+passes or progressive refinements. A snapshot of the selected stars and camera
+position is prepared on the main thread, then one task on Bevy's
+`AsyncComputeTaskPool` builds the texture. Each frame checks the task without
+waiting for it. Invalidation signals cancellation, discards stale results and
+starts a new bake at the latest position once the cancelled worker has stopped.
+Cancellation is checked before allocation, between mip levels, every 256 stars,
+and per rasterized row for resolved disks. Rotation does not invalidate the cache.
+
+Each star's angular radius is `asin(min(radius / distance, 1))`. Authored stars
+use their configured physical radii. The compact Gaia records lack radii, so the
+renderer uses `696000 km * sqrt(luminosity / solar_luminosity)`: an explicitly
+approximate assumption of solar luminous surface brightness, not a measured radius.
+No binary format change is required.
+
+Stars larger than a texel are uniform-brightness spherical disks baked into all
+intersecting cube faces. Conservative projected bounds limit rasterization to the
+disk region; 4×4 sampling smooths edge texels. Two passes normalize coverage by
+solid angle before writing pixels, conserving integrated flux in 32-bit
+floating-point storage without an extra image-sized buffer. Subpixel disks blend
+continuously into bilinear point footprints. Each mip is baked independently with
+the same angular radius and flux, so stars retain their light when minified.
+Limb darkening and stellar surface detail are not modeled.
+
+Exposure, brightness and bloom are applied live, not baked. No stellar sphere
+meshes are drawn. Their simulation bodies and lighting remain active as before.
 
 Rotation and floating-origin rebases reuse the entire cube. Translation refreshes
-it when its conservative half-texel parallax budget is exceeded. Catalogue
-revision, magnitude limit, explicit relocation and changes in resolved-star
-membership also invalidate it. The worker acknowledges cancellation before a new
+it when displacement from the baked position exceeds `nearest_star_distance / 8192`
+(`0.25 / 2048` times the distance). The nearest distance includes faint authored and
+Gaia stars as well as those currently visible. A new catalogue selection, magnitude
+limit change, or explicit relocation also invalidates it. Camera rotation, field of
+view, exposure and sky brightness do not require a rebake. The worker acknowledges cancellation before a new
 bake starts, bounding CPU work and memory without queuing camera poses. GPU
 transfers already submitted cannot be interrupted, but stale textures are never
 installed as the displayed sky.
 
 The old sky stays displayed until the render world has prepared the replacement
-texture. A lower-resolution result only replaces a sharper sky if the latter is
-stale. Only the displayed level and an in-flight replacement need be retained;
+texture. Only the displayed texture and an in-flight replacement need be retained;
 CPU pixel data moves to the render world without a retained main-world copy.
-A 4096 cube is 768 MiB at its base level, approximately 1 GiB including mip levels,
-so replacement can temporarily require two large textures
-plus staging storage. Uploads currently use Bevy's standard image preparation;
-CPU work is asynchronous, but a large upload can still stall rendering. This
-readiness handshake prevents missing textures, not bandwidth costs. The Universe
-GUI reports displayed resolution, current bake/upload level and CPU bake time.
+A 2048 cube is 384 MiB at its base level, approximately 512 MiB including mip levels,
+so replacement can temporarily require two textures plus staging storage. Mip
+levels are ordinary texture filtering data, all generated in the same bake; they
+are not separately displayed refinement passes. Uploads use Bevy's standard image
+preparation. CPU baking is asynchronous, but a large upload can still stall
+rendering. The readiness handshake prevents missing textures, not bandwidth costs.
+The Universe GUI reports bake/upload state, star count and CPU bake time.
 
 ## Measurement policy
 

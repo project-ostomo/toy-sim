@@ -1,0 +1,19 @@
+[package]
+name = "toy-sim-example-controller"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = ["firmware"]
+firmware = []
+
+[dependencies]
+glam = "0.32.1"
+toy-sim-ship-api = { path = "../toy-sim-ship-api" }
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[[example]]
+name = "custom_screen"
+crate-type = ["cdylib"]

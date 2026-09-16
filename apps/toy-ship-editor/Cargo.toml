@@ -1,0 +1,14 @@
+[package]
+name = "toy-ship-editor"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+toy-sim-ships = { path = "../../crates/toy-sim-ships" }
+toy-sim-ship-api = { path = "../../crates/toy-sim-ship-api" }
+toy-sim-ship-wasm = { path = "../../crates/toy-sim-ship-wasm" }
+toy-sim-ship-view = { path = "../../crates/toy-sim-ship-view" }
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+bevy_dylib.workspace = true

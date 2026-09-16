@@ -1,22 +1,8 @@
 name = "Helion system"
+# Fixed galactic anchor, in integer micrometres.
+position_um = ["0", "0", "0"]
 
-# Inertial directions; orbital angles are radians. Simulation begins at MJD 0.
-[scenario]
-body = "Helion I Neris"
-vessel = "dummy"
-altitude = 30000000.0
-radial_direction = [0.0, 0.0, 1.0]
-orbit_normal = [0.0, 1.0, 0.0]
-camera_distance = 100.0
-camera_yaw = 0.0
-camera_pitch = 0.0
-
-[scenario.traffic]
-count = 500
-seed = 42
-min_altitude = 3000000.0
-max_altitude = 40000000.0
-
+# Orbital angles are radians; epochs are in MJD.
 [[bodies]]
 name = "Helion"
 class = "star"

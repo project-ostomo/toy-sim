@@ -1,5 +1,5 @@
 /target
 
 # Downloaded source data; retain the compact runtime catalogue instead.
-/assets/catalogues/*.csv
-/assets/catalogues/*.csv.gz
+/crates/toy-sim-stars/data/*.csv
+/crates/toy-sim-stars/data/*.csv.gz

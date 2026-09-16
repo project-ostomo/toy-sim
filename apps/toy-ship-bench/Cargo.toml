@@ -1,0 +1,9 @@
+[package]
+name = "toy-ship-bench"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+toy-sim-ships = { path = "../../crates/toy-sim-ships" }
+toy-sim-ship-api = { path = "../../crates/toy-sim-ship-api" }
+toy-sim-ship-wasm = { path = "../../crates/toy-sim-ship-wasm" }

@@ -10,7 +10,7 @@ import urllib.request
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--count', type=int, default=1_000_000)
-parser.add_argument('--output', type=pathlib.Path, default=pathlib.Path('assets/catalogues/gaia-dr3-earth-million.csv'))
+parser.add_argument('--output', type=pathlib.Path, default=pathlib.Path('crates/toy-sim-stars/data/gaia-dr3-earth-million.csv'))
 parser.add_argument('--job', help='Resume retrieval of an existing ESA asynchronous job URL')
 args = parser.parse_args()
 if args.count <= 0:

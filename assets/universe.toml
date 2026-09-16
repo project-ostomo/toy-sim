@@ -1,18 +1,1 @@
 systems = ["stars/helion.star.toml"]
-starting_system = "Helion system"
-gravity_cutoff = 1e-8
-
-[synthetic]
-count = 0
-seed = 42
-min_distance_pc = 2.0
-max_distance_pc = 30.0
-
-[sky]
-magnitude_limit = 6.0
-brightness = 1.0
-
-[gaia]
-path = "catalogues/gaia-dr3-earth-million.stars"
-max_stars = 150000
-exclude_source_ids = []

@@ -1,0 +1,14 @@
+[package]
+name = "toy-sim-ship-view"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_egui.workspace = true
+toy-sim-ships = { path = "../toy-sim-ships" }
+toy-sim-ship-wasm = { path = "../toy-sim-ship-wasm" }
+toy-sim-ship-api = { path = "../toy-sim-ship-api" }
+
+# Same font parser already used by egui; query the embedded cmap directly.
+skrifa = { version = "0.44.0", default-features = false, features = ["std"] }

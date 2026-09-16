@@ -14,7 +14,17 @@ impl StarCatalogue {
         let file = File::open(path.as_ref())
             .with_context(|| format!("opening {}", path.as_ref().display()))?;
         let size = file.metadata()?.len();
-        let mut reader = BufReader::with_capacity(1024 * 1024, file);
+        Self::read_records(BufReader::with_capacity(1024 * 1024, file), size)
+    }
+    /// Decode a catalogue already in memory, without copying its encoded bytes.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+        Self::read_records(bytes, bytes.len() as u64)
+    }
+    /// Build an index from the million-star Gaia DR3 catalogue embedded in this crate.
+    pub fn embedded() -> Result<Self> {
+        Self::from_bytes(include_bytes!("../data/gaia-dr3-earth-million.stars"))
+    }
+    fn read_records(mut reader: impl Read, size: u64) -> Result<Self> {
         let mut h = [0; HEADER_BYTES as usize];
         reader.read_exact(&mut h)?;
         ensure!(&h[..8] == MAGIC, "not a TOYSTAR catalogue");

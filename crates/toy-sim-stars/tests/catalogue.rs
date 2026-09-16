@@ -252,3 +252,16 @@ fn python_converter_fixture_matches_portable_loader() {
     std::fs::remove_file(&path).unwrap();
     std::fs::remove_file(path.with_extension("stars.json")).unwrap();
 }
+
+#[test]
+fn embedded_million_star_catalogue_is_queryable_without_a_runtime_file() {
+    let catalogue = StarCatalogue::embedded().unwrap();
+    assert_eq!(catalogue.len(), 1_000_000);
+    let visible = catalogue
+        .visible(P::ZERO, VisibilityQuery::magnitude(6.0))
+        .unwrap();
+    assert!((6_000..7_000).contains(&visible.matched));
+    assert_eq!(visible.indices.len(), visible.matched);
+    assert!(visible.candidates < 20_000);
+    assert!(StarCatalogue::from_bytes(b"truncated").is_err());
+}

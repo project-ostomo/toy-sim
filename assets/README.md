@@ -1,71 +1,78 @@
-# Celestial configuration
+# Assets
 
-`stars/helion.star.toml` contains the complete system. Its `[scenario]` table selects the starting body and vessel, altitude (metres), inertial
-radial direction and orbit normal, and orbit-camera distance/yaw/pitch. The ship
-starts with circular velocity relative to its parent plus the parent's orbital
-velocity. The simulation clock starts at MJD 0; orbital angles are radians.
+This directory is the Bevy asset root for both GUI applications. `toy-sim` and `toy-ship-editor` set `AssetPlugin::file_path` to `<crate>/../../assets`, resolved at compile time. Both applications always read from this directory, whatever the current working directory is.
 
-Each `[[bodies]]` entry describes one star, planet, or moon. Parent references
-are resolved regardless of entry order. Mass, radius, orbital elements, rotation,
-and surface colour belong to that entry. Distances and times accept units such as
-`"6000 km"`, `"1 au"`, and `"24 h"`; unadorned numbers use SI units.
+For step-by-step editing instructions, see [docs/asset-workflow.md](../docs/asset-workflow.md).
 
-An optional `[bodies.atmosphere]` table immediately following its body entry configures:
+## Contents
 
-- `height`, `scale_height`, `mie_scale_height`: metres above the surface.
-- `surface_density`: kg/m³; `temperature`: kelvin.
-- `specific_gas_constant`: J/(kg K); `heat_capacity_ratio`: dimensionless.
-- `rayleigh_scattering`: RGB coefficients in m⁻¹.
-- `mie_scattering`, `mie_absorption`: coefficients in m⁻¹.
-- `mie_asymmetry`: between -1 and 1, exclusive.
-- `ground_albedo`: linear RGB reflectance, each channel between 0 and 1.
+| Path | Loaded by | Purpose |
+| --- | --- | --- |
+| [universe.toml](universe.toml) | `toy-sim` at startup | Lists the star system files that make up the universe. |
+| [stars/helion.star.toml](stars/helion.star.toml) | `toy-sim`, through `universe.toml` and several tests | The Helion system: one star, the planet Helion I Neris with an atmosphere, and five airless moons. |
+| [stars/sol.star.toml](stars/sol.star.toml) | Nothing at present | A Sun and eight planets. It is not listed in `universe.toml`. |
+| [ships/starter.ship](ships/starter.ship) | `toy-sim --ship`, the editor's Open button, an editor test | The armed starter design saved in the binary `.ship` format. |
+| [models/dummy.glb](models/dummy.glb) | Nothing in the current source | A glTF binary file with no references. |
+| [models/parts/](models/parts/README.md) | Parts whose catalogue entry sets `model` | Location for optional part models. |
 
-Gas density and Rayleigh scattering share a normalized exponential falloff,
-reaching zero at `height`. Pressure follows the ideal gas law. Missing atmosphere
-means vacuum: no scattering and no aerodynamic drag.
+## universe.toml
 
-Rendering uses Bevy 0.19's `Atmosphere` and `ScatteringMedium` assets with the
-raymarched camera mode. Atmospheres follow their bodies with the floating origin;
-body meshes are scaled separately so atmosphere distances stay in metres.
-Bevy renders only the nearest atmosphere per camera. The included scenario has
-one atmosphered planet and five airless moons.
+```toml
+systems = ["stars/helion.star.toml"]
+```
 
-The optional `[scenario.traffic]` table creates additional coasting ships of the
-scenario vessel type. `count` is the number of additional ships, `seed` selects a
-reproducible random distribution, and `min_altitude` / `max_altitude` are metres
-above the planet surface. Altitudes must stay above the configured atmosphere.
-Planes, phases and altitudes are randomized; each ship starts at circular speed
-plus the parent's orbital velocity. The included scenario has 500 traffic ships
-and one controlled sensor ship.
+`systems` must be a non-empty list of non-empty paths relative to this directory. Unknown keys are rejected. Each path is loaded as a star system asset.
 
-## Universe manifest and synthetic fixtures
+## Star system files (`*.star.toml`)
 
-`universe.toml` explicitly selects authored system files and the starting system.
-Only the starting system's `[scenario]` creates ships. The unused `sol.star.toml`
-is not loaded: its angular units need correcting before it is used with this solver.
-The `[synthetic]` section adds deterministic runtime fixtures: one fixed star and
-three non-crossing planets per system, distributed uniformly in volume between
-`min_distance_pc` and `max_distance_pc` around the starting system. The shipped
-seed is 42; count is now zero because the Gaia catalogue supplies background stars.
-Set count above zero to add test systems between 2 and 30 parsecs. No generated TOMLs are needed.
+The `.star.toml` extension selects the TOML loader for `OrreryCfg` ([orrery_cfg.rs](../apps/toy-sim/src/orrery/orrery_cfg.rs)). Unknown top-level keys are rejected.
 
-Each authored system may set `position_um = ["x", "y", "z"]` at its top level;
-these are exact signed integer micrometres and default to the origin. Every
-celestial name must be globally unique. Names, including parent/scenario references,
-are identities; there is no additional persistent body-ID namespace. Helion's
-planet is `Helion I Neris`, with moons `Helion I a Ione` through `Helion I e Orin`.
-This version requires exactly one stationary root star per system. All other
-bodies have parents, positive mass/radius, and finite elliptic orbit parameters.
+Top level:
 
-`gravity_cutoff` is acceleration in m/s², defaulted in the shipped manifest to
-`1e-8`. The derived boundary is orbital extent plus `sqrt(GM / cutoff)`, with a
-hard gravity cutoff and immediate activation/deactivation (no hysteresis).
-`[sky]` sets `magnitude_limit` and skybox display `brightness`.
-Magnitude selection uses the synthetic visual calibration of absolute magnitude
-4.83 for 3.6e28 lumens at 10 pc; it is not an imported Gaia photometric model.
-The half-magnitude interval below the limiting magnitude fades smoothly to zero.
-Display brightness does not change which stars pass magnitude selection.
+- `name`: system name, unique across the universe.
+- `position_um`: fixed galactic anchor as three integer micrometre coordinates. Decimal strings are accepted so values beyond the TOML integer range survive. Defaults to the origin.
+- `bodies`: array of body tables.
 
-Stars may specify `spectral_class = "G"` (O, B, A, F, G, K, M). These are approximate display presets; omission preserves `surface_color`.
+Body fields:
 
-Optional `[gaia]` config selects a flat binary `.stars` catalogue, `max_stars` and `exclude_source_ids`. The shipped manifest enables a 1,000,000-source ESA Gaia DR3 bright-star catalogue; see `catalogues/README.md` and `../docs/gaia-catalogue.md`.
+| Field | Default | Notes |
+| --- | --- | --- |
+| `name` | required | Unique across all loaded systems. |
+| `class` | `planet` | `star` (requires `lumens`) or `planet`. |
+| `parent` | none | Required for every body except the star. |
+| `mass` | 0 | Kilograms, or a string with `kg`, `massEarth`/`mEarth`, `massSol`/`mSol`/`massSun`. Must be positive. |
+| `radius` | 0 | Metres, or a string with `m`, `km`, `au`, `ly`, `pc`. Must be positive. |
+| `semi_major` | 0 | Distance units as above. Zero fixes the body to its parent. |
+| `period` | computed | Seconds, or a string with `s`, `h`, `d`, `yr`. If zero while `semi_major` is non-zero, it is computed from Kepler's third law. |
+| `eccentricity` | 0 | Must lie in [0, 1). |
+| `inclination`, `ascending_node`, `arg_of_pericenter`, `mean_anomaly` | 0 | Radians. |
+| `epoch` | 0 | MJD. |
+| `rotation_period` | 0 | Time units as above. |
+| `obliquity`, `eq_ascend_node`, `rotation_epoch` | 0 | Rotation parameters. |
+| `surface_color` | `[0.4, 0.4, 0.4]` | Components in [0, 1]. |
+| `spectral_class` | none | One of `O B A F G K M`. It sets the star colour. |
+| `atmosphere` | none | Table; omit for an airless body. |
+
+Each system must contain exactly one star. The star has no parent and a zero semi-major axis, and its `lumens` must be positive and finite.
+
+Atmosphere tables use metres, kg/m³, kelvin, J/(kg·K) and optical coefficients in m⁻¹: `height`, `surface_density`, `scale_height`, `temperature`, `specific_gas_constant`, `heat_capacity_ratio`, `rayleigh_scattering` (RGB), `mie_scattering`, `mie_absorption`, `mie_scale_height`, `mie_asymmetry`, `ground_albedo` (RGB). See [helion.star.toml](stars/helion.star.toml) for a complete example.
+
+`sol.star.toml` writes its orbital angles with degree-like values (for example `inclination = 7.00487`). The solver reads these fields as radians. Convert the angles before you add that file to `universe.toml`.
+
+## Ship files
+
+`.ship` files are CBOR-encoded blueprints. They are documented in [docs/ships.md](../docs/ships.md#blueprint-files-ship). To regenerate `ships/starter.ship` from code:
+
+```sh
+cargo run -p toy-sim-ships --example write_starter -- assets/ships/starter.ship
+```
+
+## Assets compiled into binaries
+
+Some data is embedded at build time and is not part of this directory. Editing it requires a rebuild:
+
+- the part and resource catalogue: [crates/toy-sim-ships/data/catalogue.toml](../crates/toy-sim-ships/data/catalogue.toml)
+- the standard firmware: [crates/toy-sim-ships/data/example-controller.wasm](../crates/toy-sim-ships/data/example-controller.wasm)
+- the star catalogue: [crates/toy-sim-stars/data/](../crates/toy-sim-stars/data/README.md)
+- the MFD font: [crates/toy-sim-ship-view/data/fonts/](../crates/toy-sim-ship-view/data/fonts/README.md)
+- the WGSL shaders in [crates/toy-sim-ship-view/src](../crates/toy-sim-ship-view/src)
