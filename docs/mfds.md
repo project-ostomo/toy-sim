@@ -4,13 +4,21 @@ Flight computer firmware can define up to eight programmable screens. Each scree
 
 Programmable screens are separate from the fixed instruments (attitude, navigation, contacts, weapons). For those, the firmware publishes data records and the client draws a fixed presentation ([ship-abi.md](ship-abi.md#instruments)).
 
+Screens are drawn by one of two entry points, depending on the host:
+
+- **Local simulator (`apps/toy-sim`).** Screens come from the flight computer's `ship_tick` callback, as described in [In the simulator](#in-the-simulator).
+- **Authoritative server.** Screens come from `ship_display`, run in a separate display instance only while a network client subscribes. The frames are sent to that client in state frames ([Over the network](#over-the-network)).
+
+The drawing imports and limits are the same for both.
+
 Source:
 
 - Syscalls: [imports/drawing.rs](../crates/toy-sim-ship-wasm/src/imports/drawing.rs), with event handling in [imports.rs](../crates/toy-sim-ship-wasm/src/imports.rs) and [computer.rs](../crates/toy-sim-ship-wasm/src/computer.rs)
-- Frame model and limits: [screens.rs](../crates/toy-sim-ship-wasm/src/screens.rs)
+- Frame model and limits: [drawing.rs](../crates/toy-sim-model/src/drawing.rs) in `toy-sim-model`, re-exported as `toy_sim_ship_wasm::screens`. The types are serde-serializable so frames can be sent over the network.
+- Server display instances and screen input: [session.rs](../crates/toy-sim-server/src/sim/displays.rs)
 - Painter and bezel widget: [mfd.rs](../crates/toy-sim-ship-view/src/mfd.rs)
 - Custom screen widget and input mapping: [screens.rs](../crates/toy-sim-ship-view/src/screens.rs)
-- Simulator windows: [gui/mfds.rs](../apps/toy-sim/src/gui/mfds.rs)
+- Simulator windows: [gui/mfds.rs](../crates/toy-sim-client/src/ui/mfd.rs)
 - Font: [crates/toy-sim-ship-view/data/fonts/README.md](../crates/toy-sim-ship-view/data/fonts/README.md)
 
 ## Defining screens
@@ -98,11 +106,26 @@ Modifier bits: Shift 1, Ctrl 2, Alt 4, Command 8.
 
 Clicking the screen gives it keyboard focus. Key and text events are taken from egui while the screen is focused, so they do not reach other widgets. The simulator's own keyboard controls are also skipped while egui wants keyboard input.
 
-## In the simulator
+## In the shared client
 
-For the controlled ship, the MFD system ([gui/mfds.rs](../apps/toy-sim/src/gui/mfds.rs)) opens one egui window per defined screen, titled with the screen title and 512 points wide by default. Opening a window adds its ID to `requested_screens` for the next callback. While the computer is booting, the window shows "Flight computer rebooting". The screen scales to the window width (clamped to 128–1024 points) at the definition's aspect ratio. This window draws only the surface; bezel labels are not shown.
+The shared frontend opens MFD windows from the server's screen definitions. The "MFD slots" section also offers slots 1–8 before definitions are available, allowing the first subscription to start the display instance. Each window renders drawing primitives and forwards pointer, drag, key and text events. Closing a window unsubscribes and suppresses older buffered screen frames. The same frontend runs in the remote client and the debug launcher.
 
-To try it, build the custom screen example ([ship-abi.md](ship-abi.md#rust)), import the `.wasm` as custom firmware in the editor ([ship-editor.md](ship-editor.md#firmware)), and launch. The example keeps the standard flight computer running and adds a "Custom diagnostics" screen. It shows stored energy and counts primary clicks inside its rectangle, and the R key resets the count.
+Screens execute in separate server display instances through `ship_display`. The flight callback does not render an MFD. No host widgets are embedded in the drawing surface, so third-party clients can choose their own shell and visual presentation.
+
+## Over the network
+
+The server path is described in full in [server-client.md](server-client.md#display-instances). In outline:
+
+1. A client sends `ScreenSubscribe { ship, slot, hz }` for a ship its account controls. `hz` is 1 to 10.
+2. While the ship is in space and has at least one subscriber, the server keeps a display instance of the ship's firmware. The instance calls `ship_display` with the flight computer's latest observation. Its `requested_screens` holds the subscribed slots that are due at the highest requested rate.
+3. Each completed frame for a subscribed slot becomes a `ScreenUpdate` in the client's state frames. Its `revision` identifies the current display instance; ownership changes revoke that instance. A failed callback replaces the frame with an error string.
+4. `ScreenInput { slot, revision, kind, code, modifiers, xy, text }` queues a `ScreenEvent` on the display instance. The client must be subscribed, and `revision` must match the displayed update.
+5. The instance is dropped 10 ticks after the last subscriber leaves, or when control of the ship changes.
+
+The display instance cannot write devices or issue world commands. It does not share memory with the flight instance. Firmware without a `ship_display` export gets no display instance; each subscribed slot is reported with no frame and the error "Display unavailable". The standard firmware exports a drawing-only `ship_display`: each requested slot becomes a 512 × 256 "Ship status" screen with simulation time, speed, mass and battery energy as text. It does not read screen events, so clicks on it do nothing.
+
+The shared UI supports every defined slot and complete input forwarding. [Display tests](../crates/toy-sim-server/src/sim/displays.rs) cover shared viewers, expiry, ownership and power revocation, input forwarding and stale instance revisions.
+
 
 ## The bezel MFD widget
 
@@ -136,4 +159,8 @@ The view tests check:
 - bezel clicks
 - coordinate mapping, focus, text chunking and drag release in the custom screen widget
 
-The WASM tests cover unfinished frames and the custom screen firmware responding to a click.
+The WASM tests cover unfinished frames and the custom screen firmware responding to a click. The firmware runs through `instantiate_display` in that test.
+
+```sh
+cargo test -p toy-sim-server --lib sim::displays::tests
+```

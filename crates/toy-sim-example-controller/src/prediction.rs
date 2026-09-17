@@ -2,7 +2,7 @@
 use crate::hardware::Sample;
 use crate::{
     Bindings, attitude,
-    navigation::{Pursuit, charge},
+    navigation::{Pursuit, arrival_speed, rendezvous},
 };
 use glam::{DMat3, DQuat, DVec3};
 use toy_sim_ship_api::abi;
@@ -10,12 +10,10 @@ use toy_sim_ship_api::abi;
 const REFRESH_S: f64 = 0.5;
 const HORIZON_S: f64 = 3600.;
 const MAX_SAMPLES: usize = 4096;
-#[cfg(target_arch = "wasm32")]
-const RESERVE: u64 = 230_000;
 fn budget() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
-        toy_sim_ship_api::sdk::budget().map_or(0, |b| b.instruction_remaining) > RESERVE
+        toy_sim_ship_api::sdk::budget().is_ok_and(crate::budget::forecast_allowed)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -152,15 +150,23 @@ impl Rollout {
             || nav.disturbance.distance(self.disturbance)
                 > (self.force / self.state.mass * 0.05).max(0.5)
     }
+    fn response(&self) -> f64 {
+        (2. * attitude::turn_allowance(self.inertia, &self.bindings) + 2.).max(2.)
+    }
     fn command(&self, s: State) -> (DVec3, f64) {
         (
-            charge(
+            rendezvous(
                 s.r + self.offset,
                 s.u,
                 self.disturbance,
                 self.force / s.mass,
+                self.response(),
             ),
-            0.0,
+            arrival_speed(
+                (s.r + self.offset).length(),
+                self.force / s.mass,
+                self.response(),
+            ),
         )
     }
     fn point(&self) -> Point {
@@ -181,10 +187,10 @@ impl Rollout {
                 s.u + acceleration * dt,
             )
         } else {
-            let reference = s.u + (command + self.disturbance) * 2.;
-            let decay = (-dt / 2.).exp();
+            let reference = s.u + (command + self.disturbance) * self.response();
+            let decay = (-dt / self.response()).exp();
             (
-                s.r - reference * dt - (s.u - reference) * (2. * (1. - decay)),
+                s.r - reference * dt - (s.u - reference) * (self.response() * (1. - decay)),
                 reference + (s.u - reference) * decay,
             )
         }
@@ -221,7 +227,9 @@ impl Rollout {
         let mut burn_fraction;
         loop {
             if dt <= 0.100001 {
-                burn_fraction = 1.0;
+                let alignment = (s.q * self.bindings.engine_axis).dot(direction);
+                burn_fraction = (command.length() / a).clamp(0., 1.)
+                    * if alignment > 0.995 { alignment } else { 0. };
                 let used =
                     (self.bindings.propellant_rate * self.ceiling * burn_fraction * dt).min(s.fuel);
                 let availability =
@@ -260,10 +268,10 @@ impl Rollout {
                     s.u + acceleration * dt,
                 )
             } else {
-                let reference = mid_u + (mid_command + self.disturbance) * 2.;
-                let decay = (-dt / 2.).exp();
+                let reference = mid_u + (mid_command + self.disturbance) * self.response();
+                let decay = (-dt / self.response()).exp();
                 (
-                    s.r - reference * dt - (s.u - reference) * (2. * (1. - decay)),
+                    s.r - reference * dt - (s.u - reference) * (self.response() * (1. - decay)),
                     reference + (s.u - reference) * decay,
                 )
             };
@@ -315,7 +323,7 @@ impl Rollout {
         }
         self.state = next;
         self.samples.push(self.point());
-        if self.eta.is_none() && s.r.dot(s.u) > 0.0 && next.r.dot(next.u) <= 0.0 {
+        if self.eta.is_none() && (next.r + self.offset).length() <= 2. && next.u.length() <= 0.5 {
             self.eta = Some(next.time);
         }
         if self.eta.is_some_and(|pass| next.time >= pass + 10.0) {
@@ -574,6 +582,7 @@ mod tests {
         p.inertia = DMat3::IDENTITY * 100.;
         p.inverse = p.inertia.inverse();
         p.bindings.engine_axis = DVec3::X;
+        p.bindings.torque_limit = 1000.;
         p.bindings.propellant_rate = flow;
         p.state.direction = DVec3::X;
         p.state.fuel = fuel;

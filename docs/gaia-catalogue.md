@@ -30,7 +30,7 @@ be downloaded again with `tools/download_gaia_earth.py`; the ADQL and
 micrometre offset; `--min-parallax-snr` defaults to 10.
 
 The universe manifest contains only authored system paths. Rendering defaults live
-in `apps/toy-sim/src/starfield.rs` (magnitude 6, brightness 1) and `apps/toy-sim/src/gaia.rs` (150,000-star cap).
+in `crates/toy-sim-client/src/ui/scene/sky.rs` (magnitude 6, brightness 1) and `crates/toy-sim-client/src/ui/scene/sky.rs` (150,000-star cap).
 The Universe GUI still adjusts magnitude and brightness live. Replacing the bundled
 catalogue requires rebuilding the executable. The app decodes and indexes it on
 one background task, then shares an immutable `Arc<StarCatalogue>`. Queries run
@@ -100,7 +100,7 @@ standalone loader/query process peaked at approximately 214 MiB resident memory.
 ## Sky rendering
 
 The renderer uses Bevy's built-in skybox with CPU-baked RGBA32F cubemaps, always
-2048 pixels per face (`RESOLUTION` in `apps/toy-sim/src/starfield/bake.rs`). Radiance is stored
+2048 pixels per face (`RESOLUTION` in `crates/toy-sim-client/src/ui/scene/sky/bake.rs`). Radiance is stored
 without the former half-float brightness clamp; the renderer requires the GPU's
 `FLOAT32_FILTERABLE` feature for linear cubemap filtering. There are no coarse
 passes or progressive refinements. A snapshot of the selected stars and camera

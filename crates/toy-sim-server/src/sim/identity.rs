@@ -1,0 +1,189 @@
+use bevy::prelude::*;
+use std::collections::{BTreeSet, HashMap};
+use toy_sim_model::{AccountId, Id, IffIdentity, InfoGroupKey};
+
+#[derive(Component, Clone, Copy)]
+pub struct Identity(pub Id);
+
+#[derive(Component, Clone, Copy)]
+pub struct SpatialInstance(pub Id);
+
+pub fn renew_spatial_instance(world: &mut World, entity: Entity) {
+    world.entity_mut(entity).insert(SpatialInstance(Id::new()));
+}
+
+pub fn track_spatial_instance(track: Id, instance: Id) -> Id {
+    let mut hash = blake3::Hasher::new_derive_key("toy-sim track spatial instance v1");
+    hash.update(&track.0);
+    hash.update(&instance.0);
+    Id(hash.finalize().as_bytes()[..16].try_into().unwrap())
+}
+
+#[derive(Component)]
+pub struct Control {
+    pub account: AccountId,
+    pub revision: u64,
+}
+
+#[derive(Component)]
+pub struct Transponder(pub IffIdentity);
+
+#[derive(Component)]
+#[relationship(relationship_target = GroupShips)]
+pub struct Membership(pub Entity);
+
+#[derive(Component, Default)]
+#[relationship_target(relationship = Membership)]
+pub struct GroupShips(Vec<Entity>);
+
+#[derive(Component)]
+pub struct Account {
+    pub group: Entity,
+    pub factions: BTreeSet<Id>,
+    pub debug: bool,
+}
+
+#[derive(Resource, Default)]
+pub struct IdentityIndex(pub HashMap<Id, Entity>);
+
+#[derive(Resource, Default)]
+pub struct GroupIndex(pub HashMap<InfoGroupKey, Entity>);
+
+#[derive(Resource)]
+pub struct WorldEpoch(pub Id);
+
+#[derive(Resource)]
+pub struct SensorSeed(pub [u8; 32]);
+
+#[derive(Component)]
+pub struct BeaconEmitter;
+
+#[derive(Component)]
+pub struct FixedBeacon;
+
+#[derive(Component)]
+pub struct Appearance(pub [u8; 32]);
+
+#[derive(Resource, Default)]
+pub struct AppearanceAssets(pub HashMap<[u8; 32], Vec<u8>>);
+
+pub fn register(world: &mut World, entity: Entity, id: Id) {
+    world.entity_mut(entity).insert(Identity(id));
+    if world.get::<super::vessel::ShipDesign>(entity).is_some()
+        && world.get::<SpatialInstance>(entity).is_none()
+    {
+        renew_spatial_instance(world, entity);
+    }
+    world.resource_mut::<IdentityIndex>().0.insert(id, entity);
+}
+
+pub fn lookup(world: &World, id: Id) -> anyhow::Result<Entity> {
+    world
+        .resource::<IdentityIndex>()
+        .0
+        .get(&id)
+        .copied()
+        .filter(|entity| world.get_entity(*entity).is_ok())
+        .ok_or_else(|| anyhow::anyhow!("Entity unavailable"))
+}
+
+#[derive(Component)]
+#[relationship(relationship_target = OwnedShips)]
+pub struct ControlledBy(pub Entity);
+
+#[derive(Component, Default)]
+#[relationship_target(relationship = ControlledBy)]
+pub struct OwnedShips(Vec<Entity>);
+
+pub fn initialize(world: &mut World, accounts: &[AccountId]) {
+    world.init_resource::<IdentityIndex>();
+    world.init_resource::<AppearanceAssets>();
+    world.insert_resource(WorldEpoch(Id::new()));
+    world.insert_resource(SensorSeed(rand::random()));
+    super::intelligence::initialize(world);
+    for &id in accounts {
+        add_account(world, id, false);
+    }
+}
+
+pub fn add_account(world: &mut World, id: Id, debug: bool) -> Entity {
+    if let Some(entity) = world.resource::<IdentityIndex>().0.get(&id).copied() {
+        if debug && let Some(mut account) = world.get_mut::<Account>(entity) {
+            account.debug = true;
+        }
+        return entity;
+    }
+    let group = super::intelligence::join(world, InfoGroupKey(rand::random()));
+    let entity = world
+        .spawn((
+            Account {
+                group,
+                factions: BTreeSet::new(),
+                debug,
+            },
+            OwnedShips::default(),
+        ))
+        .id();
+    register(world, entity, id);
+    entity
+}
+
+pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result<()> {
+    let account = add_account(world, owner, false);
+    let group = world.get::<Account>(account).unwrap().group;
+    let design = &world.get::<super::vessel::ShipDesign>(ship).unwrap().0;
+    let mut visual = design.blueprint.clone();
+    visual.firmware = toy_sim_ships::Firmware::Standard;
+    visual.avionics = Default::default();
+    visual.name.clear();
+    for part in &mut visual.parts {
+        part.name.clear();
+        part.alias.clear();
+        part.groups.clear();
+    }
+    let bytes = toml::to_string(&visual)?.into_bytes();
+    let appearance = *blake3::hash(&bytes).as_bytes();
+    world
+        .resource_mut::<AppearanceAssets>()
+        .0
+        .insert(appearance, bytes);
+    world.entity_mut(ship).insert((
+        Control {
+            account: owner,
+            revision: 1,
+        },
+        ControlledBy(account),
+        Membership(group),
+        Transponder(IffIdentity {
+            owner,
+            faction: None,
+            labels: BTreeSet::new(),
+            enabled: true,
+            range_m: 1e8,
+        }),
+        Appearance(appearance),
+    ));
+    register(world, ship, Id::new());
+    Ok(())
+}
+
+pub fn identify_celestials(
+    mut commands: Commands,
+    mut index: ResMut<IdentityIndex>,
+    bodies: Query<(Entity, &super::orrery::Celestial), Without<Identity>>,
+) {
+    for (entity, celestial) in &bodies {
+        let id = super::registry::identity(&celestial.0);
+        commands.entity(entity).insert(Identity(id));
+        index.0.insert(id, entity);
+    }
+}
+
+pub fn clean_indexes(
+    mut identities: ResMut<IdentityIndex>,
+    mut groups: ResMut<GroupIndex>,
+    alive: Query<Entity>,
+) {
+    identities.0.retain(|_, entity| alive.contains(*entity));
+    groups.0.retain(|_, entity| alive.contains(*entity));
+}

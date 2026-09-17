@@ -8,7 +8,6 @@ mod firmware {
 
     #[derive(Default)]
     struct Diagnostics {
-        computer: Computer,
         declared: bool,
         presses: u64,
         last_frame: Option<u64>,
@@ -16,7 +15,7 @@ mod firmware {
 
     impl Diagnostics {
         fn run(&mut self) -> Result<(), i32> {
-            let tick = self.computer.run()?;
+            let tick = sdk::tick()?;
 
             if !self.declared {
                 sdk::screen_define(&abi::ScreenDefinition {
@@ -109,6 +108,13 @@ mod firmware {
 
     #[unsafe(no_mangle)]
     extern "C" fn ship_tick() {
+        static mut COMPUTER: Option<Computer> = None;
+        let computer = unsafe { &mut *core::ptr::addr_of_mut!(COMPUTER) };
+        let _ = computer.get_or_insert_with(Computer::default).run();
+    }
+
+    #[unsafe(no_mangle)]
+    extern "C" fn ship_display() {
         static mut DIAGNOSTICS: Option<Diagnostics> = None;
         let diagnostics = unsafe { &mut *core::ptr::addr_of_mut!(DIAGNOSTICS) };
         let _ = diagnostics.get_or_insert_with(Diagnostics::default).run();

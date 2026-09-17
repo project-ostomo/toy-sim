@@ -11,9 +11,9 @@ use toy_sim_ship_api::abi::{self as w, Record};
 use toy_sim_ships::*;
 
 mod computer;
-pub mod screens;
 pub use computer::*;
 use screens::*;
+pub use toy_sim_model::drawing as screens;
 
 use wasmtime::{
     Caller, Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits,
@@ -31,8 +31,16 @@ pub const MAX_BOOTS_PER_TICK: usize = 64;
 /// Shared immutable scene access, called only after a successful scan admission.
 pub trait ScanSource: Send + Sync {
     fn scan(&self, range_m: f64, n: usize) -> Vec<SensorContact>;
+    fn query(
+        &self,
+        _query: toy_sim_model::ProgramQuery,
+        _display: bool,
+    ) -> Result<toy_sim_model::ProgramReply> {
+        anyhow::bail!("world service unavailable")
+    }
 }
 struct Host {
+    display_only: bool,
     working: Session,
     current: spatial::Snapshot,
     sequence: u64,
@@ -60,6 +68,7 @@ struct Machine {
     tick: TypedFunc<(), ()>,
 }
 pub struct Controller {
+    display_only: bool,
     pub state: Session,
     pub observer_origin: spatial::Position,
     pub catalogue: Arc<[DeviceDescriptor]>,
@@ -120,6 +129,12 @@ impl Controller {
         self.fractional_gas = gain.fract();
         self.gas = self.gas.saturating_add(gain.floor() as u64).min(cap);
     }
+    pub fn revoke_authority(&mut self) {
+        self.pending_requests.clear();
+        self.pending_events.clear();
+        self.reboot();
+    }
+
     pub fn reboot(&mut self) {
         self.machine = None;
         self.gas = 0;
@@ -310,12 +325,13 @@ impl ControllerRuntime {
     /// Simulation startup still goes through the separately metered boot path.
     pub fn validate_program(&mut self, bytes: &[u8]) -> Result<()> {
         let module = self.compile(bytes)?;
-        Machine::new(&self.engine, &self.linker, &module)?;
+        Machine::new(&self.engine, &self.linker, &module, false)?;
         Ok(())
     }
     /// Compiles/validates the program, but leaves the computer in its initial 50-tick boot.
     pub fn instantiate(&mut self, bytes: &[u8]) -> Result<Controller> {
         Ok(Controller {
+            display_only: false,
             state: Session::default(),
             observer_origin: [0; 3],
             catalogue: Arc::default(),
@@ -343,7 +359,12 @@ impl ControllerRuntime {
             return Ok(false);
         }
         controller.gas -= BOOT_GAS;
-        match Machine::new(&self.engine, &self.linker, &controller.module) {
+        match Machine::new(
+            &self.engine,
+            &self.linker,
+            &controller.module,
+            controller.display_only,
+        ) {
             Ok(machine) => {
                 controller.machine = Some(machine);
                 controller.fault = None;
@@ -358,9 +379,27 @@ impl ControllerRuntime {
     pub fn cached_modules(&self) -> usize {
         self.modules.len()
     }
+
+    pub fn instantiate_display(&mut self, bytes: &[u8]) -> Result<Controller> {
+        let mut controller = self.instantiate(bytes)?;
+        ensure!(
+            controller.module.get_export("ship_display").is_some(),
+            "program has no display entry point"
+        );
+        controller.display_only = true;
+        controller.gas = BOOT_GAS;
+        self.boot(&mut controller)?;
+        controller.gas = CALLBACK_START_GAS;
+        Ok(controller)
+    }
 }
 impl Machine {
-    fn new(engine: &Engine, linker: &Linker<Host>, module: &Module) -> Result<Self> {
+    fn new(
+        engine: &Engine,
+        linker: &Linker<Host>,
+        module: &Module,
+        display_only: bool,
+    ) -> Result<Self> {
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT)
             .memories(1)
@@ -370,6 +409,7 @@ impl Machine {
         let mut store = Store::new(
             engine,
             Host {
+                display_only,
                 working: Session::default(),
                 current: spatial::Snapshot::default(),
                 sequence: 0,
@@ -409,7 +449,14 @@ impl Machine {
                 .get_memory(&mut store, "memory")
                 .context("missing guest memory")?,
         );
-        let tick = instance.get_typed_func(&mut store, "ship_tick")?;
+        let tick = instance.get_typed_func(
+            &mut store,
+            if display_only {
+                "ship_display"
+            } else {
+                "ship_tick"
+            },
+        )?;
         Ok(Self { store, tick })
     }
 }

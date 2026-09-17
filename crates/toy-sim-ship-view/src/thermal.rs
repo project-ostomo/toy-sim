@@ -2,16 +2,19 @@
 //! radiance, so cooling into the infrared naturally makes a field disappear.
 use bevy::{
     asset::embedded_asset,
+    camera::visibility::NoFrustumCulling,
+    core_pipeline::prepass::DepthPrepass,
     mesh::{MeshTag, MeshVertexBufferLayoutRef},
     pbr::{MaterialPipeline, MaterialPipelineKey},
     prelude::*,
     render::render_resource::{
-        AsBindGroup, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+        AsBindGroup, CompareFunction, RenderPipelineDescriptor, SpecializedMeshPipelineError,
     },
     shader::ShaderRef,
 };
 
 #[derive(Component)]
+#[require(NoFrustumCulling)]
 pub struct ThermalSphere {
     pub temperature_k: f32,
     pub strength: f32,
@@ -27,6 +30,9 @@ pub struct ThermalAssets {
 pub struct ThermalMaterial {
     #[uniform(0)]
     colors: [Vec4; 256],
+    // Fractional shell thickness and optical depth through both central walls.
+    #[uniform(1)]
+    shell: Vec4,
 }
 
 impl Material for ThermalMaterial {
@@ -37,7 +43,7 @@ impl Material for ThermalMaterial {
         Self::vertex_shader()
     }
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Add
+        AlphaMode::Premultiplied
     }
     fn enable_shadows() -> bool {
         false
@@ -52,6 +58,10 @@ impl Material for ThermalMaterial {
         _: MaterialPipelineKey<Self>,
     ) -> Result<(), SpecializedMeshPipelineError> {
         d.primitive.cull_mode = None;
+        if let Some(depth) = &mut d.depth_stencil {
+            depth.depth_write_enabled = Some(false);
+            depth.depth_compare = Some(CompareFunction::Always);
+        }
         Ok(())
     }
 }
@@ -62,6 +72,7 @@ impl Plugin for ThermalPlugin {
         embedded_asset!(app, "thermal.wgsl");
         app.add_plugins(MaterialPlugin::<ThermalMaterial>::default())
             .add_systems(Startup, prepare)
+            .add_systems(Update, enable_depth)
             .add_systems(
                 PostUpdate,
                 update.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
@@ -77,9 +88,21 @@ fn prepare(
     let colors =
         std::array::from_fn(|i| blackbody(300.0 + (i as f64) * 9700.0 / 255.0).extend(0.0));
     commands.insert_resource(ThermalAssets {
-        mesh: meshes.add(Sphere::new(1.0).mesh().uv(32, 16)),
-        material: materials.add(ThermalMaterial { colors }),
+        mesh: meshes.add(Rectangle::new(2.0, 2.0)),
+        material: materials.add(ThermalMaterial {
+            colors,
+            shell: Vec4::new(0.02, 0.000005, 0.0, 0.0),
+        }),
     });
+}
+
+fn enable_depth(
+    mut commands: Commands,
+    cameras: Query<Entity, (With<Camera3d>, Without<DepthPrepass>)>,
+) {
+    for entity in &cameras {
+        commands.entity(entity).insert(DepthPrepass);
+    }
 }
 
 fn update(mut spheres: Query<(&ThermalSphere, &mut MeshTag, &mut Visibility)>) {

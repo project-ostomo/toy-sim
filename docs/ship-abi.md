@@ -1,6 +1,10 @@
-# Ship controller ABI (version 11)
+# Ship controller ABI (version 13)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v11`. It exchanges fixed-size little-endian C records and never allocates or serializes across the boundary.
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v13`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 13 adds `spatial_instance` to tracks returned by `world_query`. This changes the Postcard reply layout. Rebuild firmware against the current `toy-sim-model`; the host rejects ABI 12 modules.
+
+ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
 
 - Record definitions and constants: [crates/toy-sim-ship-api/src/abi.rs](../crates/toy-sim-ship-api/src/abi.rs)
 - Rust helpers: [crates/toy-sim-ship-api/src/sdk.rs](../crates/toy-sim-ship-api/src/sdk.rs)
@@ -15,12 +19,14 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v11` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v13` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.
 
-Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `10`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
+`ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
+
+Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `12`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
 For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=1048576` to the linker.
 
@@ -40,13 +46,15 @@ instantiate ──► booting ──(50,000,000 gas accumulated, boot slot)─�
 
 ### Atomic callbacks
 
-Each callback edits a private copy of the session. Only when `ship_tick` returns normally are these committed: the device writes, request replies, screen frames, instrument records, spatial publications and admitted scans. If the callback traps, all of it is discarded and the hardware's command settings are reset.
+Each callback edits a private copy of the session. Only when the entry point returns normally are these committed: the device writes, request replies, screen frames, instrument records, spatial publications, admitted scans and staged world actions. If the callback traps, all of it is discarded and the hardware's command settings are reset.
 
 Hardware keeps the last committed settings between callbacks. A sleeping program therefore keeps its throttles and torques.
 
 ### Scheduling
 
 `tick_set_interval(seconds)` sets how long the host waits after this callback completes before calling again. The value persists until changed. Zero means every tick. New requests or screen events wake the program early. The simulation tick is 0.1 s.
+
+The server honours the interval through `CallbackSchedule`: a flight program is called only when its interval has elapsed or requests are queued, and queued requests are handed over only on a callback that runs. Display instances are scheduled separately, by the subscribers' refresh rate ([Display entry point](#display-entry-point)).
 
 ## Calling conventions
 
@@ -143,13 +151,86 @@ An unknown setting code returns `ERR_ARGUMENT`. A setting that does not match th
 
 ## Sensors and tracks
 
-`sensor_scan(sensor, maximum, contacts, bytes)` fills up to `maximum` (at most 256) `Contact` records (72 bytes each), and `bytes` must equal `maximum × 72`. It returns the number written. The sensor device must be operational and powered with a non-zero range, otherwise the call returns `ERR_UNAVAILABLE`. It charges `maximum × 1000` gas (`SCAN_GAS_PER_OBJECT`) before querying.
+`sensor_scan(sensor, maximum, contacts, bytes)` fills up to `maximum` (at most 256) `Contact` records (72 bytes each), and `bytes` must equal `maximum × 72`. It returns the number written. The sensor device must be operational and powered with a non-zero range, otherwise the call returns `ERR_UNAVAILABLE`. It charges `maximum × 3000` gas (`SCAN_GAS_PER_OBJECT`) before querying.
 
-The simulator answers with the nearest `maximum` indexed objects within range, measured from centre to centre. Objects hidden behind occluding bodies are then removed, and they are not replaced by more distant objects. The range is the smaller of the sensor reading and the ship's `Sensor` component range (adjustable in the Sensor debug window). The index holds ships and the bodies of active star systems. Projectiles are not indexed.
+The server answers from the ship's fused information-group snapshot and the public beacon snapshot, selecting ship tracks only. It returns the nearest available tracks within range, excluding the observing ship and duplicate UUIDs. Measurements are acquired once per simulation tick; repeating a query cannot reroll sensor noise. The range is limited by the powered sensor. Debug accounts can override its range and occlusion setting.
 
-`Contact` fields are `id` (a stable entity identifier), `kind` (`CONTACT_SHIP` 0, `CONTACT_CELESTIAL` 1, `CONTACT_OTHER` 2, `CONTACT_PROJECTILE` 3), `radius_m`, and position and velocity relative to the ship.
+`Contact` fields are `id` (an opaque per-ship handle for a group track), `kind` (`CONTACT_SHIP` 0), `radius_m`, and position and velocity relative to the ship. Celestial bodies are excluded from sensor contacts; use explicit celestial world queries for navigation. A previously authenticated ship may retain its IFF identity while its estimate coasts. See [server-client.md](server-client.md#contact-handles) for handle lifetime and query accounting.
+
+The standard firmware starts with a 32-contact scan buffer, grows it when full and reduces it for sparse results. It reserves gas for flight control and the next callback before admitting a scan or forecast work.
 
 Every successful scan is admitted into host-side tracks, up to 512. Each track keeps its latest and previous estimates. Tracks expire 2 s after their latest measurement. `contact_label(id, out, bytes)` returns the contact's name as `Text64` while its track is current.
+
+## World services
+
+ABI 12 adds two imports that connect firmware to the authoritative world's travel, beacon and intelligence services. Their payloads are [postcard](https://docs.rs/postcard) encodings of types in [toy-sim-model](../crates/toy-sim-model/src/lib.rs). They do not use fixed records, and the generated C header and AssemblyScript bindings declare the imports only. Firmware in those languages must produce postcard bytes itself.
+
+| Import | Notes |
+| --- | --- |
+| `world_query(input, bytes, out, capacity)` | Decodes a `ProgramQuery` from `input` and writes a postcard `ProgramReply` into `out`. Returns the reply length. |
+| `world_command(input, bytes)` | Decodes a `ProgramAction` and stages it. Returns 0. |
+
+### `world_query`
+
+**Buffers.** `bytes` and `capacity` are each at most 65,536. The reply must fit in `capacity`, otherwise the call returns `ERR_BUFFER`. Unlike record imports, `out` does not need to match the reply size exactly.
+
+**Gas.**
+
+1. The call cost (100) plus one gas per 8 input bytes.
+2. A pre-check that the computer holds at least the estimated work: `min(work, 1,000,000)` for `Tracks` and `Continue`, `100 + 1008 × min(limit, 256)` for `Beacons`, and 1000 for anything else. If it does not, the call returns `ERR_GAS`.
+3. After the query, the actual work: the page's `gas_used` for track queries, `100 + 1008` per returned beacon, or 1000.
+4. One gas per 8 reply bytes.
+
+**Errors.** Undecodable input, a failed query or an invalid query returns `ERR_ARGUMENT`. A host with no world provider returns `ERR_UNAVAILABLE`.
+
+| `ProgramQuery` | Reply |
+| --- | --- |
+| `Travel` | `Travel { state, pose, slip_ready }`: the ship's travel state, its exact galactic pose, and whether its slipdrive is ready |
+| `Tracks(TrackQuery)` | `Tracks(QueryPage)` from the ship's information group snapshot. Work is capped at 1,000,000 and the query is validated with the network limits. |
+| `Continue { cursor, work }` | The next page of a retained cursor |
+| `Beacon(entity)` | `Beacons` with zero or one beacon |
+| `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
+| `Resolve(Destination)` | `Pose` of a galactic position, beacon, or offset from a beacon or celestial body |
+
+Track queries are metered as described in [server-client.md](server-client.md#metered-queries). A cursor expires 10 ticks after its query started. Each ship keeps separate cursor stores for its flight instance and its display instance.
+
+### `world_command`
+
+**Limits.** Input is at most 65,536 bytes, and a callback can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. It returns `ERR_ARGUMENT` for undecodable input, for a display instance, or when the limit is reached.
+
+**Application.** Staged actions are applied only if the callback commits. The world applies them after every ship's program has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteLeg` staged after a rejected `Dock` does not advance travel.
+
+| `ProgramAction` | Effect |
+| --- | --- |
+| `Block { revision, reason }` | Sets travel status `Blocked(reason)` for the current travel revision. `reason` is at most 512 bytes. |
+| `Route { revision, legs }` | Installs up to 256 legs for the current travel revision |
+| `CompleteLeg { revision, leg }` | Advances travel progress |
+| `Slip(position)` | Starts slipdrive preparation |
+| `Gate(entry)` | Enters a paired gate |
+| `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Bay operations |
+
+The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
+
+### Availability
+
+Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `toy-sim-debug`. `world_command` stages validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
+
+## Display entry point
+
+`ship_display` is a second entry point for drawing screens. `ControllerRuntime::instantiate_display(bytes)` creates a display controller:
+
+- It fails if the module has no `ship_display` export.
+- It boots at once and starts with `CALLBACK_START_GAS`.
+- Each callback calls `ship_display` instead of `ship_tick`.
+
+A display instance is a separate WebAssembly instance with its own memory, gas, session, screens and query cursors. It shares no memory with the flight instance. The same imports are linked, with these differences:
+
+- `device_write` and `world_command` return `ERR_ARGUMENT`.
+- `world_query` uses the display cursor store.
+
+The authoritative server creates a display instance only while a network client subscribes to one of the ship's screens. It passes the flight computer's latest observation with requests removed, sets `requested_screens` to the due subscribed slots, delivers screen input from clients, and keeps only screen frames from the result. Other publications from a display instance are ignored. The lifecycle is described in [server-client.md](server-client.md#display-instances).
+
+The server invokes `ship_display` only for subscribed screens. Production clients receive those display frames; the flight callback does not serve MFD windows.
 
 ## Requests
 
@@ -224,7 +305,7 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 ## Screens
 
-`screen_define`, `screen_remove`, `screen_begin`, `screen_draw`, `screen_button`, `screen_end`, `screen_event_read` and `screen_event_ack` are documented in [mfds.md](mfds.md).
+`screen_define`, `screen_remove`, `screen_begin`, `screen_draw`, `screen_button`, `screen_end`, `screen_event_read` and `screen_event_ack` are documented in [mfds.md](mfds.md). They work from both `ship_tick` and `ship_display`. Production clients receive frames drawn by the separate `ship_display` instance.
 
 ## Writing firmware
 
@@ -232,7 +313,9 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 Depend on `toy-sim-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports its entry points from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. [examples/custom_screen.rs](../crates/toy-sim-example-controller/examples/custom_screen.rs) wraps that firmware's `Computer` and adds a screen. It is built with `--no-default-features` so the library does not export the entry points a second time.
+The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. It also exports a drawing-only `ship_display` that draws a "Ship status" text screen (simulation time, speed, mass and battery energy) on every requested slot; it ignores screen events and does not call world services. On `wasm32` its `Computer` also runs the travel planner in [world.rs](../crates/toy-sim-example-controller/src/world.rs), which uses `world_query` and `world_command` through postcard ([server-client.md](server-client.md#travel-orders-and-firmware-planning)).
+
+[examples/custom_screen.rs](../crates/toy-sim-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 
 The repository has no build script for firmware. These commands follow from the manifests and the comment in `custom_screen.rs`:
 
@@ -255,7 +338,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v11", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v13", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
@@ -269,16 +352,18 @@ The script parses the record structs, `Text` sizes, integer constants and the `r
 
 ## Host API
 
-For embedding the runtime elsewhere, as `toy-ship-bench` does:
+For isolated ABI tests or tools that embed the runtime:
 
-- `ControllerRuntime::new()`, `compile(bytes)`, `validate_program(bytes)`, `instantiate(bytes)` (returns a booting `Controller`), `boot(&mut controller)`, `cached_modules()`
+- `ControllerRuntime::new()`, `compile(bytes)`, `validate_program(bytes)`, `instantiate(bytes)` (returns a booting `Controller`), `instantiate_display(bytes)` (returns a booted display controller), `boot(&mut controller)`, `cached_modules()`
 - `Controller::configure_hardware(design, catalogue)` installs the device and resource directories.
 - `advance(dt)`, `can_run()`, `is_booting()`, `boot_progress()`, `gas_remaining()`, `memory_bytes()`
 - `run(input)` and `run_with_scan(input, Option<Arc<dyn ScanSource>>)` return `Ok(None)` when the computer cannot run yet.
-- `reboot()`, `fail(message)`, `enqueue_screen_event(event)`, `has_pending_input()`
+- `ScanSource` has `scan(range_m, n)` and `query(ProgramQuery, display)`. The default `query` fails, which makes `world_query` return `ERR_ARGUMENT`.
+- `reboot()`, `revoke_authority()` (drops pending requests and screen events, then reboots), `fail(message)`, `enqueue_screen_event(event)`, `has_pending_input()`
 - State fields: `state` (the committed `Session`), `fault`, `contacts`, `scan_time`, `telemetry`, `screens`, `trajectory_revision`, `instrument_interest`, `observer_origin`
 - `CallbackSchedule` implements the interval logic. Call `advance(dt)` once per tick, check `ready(has_input)`, and call `completed(output.tick_interval_seconds)` after a successful callback.
-- `Input` carries tick, dt, physics dt, `Observation` (time, flight state, resources, inventory), device statuses, requests, screen events and requested screens. `Output` carries device commands, replies, screen frames, cleared screens and the interval.
+- `Input` carries tick, dt, physics dt, `Observation` (time, flight state, resources, inventory), device statuses, requests, screen events and requested screens. `Output` carries staged world actions, device commands, replies, screen frames, cleared screens and the interval.
+- `screens` re-exports `toy_sim_model::drawing`, where the validated screen frame types now live.
 
 ## Tests
 
@@ -300,7 +385,7 @@ cargo test -p toy-sim-ship-wasm
 - request persistence across reboot
 - unfinished screen frames
 - snapshot quotas
-- the custom screen firmware
+- the custom screen firmware running as a display instance, with no attitude or navigation instruments published
 - bundled firmware forecasts, weapons engagement and pursuit within budget
 - weapon setting validation
 - the contacts instrument on a rotated ship

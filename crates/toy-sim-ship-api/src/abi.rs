@@ -1,9 +1,9 @@
-//! Ship ABI 11: fixed little-endian C records, no allocation or serialization.
+//! Ship ABI 13: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v11";
-pub const VERSION: u32 = 11;
+pub const IMPORT_MODULE: &str = "ship_v13";
+pub const VERSION: u32 = 13;
 pub const ERR_GAS: i32 = -1;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
@@ -12,7 +12,7 @@ pub const ERR_LIMIT: i32 = -5;
 pub const ERR_HANDLE: i32 = -6;
 pub const ERR_UNSUPPORTED: i32 = -7;
 pub const CALL_GAS: u64 = 100;
-pub const SCAN_GAS_PER_OBJECT: u64 = 1000;
+pub const SCAN_GAS_PER_OBJECT: u64 = 3000;
 pub const MAX_CONTACTS: u32 = 256;
 pub const MAX_TRACKS: u32 = 512;
 pub const MAX_SNAPSHOTS: u32 = 8;
@@ -1190,6 +1190,8 @@ const _: () = assert!(core::mem::offset_of!(ScreenEvent, x) == 40);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, y) == 48);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, text) == 56);
 pub const IMPORTS: &[&str] = &[
+    "world_query",
+    "world_command",
     "tick_read",
     "budget_read",
     "flight_read",
@@ -1229,8 +1231,10 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v11")]
+    #[link(wasm_import_module = "ship_v13")]
     unsafe extern "C" {
+        pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
+        pub fn world_command(input: *const u8, bytes: u32) -> i32;
         pub fn tick_read(out: *mut u8, bytes: u32) -> i32;
         pub fn budget_read(out: *mut u8, bytes: u32) -> i32;
         pub fn flight_read(out: *mut u8, bytes: u32) -> i32;

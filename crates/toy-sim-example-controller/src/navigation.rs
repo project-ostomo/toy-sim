@@ -76,22 +76,21 @@ impl Default for Pursuit {
     }
 }
 
-/// No terminal velocity matching: lateral correction never reverses axial thrust.
-pub fn charge(error: DVec3, u: DVec3, disturbance: DVec3, a: f64) -> DVec3 {
-    let line = error.normalize_or(u.normalize_or(DVec3::NEG_Z));
-    let distance = error.length();
-    let closing = u.dot(line);
-    let root = (closing * closing + 2.0 * a * distance).sqrt();
-    let time = if closing >= 0.0 {
-        2.0 * distance / (root + closing).max(1e-9)
-    } else {
-        (root - closing) / a.max(1e-9)
-    }
-    .max(0.5);
-    let sideways = u - line * closing;
-    let external = disturbance - line * disturbance.dot(line);
-    let lateral = (-2.0 * sideways / time - external).clamp_length_max(a * 0.8);
-    lateral + line * (a * a - lateral.length_squared()).max(0.0).sqrt()
+pub fn arrival_speed(distance: f64, acceleration: f64, response: f64) -> f64 {
+    let delayed = acceleration * response;
+    ((delayed * delayed + acceleration * distance).sqrt() - delayed).min(distance / response)
+}
+
+pub fn rendezvous(
+    error: DVec3,
+    velocity: DVec3,
+    disturbance: DVec3,
+    acceleration: f64,
+    response: f64,
+) -> DVec3 {
+    let speed = arrival_speed(error.length(), acceleration, response);
+    let desired = error.normalize_or_zero() * speed;
+    ((desired - velocity) / response - disturbance).clamp_length_max(acceleration)
 }
 
 impl Pursuit {
@@ -131,8 +130,8 @@ impl Pursuit {
             return Err("Invalid throttle limit".into());
         }
         self.limit = limit;
-        self.stand_off = 0.0;
-        self.offset = DVec3::ZERO;
+        self.stand_off = stand_off;
+        self.offset = -self.r.normalize_or_zero() * stand_off;
         self.effectiveness = 1.;
         self.phase = Phase::Pursuing;
         self.reason.clear();
@@ -281,9 +280,17 @@ impl Pursuit {
             return;
         }
         self.turn_allowance = attitude::turn_allowance(inertia, b);
-        self.acceleration = charge(self.error(), self.u, self.disturbance, a);
-        self.allowed_speed = 0.0;
-        self.stopping_distance = 0.0;
+        let error = self.error();
+        let response = (2. * self.turn_allowance + 2.).max(2.);
+        self.allowed_speed = arrival_speed(error.length(), a, response);
+        self.stopping_distance = self.u.length_squared() / (2. * a) + self.u.length() * response;
+        self.acceleration = rendezvous(error, self.u, self.disturbance, a, response);
+        if error.length() <= 2. && self.u.length() <= 0.5 {
+            self.phase = Phase::Ready;
+            self.acceleration = DVec3::ZERO;
+            self.throttle = 0.;
+            return;
+        }
         if !self.acceleration.is_finite() {
             self.pause("Invalid guidance command");
             return;
@@ -293,7 +300,7 @@ impl Pursuit {
         } else if self.direction == DVec3::ZERO {
             self.direction = q * b.engine_axis;
         }
-        self.throttle = self.throttle_ceiling;
+        self.throttle = self.throttle_ceiling * (self.acceleration.length() / a).clamp(0., 1.);
     }
 }
 
@@ -329,18 +336,24 @@ mod tests {
         assert_eq!(nav.disturbance, DVec3::ZERO);
     }
     #[test]
-    fn charge_keeps_full_thrust_and_never_brakes_before_the_pass() {
-        for distance in [0.01, 100.0, 100_000.0] {
-            let command = charge(
-                DVec3::X * distance,
-                DVec3::new(1000.0, 30.0, 0.0),
-                DVec3::ZERO,
-                10.0,
-            );
-            assert!((command.length() - 10.0).abs() < 1e-9);
-            assert!(command.x > 0.0 && command.y < 0.0);
+    fn rendezvous_brakes_and_matches_terminal_velocity() {
+        let braking = rendezvous(DVec3::X * 100., DVec3::X * 100., DVec3::ZERO, 10., 2.);
+        assert!(braking.x < 0.);
+        let mut position = DVec3::ZERO;
+        let mut velocity = DVec3::ZERO;
+        let target = DVec3::X * 1000.;
+        for _ in 0..3000 {
+            let error = target - position;
+            if error.length() <= 2. && velocity.length() <= 0.5 {
+                break;
+            }
+            velocity += rendezvous(error, velocity, DVec3::ZERO, 10., 2.) * 0.1;
+            position += velocity * 0.1;
         }
+        assert!((target - position).length() <= 2.);
+        assert!(velocity.length() <= 0.5);
     }
+
     #[test]
     fn engagement_validates_limit_and_can_retry_hardware() {
         let mut nav = Pursuit::default();

@@ -25,7 +25,7 @@ systems = ["stars/helion.star.toml"]
 
 ## Star system files (`*.star.toml`)
 
-The `.star.toml` extension selects the TOML loader for `OrreryCfg` ([orrery_cfg.rs](../apps/toy-sim/src/orrery/orrery_cfg.rs)). Unknown top-level keys are rejected.
+The `.star.toml` extension selects the TOML loader for `OrreryCfg` ([orrery_cfg.rs](../crates/toy-sim-universe/src/orrery_cfg.rs)). Unknown top-level keys are rejected.
 
 Top level:
 

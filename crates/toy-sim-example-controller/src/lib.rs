@@ -1,6 +1,8 @@
 //! Standard flight computer: hardware discovery, control allocation and arrival guidance.
 pub mod allocation;
 mod attitude;
+#[cfg(any(target_arch = "wasm32", test))]
+mod budget;
 pub mod navigation;
 pub mod prediction;
 use glam::{DMat3, DQuat, DVec3};
@@ -12,6 +14,11 @@ pub mod weapons;
 use hardware::{Actuation, Capability, Hardware, Sample};
 #[cfg(target_arch = "wasm32")]
 pub mod firmware;
+#[cfg(target_arch = "wasm32")]
+mod world;
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "world/graph.rs"]
+mod world_graph;
 
 pub struct Pilot {
     devices: Option<Bindings>,
@@ -294,7 +301,8 @@ impl Pilot {
         }
         self.throttle = if self.navigation.phase.active() {
             // Arrival guidance sets variable throttle and coasts through large turns.
-            self.navigation.throttle
+            let alignment = (q * b.engine_axis).dot(self.navigation.direction.normalize_or_zero());
+            self.navigation.throttle * if alignment > 0.995 { alignment } else { 0. }
         } else if navigation_owns {
             0.
         } else {

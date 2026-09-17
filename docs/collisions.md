@@ -1,18 +1,14 @@
 # Collisions
 
-Ships, projectiles and docked assemblies are integrated by a time-ordered continuous collision solver ([apps/toy-sim/src/physics/collision](../apps/toy-sim/src/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves every contact as an energy-absorbing impact. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
+Ships in space and projectiles are integrated by a time-ordered continuous collision solver ([crates/toy-sim-server/src/sim/physics/collision](../crates/toy-sim-server/src/sim/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves every contact as an energy-absorbing impact. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
 
 Geometry queries, broad-phase trees and contact manifolds come from Parry (`parry3d-f64`). Trajectory sampling, heat accounting and event scheduling are implemented in this module.
 
 ## Participating bodies
 
-The `CollisionBody` marker selects participants. Three components require it:
+The `CollisionBody` marker selects ships in space and weapon projectiles. `apply_forces` in [physics.rs](../crates/toy-sim-server/src/sim/physics.rs) skips these entities; the collision step integrates them.
 
-- `Vessel`
-- `Projectile` (weapon slugs)
-- `DockParent` (an invisible rigid body that carries docked children)
-
-`apply_forces` in [physics.rs](../apps/toy-sim/src/physics.rs) skips these entities; the collision step integrates them instead. An entity with `DockChild` joins its parent's body as an additional member at its stored relative pose.
+Docked ships are station inventory. Docking removes their motion, collision and spatial components, and their mass contributes to the host. They do not add hull members to the host's collision body. Gate mouths use a non-solid aperture.
 
 Geometry:
 
@@ -36,13 +32,13 @@ Ship geometry is cached per compiled design.
 
 ## Motion within a tick
 
-Between events, each body translates at constant velocity. Its rotation follows torque-free rigid-body motion with constant world angular momentum, using the split integrator in [rotation.rs](../apps/toy-sim/src/physics/rotation.rs). Because forces were applied as a kick at the tick start, the combined scheme is symplectic Euler, consistent with `apply_forces`.
+Between events, each body translates at constant velocity. Its rotation follows torque-free rigid-body motion with constant world angular momentum, using the split integrator in [rotation.rs](../crates/toy-sim-server/src/sim/physics/rotation.rs). Because forces were applied as a kick at the tick start, the combined scheme is symplectic Euler, consistent with `apply_forces`.
 
 ## Broad phase
 
 The solver works in a common translating frame: the first body's velocity plus the mass-weighted mean velocity offset. Ships that share an orbital velocity therefore have short swept volumes. Each live body becomes a proxy: its start position, its displacement over the rest of the tick in that frame, and its radius plus 2 mm.
 
-`RegionIndex` ([spatial_tree.rs](../apps/toy-sim/src/spatial_tree.rs)) stores proxies in 100 km integer-addressed regions, each with its own Parry BVH. A swept proxy occupies only the cells along its capsule. The index persists between ticks and is refreshed in place. `pairs()` returns candidate pairs, and after each event `neighbors()` finds the pairs to predict again.
+`RegionIndex` ([spatial_tree.rs](../crates/toy-sim-server/src/sim/spatial_tree.rs)) stores proxies in 100 km integer-addressed regions, each with its own Parry BVH. A swept proxy occupies only the cells along its capsule. The index persists between ticks and is refreshed in place. `pairs()` returns candidate pairs, and after each event `neighbors()` finds the pairs to predict again.
 
 ## Narrow phase: predicting the next contact
 
@@ -126,7 +122,7 @@ The solver records motion segments for bodies whose motion changed within the ti
 cargo test -p toy-sim collision
 ```
 
-[tests.rs](../apps/toy-sim/src/physics/collision/tests.rs) covers:
+[tests.rs](../crates/toy-sim-server/src/sim/physics/collision/solver_tests.rs) covers:
 
 - stable sphere entry and exit times
 - head-on momentum conservation with heat counted once
@@ -147,7 +143,7 @@ cargo test -p toy-sim collision
 - shields absorbing slow glancing slugs
 - projectile expiry at 2 s
 
-[ecs.rs](../apps/toy-sim/src/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
+[ecs.rs](../crates/toy-sim-server/src/sim/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
 
 Two benchmarks are ignored by default. Run them in release mode:
 

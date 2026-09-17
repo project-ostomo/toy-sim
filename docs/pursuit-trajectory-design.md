@@ -1,12 +1,18 @@
 # Pursuit trajectory presentation proposal
 
-Historical design proposal for the former rendezvous controller. Stock firmware now
-uses stopping-distance velocity feedback; its current forecast is described in
-[rendezvous.md](rendezvous.md). The ABI extensions below remain unimplemented.
+This is a historical design proposal written for an earlier rendezvous controller.
+Stock firmware now flies a braking rendezvous: arrival-speed velocity feedback that
+ends within 2 m and 0.5 m/s of the aim point. The same law flies sublight travel
+legs. The law, its forecast and its instrument fields are described in
+[rendezvous.md](rendezvous.md#guidance-law).
 
-Historical design notes; the implemented spatial interface is documented in
-[ABI 11](ship-abi.md). The earlier ABI 7 and stock forecast
-publication remain unchanged. The tumbling traffic scenario is implemented separately.
+The implemented spatial interface is [ABI 13](ship-abi.md). ABI 12 added
+`world_query`, `world_command` and the separate `ship_display` entry point. None
+of the trajectory extensions proposed below were added: no timed
+position/velocity knots, burn events or published target reference paths. The
+stock forecast is still published as a timed path, and the navigation instrument
+still leaves its stand-off, approach speed and braking distance fields at zero.
+The tumbling traffic scenario is implemented separately.
 
 ## What the player needs to see
 

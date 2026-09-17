@@ -1,0 +1,15 @@
+[package]
+name = "toy-sim-universe"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+glam = "0.32.1"
+anyhow.workspace = true
+serde.workspace = true
+toml.workspace = true
+serde_yml = "0.0.13"
+smol_str = { version = "0.3.6", features = ["serde"] }
+hifitime = "4.3.1"
+toy-sim-space = { path = "../toy-sim-space" }
+toy-sim-stars = { path = "../toy-sim-stars" }

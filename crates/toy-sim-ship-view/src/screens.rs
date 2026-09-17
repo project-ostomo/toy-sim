@@ -1,7 +1,22 @@
 //! Standalone programmable 2D surfaces. They cannot embed native instruments.
 use bevy_egui::egui;
+use toy_sim_model::drawing::ScreenImage;
 use toy_sim_ship_api::abi::{ScreenDefinition, ScreenEvent, Text64};
-use toy_sim_ship_wasm::screens::ScreenImage;
+
+pub fn show_remote(
+    ui: &mut egui::Ui,
+    definition: &toy_sim_model::presentation::ScreenDefinition,
+    frame: Option<&ScreenImage>,
+) -> Vec<ScreenEvent> {
+    let definition = ScreenDefinition {
+        id: u64::from(definition.slot),
+        width: u64::from(definition.width.max(1)),
+        height: u64::from(definition.height.max(1)),
+        title: Text64::new(&definition.title),
+    };
+
+    show(ui, &definition, frame)
+}
 
 pub fn show(
     ui: &mut egui::Ui,

@@ -1,5 +1,5 @@
 use super::*;
-use toy_sim_ship_wasm::screens::{GREEN, WHITE};
+use toy_sim_model::drawing::{GREEN, WHITE};
 
 fn blank(id: u8) -> ScreenImage {
     ScreenImage {

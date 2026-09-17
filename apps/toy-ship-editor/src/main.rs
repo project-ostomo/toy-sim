@@ -156,16 +156,16 @@ impl Editor {
         self.ship.save(&path)?;
         let binary = if self.sim_path.is_empty() {
             std::env::current_exe()?.with_file_name(if cfg!(windows) {
-                "toy-sim.exe"
+                "toy-sim-debug.exe"
             } else {
-                "toy-sim"
+                "toy-sim-debug"
             })
         } else {
             PathBuf::from(&self.sim_path)
         };
         anyhow::ensure!(
             binary.is_file(),
-            "Build toy-sim first, or set its executable path in the inspector"
+            "Build toy-sim-debug and toy-sim-server first, or set its executable path in the inspector"
         );
         self.child = Some(
             std::process::Command::new(binary)

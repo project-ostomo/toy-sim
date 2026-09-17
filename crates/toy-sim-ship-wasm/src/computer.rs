@@ -136,6 +136,7 @@ impl Default for Input {
 
 #[derive(Clone, Debug, Default)]
 pub struct Output {
+    pub world_actions: Vec<toy_sim_model::ProgramAction>,
     pub devices: Vec<DeviceCommand>,
     pub replies: Vec<RequestReply>,
     pub screens: Vec<ScreenImage>,
@@ -379,7 +380,7 @@ mod tests {
         let bytes = wat::parse_str(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const 11)
+            (func (export "ship_api_version") (result i32) i32.const 13)
             (func (export "ship_tick")))"#,
         )
         .unwrap();

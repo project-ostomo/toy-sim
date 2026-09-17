@@ -122,6 +122,81 @@ pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
 fn context(linker: &mut Linker<Host>) -> Result<()> {
     linker.func_wrap(
         w::IMPORT_MODULE,
+        "world_query",
+        |mut caller: Caller<'_, Host>,
+         pointer: u32,
+         length: u32,
+         output: u32,
+         capacity: u32|
+         -> i32 {
+            let result = (|| -> CallResult<usize> {
+                enter(&mut caller)?;
+                if length > 65536 || capacity > 65536 {
+                    return Err(w::ERR_BUFFER);
+                }
+                pay(&mut caller, u64::from(length).div_ceil(8))?;
+                let query: toy_sim_model::ProgramQuery =
+                    postcard::from_bytes(payload(&caller, pointer, length)?)
+                        .map_err(|_| w::ERR_ARGUMENT)?;
+                let work = match &query {
+                    toy_sim_model::ProgramQuery::SlipEligibility { .. } => 131_072,
+                    toy_sim_model::ProgramQuery::Tracks(query) => query.work.min(1_000_000),
+                    toy_sim_model::ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),
+                    toy_sim_model::ProgramQuery::Beacons { limit, .. } => {
+                        100 + 1008 * u64::from((*limit).min(256))
+                    }
+                    _ => 1000,
+                };
+                if caller.data().gas < work {
+                    return Err(w::ERR_GAS);
+                }
+                let source = caller.data().source.clone().ok_or(w::ERR_UNAVAILABLE)?;
+                let slip_query =
+                    matches!(&query, toy_sim_model::ProgramQuery::SlipEligibility { .. });
+                let reply = source
+                    .query(query, caller.data().display_only)
+                    .map_err(|_| w::ERR_ARGUMENT)?;
+                let used = match &reply {
+                    toy_sim_model::ProgramReply::Tracks(page) => page.gas_used,
+                    toy_sim_model::ProgramReply::Beacons(beacons) => {
+                        100 + 1008 * beacons.len() as u64
+                    }
+                    _ if slip_query => 131_072,
+                    _ => 1000,
+                };
+                pay(&mut caller, used)?;
+                let bytes = postcard::to_allocvec(&reply).map_err(|_| w::ERR_BUFFER)?;
+                if bytes.len() > capacity as usize {
+                    return Err(w::ERR_BUFFER);
+                }
+                emit_bytes(&mut caller, output, bytes.len() as u32, &bytes)?;
+                Ok(bytes.len())
+            })();
+            result.map_or_else(|error| error, |length| length as i32)
+        },
+    )?;
+    linker.func_wrap(
+        w::IMPORT_MODULE,
+        "world_command",
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| -> i32 {
+            status((|| {
+                enter(&mut caller)?;
+                if caller.data().display_only
+                    || length > 65536
+                    || caller.data().output.world_actions.len() >= 8
+                {
+                    return Err(w::ERR_ARGUMENT);
+                }
+                pay(&mut caller, 1000 + u64::from(length).div_ceil(8))?;
+                let action = postcard::from_bytes(payload(&caller, pointer, length)?)
+                    .map_err(|_| w::ERR_ARGUMENT)?;
+                caller.data_mut().output.world_actions.push(action);
+                Ok(())
+            })())
+        },
+    )?;
+    linker.func_wrap(
+        w::IMPORT_MODULE,
         "tick_read",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
             status((|| {
@@ -354,6 +429,9 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
         |mut caller: Caller<'_, Host>, id: u64, setting: u64, pointer: u32, bytes: u32| {
             status((|| {
                 enter(&mut caller)?;
+                if caller.data().display_only {
+                    return Err(w::ERR_ARGUMENT);
+                }
                 let index = device_index(&caller, id)?;
                 let setting = match setting {
                     w::SET_RCS => {

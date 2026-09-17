@@ -52,7 +52,7 @@ observations per contact, interpolates between them and extrapolates measured
 velocity for at most two seconds. Hulls, target boxes, coast estimates and markers
 use one presentation clock; no renderer queries live target entity transforms.
 
-ABI 11 unifies trajectories and space labels as leased paths and markers. Snapshot
+The current ABI ([version 13](ship-abi.md)) represents trajectories and space labels as leased paths and markers, as introduced in ABI 11. Snapshot
 frames retain the precise source observation origin. Forecast vertices carry absolute
 times, so a calculation can span callbacks without shifting old geometry onto a newer
 ship position. Ship, body and admitted-contact frames support current annotations;

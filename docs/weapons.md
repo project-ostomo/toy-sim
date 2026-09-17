@@ -6,7 +6,7 @@ Source:
 
 - Definitions, specs and servo mechanics: [crates/toy-sim-ships/src/weapons.rs](../crates/toy-sim-ships/src/weapons.rs)
 - Hardware commands and readings: `ShipState::step` in [runtime.rs](../crates/toy-sim-ships/src/runtime.rs)
-- Launch events inside the collision timeline: [apps/toy-sim/src/physics/collision/weapons.rs](../apps/toy-sim/src/physics/collision/weapons.rs)
+- Launch events inside the collision timeline: [crates/toy-sim-server/src/sim/physics/collision/weapons.rs](../crates/toy-sim-server/src/sim/physics/collision/weapons.rs)
 - Standard firmware engagement policy: [crates/toy-sim-example-controller/src/weapons.rs](../crates/toy-sim-example-controller/src/weapons.rs)
 
 ## Defining a weapon part
@@ -108,11 +108,11 @@ The weapons instrument has a 2 s lease. Its reason text is "Tracking", "Firing" 
 
 ## In the simulator
 
-The Weapons window ([gui/instruments.rs](../apps/toy-sim/src/gui/instruments.rs)) has "Engage selected", which uses the contact selected in the Contacts window with a 2 s maximum flight time, and "Hold fire". For each weapon row it shows the mode, target, reason, rounds, battery energy versus shot energy, pointing error, flight time and active inhibit flags.
+The Weapons window ([gui/instruments.rs](../crates/toy-sim-client/src/ui/instruments.rs)) has "Engage selected", which uses the contact selected in the Contacts window with a 2 s maximum flight time, and "Hold fire". For each weapon row it shows the mode, target, reason, rounds, battery energy versus shot energy, pointing error, flight time and active inhibit flags.
 
-When the player engages an uncontrolled ship, that ship is ordered to engage the player in return ([vessel README](../apps/toy-sim/src/vessel/README.md#retaliation)).
+When the player engages an uncontrolled ship, that ship is ordered to engage the player in return ([vessel README](server-client.md#server-tick)).
 
-Presentation: barrel meshes interpolate yaw and pitch between ticks. Slugs draw as camera-facing tracer ribbons while alive, for up to 4 s. Impacts produce short flashes, with debris chips when no shield was involved.
+Presentation: barrel meshes interpolate yaw and pitch between ticks. Slugs draw as camera-facing tracer ribbons over a 2 ms exposure while their published trajectory is active. Each view compensates for its own camera motion; focus changes and discontinuities reset that history. Impacts produce short flashes, with debris chips when no shield was involved.
 
 ## Tests
 

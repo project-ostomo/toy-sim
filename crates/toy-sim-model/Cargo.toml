@@ -1,0 +1,13 @@
+[package]
+name = "toy-sim-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+uuid = "1.26"
+toy-sim-space = { path = "../toy-sim-space" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1.26", features = ["v4"] }
+rand = "0.10.2"

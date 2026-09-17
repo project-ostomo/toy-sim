@@ -179,7 +179,7 @@ pub fn editor(
                     ));
                 });
                 ui.collapsing("Launch settings", |ui| {
-                    ui.label("Optional toy-sim executable override");
+                    ui.label("Optional toy-sim-debug executable override");
                     ui.text_edit_singleline(&mut e.sim_path);
                 });
                 if !e.devices_mode

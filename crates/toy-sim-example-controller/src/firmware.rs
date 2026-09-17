@@ -14,8 +14,10 @@ const ARRIVAL_MARKER: u64 = 4;
 #[derive(Default)]
 pub struct Computer {
     pilot: Pilot,
+    planner: crate::world::Planner,
     hardware: Hardware,
     weapons: crate::weapons::WeaponsController,
+    scan_window: crate::budget::ScanWindow,
 }
 
 impl Computer {
@@ -37,13 +39,46 @@ impl Computer {
             propellant_kg,
         };
         let mut contacts = [abi::Contact::default(); abi::MAX_CONTACTS as usize];
-        let count = self
+        let scan_limit = self.scan_window.limit(sdk::budget()?);
+        let mut count = self
             .hardware
             .devices
             .iter()
             .find(|device| device.info.kind == abi::DEVICE_SENSOR && device.available())
-            .and_then(|sensor| sdk::scan(sensor.info.id, &mut contacts).ok())
+            .and_then(|sensor| sdk::scan(sensor.info.id, &mut contacts[..scan_limit]).ok())
             .unwrap_or(0);
+        self.scan_window.observed(scan_limit, count);
+        let travel_contact = self.planner.update(tick.tick).ok().flatten();
+        if let Some(contact) = travel_contact {
+            count = count.min(contacts.len() - 1);
+            contacts[count] = contact;
+            count += 1;
+            if self
+                .pilot
+                .navigation
+                .target
+                .as_ref()
+                .is_none_or(|target| target.id != u64::MAX)
+                || !self.pilot.navigation.phase.active()
+            {
+                let _ = self
+                    .pilot
+                    .navigation
+                    .select(u64::MAX, &contacts[..count], &sample);
+                let _ = self.pilot.navigation.start(1., 0., sample.radius_m);
+            }
+        } else if self
+            .pilot
+            .navigation
+            .target
+            .as_ref()
+            .is_some_and(|target| target.id == u64::MAX)
+        {
+            self.pilot.navigation.abort();
+        }
+        if let Some(rotation) = self.planner.docking_attitude {
+            self.pilot.hold = Some(glam::DQuat::from_array(rotation));
+        }
         self.weapons.observe(&sample, &contacts[..count]);
         self.pilot
             .observe(&sample, &self.hardware, &contacts[..count]);
@@ -320,4 +355,56 @@ extern "C" fn ship_tick() {
         .get_or_insert_with(Computer::default)
         .run()
         .expect("flight computer syscall failed");
+}
+
+#[cfg(feature = "firmware")]
+#[unsafe(no_mangle)]
+extern "C" fn ship_display() {
+    let _ = draw_display();
+}
+
+#[cfg(feature = "firmware")]
+fn draw_display() -> Result<(), i32> {
+    let tick = sdk::tick()?;
+    let flight = sdk::flight()?;
+    let resources = sdk::resources()?;
+    for slot in 0..8 {
+        if tick.requested_screens & (1 << slot) == 0 {
+            continue;
+        }
+        sdk::screen_define(&abi::ScreenDefinition {
+            id: slot,
+            width: 512,
+            height: 256,
+            title: abi::Text64::new("Ship status"),
+        })?;
+        sdk::screen_begin(&abi::ScreenFrame {
+            id: slot,
+            background: 0x03070e,
+        })?;
+        let lines = [
+            "SHIP STATUS".to_string(),
+            format!("SIMULATION {:.1} S", tick.tick as f64 * 0.1),
+            format!(
+                "SPEED {:.2} M/S",
+                glam::DVec3::from_array(flight.velocity).length()
+            ),
+            format!("MASS {:.0} KG", flight.mass_kg),
+            format!("ENERGY {:.2} MJ", resources.energy_j / 1e6),
+        ];
+        for (index, line) in lines.iter().enumerate() {
+            sdk::screen_draw(
+                slot,
+                abi::DRAW_TEXT,
+                &abi::ScreenText {
+                    color: 0x50ff78,
+                    x: 24,
+                    y: 24 + index as i64 * 36,
+                },
+                line.as_bytes(),
+            )?;
+        }
+        sdk::screen_end(slot)?;
+    }
+    Ok(())
 }

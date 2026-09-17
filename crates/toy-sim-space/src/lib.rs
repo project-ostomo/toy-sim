@@ -227,3 +227,19 @@ mod tests {
         );
     }
 }
+
+/// A helper trait for conversion from meters to micrometers.
+pub trait ToMicrometersExt {
+    fn to_micrometers(self) -> GalacticPosition;
+}
+
+impl ToMicrometersExt for Vec3 {
+    fn to_micrometers(self) -> GalacticPosition {
+        GalacticPosition::from_meters(self.as_dvec3())
+    }
+}
+impl ToMicrometersExt for DVec3 {
+    fn to_micrometers(self) -> GalacticPosition {
+        GalacticPosition::from_meters(self)
+    }
+}

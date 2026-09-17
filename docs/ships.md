@@ -2,7 +2,7 @@
 
 A ship is a set of box-shaped parts placed on a grid, plus integrated standard avionics and a flight computer program. This guide covers the data model and the native hardware simulation in [toy-sim-ships](../crates/toy-sim-ships). It also describes how the simulator runs ships and what the standard firmware does.
 
-Related guides: [ship-editor.md](ship-editor.md) for building designs, [ship-abi.md](ship-abi.md) for firmware, [weapons.md](weapons.md), [collisions.md](collisions.md), and the ECS adapter notes in [apps/toy-sim/src/vessel/README.md](../apps/toy-sim/src/vessel/README.md).
+Related guides: [ship-editor.md](ship-editor.md) for building designs, [ship-abi.md](ship-abi.md) for firmware, [weapons.md](weapons.md), [collisions.md](collisions.md), and the [server architecture](server-client.md).
 
 ## The catalogue
 
@@ -204,6 +204,12 @@ HP loss per second = maximum_HP · 0.1 · max(0, stored_heat / budget − 1)²
 
 Hull impacts also cause immediate structural damage at 1 HP per 100 kJ and add their energy to the internal buffer. Backup cooling removes up to `2000 W · exposed_area_m²` from that buffer. The model treats this as a fixed capacity for auxiliary radiators.
 
+### Shield appearance
+
+The shared renderer draws shields with an analytic spherical shell shader. The edge is antialiased and independent of mesh tessellation. Shell path length determines visible transmission and temperature-dependent emission, giving a brighter rim and a clearer center. Opaque scene depth clips the shell behind the hull. The default shell thickness is 2% of radius, with a visible optical depth of 0.000005 through both central walls at full strength. These visual parameters are independent of the simulation's effective radiator emissivity.
+
+The `thermal_shield` example in `toy-sim-ship-view` provides a standalone visual check. `THERMAL_TEMPERATURE_K`, `THERMAL_RADIUS`, `THERMAL_CAMERA_DISTANCE`, and `THERMAL_STRENGTH` control the scene. It defaults to 3500 K and an exterior camera; a camera distance below the radius tests an interior view.
+
 ### Shield coolant
 
 A shield generator specifies its deployed coolant mass, effective emitting area, replenishment throughput and electrical power. Separate `coolant_tank` parts add reserve mass. Tanks and the deployed circuit start full; their coolant contributes to ship mass, and material lost through evaporation or interception leaves the ship.
@@ -244,7 +250,7 @@ The six states are absent, off, active, depleted, unpowered and blocked. Activat
 
 ## Ships in the simulator
 
-The simulator spawns ships from the fixed startup scenario (see the [README](../README.md#what-happens-at-startup)). Once per 10 Hz tick, each ship's computer receives an observation, its commands are applied, and hardware is stepped before gravity and integration. The full sequence is in [apps/toy-sim/src/vessel/README.md](../apps/toy-sim/src/vessel/README.md).
+The simulator spawns ships from the fixed startup scenario (see the [README](../README.md#what-happens-at-startup)). Once per 10 Hz tick, each ship's computer receives an observation, its commands are applied, and typed hardware ECS systems apply resource allocation and actuation before gravity and integration. The full sequence is in [server-client.md](server-client.md).
 
 GUI windows for the controlled ship:
 
@@ -264,10 +270,13 @@ The two "Reset encounter" buttons behave differently. In Hardware diagnostics, i
 1. Reads the tick context. It then discovers resources and devices, up to 16 records per callback, until discovery completes. Requests wait in the host until then.
 2. Reads every device, the flight state and propellant mass.
 3. Scans up to 256 contacts with the first available sensor.
-4. Replies to each request (below).
-5. Runs attitude control and allocation, then weapons control.
-6. Publishes the attitude, navigation, contacts and weapons instruments with 2 s leases. Also publishes a target marker, plus forecast paths when the client shows interest.
-7. Sets the callback interval to 0, so it runs every tick.
+4. Runs the travel planner through server world services. It pages through public beacons, searches routes across multiple paired gates, checks slip eligibility and guides the ship through each accepted leg. Planning work is bounded across callbacks ([server-client.md](server-client.md#docking-and-travel)).
+5. Replies to each request (below).
+6. Runs attitude control and allocation, then weapons control.
+7. Publishes the attitude, navigation, contacts and weapons instruments with 2 s leases. Also publishes a target marker, plus forecast paths when the client shows interest.
+8. Sets the callback interval to 0, so it runs every tick.
+
+The firmware also exports `ship_display`, which draws a "Ship status" text screen when a client subscribes ([mfds.md](mfds.md#over-the-network)). Remote and debug clients use the same display path.
 
 Requests and their effect:
 

@@ -3,9 +3,7 @@ mod font;
 mod geometry;
 use bevy_egui::egui;
 pub use font::{MfdFontPlugin, install as install_font};
-use toy_sim_ship_wasm::screens::{
-    BezelKey, Draw, FONT_HEIGHT, FONT_WIDTH, Ink, ScreenId, ScreenImage,
-};
+use toy_sim_model::drawing::{BezelKey, Draw, FONT_HEIGHT, FONT_WIDTH, Ink, ScreenId, ScreenImage};
 
 fn rgb(c: Ink) -> egui::Color32 {
     egui::Color32::from_rgb(c[0], c[1], c[2])

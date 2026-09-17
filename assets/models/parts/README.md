@@ -27,6 +27,6 @@ When `model` is set, the simulator ([toy-sim-ship-view/src/lib.rs](../../../crat
 
 ## What a model does not change
 
-Models are visual only. Mass, inertia, collision geometry, exposed area, connectivity and overlap checks all use the box given by `dimensions` ([design.rs](../../../crates/toy-sim-ships/src/design.rs), [collision/mod.rs](../../../apps/toy-sim/src/physics/collision/mod.rs)). Explosion fragments are also boxes coloured with `color`.
+Models are visual only. Mass, inertia, collision geometry, exposed area, connectivity and overlap checks all use the box given by `dimensions` ([design.rs](../../../crates/toy-sim-ships/src/design.rs), [collision/mod.rs](../../../crates/toy-sim-server/src/sim/physics/collision/mod.rs)). Explosion fragments are also boxes coloured with `color`.
 
 The catalogue is compiled into the binaries with `include_str!`. After editing it, rebuild both applications. See [docs/asset-workflow.md](../../../docs/asset-workflow.md) for the full editing workflow.

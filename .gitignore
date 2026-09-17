@@ -1,4 +1,5 @@
 /target
+/demo/
 
 # Downloaded source data; retain the compact runtime catalogue instead.
 /crates/toy-sim-stars/data/*.csv

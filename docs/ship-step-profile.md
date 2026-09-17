@@ -1,9 +1,6 @@
 # Ship-step measurements
 
-These are historical measurements. Automatic startup pursuit has since been
-removed; the current fleet benchmark defaults to coasting traffic in every mode.
-The game now spawns two ships; the benchmark explicitly retains the historical
-501-ship orbital fixture.
+These measurements describe retired fixtures and older ABIs. They are retained as historical results and do not measure the current server/client implementation. Use the process benchmark documented in [server-client.md](server-client.md) for current simulation, transport, CPU and RSS measurements. Its results must be interpreted using the configured ship count, sessions and build profile.
 
 ## Standard avionics and native instruments (ABI 6)
 
