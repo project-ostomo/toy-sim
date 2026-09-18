@@ -187,10 +187,10 @@ pub fn fire(
         } else {
             0.0
         };
-    if ship.inventory.quantities[0] < required_propellant {
+    if ship.inventory.available(0) < required_propellant {
         flags |= abi::WEAPON_PROPELLANT;
     }
-    if spec.beam_power_w == 0.0 && ship.inventory.quantities[resource] < 1.0 {
+    if spec.beam_power_w == 0.0 && ship.inventory.quantities[resource] < 1 {
         flags |= abi::WEAPON_AMMO;
     }
     if state.next_fire_s > now + 1e-8 {
@@ -226,16 +226,38 @@ pub fn fire(
     let pivot = body.rotation * body.members[member].local_position
         + part_rotation * (part.centre - ship.design.centre)
         + mount * DVec3::from_array(spec.pivot_device_m);
-    let muzzle = pivot + barrel * DVec3::from_array(spec.muzzle_offset_m);
-    if !clear_muzzle(
-        body,
-        member,
-        part_index,
-        ship,
-        pivot,
-        muzzle,
-        spec.projectile_radius_m,
-    ) {
+    let physical_muzzle = pivot + barrel * DVec3::from_array(spec.muzzle_offset_m);
+    let direction = barrel * DVec3::NEG_Z;
+    let member_pose = pose(
+        body.rotation * body.members[member].local_position,
+        body.rotation * body.members[member].local_rotation,
+    );
+    let hull = &body.members[member].geometry.hull;
+    let mut muzzle = physical_muzzle;
+    // A sub-metre barrel can end inside the conservative voxel envelope. Clear
+    // that envelope, while the real part geometry still vetoes obstructed fire.
+    for _ in 0..8 {
+        if !hull.contains_point(&member_pose, vector(muzzle)) {
+            break;
+        }
+        let ray = query::Ray::new(vector(muzzle), vector(direction));
+        let Some(exit) = hull.cast_ray(&member_pose, &ray, 3., false) else {
+            break;
+        };
+        muzzle += direction * (exit + spec.projectile_radius_m * 2. + 0.001);
+    }
+    if (muzzle - physical_muzzle).length() > 3.
+        || hull.contains_point(&member_pose, vector(muzzle))
+        || !clear_muzzle(
+            body,
+            member,
+            part_index,
+            ship,
+            pivot,
+            muzzle,
+            spec.projectile_radius_m,
+        )
+    {
         ship.weapons[index].inhibit_flags = abi::WEAPON_BLOCKED;
         return None;
     }
@@ -272,6 +294,7 @@ pub fn fire(
     let sine = (1.0 - cosine * cosine).sqrt();
     let direction = barrel * DVec3::new(sine * angle.cos(), sine * angle.sin(), -cosine);
     let mass = spec.projectile_mass_kg;
+    let propellant = toy_sim_ships::stochastic_units(propellant) as f64;
     let removed_mass = mass + propellant;
     let remaining = body.mass - removed_mass;
     if remaining <= 0.0 {
@@ -284,19 +307,24 @@ pub fn fire(
     let momentum_after = body.momentum * (remaining / body.mass);
     let kinetic = 0.5 * mass * spec.muzzle_speed_m_s.powi(2);
     let energy = shot_energy(&spec);
-    if !kinetic.is_finite() || kinetic < 0.0 || kinetic > energy {
+    let supplied = if spec.chemical != 0 {
+        kinetic / spec.efficiency
+    } else {
+        energy
+    };
+    if !kinetic.is_finite() || kinetic < 0.0 || kinetic > supplied {
         state.inhibit_flags = abi::WEAPON_ENERGY;
         return None;
     }
-    let heat = energy - kinetic;
+    let heat = supplied - kinetic;
     let projectile = allocate();
     let position = body.position.offset_by(muzzle);
     let velocity = body.velocity + relative;
     ship.inventory.energy_j -= energy;
     state.next_fire_s = now + spec.cycle_interval_s;
     state.shots_fired += 1;
-    ship.inventory.quantities[resource] -= 1.0;
-    ship.inventory.quantities[0] -= propellant;
+    ship.inventory.quantities[resource] -= 1;
+    ship.inventory.consume(0, propellant);
     body.momentum = momentum_after;
     body.mass = remaining;
     body.inertia_inv = inverse_after;
@@ -521,6 +549,47 @@ mod tests {
     }
 
     #[test]
+    fn conventional_gun_fires_at_full_rate_without_battery_or_counter_propellant() {
+        let mut world = World::new();
+        let (mut body, mut ship) = armed(&mut world);
+        let spec = Catalogue::builtin()
+            .part("autocannon_compact")
+            .unwrap()
+            .clone();
+        let toy_sim_ships::Equipment::Weapon { weapon } = spec.equipment else {
+            unreachable!()
+        };
+        let spec = weapon.spec(&Catalogue::builtin()).unwrap();
+        Arc::make_mut(&mut ship.design).weapon_specs[0] = spec;
+        ship.inventory.energy_j = 0.0;
+        ship.inventory.quantities.fill(0);
+        let ammo = spec.ammunition_resource as usize - 1;
+        ship.inventory.quantities[ammo] = 10;
+        let heat = body.members[0].thermal.hull_energy_j;
+        let mut report = Report::default();
+        for shot in 0..4 {
+            assert!(
+                fire(
+                    &mut body,
+                    0,
+                    0,
+                    &mut ship,
+                    0.0,
+                    shot as f64 * 0.025,
+                    &mut || world.spawn_empty().id(),
+                    &mut report
+                )
+                .is_some()
+            );
+        }
+        assert_eq!(ship.weapons[0].shots_fired, 4);
+        assert_eq!(ship.inventory.quantities[ammo], 6);
+        assert_eq!(ship.inventory.quantities[0], 0);
+        assert_eq!(ship.inventory.energy_j, 0.0);
+        assert!(body.members[0].thermal.hull_energy_j > heat);
+    }
+
+    #[test]
     fn laser_consumes_only_electricity_and_heats_its_emitter() {
         let mut world = World::new();
         let (mut body, mut ship) = armed(&mut world);
@@ -530,7 +599,7 @@ mod tests {
         spec.ammunition_resource = 0;
         spec.efficiency = 0.5;
         spec.cycle_interval_s = 0.1;
-        ship.inventory.quantities.fill(0.0);
+        ship.inventory.quantities.fill(0);
         ship.inventory.energy_j = 1000.0;
         let mass = body.mass;
         let heat = body.members[0].thermal.hull_energy_j;
@@ -626,10 +695,13 @@ mod tests {
                 - before.members[0].thermal.shield_energy_j;
             let spent = before_energy - ship.inventory.energy_j;
             assert!((kinetic + heat - spent).abs() < 0.01);
-            assert!((body.mass + projectile.mass + propellant - before.mass).abs() < 1e-8);
-            assert!((ship.inventory.quantities[0] - (before_ammo[0] - propellant)).abs() < 1e-9);
+            let actual_propellant = (before_ammo[0] - ship.inventory.quantities[0]) as f64;
+            assert!((body.mass + projectile.mass + actual_propellant - before.mass).abs() < 1e-8);
+            assert!(
+                (ship.inventory.available(0) - (before_ammo[0] as f64 - propellant)).abs() < 1.0
+            );
             let ammo = ship.design.weapon_specs[0].ammunition_resource as usize - 1;
-            assert_eq!(ship.inventory.quantities[ammo], before_ammo[ammo] - 1.0);
+            assert_eq!(ship.inventory.quantities[ammo], before_ammo[ammo] - 1);
         }
     }
 
@@ -645,10 +717,10 @@ mod tests {
             let (mut body, mut ship) = armed(&mut world);
             match expected {
                 abi::WEAPON_ENERGY => ship.inventory.energy_j = 0.0,
-                abi::WEAPON_PROPELLANT => ship.inventory.quantities[0] = 0.0,
+                abi::WEAPON_PROPELLANT => ship.inventory.quantities[0] = 0,
                 abi::WEAPON_AMMO => {
                     let resource = ship.design.weapon_specs[0].ammunition_resource as usize - 1;
-                    ship.inventory.quantities[resource] = 0.0;
+                    ship.inventory.quantities[resource] = 0;
                 }
                 _ => {
                     let mut obstruction = body.members[0].clone();

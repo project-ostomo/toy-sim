@@ -56,7 +56,6 @@ pub fn install_ship(
                 public: false,
                 allowed: Default::default(),
                 reservation: None,
-                occupant: None,
             }),
             _ => {}
         }
@@ -205,8 +204,7 @@ fn consume(inventory: &mut Inventory, cat: &Catalogue, resource: &str, mass: f64
     let Some(index) = cat.resources.iter().position(|r| r.id == resource) else {
         return 0.;
     };
-    let units = (mass / cat.resources[index].mass_kg).min(inventory.quantities[index]);
-    inventory.quantities[index] -= units;
+    let units = inventory.consume(index, mass / cat.resources[index].mass_kg);
     units * cat.resources[index].mass_kg
 }
 
@@ -217,12 +215,11 @@ pub fn service_docked(
         (
             Entity,
             &DockServices,
-            &DockingBays,
+            &crate::sim::travel::StoredShips,
             &crate::sim::identity::Control,
         ),
         Without<Dormant>,
     >,
-    identities: Option<Res<crate::sim::identity::IdentityIndex>>,
     ships: Query<(
         &ShipDesign,
         &crate::sim::identity::Control,
@@ -233,16 +230,10 @@ pub fn service_docked(
     mut masses: Query<&mut MassProps>,
 ) {
     let dt = time.delta_secs_f64();
-    let Some(identities) = identities else {
-        return;
-    };
-    for (host, services, bays, owner) in &hosts {
+    for (host, services, guests, owner) in &hosts {
         let mut cargo_budget = services.cargo_kg_s * dt;
         let mut power_budget = services.power_w * dt;
-        for bay in &bays.0 {
-            let Some(guest) = bay.occupant.and_then(|id| identities.0.get(&id).copied()) else {
-                continue;
-            };
+        for guest in guests.iter() {
             let Ok((design, control, request)) = ships.get(guest) else {
                 continue;
             };
@@ -266,21 +257,19 @@ pub fn service_docked(
                 continue;
             }
             for (i, resource) in cat.0.resources.iter().enumerate() {
-                let missing = (target.0.tank_capacities_m3[i] / resource.volume_m3
-                    - target.0.quantities[i])
-                    .max(0.);
-                let units = missing
-                    .min(source.0.quantities[i])
-                    .min(cargo_budget / resource.mass_kg);
-                if units <= 0. {
+                let room = (design.0.capacity_m3 - target.0.cargo_volume(&cat.0)).max(0.0);
+                let units = source.0.cargo[i]
+                    .min((room / resource.volume_m3).floor() as u64)
+                    .min((cargo_budget / resource.mass_kg).floor() as u64);
+                if units == 0 {
                     continue;
                 }
                 if source
                     .0
-                    .transfer(&mut target.0, i, units, design.0.capacity_m3, &cat.0)
+                    .transfer_cargo(&mut target.0, i, units, design.0.capacity_m3, &cat.0)
                     .is_ok()
                 {
-                    let mass = units * resource.mass_kg;
+                    let mass = units as f64 * resource.mass_kg;
                     cargo_budget -= mass;
                     if let Ok(mut value) = stored.get_mut(host) {
                         value.0 += mass;
@@ -292,6 +281,57 @@ pub fn service_docked(
             }
         }
     }
+}
+
+pub fn transfer_cargo(
+    world: &mut World,
+    source: Entity,
+    destination: Entity,
+    resource: &str,
+    quantity: u64,
+) -> anyhow::Result<()> {
+    use crate::sim::{identity::Identity, travel::PresenceState};
+    use anyhow::{Context, ensure};
+    use toy_sim_model::travel::Presence;
+    ensure!(
+        source != destination && quantity > 0,
+        "choose a different ship and a positive quantity"
+    );
+    let source_id = world
+        .get::<Identity>(source)
+        .context("source ship missing")?
+        .0;
+    let target_id = world
+        .get::<Identity>(destination)
+        .context("target ship missing")?
+        .0;
+    let host = |entity| match world.get::<PresenceState>(entity).map(|p| &p.0) {
+        Some(Presence::Docked { host, .. }) => Some(*host),
+        _ => None,
+    };
+    let a = host(source);
+    let b = host(destination);
+    ensure!(
+        a == Some(target_id) || b == Some(source_id) || (a.is_some() && a == b),
+        "cargo transfers require a shared dock"
+    );
+    let cat = world.resource::<ShipCatalogue>().0.clone();
+    let index = cat
+        .resources
+        .iter()
+        .position(|r| r.id == resource)
+        .context("unknown resource")?;
+    let capacity = world
+        .get::<ShipDesign>(destination)
+        .context("target design missing")?
+        .0
+        .capacity_m3;
+    let mut query = world.query::<&mut ShipInventory>();
+    let [mut from, mut to] = query
+        .get_many_mut(world, [source, destination])
+        .context("inventory unavailable")?;
+    from.0
+        .transfer_cargo(&mut to.0, index, quantity, capacity, &cat)
 }
 
 #[cfg(test)]
@@ -419,7 +459,7 @@ mod tests {
             UtilityDef::LifeSupport {
                 capacity: 2,
                 power_w: 100.,
-                supplies_kg_per_person_s: 1.,
+                supplies_kg_per_person_s: 10.,
             },
         );
         let cat = &fixture.app.world().resource::<ShipCatalogue>().0;
@@ -448,8 +488,8 @@ mod tests {
             .people = 2;
         fixture.set_inventory(|i| {
             i.energy_j = 100.;
-            i.quantities[repair] = 1.;
-            i.quantities[supplies] = 0.1;
+            i.quantities[repair] = 1;
+            i.quantities[supplies] = 1;
         });
         step(&mut fixture);
         assert_eq!(
@@ -473,7 +513,7 @@ mod tests {
         let mut fixture = HardwareFixture::standard();
         let cat = fixture.app.world().resource::<ShipCatalogue>().0.clone();
         let mut source = Inventory::empty(&cat);
-        source.quantities[0] = 100.;
+        source.cargo[0] = 100;
         source.energy_j = 1000.;
         let mut target = Inventory::empty(&cat);
         target.tank_capacities_m3[0] = 1.;
@@ -516,9 +556,13 @@ mod tests {
                 public: false,
                 allowed: Default::default(),
                 reservation: None,
-                occupant: Some(guest_id),
             }]),
         ));
+        fixture
+            .app
+            .world_mut()
+            .entity_mut(guest)
+            .insert(crate::sim::travel::DockedIn(fixture.ship));
         fixture
             .app
             .world_mut()
@@ -540,8 +584,8 @@ mod tests {
                 .get::<ShipInventory>(guest)
                 .unwrap()
                 .0
-                .quantities[0],
-            0.
+                .cargo[0],
+            0
         );
         fixture
             .app
@@ -563,8 +607,8 @@ mod tests {
             .unwrap()
             .0;
         let dst = &fixture.app.world().get::<ShipInventory>(guest).unwrap().0;
-        assert_eq!(src.quantities[0] + dst.quantities[0], 100.);
-        assert_eq!(dst.quantities[0] * cat.resources[0].mass_kg, 10.);
+        assert_eq!(src.cargo[0] + dst.cargo[0], 100);
+        assert_eq!(dst.cargo[0] as f64 * cat.resources[0].mass_kg, 10.);
         assert_eq!(src.energy_j + dst.energy_j, 1000.);
         assert_eq!(dst.energy_j, 100.);
         assert_eq!(

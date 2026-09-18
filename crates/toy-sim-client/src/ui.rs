@@ -65,6 +65,8 @@ mod tests {
 
     pub(super) fn ship(id: Id) -> OwnedShip {
         OwnedShip(ShipTelemetry {
+            appearance: None,
+            radius_m: 10.,
             dock_services: Default::default(),
             info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {

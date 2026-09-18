@@ -8,16 +8,26 @@ use crate::Catalogue;
 /// Prototype counter-exhaust: ten percent of projectile mass, in kg of propellant.
 /// Exhaust energy and momentum are deliberately not simulated.
 pub fn shot_propellant_kg(spec: &abi::WeaponSpec) -> f64 {
-    if spec.beam_power_w > 0.0 {
+    if spec.beam_power_w > 0.0 || spec.chemical != 0 {
         0.0
     } else {
         spec.projectile_mass_kg * 0.1
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WeaponDrive {
+    #[default]
+    Electric,
+    Chemical,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponDef {
+    #[serde(default)]
+    pub drive: WeaponDrive,
     #[serde(default)]
     pub laser: Option<LaserDef>,
     pub ammunition: String,
@@ -46,6 +56,7 @@ impl WeaponDef {
             .or_else(|| self.laser.as_ref().map(|_| 0))?;
         let turret = self.slew_rate_rad_s > 0.0;
         Some(abi::WeaponSpec {
+            chemical: u64::from(self.drive == WeaponDrive::Chemical),
             ammunition_resource: if self.laser.is_some() {
                 0
             } else {
@@ -78,6 +89,9 @@ impl WeaponDef {
     }
 
     pub fn valid(&self) -> bool {
+        if self.laser.is_some() && self.drive == WeaponDrive::Chemical {
+            return false;
+        }
         if self.laser.as_ref().is_some_and(|laser| {
             !laser.optical_power_w.is_finite()
                 || laser.optical_power_w <= 0.0
@@ -125,6 +139,9 @@ pub struct WeaponState {
 }
 
 pub fn shot_energy(spec: &abi::WeaponSpec) -> f64 {
+    if spec.chemical != 0 {
+        return 0.0;
+    }
     if spec.beam_power_w > 0.0 {
         spec.beam_power_w * spec.cycle_interval_s / spec.efficiency
     } else {

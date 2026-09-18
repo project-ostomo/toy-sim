@@ -285,14 +285,15 @@ fn update(
     let next = cameras
         .iter()
         .filter(|(_, camera, transform, view, _)| {
-            view.snapshot.as_ref().is_none_or(|snapshot| {
-                !snapshot.valid(
-                    camera.origin.offset_by(transform.translation.as_dvec3()),
-                    magnitude,
-                    view.revision,
-                    0,
-                )
-            })
+            !camera.private
+                && view.snapshot.as_ref().is_none_or(|snapshot| {
+                    !snapshot.valid(
+                        camera.origin.offset_by(transform.translation.as_dvec3()),
+                        magnitude,
+                        view.revision,
+                        0,
+                    )
+                })
         })
         .min_by_key(|(_, _, _, view, _)| view.last_job);
     let Some((camera, view, transform, sky, systems)) = next else {

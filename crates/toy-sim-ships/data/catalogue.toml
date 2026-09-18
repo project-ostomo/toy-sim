@@ -16,6 +16,7 @@ mass_kg = 0.01
 volume_m3 = 0.000002
 [[parts]]
 id = "structure"
+tank_volume_m3 = 0.8
 title = "Hull block"
 dimensions = [10,10,10]
 mass_kg = 100.0
@@ -842,46 +843,6 @@ range_m = 1000000000.0
 power_w = 1000000.0
 active = true
 
-[[parts]]
-id = "beacon_4m"
-title = "4m Subspace beacon"
-dimensions = [40, 40, 80]
-mass_kg = 5000.0
-hull = 5000.0
-color = [0.45, 0.5, 0.56]
-model = "models/parts/beacon-4m.glb"
-kind = "utility"
-[parts.utility]
-type = "beacon"
-power_w = 2000000.0
-
-[[parts]]
-id = "docking_port_2m"
-title = "2m Docking port"
-dimensions = [20, 20, 10]
-mass_kg = 400.0
-hull = 400.0
-color = [0.45, 0.5, 0.56]
-model = "models/parts/docking-port-2m.glb"
-kind = "utility"
-[parts.utility]
-type = "docking"
-radius_m = 4.0
-mass_capacity_kg = 100000.0
-
-[[parts]]
-id = "hangar_8m"
-title = "8m Hangar bay"
-dimensions = [80, 80, 160]
-mass_kg = 20000.0
-hull = 20000.0
-color = [0.45, 0.5, 0.56]
-model = "models/parts/hangar-8m.glb"
-kind = "utility"
-[parts.utility]
-type = "docking"
-radius_m = 3.5
-mass_capacity_kg = 1000000.0
 
 [[parts]]
 id = "crew_4m"
@@ -1289,3 +1250,175 @@ efficiency = 0.5
 dispersion_half_angle_rad = 0.0001
 muzzle_offset_m = [0.0, 0.0, -0.8]
 slew_rate_rad_s = 0.0
+
+[[resources]]
+id = "autocannon_round"
+title = "20 mm autocannon cartridges"
+mass_kg = 0.1
+volume_m3 = 0.00004
+storage = { class = "charges", usable_fraction = 0.85, containment_kg_m3 = 15.0 }
+
+[[parts]]
+id = "autocannon_compact"
+title = "20 mm point-defense autocannon"
+dimensions = [5, 5, 10]
+model = "models/parts/railgun-2m.glb"
+model_scale = 0.2
+mass_kg = 45.0
+hull = 100.0
+color = [0.40, 0.48, 0.55]
+kind = "weapon"
+[parts.weapon]
+drive = "chemical"
+ammunition = "autocannon_round"
+projectile_radius_m = 0.01
+muzzle_speed_m_s = 1100.0
+cycle_interval_s = 0.025
+efficiency = 0.35
+dispersion_half_angle_rad = 0.001
+muzzle_offset_m = [0.0, 0.0, -0.55]
+slew_rate_rad_s = 6.0
+
+[[parts]]
+id = "station_core_32m"
+collision = { shape = "cylinder" }
+title = "32m station backbone"
+dimensions = [320, 320, 640]
+mass_kg = 250000.0
+hull = 250000.0
+color = [0.38, 0.42, 0.45]
+model = "models/stations/station-core-32m.glb"
+kind = "structure"
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0, 0.0, -32.0], normal = [0.0, 0.0, -1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0, 0.0, 32.0], normal = [0.0, 0.0, 1.0] },
+{ name = "left", connector = "equipment", position_m = [-16.0, 0.0, 0.0], normal = [-1.0, 0.0, 0.0] },
+{ name = "right", connector = "equipment", position_m = [16.0, 0.0, 0.0], normal = [1.0, 0.0, 0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0, 16.0, 0.0], normal = [0.0, 1.0, 0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0, -16.0, 0.0], normal = [0.0, -1.0, 0.0] }
+]
+tank_volume_m3 = 8000.0
+
+[[parts]]
+id = "station_end_32m"
+title = "32m station bulkhead"
+dimensions = [320, 320, 80]
+mass_kg = 50000.0
+hull = 50000.0
+color = [0.38, 0.42, 0.45]
+model = "models/stations/station-end-32m.glb"
+kind = "structure"
+nodes = [
+{ name = "aft", connector = "station_backbone", position_m = [0.0, 0.0, 4.0], normal = [0.0, 0.0, 1.0] },
+{ name = "left", connector = "equipment", position_m = [-16.0, 0.0, 0.0], normal = [-1.0, 0.0, 0.0] },
+{ name = "right", connector = "equipment", position_m = [16.0, 0.0, 0.0], normal = [1.0, 0.0, 0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0, 16.0, 0.0], normal = [0.0, 1.0, 0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0, -16.0, 0.0], normal = [0.0, -1.0, 0.0] }
+]
+
+[[parts]]
+id = "station_habitat_200m"
+collision = { shape = "hub_and_rings", hub_radius_m = 16.0, inner_radius_m = 88.0, outer_radius_m = 100.0, ring_offset_m = 13.0, ring_half_depth_m = 5.0 }
+title = "200m counter-rotating habitat"
+dimensions = [2000, 2000, 480]
+mass_kg = 2000000.0
+hull = 2000000.0
+color = [0.38, 0.42, 0.45]
+model = "models/stations/station-habitat-200m.glb"
+kind = "utility"
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0, 0.0, -24.0], normal = [0.0, 0.0, -1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0, 0.0, 24.0], normal = [0.0, 0.0, 1.0] },
+{ name = "left", connector = "equipment", position_m = [-16.0, 0.0, 0.0], normal = [-1.0, 0.0, 0.0] },
+{ name = "right", connector = "equipment", position_m = [16.0, 0.0, 0.0], normal = [1.0, 0.0, 0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0, 16.0, 0.0], normal = [0.0, 1.0, 0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0, -16.0, 0.0], normal = [0.0, -1.0, 0.0] }
+]
+[parts.utility]
+type = "crew"
+capacity = 10000
+
+[[parts]]
+id = "station_hangar_64m"
+collision = { shape = "hangar", inner_radius_m = 28.0, rear_depth_m = 10.0 }
+title = "64m station docking hangar"
+dimensions = [640, 640, 960]
+mass_kg = 800000.0
+hull = 800000.0
+color = [0.38, 0.42, 0.45]
+model = "models/stations/station-hangar-64m.glb"
+kind = "utility"
+nodes = [
+{ name = "aft", connector = "station_backbone", position_m = [0.0, 0.0, 48.0], normal = [0.0, 0.0, 1.0] },
+{ name = "left", connector = "equipment", position_m = [-32.0, 0.0, 0.0], normal = [-1.0, 0.0, 0.0] },
+{ name = "right", connector = "equipment", position_m = [32.0, 0.0, 0.0], normal = [1.0, 0.0, 0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0, 32.0, 0.0], normal = [0.0, 1.0, 0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0, -32.0, 0.0], normal = [0.0, -1.0, 0.0] }
+]
+[parts.utility]
+type = "docking"
+radius_m = 25.0
+mass_capacity_kg = 100000000.0
+
+[[parts]]
+id = "station_beacon_48m"
+collision = { shape = "hub_and_rings", hub_radius_m = 16.0, inner_radius_m = 16.1, outer_radius_m = 24.0, ring_offset_m = 26.0, ring_half_depth_m = 13.0 }
+title = "Station subspace beacon"
+dimensions = [480, 480, 640]
+mass_kg = 250000.0
+hull = 250000.0
+color = [0.38, 0.42, 0.45]
+model = "models/stations/station-beacon-48m.glb"
+kind = "utility"
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0, 0.0, -32.0], normal = [0.0, 0.0, -1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0, 0.0, 32.0], normal = [0.0, 0.0, 1.0] },
+{ name = "left", connector = "equipment", position_m = [-16.0, 0.0, 0.0], normal = [-1.0, 0.0, 0.0] },
+{ name = "right", connector = "equipment", position_m = [16.0, 0.0, 0.0], normal = [1.0, 0.0, 0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0, 16.0, 0.0], normal = [0.0, 1.0, 0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0, -16.0, 0.0], normal = [0.0, -1.0, 0.0] }
+]
+[parts.utility]
+type = "beacon"
+power_w = 5000000.0
+
+[[parts]]
+id = "torquer_agile"
+title = "Agile patrol attitude actuator"
+dimensions = [10, 10, 10]
+model = "models/parts/torquer-1m.glb"
+mass_kg = 180.0
+hull = 200.0
+color = [0.40, 0.48, 0.55]
+kind = "torquer"
+torque_nm = 1000000.0
+power_w = 2000000.0
+
+[[parts]]
+id = "station_life_support_8m"
+title = "Station life support plant"
+dimensions = [80,80,80]
+mass_kg = 60000.0
+hull = 60000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/life-support-2m.glb"
+model_scale = 4.0
+kind = "utility"
+[parts.utility]
+type = "life_support"
+capacity = 10000
+power_w = 10000000.0
+supplies_kg_per_person_s = 0.00003
+
+[[parts]]
+id = "radiator_32m"
+title = "32m station radiator"
+dimensions = [320,40,320]
+mass_kg = 9600.0
+hull = 20000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/radiator-8m.glb"
+model_scale = 4.0
+kind = "radiator"
+area_m2 = 2048.0
+emissivity = 0.9

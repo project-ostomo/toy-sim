@@ -1,4 +1,6 @@
 mod instruments;
+mod inventory;
+mod map;
 mod model;
 mod overview;
 mod panels;
@@ -13,7 +15,7 @@ use toy_sim_ui::{bevy_egui::EguiContexts, desktop::*, egui, icons::Icon};
 const SELECTED: WindowSpec = WindowSpec {
     id: "selected",
     title: "SELECTED ITEM",
-    size: egui::vec2(390., 204.),
+    size: egui::vec2(390., 244.),
     min_size: egui::vec2(350., 140.),
     anchor: egui::Align2::RIGHT_TOP,
     offset: egui::Vec2::ZERO,
@@ -25,7 +27,7 @@ const OVERVIEW: WindowSpec = WindowSpec {
     size: egui::vec2(390., 380.),
     min_size: egui::vec2(350., 230.),
     anchor: egui::Align2::RIGHT_TOP,
-    offset: egui::vec2(0., 218.),
+    offset: egui::vec2(0., 258.),
     open: true,
 };
 const SHIP: WindowSpec = WindowSpec {
@@ -43,6 +45,24 @@ const NAVIGATION: WindowSpec = WindowSpec {
     size: egui::vec2(330., 260.),
     min_size: egui::vec2(280., 200.),
     anchor: egui::Align2::LEFT_BOTTOM,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
+const INVENTORY: WindowSpec = WindowSpec {
+    id: "inventory",
+    title: "INVENTORY",
+    size: egui::vec2(510., 390.),
+    min_size: egui::vec2(370., 280.),
+    anchor: egui::Align2::LEFT_TOP,
+    offset: egui::vec2(0., 145.),
+    open: false,
+};
+const MAP: WindowSpec = WindowSpec {
+    id: "map",
+    title: "GATE NETWORK",
+    size: egui::vec2(720., 510.),
+    min_size: egui::vec2(480., 350.),
+    anchor: egui::Align2::CENTER_CENTER,
     offset: egui::Vec2::ZERO,
     open: false,
 };
@@ -75,6 +95,8 @@ enum Sort {
 #[derive(Resource)]
 struct Shell {
     desktop: Desktop,
+    inventory: inventory::State,
+    map: map::State,
     filter: Filter,
     sort: Sort,
     descending: bool,
@@ -110,6 +132,8 @@ impl Default for Shell {
     fn default() -> Self {
         Self {
             desktop: Desktop::default(),
+            inventory: inventory::State::default(),
+            map: map::State::default(),
             filter: Filter::default(),
             sort: Sort::default(),
             descending: false,
@@ -125,6 +149,8 @@ enum Intent {
     Look(Option<SelectedTarget>),
     Align(SelectedTarget),
     Approach(ContactRef, f64),
+    KeepRange(ContactRef, f64),
+    Queue(Vec<travel::Order>, bool),
     Engage(ContactRef),
     Command(ShipCommand, &'static str),
     Orbits(bool),
@@ -149,6 +175,7 @@ fn draw(
     clock: Res<RenderTime>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
+    beacons: Query<(&NavigationObject, &DisplayPose)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     mut views: Query<(
         &ViewObservation,
@@ -186,7 +213,11 @@ fn draw(
                 continue;
             }
             let own = track.entity.is_some_and(|id| Some(id) == selection.ship);
-            if own {
+            if own
+                || track
+                    .entity
+                    .is_some_and(|id| session.navigation.beacons.iter().any(|b| b.id == id))
+            {
                 continue;
             }
             let name = track
@@ -263,10 +294,35 @@ fn draw(
             });
         }
     }
+    for (beacon, pose) in &beacons {
+        let beacon = &beacon.0;
+        let offset = pose.0.position.relative_to(origin);
+        if offset.length() > 1e12 {
+            continue;
+        }
+        rows.push(Row {
+            target: SelectedTarget::Beacon(beacon.id),
+            name: beacon.name.clone(),
+            kind: if beacon.gate_exit.is_some() {
+                "Stargate"
+            } else {
+                "Station"
+            }
+            .into(),
+            offset,
+            distance: offset.length(),
+            speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
+            radius: beacon.radius_m,
+            detail: "Subspace beacon".into(),
+            own: false,
+        });
+    }
     let model = FrameModel {
+        navigation: &session.navigation,
         rows,
         ship: telemetry,
         details,
+        ships: ships.iter().map(|(ship, _, _)| &ship.0).collect(),
         system: system_name,
         vicinity,
         connected: session.world.is_some() && session.status.is_empty(),
@@ -285,11 +341,55 @@ fn draw(
     );
     for intent in intents {
         match intent {
+            Intent::Queue(orders, append) => {
+                if let Some(ship) = telemetry.filter(|_| model.connected) {
+                    let mut queue = if append {
+                        ship.travel
+                            .orders
+                            .iter()
+                            .skip(ship.travel.order)
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    } else {
+                        Vec::new()
+                    };
+                    queue.extend(orders);
+                    if queue.len() > 256 {
+                        continue;
+                    }
+                    let id = outgoing.ship(
+                        ship,
+                        ShipCommand::SetTravel {
+                            expected_revision: ship.travel.revision,
+                            orders: queue,
+                        },
+                    );
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: "Command queue".into(),
+                        last_tick: 0,
+                        error: None,
+                    });
+                }
+            }
             Intent::Select(target) => {
                 selection.target = Some(target);
                 shell.desktop.open(SELECTED);
             }
             Intent::Look(target) => {
+                if let Some(SelectedTarget::Contact(_)) = target {
+                    if !model.rows.iter().any(|row| {
+                        Some(row.target) == target && row.distance <= scene::LOOK_AT_RANGE_M
+                    }) {
+                        shell.feedback = Some(Feedback {
+                            pending: vec![],
+                            label: "Look at".into(),
+                            last_tick: session.tick,
+                            error: Some("Ship is outside camera range (100 km)".into()),
+                        });
+                        continue;
+                    }
+                }
                 for (view, _, mut camera, _) in &mut views {
                     if Some(view.0.id) == selection.view {
                         camera.focus = target;
@@ -335,30 +435,45 @@ fn commands_for(
     let (commands, label) = match intent {
         Intent::Align(target) => {
             let row = rows.iter().find(|row| row.target == target)?;
-            let direction = row.offset.try_normalize()?;
+            row.offset.try_normalize()?;
+            let target = match target {
+                SelectedTarget::Contact(reference) => travel::Target::Contact(reference),
+                SelectedTarget::Beacon(id) => {
+                    travel::Target::Destination(travel::Destination::Beacon(id))
+                }
+                SelectedTarget::Celestial(id) => {
+                    travel::Target::Destination(travel::Destination::Relative {
+                        reference: travel::Reference::Celestial(id),
+                        offset: GalacticPosition::ZERO,
+                        axes: travel::Axes::Galactic,
+                    })
+                }
+            };
             (
-                vec![ShipCommand::Flight(FlightCommand::AimDirection(
-                    direction.to_array(),
-                ))],
+                vec![queue_command(ship, travel::GuidanceMode::Align, target, 0.)],
                 "Align",
             )
         }
-        Intent::Approach(reference, stand_off) => {
+        Intent::Approach(reference, range) | Intent::KeepRange(reference, range) => {
             let row = rows
                 .iter()
                 .find(|row| row.target == SelectedTarget::Contact(reference))?;
             if row.own {
                 return None;
             }
+            let mode = if matches!(intent, Intent::KeepRange(..)) {
+                travel::GuidanceMode::KeepRange
+            } else {
+                travel::GuidanceMode::Approach
+            };
             (
-                vec![
-                    ShipCommand::Flight(FlightCommand::SelectTarget(reference)),
-                    ShipCommand::Flight(FlightCommand::EngageNavigation {
-                        throttle_limit: 1.,
-                        stand_off_m: stand_off.max(row.radius + 100.),
-                    }),
-                ],
-                "Approach",
+                vec![queue_command(
+                    ship,
+                    mode,
+                    travel::Target::Contact(reference),
+                    range.max(row.radius + 100.),
+                )],
+                "Approach / keep range",
             )
         }
         Intent::Engage(reference) => {
@@ -369,12 +484,13 @@ fn commands_for(
                 return None;
             }
             (
-                vec![ShipCommand::EngageWeapons {
-                    group: reference.group,
-                    track: reference.track,
-                    maximum_flight_time_s: 30.,
-                }],
-                "Engage weapons",
+                vec![queue_command(
+                    ship,
+                    travel::GuidanceMode::Engage,
+                    travel::Target::Contact(reference),
+                    1000_f64.max(row.radius + 100.),
+                )],
+                "Engage",
             )
         }
         Intent::Command(command, label) => (vec![command], label),
@@ -385,3 +501,19 @@ fn commands_for(
 
 #[cfg(test)]
 mod tests;
+
+fn queue_command(
+    ship: &ShipTelemetry,
+    mode: travel::GuidanceMode,
+    target: travel::Target,
+    range_m: f64,
+) -> ShipCommand {
+    ShipCommand::SetTravel {
+        expected_revision: ship.travel.revision,
+        orders: vec![travel::Order::Guidance(travel::Guidance {
+            mode,
+            target,
+            range_m,
+        })],
+    }
+}

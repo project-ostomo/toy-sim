@@ -18,6 +18,7 @@ pub struct Computer {
     hardware: Hardware,
     weapons: crate::weapons::WeaponsController,
     scan_window: crate::budget::ScanWindow,
+    queue_engagement: bool,
 }
 
 impl Computer {
@@ -30,7 +31,7 @@ impl Computer {
 
         self.hardware.measure()?;
         let propellant_kg = match self.hardware.propellant {
-            Some(resource) => sdk::resource(resource.id)?.units * resource.unit_mass_kg,
+            Some(resource) => sdk::resource(resource.id)?.units as f64 * resource.unit_mass_kg,
             None => 0.,
         };
         let sample = Sample {
@@ -79,7 +80,34 @@ impl Computer {
         if let Some(rotation) = self.planner.docking_attitude {
             self.pilot.hold = Some(glam::DQuat::from_array(rotation));
         }
+        if let Some(direction) = self.planner.aim_direction {
+            let request = abi::DirectionRequest { direction };
+            let _ = self.pilot.request(
+                abi::REQUEST_AIM_DIRECTION,
+                abi::Record::bytes(&request),
+                &sample,
+                &self.hardware,
+            );
+        }
+        if let Some(enemy) = self.planner.engagement {
+            count = count.min(contacts.len() - 1);
+            contacts[count] = enemy;
+            count += 1;
+        }
         self.weapons.observe(&sample, &contacts[..count]);
+        if let Some(enemy) = self.planner.engagement {
+            let _ = self.weapons.engage(
+                abi::EngageWeaponsRequest {
+                    contact: enemy.id,
+                    maximum_flight_time_s: 30.,
+                },
+                sample.tick.time_s,
+            );
+            self.queue_engagement = true;
+        } else if self.queue_engagement {
+            self.weapons.hold_fire();
+            self.queue_engagement = false;
+        }
         self.pilot
             .observe(&sample, &self.hardware, &contacts[..count]);
 

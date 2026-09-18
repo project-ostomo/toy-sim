@@ -92,19 +92,21 @@ fn resource(cat: &Catalogue, name: &str) -> usize {
 fn convert(
     inventory: &mut Inventory,
     cat: &Catalogue,
-    capacity: f64,
     source: usize,
     target: usize,
     amount: f64,
 ) -> bool {
-    if amount <= 0.0 || inventory.quantities[source] < amount {
+    if amount <= 0.0 || inventory.available(source) < amount {
         return false;
     }
-    inventory.quantities[source] -= amount;
-    if inventory.insert(target, amount, capacity, cat).is_err() {
-        inventory.quantities[source] += amount;
+    if amount.ceil() > inventory.tank_room(target, cat) as f64 {
         return false;
     }
+    let units = stochastic_units(amount).min(inventory.quantities[source]);
+    inventory.quantities[source] -= units;
+    inventory
+        .insert_consumable(target, units, cat)
+        .expect("reserved tank space");
     true
 }
 
@@ -162,15 +164,8 @@ pub(crate) fn generate(
                 0.0
             };
             let fuel_kg =
-                (demand_j / spec.fuel_energy_j_kg).min(hardware.inventory.0.quantities[fuel]);
-            let consumed = if convert(
-                &mut hardware.inventory.0,
-                &cat.0,
-                design.0.capacity_m3,
-                fuel,
-                spent,
-                fuel_kg,
-            ) {
+                (demand_j / spec.fuel_energy_j_kg).min(hardware.inventory.0.available(fuel));
+            let consumed = if convert(&mut hardware.inventory.0, &cat.0, fuel, spent, fuel_kg) {
                 fuel_kg
             } else {
                 0.0
@@ -201,15 +196,8 @@ pub(crate) fn generate(
             hardware.thermal.0.add_waste_heat(removed - electric, dt);
             if consumed > 0.0 && spec.breeding_ratio > 0.0 {
                 let amount =
-                    (consumed * spec.breeding_ratio).min(hardware.inventory.0.quantities[fertile]);
-                convert(
-                    &mut hardware.inventory.0,
-                    &cat.0,
-                    design.0.capacity_m3,
-                    fertile,
-                    bred,
-                    amount,
-                );
+                    (consumed * spec.breeding_ratio).min(hardware.inventory.0.available(fertile));
+                convert(&mut hardware.inventory.0, &cat.0, fertile, bred, amount);
             }
             if 300.0 + reactor.core_energy_j / spec.core_heat_capacity_j_k
                 >= spec.meltdown_temperature_k
@@ -224,7 +212,7 @@ pub(crate) fn generate(
                 let output = &mut outputs.0[index];
                 output.actual = electric / dt;
                 output.powered = enabled
-                    && hardware.inventory.0.quantities[fuel] > 0.0
+                    && hardware.inventory.0.available(fuel) > 0.0
                     && (fuel_kg <= 0.0 || consumed > 0.0);
                 output.power.recovered_w = electric / dt;
             }
@@ -284,11 +272,11 @@ pub(crate) fn process(
                 None
             };
             let amount = requested
-                .min(hardware.inventory.0.quantities[source] / fuel_fraction)
+                .min(hardware.inventory.0.available(source) / fuel_fraction)
                 .min(hardware.inventory.0.energy_j / spec.power_w * spec.throughput_kg_s);
             let amount = if let Some(material) = material {
                 amount.min(
-                    hardware.inventory.0.quantities[material]
+                    hardware.inventory.0.available(material)
                         / (1.0 - fuel_fraction).max(f64::MIN_POSITIVE),
                 )
             } else {
@@ -297,31 +285,30 @@ pub(crate) fn process(
             if amount <= 0.0 {
                 continue;
             }
-            let mut next = hardware.inventory.0.clone();
-            next.quantities[source] -= amount * fuel_fraction;
-            if let Some(material) = material {
-                next.quantities[material] -= amount * (1.0 - fuel_fraction);
-            }
-            if next
-                .insert(
-                    target,
-                    amount * spec.recovery_fraction,
-                    design.0.capacity_m3,
-                    &cat.0,
-                )
-                .is_err()
-                || next
-                    .insert(
-                        waste,
-                        amount * (1.0 - spec.recovery_fraction),
-                        design.0.capacity_m3,
-                        &cat.0,
-                    )
-                    .is_err()
+            let units = stochastic_units(amount);
+            let fuel_units = stochastic_units(units as f64 * fuel_fraction).min(units);
+            let material_units = units - fuel_units;
+            let recovered = stochastic_units(units as f64 * spec.recovery_fraction).min(units);
+            let discarded = units - recovered;
+            let energy = units as f64 / spec.throughput_kg_s * spec.power_w;
+            if units == 0
+                || fuel_units > hardware.inventory.0.quantities[source]
+                || material.is_some_and(|i| material_units > hardware.inventory.0.quantities[i])
+                || recovered > hardware.inventory.0.tank_room(target, &cat.0)
+                || discarded > hardware.inventory.0.tank_room(waste, &cat.0)
+                || energy > hardware.inventory.0.energy_j
             {
                 continue;
             }
-            let energy = amount / spec.throughput_kg_s * spec.power_w;
+            let mut next = hardware.inventory.0.clone();
+            next.quantities[source] -= fuel_units;
+            if let Some(material) = material {
+                next.quantities[material] -= material_units;
+            }
+            next.insert_consumable(target, recovered, &cat.0)
+                .expect("reserved tank space");
+            next.insert_consumable(waste, discarded, &cat.0)
+                .expect("reserved tank space");
             next.energy_j -= energy;
             hardware.inventory.0 = next;
             hardware.thermal.0.add_waste_heat(energy, dt);
@@ -354,18 +341,23 @@ mod tests {
         reactor.groups.clear();
         reactor.id = 99;
         blueprint.parts.push(reactor);
-        let catalogue = Catalogue::builtin();
-        let mut z = 0;
+        let mut parent = None;
         for part in &mut blueprint.parts {
-            part.position = [0, 0, z];
-            z += catalogue.part(&part.prototype).unwrap().dimensions[2] as i32;
+            part.attachment = parent.map(|parent| Attachment {
+                parent,
+                socket: "back".into(),
+                plug: "front".into(),
+                roll: 0,
+            });
+            parent = Some(part.id);
         }
         let mut fixture = HardwareFixture::new(blueprint);
         let cat = Catalogue::builtin();
         fixture.set_inventory(|inventory| {
-            inventory.quantities.fill(0.0);
-            inventory.quantities[resource(&cat, "reactor_fuel")] = 1.0;
-            inventory.quantities[resource(&cat, "fertile_feedstock")] = 2.0;
+            inventory.tank_capacities_m3.fill(1.0);
+            inventory.quantities.fill(0);
+            inventory.quantities[resource(&cat, "reactor_fuel")] = 1;
+            inventory.quantities[resource(&cat, "fertile_feedstock")] = 2;
             inventory.energy_j = 1e6;
         });
         fixture
@@ -382,10 +374,15 @@ mod tests {
         let after = fixture.state();
         let used = before.inventory.quantities[resource(&cat, "reactor_fuel")]
             - after.inventory.quantities[resource(&cat, "reactor_fuel")];
-        assert!(used > 0.0);
+        assert_eq!(
+            after.inventory.quantities[resource(&cat, "spent_fuel")],
+            used
+        );
         assert!((after.inventory.mass(&cat) - before.inventory.mass(&cat)).abs() < 1e-9);
-        assert!(
-            (after.inventory.quantities[resource(&cat, "bred_fuel")] - used * 1.05).abs() < 1e-9
+        assert_eq!(
+            after.inventory.quantities[resource(&cat, "bred_fuel")]
+                + after.inventory.quantities[resource(&cat, "fertile_feedstock")],
+            2
         );
         assert!(after.inventory.energy_j > before.inventory.energy_j);
     }
@@ -420,22 +417,28 @@ mod tests {
         let mut fixture = fixture("fuel_processor_4m");
         let cat = Catalogue::builtin();
         fixture.set_inventory(|inventory| {
-            inventory.quantities.fill(0.0);
-            inventory.quantities[resource(&cat, "spent_fuel")] = 1.0;
+            inventory.tank_capacities_m3.fill(1.0);
+            inventory.quantities.fill(0);
+            inventory.quantities[resource(&cat, "spent_fuel")] = 1;
         });
         fixture.advance();
         assert_eq!(
             fixture.state().inventory.quantities[resource(&cat, "reactor_fuel")],
-            0.0
+            0
         );
         fixture.set_inventory(|inventory| {
-            inventory.quantities[resource(&cat, "bred_fuel")] = 0.1;
+            inventory.quantities[resource(&cat, "bred_fuel")] = 1;
             inventory.energy_j = 1e6;
         });
+        {
+            let world = fixture.app.world_mut();
+            let mut q = world.query::<&mut FuelProcessor>();
+            q.single_mut(world).unwrap().0.throughput_kg_s = 10.0;
+        }
         let before = fixture.state();
         fixture.advance();
         let after = fixture.state();
-        assert!(after.inventory.quantities[resource(&cat, "reactor_fuel")] > 0.0);
+        assert!(after.inventory.quantities[resource(&cat, "reactor_fuel")] > 0);
         assert!((before.inventory.mass(&cat) - after.inventory.mass(&cat)).abs() < 1e-9);
         assert!(after.inventory.energy_j < before.inventory.energy_j);
     }
@@ -447,30 +450,28 @@ mod tests {
         let fuel = resource(&cat, "reactor_fuel");
         let material = resource(&cat, "repair_material");
         fixture.advance();
-        assert_eq!(fixture.state().inventory.quantities[charges], 0.0);
+        assert_eq!(fixture.state().inventory.quantities[charges], 0);
         fixture.set_inventory(|inventory| {
-            inventory.quantities[material] = 1.0;
+            inventory.quantities[material] = 1;
             inventory.energy_j = 10e6;
         });
+        {
+            let world = fixture.app.world_mut();
+            let mut q = world.query::<&mut FuelProcessor>();
+            q.single_mut(world).unwrap().0.throughput_kg_s = 10.0;
+        }
         let before = fixture.state();
         fixture.advance();
         let after = fixture.state();
         let produced = after.inventory.quantities[charges];
-        assert!(produced > 0.0);
+        assert_eq!(produced, 1);
         assert!((before.inventory.mass(&cat) - after.inventory.mass(&cat)).abs() < 1e-9);
-        assert!(
-            (before.inventory.quantities[fuel]
-                - after.inventory.quantities[fuel]
-                - produced * 0.01)
-                .abs()
-                < 1e-9
-        );
-        assert!(
-            (before.inventory.quantities[material]
-                - after.inventory.quantities[material]
-                - produced * 0.99)
-                .abs()
-                < 1e-9
+        let used_fuel = before.inventory.quantities[fuel] - after.inventory.quantities[fuel];
+        let used_material =
+            before.inventory.quantities[material] - after.inventory.quantities[material];
+        assert_eq!(
+            used_fuel + used_material,
+            produced + after.inventory.quantities[resource(&cat, "spent_fuel")]
         );
     }
     #[test]

@@ -31,49 +31,50 @@ The window opens at 1400 × 900. Loading or replacing a ship frames its physical
 ## Layout
 
 - **Toolbar:** New, Starter, file path field, Open, Save (shows `Save *` when there are unsaved changes), Undo, Redo, the Assembly / Systems mode switch, and Launch sim.
-- **Left panel:** in Assembly mode, a searchable catalogue with category filters and model thumbnails. Hover a tile for specifications; click it to pick up that part. Rotation and selection controls stay below the scrolling grid. In Systems mode, a short description of the standard avionics.
+- **Left panel:** in Assembly mode, a searchable catalogue with category filters and model thumbnails. Hover a tile for specifications; click it to pick up that part. Rotation, connector selection and selection controls stay below the scrolling catalogue. In Systems mode, a short description of the standard avionics.
 - **Right inspector:** the Part tab shows the picked or selected part, with a larger model preview and grouped physical, performance and resource specifications. The Ship tab contains the ship name, Preview thrust slider, flight computer, firmware import and launch settings.
 - **Centre:** the 3D viewport in Assembly mode, or the systems panel in Systems mode.
 - **Bottom status bar:** the validation result (green summary or red error), the last status message, and a controls reminder in Assembly mode.
 
 The file path field is relative to the working directory. Open replaces the design (you can undo this) and clears the dirty flag. Save writes atomically through a temporary `.ship.tmp` file.
 
-Undo keeps up to 100 previous states. Any edit clears the redo stack. New and Starter are ordinary edits and can be undone.
+Undo keeps up to 100 previous states. Any edit clears the redo stack. New and Starter are ordinary edits and can be undone. Starter loads the small water-NTR patrol.
 
 ## Assembly mode
 
 | Input | Effect |
 | --- | --- |
 | Click a catalogue tile | Pick up a prototype and open its Part inspector |
-| Click in the viewport while placing | Place the ghost part if it does not overlap |
+| Click a matching socket while placing | Attach the preview if the assembly validates |
 | Click in the viewport with nothing selected for placement | Select the nearest part under the cursor, or clear the selection |
 | Right-drag | Orbit the camera |
 | Middle-drag | Pan |
 | Mouse wheel over the viewport | Zoom (distance clamped between 0.3 and 100,000) |
-| R | Advance placement rotation through the 24 orientations |
-| Hold Shift while placing | Snap to a 1 m grid along the placement surface |
-| Delete | Delete the selected part when not placing |
+| R | Rotate around the connection in quarter turns |
+| Delete | Delete the selected part and attached descendants when not placing |
 | Esc | Cancel placement |
 
 Keyboard shortcuts are ignored while a text field has focus.
 
-Placement normally uses the 0.1 m blueprint grid. Holding Shift snaps the part's position to whole metres along the placement surface, while keeping it flush against the attachment face. Releasing Shift restores the finer grid.
+**Placement.** A blueprint has one root at the assembly origin. Pick a catalogue part, choose its plug in the connector selector, then click a cyan marker on a compatible, unused socket. Connector types must match. Hull connections include their size; station backbones use a separate connector type. Parts may expose equipment sockets for weapons and other hardware.
 
-**Placement.** A preview of the actual part geometry follows the cursor. The ghost snaps to the face under the cursor: it is centred on the hit point and pushed flush against that face. When the cursor hits no part, the ghost sits on the y = 0 plane. It is outlined green when free and red when it overlaps a part. Placement checks only overlap; validation reports connectivity problems after the part is added. Placed parts get the next free ID. Device parts get a default alias `<prototype>_<id>`, with a numeric suffix if needed. Structural parts get no alias.
+The actual part model previews the resolved attachment transform, with a green outline when valid and red when rejected. R selects one of four quarter-turn rolls around the connection. The first part becomes the root when you click the empty viewport. Further parts require a socket; there is no placement grid or free surface placement. Collision compilation separately uses a coarse 1 m grid.
+
+Placed parts get the next free ID. Device parts get a default alias `<prototype>_<id>`, with a numeric suffix if needed. Structural parts get no alias.
 
 **Part inspector.** Picking a catalogue part or selecting an installed part opens the Part tab. Hovering other tiles leaves this pane unchanged. Specifications use SI units and describe the equipment type: capacities, thrust or torque, power, consumption, shield properties and weapon ratings. Derived figures include engine exhaust velocity, generator waste heat and weapon energy per shot. RCS consumption is labelled per active axis.
 
-An installed part also offers an editable name (up to 64 characters), grid position, orientation (0 to 23), "Duplicate for placement", and "Delete part". Picking up a prototype preserves the last installed selection; Escape returns to it. Placement remains active after adding a part. Searching or filtering does not change the active placement or edit the blueprint. New, Open and Starter clear placement and selection.
+An installed part offers an editable name (up to 64 characters), its parent socket and plug, a quarter-turn roll slider, "Duplicate for placement", and "Delete part". The root is labelled separately. Picking up a prototype preserves the last installed selection; Escape returns to it. Placement remains active after adding a part. Searching or filtering does not change the active placement or edit the blueprint. New, Open and Starter clear placement and selection.
 
 **Resource tanks.** Select an installed fuselage part and use **Add tank** in its Part inspector. Each tank has a resource, volume in m³, and starting fill slider. The capacity bar shows allocated volume, including empty tank space. The 8m section provides 500 m³ and the end provides 40 m³. The 4m variants provide 62.5 m³ and 5 m³, and the 2m variants provide 7.8125 m³ and 0.625 m³. These provisional capacities are catalogue values. Each part supports up to 32 tanks. Reduce one tank's volume to make room for another. Removing a tank releases its allocation.
 
 The inspector shows each resource's density, loaded mass, and full mass. The Ship tab also shows the total starting tank contents mass. Tank settings survive saving, undo/redo, and duplication. Invalid resource IDs, volumes, fills, or allocations exceeding the part's capacity prevent launch.
 
-Deleting a part also removes it from the actuator exclusion list.
+Deleting a part removes its attached descendants and clears their actuator exclusions. Undo restores the assembly.
 
 **Preview thrust** drives engine plume visuals in the viewport between 0 and 1. It has no effect on the design.
 
-The viewport draws a 40 m reference grid, a yellow outline around the selected part when not placing, and the placement validity outline.
+The viewport draws compatible socket markers, a yellow outline around the selected part when not placing, and the placement validity outline. Habitat rings animate around their fixed hubs in the editor.
 
 Thumbnails share one offscreen atlas, with a 256 × 256 pixel cell per prototype. It uses isolated lighting and fits model bounds into each cell, including weapon barrels and model children that arrive asynchronously. The camera runs only while preview UI is visible. The grid, tooltips and inspector reuse the same texture.
 
@@ -97,7 +98,7 @@ Authority estimates depend only on geometry. The panel notes that power, fuel an
 
 ## Validation
 
-After every change, the editor compiles the blueprint and validates its controller program. On success, the status bar shows `<parts> parts · <dry mass> kg dry · <storage> m³ cargo · <tank space> m³ tank space · <hull> hull`. Otherwise it shows the first error, for example `parts 3 and 5 overlap`, `assembly must be connected by faces`, or `duplicate device alias main_engine`.
+After every change, the editor compiles the blueprint and validates its controller program. On success, the status bar shows `<parts> parts · <dry mass> kg dry · <storage> m³ cargo · <tank space> m³ tank space · <hull> hull`. Otherwise it shows the first error, for example `parts 3 and 5 overlap`, `incompatible connectors`, or `duplicate device alias main_engine`.
 
 ## Launching the simulator
 
@@ -129,3 +130,7 @@ The tests check that `assets/ships/starter.ship` compiles with two weapons and a
 Open `assets/ships/micropulse-demo.ship` in the editor and choose **Launch sim**, or run `cargo run -p toy-sim-debug -- --ship assets/ships/micropulse-demo.ship`. Build the server, debug launcher, and editor together first using the command above.
 
 The demonstrator has an 8m engine, a fuselage tank allocated to micropulse charges at 20% starting fill, a forward cap, battery, command module, shield, coolant reserve, and torquer. All four micropulse engine sizes are also available under Propulsion in the catalogue. For a custom ship, configure a fuselage tank for **Micropulse charges (kg)** and include a battery to start the avionics. Micropulse thrust needs no separate bulk propellant or electrical input. Electricity is recovered while firing; there is no idle generation in this version.
+
+## Station assembly
+
+Open `assets/ships/neris-anchorage.ship` for a complete station or search for station parts in the catalogue. Its cylindrical backbone, habitat hub, docking hangar and beacon connect through station backbone nodes; ship-class weapons attach through equipment nodes. The model library is in `assets/models/stations/station-catalogue.blend`. See [stations-navigation.md](stations-navigation.md) for the catalogue and runtime behavior.

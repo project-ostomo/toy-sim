@@ -40,6 +40,14 @@ pub struct Dormant;
 #[derive(Component, Default)]
 pub struct StoredMass(pub f64);
 
+#[derive(Component)]
+#[relationship(relationship_target = StoredShips)]
+pub struct DockedIn(pub Entity);
+
+#[derive(Component, Default)]
+#[relationship_target(relationship = DockedIn)]
+pub struct StoredShips(Vec<Entity>);
+
 #[derive(Component, Default)]
 pub struct DockingBays(pub Vec<Bay>);
 
@@ -52,7 +60,6 @@ pub struct Bay {
     pub public: bool,
     pub allowed: BTreeSet<AccountId>,
     pub reservation: Option<(EntityId, u64)>,
-    pub occupant: Option<EntityId>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -93,6 +100,8 @@ pub struct Preparation {
 
 #[derive(Component, Clone, Debug)]
 pub struct Transit {
+    pub origin: GalacticPosition,
+    pub departed: u64,
     pub destination: GalacticPosition,
     pub next_attempt: u64,
 }
@@ -254,12 +263,8 @@ fn containment_depth(world: &World, root: Entity) -> Result<usize> {
             "containment limit or cycle"
         );
         maximum = maximum.max(depth);
-        if let Some(bays) = world.get::<DockingBays>(current) {
-            for bay in &bays.0 {
-                if let Some(uuid) = bay.occupant {
-                    pending.push((entity(world, uuid)?, depth + 1));
-                }
-            }
+        if let Some(ships) = world.get::<StoredShips>(current) {
+            pending.extend(ships.iter().map(|child| (child, depth + 1)));
         }
     }
     Ok(maximum)
@@ -296,7 +301,7 @@ pub fn reserve_bay(world: &mut World, ship: Entity, host: Entity, bay_id: u32) -
         "docking denied"
     );
     ensure!(
-        bay.occupant.is_none() && ship_radius <= bay.radius_m && mass <= bay.mass_capacity_kg,
+        ship_radius <= bay.radius_m && mass <= bay.mass_capacity_kg,
         "bay capacity exceeded"
     );
     ensure!(
@@ -329,12 +334,11 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
     );
     let mass = world.get::<MassProps>(ship).unwrap().mass;
     let host_id = id(world, host)?;
-    let ship_id = id(world, ship)?;
     set_dormant(world, ship, Presence::Docked { host: host_id, bay });
     add_stored_mass(world, host, mass);
     let mut bays = world.get_mut::<DockingBays>(host).unwrap();
-    bays.0[bay as usize].occupant = Some(ship_id);
     bays.0[bay as usize].reservation = None;
+    world.entity_mut(ship).insert(DockedIn(host));
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
         if matches!(travel.0.legs.get(travel.0.leg), Some(Leg::Dock(_))) {
             complete_order(&mut travel.0);
@@ -384,7 +388,7 @@ pub fn undock(world: &mut World, ship: Entity) -> Result<()> {
     );
     let mut target = bay_pose(&ship_pose(world, host)?, docking_bay);
     let displacement = DQuat::from_array(target.rotation)
-        * DVec3::Z
+        * DVec3::NEG_Z
         * (radius(world, host)? + radius(world, ship)? + 10.);
     target.position = target.position.offset_by(displacement);
     target.velocity = (DVec3::from_array(target.velocity)
@@ -397,7 +401,7 @@ pub fn undock(world: &mut World, ship: Entity) -> Result<()> {
     );
     let mass = world.get::<MassProps>(ship).unwrap().mass;
     add_stored_mass(world, host, -mass);
-    world.get_mut::<DockingBays>(host).unwrap().0[bay as usize].occupant = None;
+    world.entity_mut(ship).remove::<DockedIn>();
     write_pose(world, ship, target.clone());
     set_active(world, ship);
     emit(world, ship, "undocked", Some(target.position));
@@ -792,14 +796,27 @@ pub fn advance(world: &mut World) {
         .map(|(entity, _, travel)| (entity, travel.0.orders.get(travel.0.order).cloned()))
         .collect();
     for (ship, order) in dormant_orders {
-        let result = match order {
-            Some(Order::Undock) => Some(undock(world, ship)),
-            Some(Order::WaitUntil(until)) if now >= until => Some(Ok(())),
-            _ => None,
+        let already_docked = match (&order, &world.get::<PresenceState>(ship).unwrap().0) {
+            (Some(Order::Dock(station)), Presence::Docked { host, .. }) => station == host,
+            _ => false,
+        };
+        let completes =
+            already_docked || matches!(order, Some(Order::Undock | Order::WaitUntil(_)));
+        let result = if already_docked {
+            Some(Ok(()))
+        } else {
+            match order {
+                Some(Order::WaitUntil(until)) => (now >= until).then_some(Ok(())),
+                Some(_) => Some(undock(world, ship)),
+                None => None,
+            }
         };
         if let Some(result) = result {
             match result {
-                Ok(()) => complete_order(&mut world.get_mut::<Travel>(ship).unwrap().0),
+                Ok(()) if completes => {
+                    complete_order(&mut world.get_mut::<Travel>(ship).unwrap().0)
+                }
+                Ok(()) => world.get_mut::<Travel>(ship).unwrap().0.status = Status::Planning,
                 Err(error) => blocked(world, ship, error.to_string()),
             }
         }
@@ -903,6 +920,8 @@ pub fn advance(world: &mut World) {
             drive.preparation = None;
             drive.ready_tick = arrival + 600;
             world.entity_mut(ship).insert(Transit {
+                origin: pose.position,
+                departed: now,
                 destination: preparation.destination,
                 next_attempt: arrival,
             });
@@ -923,10 +942,9 @@ pub fn destroy(world: &mut World, ship: Entity) {
     }
     if let Ok(uuid) = id(world, ship) {
         let children: Vec<_> = world
-            .get::<DockingBays>(ship)
+            .get::<StoredShips>(ship)
             .into_iter()
-            .flat_map(|bays| bays.0.iter().filter_map(|bay| bay.occupant))
-            .filter_map(|child| identity::lookup(world, child).ok())
+            .flat_map(|ships| ships.iter())
             .collect();
         for child in children {
             world
@@ -951,8 +969,8 @@ pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
     if presence == Presence::Destroyed {
         ensure!(
             world
-                .get::<DockingBays>(ship)
-                .is_none_or(|bays| bays.0.iter().all(|bay| bay.occupant.is_none()))
+                .get::<StoredShips>(ship)
+                .is_none_or(|ships| ships.is_empty())
                 && world
                     .get::<StoredMass>(ship)
                     .is_none_or(|mass| mass.0 == 0.),
@@ -1042,7 +1060,6 @@ mod tests {
             public: true,
             allowed: Default::default(),
             reservation: None,
-            occupant: None,
         }
     }
 
@@ -1141,6 +1158,8 @@ mod tests {
         let destination = GalacticPosition::default().offset_by(DVec3::X * 10000.);
         let blocker = ship(&mut world, DVec3::X * 10000., account);
         world.entity_mut(child).insert(Transit {
+            origin: GalacticPosition::ZERO,
+            departed: 0,
             destination,
             next_attempt: 0,
         });
@@ -1167,7 +1186,8 @@ mod tests {
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
                 tank_capacities_m3: vec![0.; 2],
-                quantities: vec![0.; 2],
+                quantities: vec![0; 2],
+                cargo: vec![0; 2],
                 energy_j: 5.,
             }),
         ));
@@ -1277,6 +1297,8 @@ mod tests {
         let destination = GalacticPosition::ZERO.offset_by(DVec3::X * 10000.);
         for ship in [first, second] {
             world.entity_mut(ship).insert(Transit {
+                origin: GalacticPosition::ZERO,
+                departed: 0,
                 destination,
                 next_attempt: 0,
             });

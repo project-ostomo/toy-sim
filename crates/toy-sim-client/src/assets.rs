@@ -161,18 +161,21 @@ pub(crate) fn synchronize_appearances(
         (
             Entity,
             Option<&crate::state::Contact>,
+            Option<&crate::state::OwnedShip>,
             Option<&crate::state::CombatPublication>,
             Option<&Appearance>,
         ),
         Or<(
             With<crate::state::Contact>,
+            With<crate::state::OwnedShip>,
             With<crate::state::CombatPublication>,
         )>,
     >,
 ) {
-    for (entity, contact, combat, appearance) in &sources {
+    for (entity, contact, owned, combat, appearance) in &sources {
         let hash = contact
             .and_then(|contact| contact.0.appearance)
+            .or_else(|| owned.and_then(|ship| ship.0.appearance))
             .or_else(|| match &combat?.0.kind {
                 toy_sim_model::CombatEventKind::Destroyed { appearance, .. } => *appearance,
                 _ => None,

@@ -23,7 +23,10 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     toy_sim_ui::theme::install(&ctx);
     let mut shell = Shell::default();
     let selection = Selection::default();
+    let navigation = NavigationCatalogue::default();
     let model = FrameModel {
+        navigation: &navigation,
+        ships: vec![],
         rows: vec![row(2, 1000.)],
         ship: None,
         details: None,
@@ -90,22 +93,12 @@ fn commands_use_target_identity_safe_range_and_normalized_galactic_direction() {
         unreachable!()
     };
     let (commands, _) = commands_for(Intent::Align(target), &ship, &rows).unwrap();
-    assert_eq!(
-        commands,
-        [ShipCommand::Flight(FlightCommand::AimDirection([
-            1., 0., 0.
-        ]))]
+    assert!(
+        matches!(&commands[0], ShipCommand::SetTravel { orders, .. } if matches!(&orders[0], travel::Order::Guidance(g) if g.mode == travel::GuidanceMode::Align && g.target == travel::Target::Contact(reference)))
     );
     let (commands, _) = commands_for(Intent::Approach(reference, 1.), &ship, &rows).unwrap();
-    assert_eq!(
-        commands,
-        [
-            ShipCommand::Flight(FlightCommand::SelectTarget(reference)),
-            ShipCommand::Flight(FlightCommand::EngageNavigation {
-                throttle_limit: 1.,
-                stand_off_m: 150.
-            }),
-        ]
+    assert!(
+        matches!(&commands[0], ShipCommand::SetTravel { orders, .. } if matches!(&orders[0], travel::Order::Guidance(g) if g.range_m == 150. && g.mode == travel::GuidanceMode::Approach))
     );
     assert!(commands_for(Intent::Align(target), &ship, &[]).is_none());
     assert!(commands_for(Intent::Align(target), &ship, &[row(2, 0.)]).is_none());

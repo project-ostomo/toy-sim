@@ -2,7 +2,7 @@ use bevy::{
     math::{DQuat, DVec3},
     prelude::*,
 };
-use toy_sim_model::{GalacticPosition, Id, presentation::*};
+use toy_sim_model::{GalacticPosition, presentation::*};
 use toy_sim_ship_api::abi;
 use toy_sim_ship_wasm::spatial;
 use toy_sim_ships::{DeviceKind, DeviceReading as Reading, DeviceSetting};
@@ -10,7 +10,7 @@ use toy_sim_ships::{DeviceKind, DeviceReading as Reading, DeviceSetting};
 use super::{
     hardware,
     identity::{Control, Identity},
-    physics::{AngularVelocity, MassProps, Velocity},
+    physics::{MassProps, Velocity},
     precision::PreciseTransform,
     simulation::SimulationCounters,
     vessel::{ShipCatalogue, ShipDesign, ShipSoftware},
@@ -52,10 +52,14 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         .enumerate()
         .map(|(index, (resource, quantity))| ResourceAmount {
             name: bounded(&resource.title, 128),
-            amount_kg: quantity * resource.mass_kg,
+            unit_mass_kg: resource.mass_kg,
+            unit_volume_m3: resource.volume_m3,
+            resource: resource.id.clone(),
+            quantity: *quantity,
+            cargo_quantity: state.inventory.cargo[index],
+            amount_kg: *quantity as f64 * resource.mass_kg,
             capacity_kg: if resource.volume_m3 > 0.0 {
-                state.inventory.capacity_m3(index, design.capacity_m3) / resource.volume_m3
-                    * resource.mass_kg
+                state.inventory.tank_capacities_m3[index] / resource.volume_m3 * resource.mass_kg
             } else {
                 0.0
             },
@@ -219,6 +223,8 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
     }
     let power = world.get::<hardware::PowerFlow>(entity);
     Some(ShipPresentation {
+        cargo_capacity_m3: design.capacity_m3,
+        cargo_used_m3: state.inventory.cargo_volume(catalogue),
         ship: id,
         revision: world.get::<Control>(entity)?.revision,
         sim_time_ns: tick.saturating_mul(100_000_000),

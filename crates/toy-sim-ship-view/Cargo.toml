@@ -6,3 +6,4 @@ edition.workspace = true
 [dependencies]
 bevy.workspace = true
 toy-sim-ships = { path = "../toy-sim-ships" }
+serde_json = "1"

@@ -11,6 +11,8 @@ use bevy::{
 };
 use toy_sim_model::{GalacticPosition, Id};
 
+pub(in crate::ui) const LOOK_AT_RANGE_M: f64 = 100_000.0;
+
 #[derive(Component, Default)]
 pub(in crate::ui) struct CameraOptions {
     pub focus: Option<SelectedTarget>,
@@ -26,6 +28,7 @@ pub(in crate::ui) struct ViewCamera {
     pub(super) pitch: f32,
     pub(super) distance: f32,
     pub(super) radius: f32,
+    pub(super) private: bool,
     pub(super) followed: Option<Id>,
     pub(super) aligned_to_sun: bool,
 }
@@ -77,7 +80,8 @@ pub(super) fn setup_views(
                 pitch,
                 distance: 100.,
                 radius: 1.,
-                followed: view.focused_ship,
+                private: false,
+                followed: None,
                 aligned_to_sun,
             },
             Transform::from_translation(direction * 100.).looking_at(Vec3::ZERO, Vec3::Y),
@@ -104,13 +108,14 @@ pub(super) fn update_views(
         &ViewObservation,
         &mut Camera,
         &mut ViewCamera,
-        &CameraOptions,
+        &mut CameraOptions,
         Option<&SystemSubscription>,
     )>,
     owned: Query<(&OwnedShip, &DisplayPose)>,
     contacts: Query<(&Contact, &DisplayPose)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window>,
+    beacons: Query<(&crate::state::NavigationObject, &DisplayPose)>,
 ) {
     let size = windows
         .iter()
@@ -125,7 +130,7 @@ pub(super) fn update_views(
     order.sort_unstable_by_key(|(id, _)| *id);
     let count = order.len().clamp(1, 8);
     for (index, (_, entity)) in order.into_iter().take(8).enumerate() {
-        let Ok((entity, observation, mut camera, mut state, options, systems)) =
+        let Ok((entity, observation, mut camera, mut state, mut options, systems)) =
             cameras.get_mut(entity)
         else {
             continue;
@@ -140,17 +145,43 @@ pub(super) fn update_views(
                     .map(|(_, pose)| pose.0.position)
             })
             .unwrap_or(view.origin);
+        let own_ship = owned
+            .iter()
+            .find(|(ship, _)| Some(ship.0.ship) == view.focused_ship);
+        if own_ship
+            .is_some_and(|(ship, _)| ship.0.presence != toy_sim_model::travel::Presence::Space)
+        {
+            options.focus = None;
+        }
+        let private = own_ship
+            .is_some_and(|(ship, _)| ship.0.presence != toy_sim_model::travel::Presence::Space);
+        if private && !state.private {
+            let rotation = own_ship
+                .map(|(_, pose)| Quat::from_array(pose.0.rotation.map(|n| n as f32)))
+                .unwrap_or_default();
+            let direction = rotation * Vec3::new(0.3, 0.18, 1.).normalize();
+            state.yaw = direction.x.atan2(direction.z);
+            state.pitch = direction.y.asin();
+            state.aligned_to_sun = true;
+        }
+        state.private = private;
         let mut followed = view.focused_ship;
         let mut radius = contacts
             .iter()
             .find(|(contact, _)| contact.0.entity == followed)
             .and_then(|(contact, _)| contact.0.radius_m)
-            .unwrap_or(1.) as f32;
+            .unwrap_or_else(|| own_ship.map_or(1., |(ship, _)| ship.0.radius_m))
+            as f32;
         if let Some(focus) = options.focus {
             let selected = match focus {
                 SelectedTarget::Contact(reference) => contacts
                     .iter()
-                    .find(|(contact, _)| contact.1 == reference)
+                    .find(|(contact, pose)| {
+                        contact.1 == reference
+                            && contact.1.group == view.group
+                            && view.tracks.contains(&contact.0.id)
+                            && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
+                    })
                     .map(|(contact, pose)| {
                         (
                             pose.0.position,
@@ -158,6 +189,13 @@ pub(super) fn update_views(
                             contact.0.radius_m.unwrap_or(1.) as f32,
                         )
                     }),
+                SelectedTarget::Beacon(id) => beacons
+                    .iter()
+                    .find(|(beacon, pose)| {
+                        beacon.0.id == id
+                            && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
+                    })
+                    .map(|(beacon, pose)| (pose.0.position, id, beacon.0.radius_m as f32)),
                 SelectedTarget::Celestial(id) => bodies
                     .iter()
                     .find(|(body, _, _)| body.0.entity == id)
@@ -167,6 +205,8 @@ pub(super) fn update_views(
                 origin = position;
                 followed = Some(target);
                 radius = size;
+            } else {
+                options.focus = None;
             }
         }
         if !state.aligned_to_sun {
@@ -264,7 +304,14 @@ pub(super) fn camera_controls(
             }
             state.distance *= (-scroll.delta.y * 0.05).exp();
         }
-        state.distance = state.distance.clamp((state.radius * 1.01).max(1.), 1e15);
+        state.distance = state.distance.clamp(
+            (state.radius * 1.01).max(1.),
+            if state.private {
+                (state.radius * 10.).max(100.)
+            } else {
+                1e15
+            },
+        );
         let rotation = Quat::from_rotation_y(state.yaw) * Quat::from_rotation_x(-state.pitch);
         *transform = Transform::from_translation(rotation * Vec3::Z * state.distance)
             .looking_at(Vec3::ZERO, Vec3::Y);

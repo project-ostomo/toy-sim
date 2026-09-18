@@ -4,20 +4,32 @@ use anyhow::{Context, Result, ensure};
 use glam::DMat3;
 #[derive(Clone, Debug)]
 pub struct Inventory {
-    pub quantities: Vec<f64>,
+    pub quantities: Vec<u64>,
+    pub cargo: Vec<u64>,
     pub tank_capacities_m3: Vec<f64>,
     pub energy_j: f64,
 }
+
+pub fn stochastic_units(amount: f64) -> u64 {
+    use rand::RngExt;
+    assert!(amount.is_finite() && amount >= 0.0);
+    let whole = amount.floor() as u64;
+    whole.saturating_add(u64::from(rand::rng().random_bool(amount.fract())))
+}
+
 impl Inventory {
     pub fn empty(cat: &Catalogue) -> Self {
         Self {
-            quantities: vec![0.; cat.resources.len()],
+            quantities: vec![0; cat.resources.len()],
+            cargo: vec![0; cat.resources.len()],
             tank_capacities_m3: vec![0.; cat.resources.len()],
             energy_j: 0.,
         }
     }
+
     pub fn for_design(design: &CompiledShipDesign, cat: &Catalogue) -> Self {
         let mut inventory = Self::empty(cat);
+        let mut initial = vec![0.0; cat.resources.len()];
         for part in &design.parts {
             for tank in &part.placed.tanks {
                 let index = cat
@@ -27,81 +39,109 @@ impl Inventory {
                     .expect("validated tank resource");
                 let usable = tank.volume_m3 * cat.resources[index].storage.usable_fraction;
                 inventory.tank_capacities_m3[index] += usable;
-                inventory.quantities[index] +=
-                    usable * tank.initial_fill / cat.resources[index].volume_m3;
+                initial[index] += usable * tank.initial_fill / cat.resources[index].volume_m3;
             }
         }
+        inventory.quantities = initial.into_iter().map(|q| q.floor() as u64).collect();
         inventory
     }
 
-    pub fn cargo_volume(&self, cat: &Catalogue) -> f64 {
-        self.quantities
-            .iter()
-            .enumerate()
-            .map(|(index, quantity)| {
-                (quantity * cat.resources[index].volume_m3 - self.tank_capacities_m3[index]).max(0.)
-            })
-            .sum()
+    pub fn available(&self, resource: usize) -> f64 {
+        self.quantities[resource] as f64
     }
 
-    pub fn capacity_m3(&self, resource: usize, cargo_capacity: f64) -> f64 {
-        self.tank_capacities_m3[resource] + cargo_capacity
+    pub fn consume(&mut self, resource: usize, requested: f64) -> f64 {
+        let supplied = requested.max(0.0).min(self.available(resource));
+        self.quantities[resource] -= stochastic_units(supplied).min(self.quantities[resource]);
+        supplied
+    }
+
+    pub fn tank_room(&self, resource: usize, cat: &Catalogue) -> u64 {
+        let capacity =
+            (self.tank_capacities_m3[resource] / cat.resources[resource].volume_m3).floor() as u64;
+        capacity.saturating_sub(self.quantities[resource])
+    }
+
+    pub fn insert_consumable(
+        &mut self,
+        resource: usize,
+        amount: u64,
+        cat: &Catalogue,
+    ) -> Result<()> {
+        ensure!(resource < self.quantities.len(), "unknown resource");
+        ensure!(
+            amount <= self.tank_room(resource, cat),
+            "tank capacity exceeded"
+        );
+        self.quantities[resource] = self.quantities[resource]
+            .checked_add(amount)
+            .context("quantity overflow")?;
+        Ok(())
+    }
+
+    pub fn cargo_volume(&self, cat: &Catalogue) -> f64 {
+        self.cargo
+            .iter()
+            .zip(&cat.resources)
+            .map(|(&q, r)| q as f64 * r.volume_m3)
+            .sum()
     }
 
     pub fn volume(&self, cat: &Catalogue) -> f64 {
         self.quantities
             .iter()
+            .zip(&self.cargo)
             .zip(&cat.resources)
-            .map(|(&q, r)| q * r.volume_m3)
+            .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.volume_m3)
             .sum()
     }
+
     pub fn mass(&self, cat: &Catalogue) -> f64 {
         self.quantities
             .iter()
+            .zip(&self.cargo)
             .zip(&cat.resources)
-            .map(|(&q, r)| q * r.mass_kg)
+            .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.mass_kg)
             .sum()
     }
-    pub fn insert(
+
+    pub fn insert_cargo(
         &mut self,
         resource: usize,
-        amount: f64,
+        amount: u64,
         capacity: f64,
         cat: &Catalogue,
     ) -> Result<()> {
         ensure!(
-            amount.is_finite() && amount >= 0. && capacity.is_finite() && capacity >= 0.,
-            "invalid inventory amount/capacity"
+            capacity.is_finite() && capacity >= 0.0,
+            "invalid cargo capacity"
         );
         let r = cat.resources.get(resource).context("unknown resource")?;
-        let quantity = *self.quantities.get(resource).context("unknown resource")?;
-        let new_quantity = quantity + amount;
-        ensure!(new_quantity.is_finite(), "invalid resource amount");
-        let reserved = self.tank_capacities_m3[resource];
-        let old_cargo = (quantity * r.volume_m3 - reserved).max(0.);
-        let new_cargo = (new_quantity * r.volume_m3 - reserved).max(0.);
+        let quantity = *self.cargo.get(resource).context("unknown resource")?;
+        let new_quantity = quantity.checked_add(amount).context("quantity overflow")?;
         ensure!(
-            self.cargo_volume(cat) - old_cargo + new_cargo <= capacity + 1e-9 * capacity.max(1.),
-            "inventory capacity exceeded"
+            self.cargo_volume(cat) + amount as f64 * r.volume_m3
+                <= capacity + 1e-9 * capacity.max(1.0),
+            "cargo hold full"
         );
-        let q = &mut self.quantities[resource];
-        *q += amount;
+        self.cargo[resource] = new_quantity;
         Ok(())
     }
-    pub fn transfer(
+
+    pub fn transfer_cargo(
         &mut self,
         to: &mut Self,
         resource: usize,
-        amount: f64,
+        amount: u64,
         capacity: f64,
         cat: &Catalogue,
     ) -> Result<()> {
         ensure!(
-            *self.quantities.get(resource).context("unknown resource")? >= amount,
-            "insufficient inventory"
+            *self.cargo.get(resource).context("unknown resource")? >= amount,
+            "insufficient cargo"
         );
-        to.insert(resource, amount, capacity, cat)?;
-        self.quantities[resource] -= amount;
+        to.insert_cargo(resource, amount, capacity, cat)?;
+        self.cargo[resource] -= amount;
         Ok(())
     }
 }
@@ -151,31 +191,8 @@ impl ShipState {
             sensor_range: 0.,
         }
     }
-    pub fn test_loadout(&mut self, d: &CompiledShipDesign, cat: &Catalogue) {
+    pub fn test_loadout(&mut self, d: &CompiledShipDesign, _cat: &Catalogue) {
         self.inventory.energy_j = d.battery_j;
-        let mut cargo = Inventory::empty(cat);
-        let fuel = (d.capacity_m3 * 10.).min(10.);
-        let _ = cargo.insert(1, fuel, d.capacity_m3, cat);
-        for spec in &d.weapon_specs {
-            if spec.beam_power_w > 0.0 {
-                continue;
-            }
-            let resource = spec.ammunition_resource as usize - 1;
-            let wanted: f64 = if spec.projectile_mass_kg < 1.0 {
-                1000.0
-            } else {
-                12.0
-            };
-            let available = ((d.capacity_m3 - cargo.volume(cat)).max(0.0)
-                / cat.resources[resource].volume_m3)
-                .floor();
-            let _ = cargo.insert(resource, wanted.min(available), d.capacity_m3, cat);
-        }
-        let propellant = (d.capacity_m3 - cargo.volume(cat)).max(0.) / cat.resources[0].volume_m3;
-        let _ = cargo.insert(0, propellant, d.capacity_m3, cat);
-        for (amount, loaded) in self.inventory.quantities.iter_mut().zip(cargo.quantities) {
-            *amount += loaded;
-        }
     }
     pub fn computer_running(&self, _d: &CompiledShipDesign) -> bool {
         self.hull > 0. && self.avionics.operational && self.avionics.powered
@@ -247,7 +264,8 @@ impl ShipState {
                         let ammo = if spec.beam_power_w > 0.0 {
                             f64::INFINITY
                         } else {
-                            self.inventory.quantities[spec.ammunition_resource as usize - 1]
+                            self.inventory
+                                .available(spec.ammunition_resource as usize - 1)
                         };
                         let mut flags = weapon.inhibit_flags
                             & (abi::WEAPON_BLOCKED | abi::WEAPON_TRAVEL | abi::WEAPON_POINTING);
@@ -255,7 +273,7 @@ impl ShipState {
                             (!state.operational, abi::WEAPON_UNAVAILABLE),
                             (ammo < 1.0, abi::WEAPON_AMMO),
                             (
-                                self.inventory.quantities[0]
+                                self.inventory.available(0)
                                     < crate::weapons::shot_propellant_kg(spec)
                                         + if spec.ammunition_resource == 1 {
                                             1.0

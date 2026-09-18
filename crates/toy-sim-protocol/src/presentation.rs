@@ -20,9 +20,11 @@ fn attitude_valid(attitude: &AttitudeInstrument) -> bool {
 
 fn resources(values: &[ResourceAmount]) -> bool {
     values.len() <= 256
-        && values
-            .iter()
-            .all(|r| r.name.len() <= 128 && nonnegative(&[r.amount_kg, r.capacity_kg]))
+        && values.iter().all(|r| {
+            r.name.len() <= 128
+                && r.resource.len() <= 128
+                && nonnegative(&[r.amount_kg, r.capacity_kg, r.unit_mass_kg, r.unit_volume_m3])
+        })
 }
 
 pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
@@ -34,6 +36,38 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
             && p.capabilities.len() <= 7,
         "presentation limit"
     );
+    ensure!(
+        p.navigation.systems.len() <= 65536 && p.navigation.beacons.len() <= 65536,
+        "navigation catalogue limit"
+    );
+    let mut systems = std::collections::BTreeSet::new();
+    for system in &p.navigation.systems {
+        ensure!(
+            systems.insert(system.id)
+                && system.name.len() <= 128
+                && position_valid(system.position),
+            "invalid navigation system"
+        );
+    }
+    let mut beacons = std::collections::BTreeSet::new();
+    for beacon in &p.navigation.beacons {
+        ensure!(
+            beacons.insert(beacon.id)
+                && systems.contains(&beacon.system)
+                && beacon.name.len() <= 128
+                && pose_valid(&beacon.pose)
+                && nonnegative(&[beacon.radius_m]),
+            "invalid navigation beacon"
+        );
+    }
+    for beacon in &p.navigation.beacons {
+        ensure!(
+            beacon
+                .gate_exit
+                .is_none_or(|exit| exit != beacon.id && beacons.contains(&exit)),
+            "invalid gate endpoint"
+        );
+    }
     for ship in &p.ships {
         ensure!(
             nonnegative(&[
@@ -41,7 +75,9 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
                 ship.hull_heat_capacity_j,
                 ship.battery_capacity_j,
                 ship.power_generated_w,
-                ship.power_consumed_w
+                ship.power_consumed_w,
+                ship.cargo_capacity_m3,
+                ship.cargo_used_m3
             ]) && finite(&ship.inertia_kg_m2)
                 && rotation(&ship.control_rotation),
             "invalid hardware totals"

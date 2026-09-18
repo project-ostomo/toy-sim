@@ -2,7 +2,9 @@ use crate::assets::{Appearance, ShipDesign};
 use crate::state::SessionInfo;
 mod atmosphere;
 mod camera;
-pub(super) use camera::{CameraOptions, ViewCamera};
+mod navigation_hud;
+mod transit;
+pub(super) use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
 pub(super) use orbit::ViewOptions;
 mod combat;
 mod orbit;
@@ -51,7 +53,9 @@ struct ViewLayer(usize);
 struct Shield;
 
 pub(super) fn install(app: &mut App) {
-    app.insert_resource(GlobalAmbientLight::NONE)
+    app.add_plugins(toy_sim_ship_view::mechanisms::MechanismPlugin)
+        .add_systems(Update, mechanism_time.in_set(PresentationSet::Render))
+        .insert_resource(GlobalAmbientLight::NONE)
         .add_systems(Startup, setup_ui_camera)
         .add_systems(
             Update,
@@ -69,6 +73,7 @@ pub(super) fn install(app: &mut App) {
             (
                 sync_ships,
                 sync_celestials,
+                own_visuals,
                 apply_visuals,
                 shield::update_flashes,
             )
@@ -76,6 +81,8 @@ pub(super) fn install(app: &mut App) {
                 .in_set(PresentationSet::Render),
         )
         .add_systems(PostUpdate, propagate_layers);
+    transit::install(app);
+    navigation_hud::install(app);
     sky::install(app);
     combat::install(app);
     atmosphere::install(app);
@@ -127,7 +134,12 @@ fn sync_ships(
         Option<&DestroyedAt>,
         Option<&Appearance>,
     )>,
-    owned: Query<&OwnedShip>,
+    owned: Query<(
+        Entity,
+        &OwnedShip,
+        Option<&DisplayPose>,
+        Option<&Appearance>,
+    )>,
     mut objects: Query<(
         Entity,
         &ViewMember,
@@ -144,14 +156,70 @@ fn sync_ships(
         .iter()
         .map(|(entity, view, source, _, _)| ((view.0, source.0), entity))
         .collect();
-    let inactive: HashSet<_> = owned
-        .iter()
-        .filter(|ship| ship.0.presence != toy_sim_model::travel::Presence::Space)
-        .map(|ship| ship.0.ship)
-        .collect();
+    let inactive: HashSet<_> = owned.iter().map(|(_, ship, _, _)| ship.0.ship).collect();
     let mut visible = HashSet::new();
     for (view_entity, observation, camera) in &views {
         let view = &observation.0;
+        let private_view = owned
+            .iter()
+            .find(|(_, ship, _, _)| Some(ship.0.ship) == view.focused_ship)
+            .is_some_and(|(_, ship, _, _)| {
+                ship.0.presence != toy_sim_model::travel::Presence::Space
+            });
+        for (source, ship, pose, appearance) in &owned {
+            if Some(ship.0.ship) != view.focused_ship {
+                continue;
+            }
+            let (Some(pose), Some(appearance)) = (pose, appearance) else {
+                continue;
+            };
+            let Some(design) = designs.get(&appearance.design) else {
+                continue;
+            };
+            let transform =
+                Transform::from_translation(pose.0.position.relative_to(camera.origin).as_vec3())
+                    .with_rotation(Quat::from_array(pose.0.rotation.map(|v| v as f32)));
+            let entity = if let Some((entity, _, _, mesh, mut current)) = existing
+                .get(&(view_entity, source))
+                .and_then(|e| objects.get_mut(*e).ok())
+            {
+                if mesh.appearance == appearance.hash {
+                    *current = transform;
+                    entity
+                } else {
+                    spawn_ship(
+                        &mut commands,
+                        &design.0,
+                        &assets,
+                        &loader,
+                        &thermal,
+                        transform,
+                    )
+                }
+            } else {
+                spawn_ship(
+                    &mut commands,
+                    &design.0,
+                    &assets,
+                    &loader,
+                    &thermal,
+                    transform,
+                )
+            };
+            commands.entity(entity).insert((
+                ViewMember(view_entity),
+                RenderSource(source),
+                ShipMesh {
+                    appearance: appearance.hash,
+                },
+                ViewLayer(camera.layer),
+                RenderLayers::layer(camera.layer),
+            ));
+            visible.insert(entity);
+        }
+        if private_view {
+            continue;
+        }
         let membership: HashSet<_> = view.tracks.iter().copied().collect();
         for (source, contact, pose, destroyed, appearance) in &contacts {
             let track = &contact.0;
@@ -221,6 +289,9 @@ fn sync_celestials(
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, camera, systems) in &views {
+        if camera.private {
+            continue;
+        }
         for (source, body, pose, system) in &bodies {
             if !systems.0.iter().any(|entry| entry.system == system.0) {
                 continue;
@@ -461,5 +532,33 @@ mod tests {
         let direction = sun_direction(origin, [(100., star)].into_iter()).unwrap();
         assert!(direction.dot(Vec3::new(10., 20., 30.).normalize()) > 0.999);
         assert!(sun_direction(origin, std::iter::empty()).is_none());
+    }
+}
+
+fn mechanism_time(
+    time: Res<crate::state::RenderTime>,
+    mut clock: ResMut<toy_sim_ship_view::mechanisms::MechanismTime>,
+) {
+    clock.0 = time.display_ns as f64 * 1e-9;
+}
+
+fn own_visuals(
+    mut commands: Commands,
+    ships: Query<(Entity, &OwnedShip)>,
+    contacts: Query<(&Contact, &DisplayVisual)>,
+) {
+    for (entity, ship) in &ships {
+        if ship.0.presence == toy_sim_model::travel::Presence::Space {
+            if let Some((_, visual)) = contacts
+                .iter()
+                .find(|(contact, _)| contact.0.entity == Some(ship.0.ship))
+            {
+                commands
+                    .entity(entity)
+                    .insert(DisplayVisual(visual.0.clone()));
+            }
+        } else {
+            commands.entity(entity).remove::<DisplayVisual>();
+        }
     }
 }

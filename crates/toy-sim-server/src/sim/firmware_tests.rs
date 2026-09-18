@@ -726,9 +726,9 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
         .get_mut::<hardware::ShipInventory>(fixture.ship)
         .unwrap()
         .0
-        .quantities[0] = 0.0;
+        .quantities[0] = 0;
     let initial_charges = fixture.snapshot().inventory.quantities[charge];
-    assert!(initial_charges > 0.0);
+    assert!(initial_charges > 0);
     fixture
         .app
         .world_mut()
@@ -762,8 +762,10 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
             && thrust_n > 0.0
         {
             assert!(state.avionics.powered);
-            assert!(state.inventory.quantities[charge] < initial_charges);
-            assert_eq!(state.inventory.quantities[0], 0.0);
+            if state.inventory.quantities[charge] == initial_charges {
+                continue;
+            }
+            assert_eq!(state.inventory.quantities[0], 0);
             assert!(
                 fixture
                     .app

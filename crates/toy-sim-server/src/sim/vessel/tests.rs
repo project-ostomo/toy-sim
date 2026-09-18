@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v14" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v14" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v14" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v14" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v14" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v15" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v15" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v15" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v15" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v15" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")

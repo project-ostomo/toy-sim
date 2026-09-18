@@ -6999,6 +6999,7 @@ name = "toy-sim-ship-view"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "serde_json",
  "toy-sim-ships",
 ]
 
@@ -7023,6 +7024,7 @@ dependencies = [
  "anyhow",
  "ciborium",
  "glam 0.32.1",
+ "rand 0.10.2",
  "serde",
  "serde_bytes",
  "toml",

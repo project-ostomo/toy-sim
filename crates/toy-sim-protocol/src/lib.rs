@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 6;
+pub const VERSION: u16 = 7;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -307,7 +307,8 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
                 ship.battery_j,
                 ship.hull_heat_j,
                 ship.shield_temperature_k,
-                ship.coolant_reserve_kg
+                ship.coolant_reserve_kg,
+                ship.radius_m
             ]
             .into_iter()
             .all(|value| value.is_finite() && value >= 0.),
@@ -449,7 +450,22 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                 ShipCommand::SetTravel { orders, .. } => {
                     ensure!(orders.len() <= 256, "too many waypoints");
                     for order in orders {
-                        if let travel::Order::TravelTo(destination) = order {
+                        let destination = match order {
+                            travel::Order::TravelTo(destination) => Some(destination),
+                            travel::Order::Guidance(guidance) => {
+                                ensure!(
+                                    guidance.range_m.is_finite()
+                                        && (0. ..=1e12).contains(&guidance.range_m),
+                                    "invalid guidance range"
+                                );
+                                match &guidance.target {
+                                    travel::Target::Destination(destination) => Some(destination),
+                                    travel::Target::Contact(_) => None,
+                                }
+                            }
+                            _ => None,
+                        };
+                        if let Some(destination) = destination {
                             match destination {
                                 travel::Destination::Galactic(p)
                                 | travel::Destination::Relative { offset: p, .. } => {

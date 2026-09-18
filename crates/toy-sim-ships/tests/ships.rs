@@ -65,37 +65,56 @@ fn geometry_rejects_overlap_disconnection_and_unknown_parts() {
     let c = Catalogue::builtin();
     let s = starter(EXAMPLE_CONTROLLER.to_vec());
     let mut bad = s.clone();
-    bad.parts[1].position = bad.parts[0].position;
-    assert!(bad.compile(&c).unwrap_err().to_string().contains("overlap"));
-    let mut bad = s.clone();
-    bad.parts[6].position[0] += 100;
+    bad.parts[1].attachment.as_mut().unwrap().plug = "front".into();
+    bad.parts[1].attachment.as_mut().unwrap().socket = "front".into();
     assert!(
         bad.compile(&c)
             .unwrap_err()
             .to_string()
-            .contains("connected")
+            .contains("occupied")
     );
+    let mut bad = s.clone();
+    bad.parts[6].attachment.as_mut().unwrap().parent = 999;
+    assert!(bad.compile(&c).unwrap_err().to_string().contains("parent"));
     let mut bad = s;
     bad.parts[0].prototype = "untrusted-super-engine".into();
     assert!(bad.compile(&c).is_err());
 }
 #[test]
-fn inventory_uses_fractional_si_quantities_and_atomic_capacity_checks() {
-    let c = Catalogue::builtin();
-    let mut a = Inventory::empty(&c);
-    let mut b = Inventory::empty(&c);
-    a.insert(0, 1.25, 1., &c).unwrap();
-    assert_eq!(a.mass(&c), 1.25);
-    assert_eq!(a.volume(&c), 0.00125);
-    a.transfer(&mut b, 0, 0.125, 1., &c).unwrap();
-    assert_eq!(a.quantities[0], 1.125);
-    assert_eq!(b.quantities[0], 0.125);
-    assert!(a.transfer(&mut b, 0, 1., 0.0005, &c).is_err());
-    assert_eq!(a.quantities[0], 1.125);
-    assert_eq!(b.quantities[0], 0.125);
-    for n in [-1., f64::INFINITY, f64::NAN] {
-        assert!(a.insert(0, n, 1., &c).is_err());
+fn integer_cargo_transfers_are_atomic_and_cannot_take_consumables() {
+    let cat = Catalogue::builtin();
+    let mut a = Inventory::empty(&cat);
+    let mut b = Inventory::empty(&cat);
+    a.quantities[0] = 100;
+    a.insert_cargo(0, 10, 1.0, &cat).unwrap();
+    a.transfer_cargo(&mut b, 0, 3, 1.0, &cat).unwrap();
+    assert_eq!(a.cargo[0], 7);
+    assert_eq!(b.cargo[0], 3);
+    assert_eq!(a.quantities[0], 100);
+    assert!(a.transfer_cargo(&mut b, 0, 8, 1.0, &cat).is_err());
+    assert!(a.transfer_cargo(&mut b, 0, 1, 0.003, &cat).is_err());
+    assert_eq!(a.cargo[0], 7);
+    assert_eq!(b.cargo[0], 3);
+    assert!(a.insert_cargo(0, u64::MAX, f64::MAX, &cat).is_err());
+}
+
+#[test]
+fn fractional_consumption_is_unbiased_and_bounded() {
+    let cat = Catalogue::builtin();
+    let mut inventory = Inventory::empty(&cat);
+    inventory.quantities[0] = 1_000_000;
+    let before = inventory.quantities[0];
+    for _ in 0..100_000 {
+        let previous = inventory.quantities[0];
+        assert_eq!(inventory.consume(0, 2.4), 2.4);
+        assert!((2..=3).contains(&(previous - inventory.quantities[0])));
     }
+    let used = before - inventory.quantities[0];
+    assert!((used as f64 - 240_000.0).abs() < 1500.0);
+    inventory.quantities[0] = 1;
+    assert_eq!(inventory.consume(0, 2.4), 1.0);
+    assert_eq!(inventory.quantities[0], 0);
+    assert_eq!(inventory.consume(0, 2.4), 0.0);
 }
 
 #[test]

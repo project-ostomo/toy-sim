@@ -1,4 +1,5 @@
 name = "Sol"
+position_um = ["37842920000000000000000", "0", "0"]
 
 [[bodies]]
 name = "Sun"

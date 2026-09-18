@@ -22,3 +22,39 @@ pub fn example_config() -> orrery_cfg::OrreryCfg {
 fn remote_test_config() -> orrery_cfg::OrreryCfg {
     toml::from_str(include_str!("../../../tests/fixtures/remote.star.toml")).unwrap()
 }
+
+pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
+    let manifest: universe::UniverseCfg =
+        toml::from_str(include_str!("../../../assets/universe.toml"))?;
+    manifest.validate()?;
+    let sources = [
+        (
+            "stars/helion.star.toml",
+            include_str!("../../../assets/stars/helion.star.toml"),
+        ),
+        (
+            "stars/sol.star.toml",
+            include_str!("../../../assets/stars/sol.star.toml"),
+        ),
+        (
+            "stars/vesper.star.toml",
+            include_str!("../../../assets/stars/vesper.star.toml"),
+        ),
+        (
+            "stars/aurora.star.toml",
+            include_str!("../../../assets/stars/aurora.star.toml"),
+        ),
+    ];
+    manifest
+        .systems
+        .iter()
+        .map(|path| {
+            let text = sources
+                .iter()
+                .find(|(name, _)| name == path)
+                .ok_or_else(|| anyhow::anyhow!("unbundled system: {path}"))?
+                .1;
+            Ok(toml::from_str(text)?)
+        })
+        .collect()
+}

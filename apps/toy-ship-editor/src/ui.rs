@@ -39,7 +39,7 @@ pub fn editor(
                 e.replace_ship(ShipBlueprint::default());
             }
             if ui.button("Starter").clicked() {
-                e.replace_ship(micropulse_starter());
+                e.replace_ship(ntr_patrol());
             }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut e.file).desired_width(220.));
@@ -117,7 +117,7 @@ pub fn editor(
             }
             ui.label(&e.status);
             if !e.devices_mode {
-                ui.small("Click to place/select · Shift: 1 m grid · right-drag orbit · middle-drag pan · wheel zoom · R rotate · Delete remove · Esc cancel");
+                ui.small("Click sockets to attach · right-drag orbit · middle-drag pan · wheel zoom · R roll · Delete subtree · Esc cancel");
             }
         });
     egui::Panel::left("parts-catalogue")

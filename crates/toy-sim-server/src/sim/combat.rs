@@ -408,6 +408,7 @@ mod tests {
                 ShipInventory(toy_sim_ships::Inventory {
                     tank_capacities_m3: Vec::new(),
                     quantities: Vec::new(),
+                    cargo: Vec::new(),
                     energy_j: 80.0,
                 }),
             ))

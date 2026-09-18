@@ -68,6 +68,7 @@ pub fn provision(
     if let Some(account) = debug_account {
         identity::add_account(world, account, true);
     }
+    super::infrastructure::spawn(world, player)?;
     travel::geometry::refresh(world);
     let mut publish = Schedule::default();
     publish.add_systems(
@@ -226,7 +227,10 @@ mod tests {
         let mut app = provision(&[account], Some(account), None).unwrap();
         let world = app.world_mut();
         let ships = world
-            .query_filtered::<Entity, With<vessel::Vessel>>()
+            .query_filtered::<Entity, (
+                With<vessel::Vessel>,
+                Without<super::super::infrastructure::Landmark>,
+            )>()
             .iter(world)
             .collect::<Vec<_>>();
         assert_eq!(ships.len(), 2);
@@ -255,13 +259,37 @@ mod tests {
                     .blueprint
                     .parts
                     .iter()
-                    .any(|part| part.prototype == "micropulse_engine_4m")
+                    .any(|part| part.prototype == "ntr_water_2m")
             );
         }
+        let mut own_projectiles = std::collections::HashSet::new();
         let mut previous_shots = 0;
         let mut multiple_shots_in_tick = false;
         for _ in 0..200 {
             app.update();
+            if let Some(report) = app
+                .world()
+                .get_resource::<super::super::physics::collision::CollisionReport>()
+            {
+                own_projectiles.extend(
+                    report
+                        .report
+                        .shots
+                        .iter()
+                        .filter(|shot| shot.owner == hostile)
+                        .map(|shot| shot.projectile),
+                );
+                assert!(
+                    !report.report.impact_events.iter().any(|impact| impact
+                        .entities
+                        .contains(&hostile)
+                        && impact
+                            .entities
+                            .iter()
+                            .any(|id| own_projectiles.contains(id))),
+                    "patrol gun hits its own voxel hull"
+                );
+            }
             let state = super::super::hardware::snapshot(app.world(), hostile).unwrap();
             let shots = state
                 .weapons

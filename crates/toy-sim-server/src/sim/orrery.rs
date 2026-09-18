@@ -28,7 +28,11 @@ pub struct LoadOrrery;
 impl Plugin for OrreryPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(
-            Universe::init(toy_sim_universe::example_config()).expect("valid universe"),
+            Universe::from_configs(
+                toy_sim_universe::bundled_configs().expect("bundled systems"),
+                super::physics::GRAVITY_CUTOFF,
+            )
+            .expect("valid universe"),
         )
         .init_resource::<activity::ActiveSystems>()
         .init_resource::<activity::UniverseDebug>()

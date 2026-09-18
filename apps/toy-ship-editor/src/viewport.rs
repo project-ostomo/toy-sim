@@ -102,66 +102,94 @@ pub fn visuals(
         for entity in parts {
             commands.entity(entity).despawn();
         }
-        for p in &e.ship.parts {
-            if let Some(def) = e.catalogue.part(&p.prototype) {
-                let (lo, hi) = occupied(p, def);
-                let centre =
-                    Vec3::from_array(std::array::from_fn(|i| (lo[i] + hi[i]) as f32 * 0.05));
-                let tf = Transform::from_translation(centre)
-                    .with_rotation(Quat::from_mat3(&orientation(p.orientation).as_mat3()));
-                let part = commands.spawn((EditorPart, tf, Visibility::default())).id();
-                toy_sim_ship_view::attach_part_body(&mut commands, part, def, &assets, &loader);
-                if let Some(plume) = assets.plumes.get(&p.prototype) {
-                    toy_sim_ship_view::plume::spawn_plume(&mut commands, part, plume);
-                }
+        for p in &e.layout {
+            let tf = Transform::from_translation(p.centre.as_vec3())
+                .with_rotation(Quat::from_mat3(&p.rotation.as_mat3()));
+            let part = commands.spawn((EditorPart, tf, Visibility::default())).id();
+            toy_sim_ship_view::attach_part_body(
+                &mut commands,
+                part,
+                &p.definition,
+                &assets,
+                &loader,
+            );
+            if let Some(plume) = assets.plumes.get(&p.placed.prototype) {
+                toy_sim_ship_view::plume::spawn_plume(&mut commands, part, plume);
             }
         }
     }
     if e.devices_mode {
         return;
     }
-    for x in -20..=20 {
-        let v = x as f32;
-        gizmos.line(
-            Vec3::new(v, -0.01, -20.),
-            Vec3::new(v, -0.01, 20.),
-            Color::srgba(0.25, 0.3, 0.35, 0.3),
+    let highlight = |gizmos: &mut Gizmos, p: &PreparedPart, color: Color| {
+        let (lo, hi) = p.bounds();
+        gizmos.cube(
+            Transform::from_translation(p.centre.as_vec3())
+                .with_scale((hi - lo).as_vec3() + Vec3::splat(0.015)),
+            color,
         );
-        gizmos.line(
-            Vec3::new(-20., -0.01, v),
-            Vec3::new(20., -0.01, v),
-            Color::srgba(0.25, 0.3, 0.35, 0.3),
-        );
-    }
-    let highlight = |gizmos: &mut Gizmos, p: &PlacedPart, color: Color| {
-        if let Some(def) = e.catalogue.part(&p.prototype) {
-            let (lo, hi) = occupied(p, def);
-            let centre = Vec3::from_array(std::array::from_fn(|i| (lo[i] + hi[i]) as f32 * 0.05));
-            let size = Vec3::from_array(std::array::from_fn(|i| {
-                (hi[i] - lo[i]) as f32 * 0.1 + 0.015
-            }));
-            gizmos.cube(Transform::from_translation(centre).with_scale(size), color);
-        }
     };
-    if e.place.is_none()
-        && let Some(id) = e.selected
-    {
-        if let Some(p) = e.ship.parts.iter().find(|p| p.id == id) {
-            highlight(&mut gizmos, p, Color::srgb(1., 0.8, 0.2));
+    if e.place.is_none() {
+        if let Some(part) = e.layout.iter().find(|p| Some(p.placed.id) == e.selected) {
+            highlight(&mut gizmos, part, Color::srgb(1., 0.8, 0.2));
+        }
+    } else {
+        let connector = e
+            .place
+            .as_ref()
+            .and_then(|id| e.catalogue.part(id))
+            .and_then(|def| def.attachment_nodes().get(e.plug).cloned());
+        for part in &e.layout {
+            for node in part.definition.attachment_nodes() {
+                if connector
+                    .as_ref()
+                    .is_none_or(|c| c.connector != node.connector)
+                    || socket_used(&e.ship, part.placed.id, &node.name)
+                {
+                    continue;
+                }
+                let point =
+                    (part.centre + part.rotation * DVec3::from_array(node.position_m)).as_vec3();
+                let normal = (part.rotation * DVec3::from_array(node.normal)).as_vec3();
+                let size = (e.camera_distance * 0.004).clamp(0.08, 20.0);
+                for axis in [Vec3::X, Vec3::Y, Vec3::Z] {
+                    gizmos.line(
+                        point - axis * size,
+                        point + axis * size,
+                        Color::srgb(0.3, 0.85, 1.0),
+                    );
+                }
+                gizmos.line(
+                    point,
+                    point + normal * size * 3.,
+                    Color::srgb(0.3, 0.85, 1.0),
+                );
+            }
         }
     }
-    if let Some(p) = &e.ghost {
-        highlight(
-            &mut gizmos,
-            p,
-            if e.ghost_valid {
-                Color::srgb(0.2, 1., 0.5)
-            } else {
-                Color::srgb(1., 0.2, 0.2)
-            },
-        );
+    if e.ghost.is_some() {
+        if let Some(p) = &e.ghost_pose {
+            highlight(
+                &mut gizmos,
+                p,
+                if e.ghost_valid {
+                    Color::srgb(0.2, 1., 0.5)
+                } else {
+                    Color::srgb(1., 0.2, 0.2)
+                },
+            );
+        }
     }
 }
+
+fn socket_used(ship: &ShipBlueprint, id: u64, socket: &str) -> bool {
+    ship.parts.iter().any(|p| {
+        p.attachment.as_ref().is_some_and(|a| {
+            (a.parent == id && a.socket == socket) || (p.id == id && a.plug == socket)
+        })
+    })
+}
+
 #[derive(Component)]
 pub struct PlacementGhost;
 
@@ -185,12 +213,11 @@ pub fn ghost(
     let Some(definition) = editor.catalogue.part(&part.prototype) else {
         return;
     };
-    let (lo, hi) = occupied(part, definition);
-    let centre = Vec3::from_array(std::array::from_fn(|axis| {
-        (lo[axis] + hi[axis]) as f32 * 0.05
-    }));
-    let transform = Transform::from_translation(centre)
-        .with_rotation(Quat::from_mat3(&orientation(part.orientation).as_mat3()));
+    let Some(prepared) = &editor.ghost_pose else {
+        return;
+    };
+    let transform = Transform::from_translation(prepared.centre.as_vec3())
+        .with_rotation(Quat::from_mat3(&prepared.rotation.as_mat3()));
     if let Some((prototype, entity)) = current.as_ref() {
         if prototype == &part.prototype {
             if let Ok((mut existing, mut visibility)) = existing.get_mut(*entity) {
@@ -267,7 +294,7 @@ pub fn interact(
             e.cancel_placement();
         }
         if ui.input(|i| i.key_pressed(egui::Key::R)) {
-            e.orientation = (e.orientation + 1) % 24;
+            e.orientation = (e.orientation + 1) % 4;
         }
         if e.place.is_none() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
             if let Some(id) = e.selected {
@@ -275,8 +302,8 @@ pub fn interact(
             }
         }
     }
-    e.ghost = None;
     let Some(pointer) = response.hover_pos() else {
+        e.ghost = None;
         return;
     };
     let logical = Vec2::new(pointer.x, pointer.y) * (e.pixels_per_point / window.scale_factor());
@@ -286,15 +313,11 @@ pub fn interact(
     let origin = ray.origin.as_dvec3();
     let direction = ray.direction.as_dvec3();
     let mut nearest = None;
-    for p in &e.ship.parts {
-        if let Some(def) = e.catalogue.part(&p.prototype) {
-            let (lo, hi) = occupied(p, def);
-            let lo = DVec3::from_array(lo.map(|v| v as f64 * GRID));
-            let hi = DVec3::from_array(hi.map(|v| v as f64 * GRID));
-            if let Some((t, n)) = hit(origin, direction, lo, hi) {
-                if nearest.as_ref().is_none_or(|(_, old, _, _, _)| t < *old) {
-                    nearest = Some((p.id, t, n, lo, hi));
-                }
+    for part in &e.layout {
+        let (lo, hi) = part.bounds();
+        if let Some((t, _)) = hit(origin, direction, lo, hi) {
+            if nearest.is_none_or(|(_, old)| t < old) {
+                nearest = Some((part.placed.id, t));
             }
         }
     }
@@ -303,61 +326,62 @@ pub fn interact(
             e.cancel_placement();
             return;
         };
-        let size =
-            orientation(e.orientation).abs() * DVec3::from_array(def.dimensions.map(|d| d as f64));
-        let snap_step = if ui.input(|i| i.modifiers.shift) {
-            1.0 / GRID
-        } else {
-            1.0
-        };
-        let snap = |position: DVec3| (position / snap_step).round() * snap_step;
-
-        let position = if let Some((_, t, n, lo, hi)) = nearest {
-            let point = (origin + direction * t) / GRID;
-            let mut pos = snap(point - size / 2.);
-            let axis = n.abs().max_element();
-            for k in 0..3 {
-                if n[k].abs() == axis {
-                    pos[k] = if n[k] > 0. {
-                        hi[k] / GRID
-                    } else {
-                        lo[k] / GRID - size[k]
-                    };
-                }
-            }
-            pos
-        } else if direction.y.abs() > 1e-8 {
-            let t = -origin.y / direction.y;
-            if t < 0. {
-                return;
-            }
-            let p = (origin + direction * t) / GRID;
-            let snapped = snap(p - size / 2.);
-            DVec3::new(snapped.x, 0., snapped.z)
-        } else {
+        let nodes = def.attachment_nodes();
+        let Some(plug) = nodes.get(e.plug) else {
+            e.ghost = None;
             return;
         };
+        let mut selected: Option<(f64, Attachment)> = None;
+        for part in &e.layout {
+            for socket in part.definition.attachment_nodes() {
+                if socket.connector != plug.connector
+                    || socket_used(&e.ship, part.placed.id, &socket.name)
+                {
+                    continue;
+                }
+                let point = part.centre + part.rotation * DVec3::from_array(socket.position_m);
+                let along = (point - origin).dot(direction);
+                if along <= 0.0 {
+                    continue;
+                }
+                let miss = (point - origin - direction * along).length() / along;
+                if miss < 0.025 && selected.as_ref().is_none_or(|(old, _)| miss < *old) {
+                    selected = Some((
+                        miss,
+                        Attachment {
+                            parent: part.placed.id,
+                            socket: socket.name,
+                            plug: plug.name.clone(),
+                            roll: e.orientation,
+                        },
+                    ));
+                }
+            }
+        }
+        if !e.ship.parts.is_empty() && selected.is_none() {
+            e.ghost = None;
+            return;
+        }
         let part = PlacedPart {
+            id: e.ship.parts.iter().map(|p| p.id).max().unwrap_or(0) + 1,
+            prototype: proto,
             tanks: e.placement_tanks.clone(),
             name: String::new(),
             alias: String::new(),
             groups: vec![],
-            id: 0,
-            prototype: proto,
-            position: position.to_array().map(|v| v as i32),
-            orientation: e.orientation,
+            attachment: selected.map(|(_, mount)| mount),
         };
-        let (lo, hi) = occupied(&part, def);
-        let valid = !e.ship.parts.iter().any(|p| {
-            let Some(def) = e.catalogue.part(&p.prototype) else {
-                return false;
-            };
-            let (a, b) = occupied(p, def);
-            (0..3).all(|i| lo[i] < b[i] && hi[i] > a[i])
-        });
-        e.ghost = Some(part.clone());
-        e.ghost_valid = valid;
-        if response.clicked() && valid {
+        if e.ghost.as_ref() != Some(&part) {
+            let mut candidate = e.ship.clone();
+            candidate.parts.push(part.clone());
+            e.ghost_pose = candidate
+                .layout(&e.catalogue)
+                .ok()
+                .and_then(|mut parts| parts.pop());
+            e.ghost_valid = candidate.compile(&e.catalogue).is_ok();
+            e.ghost = Some(part.clone());
+        }
+        if response.clicked() && e.ghost_valid {
             e.add_part(part);
         }
     } else if response.clicked() {

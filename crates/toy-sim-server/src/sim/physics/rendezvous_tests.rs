@@ -140,7 +140,7 @@ impl Flight {
     ) -> Self {
         let cat = guidance_catalogue();
         let mut blueprint = starter(EXAMPLE_CONTROLLER.to_vec());
-        blueprint.parts[6].position = [0, 0, 60];
+
         let design = blueprint.compile(&cat).unwrap();
         let hardware = fixture(&design, &cat);
         Self {
@@ -265,7 +265,7 @@ impl Flight {
                 inertia: inertia.to_cols_array(),
                 radius_m: self.design.radius,
             },
-            propellant_kg: self.hardware.state().inventory.quantities[0],
+            propellant_kg: self.hardware.state().inventory.available(0),
         };
         let contacts = if self.visible {
             vec![contact]
@@ -589,7 +589,7 @@ fn contact_grace_reacquisition_timeout_and_manual_takeover() {
     }
     f.visible = false;
     for _ in 0..10 {
-        let out = f.tick(vec![]);
+        f.tick(vec![]);
         assert!(f.pilot.navigation.phase.active());
         assert!(!f.pilot.navigation.visible);
         assert!(f.pilot.navigation.throttle <= 1.);
@@ -676,12 +676,13 @@ fn mounting_rotation_and_off_axis_thrust_are_compensated() {
         false,
     );
     let mut blueprint = f.design.blueprint.clone();
-    // Rotating the two-cell engine around its long axis preserves its geometry.
-    blueprint.parts[6].orientation = (0..24)
-        .find(|&i| (orientation(i) * DVec3::NEG_Z - DVec3::NEG_Z).length() < 1e-9 && i != 0)
-        .unwrap();
-    blueprint.parts[4].orientation = 7;
-    blueprint.parts[6].position = [10, 0, 50];
+    blueprint.parts[6].attachment = Some(Attachment {
+        parent: 6,
+        socket: "right".into(),
+        plug: "left".into(),
+        roll: 0,
+    });
+    blueprint.parts[4].attachment.as_mut().unwrap().roll = 1;
     f.design = blueprint.compile(&f.cat).unwrap();
     f.hardware = fixture(&f.design, &f.cat);
     f.engage();
@@ -697,17 +698,26 @@ fn stock_firmware_flies_multiple_engines_and_rotated_torquers_without_aliases() 
         false,
     );
     let mut blueprint = f.design.blueprint.clone();
-    for (id, position) in [(8, [-10, 0, 50]), (9, [10, 0, 50])] {
+    for (id, socket, plug) in [(8, "left", "right"), (9, "right", "left")] {
         let mut engine = blueprint.parts[6].clone();
         engine.id = id;
-        engine.position = position;
+        engine.attachment = Some(Attachment {
+            parent: 6,
+            socket: socket.into(),
+            plug: plug.into(),
+            roll: 0,
+        });
         engine.alias.clear();
         blueprint.parts.push(engine);
     }
     let mut torquer = blueprint.parts[4].clone();
     torquer.id = 10;
-    torquer.position = [0, 10, 40];
-    torquer.orientation = 7;
+    torquer.attachment = Some(Attachment {
+        parent: 5,
+        socket: "top".into(),
+        plug: "bottom".into(),
+        roll: 1,
+    });
     torquer.alias.clear();
     blueprint.parts.push(torquer);
     for part in &mut blueprint.parts {
@@ -974,4 +984,31 @@ fn complete_forecast_tracks_full_thrust_approach() {
         f.tick(vec![]);
     }
     assert!(f.pilot.navigation.u.length() <= 1.);
+}
+
+#[test]
+fn default_ntr_patrol_reverses_heading_in_three_seconds() {
+    let mut flight = Flight::new(DVec3::ZERO, DVec3::ZERO, DVec3::ZERO, DVec3::ZERO, false);
+    flight.cat = Catalogue::builtin();
+    flight.design = ntr_patrol().compile(&flight.cat).unwrap();
+    flight.hardware = fixture(&flight.design, &flight.cat);
+    for tick in 0..30 {
+        flight.tick(if tick == 0 {
+            vec![Command::AimDirection(DVec3::Z.to_array())]
+        } else {
+            vec![]
+        });
+        if (flight.q * DVec3::NEG_Z).angle_between(DVec3::Z) < 5.0_f64.to_radians()
+            && flight.w.length() < 0.3
+        {
+            return;
+        }
+    }
+    panic!(
+        "turn after 3s: error={} deg, rate={} rad/s",
+        (flight.q * DVec3::NEG_Z)
+            .angle_between(DVec3::Z)
+            .to_degrees(),
+        flight.w.length()
+    );
 }

@@ -147,3 +147,5 @@ pub fn add_weapon_visuals(
         );
     }
 }
+
+pub mod mechanisms;

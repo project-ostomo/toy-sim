@@ -27,6 +27,7 @@ fn overlay(
         &SystemSubscription,
     )>,
     contacts: Query<(&Contact, &DisplayPose)>,
+    beacons: Query<&crate::state::NavigationObject>,
     celestials: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) -> Result {
@@ -43,6 +44,9 @@ fn overlay(
 
     for (view_entity, camera, transform, view_camera, observation, framing, systems) in &mut cameras
     {
+        if view_camera.private {
+            continue;
+        }
         let view = &observation.0;
         let Some(viewport) = camera.logical_viewport_rect() else {
             continue;
@@ -123,7 +127,9 @@ fn overlay(
             .take(512)
         {
             let track = &contact.0;
-            if track.entity.is_some() && track.entity == view.focused_ship {
+            if track.entity.is_some_and(|id| {
+                Some(id) == view.focused_ship || beacons.iter().any(|beacon| beacon.0.id == id)
+            }) {
                 continue;
             }
             let pose = &pose.0;
@@ -190,6 +196,9 @@ fn overlay(
     if let Some((entity, view, target)) = selection {
         active.view = Some(view);
         match target {
+            SelectedTarget::Beacon(id) => {
+                active.target = Some(SelectedTarget::Beacon(id));
+            }
             SelectedTarget::Contact(contact) => {
                 active.target = Some(SelectedTarget::Contact(contact));
             }
@@ -204,7 +213,7 @@ fn overlay(
     Ok(())
 }
 
-fn distance(metres: f64) -> String {
+pub(super) fn distance(metres: f64) -> String {
     if metres >= 1.0e12 {
         format!("{:.2} AU", metres / 149_597_870_700.0)
     } else if metres >= 1.0e6 {

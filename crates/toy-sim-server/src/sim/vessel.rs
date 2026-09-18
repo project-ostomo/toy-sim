@@ -121,12 +121,11 @@ fn spawn(
     mut wasm: ResMut<WasmRuntime>,
     launch: Res<ShipLaunch>,
 ) {
-    let starter = ShipBlueprint::from_bytes(include_bytes!(
-        "../../../../assets/ships/micropulse-patrol.ship"
-    ))
-    .expect("bundled patrol ship")
-    .compile(&cat.0)
-    .expect("starter design");
+    let starter =
+        ShipBlueprint::from_bytes(include_bytes!("../../../../assets/ships/ntr-patrol.ship"))
+            .expect("bundled patrol ship")
+            .compile(&cat.0)
+            .expect("starter design");
     let starter = Arc::new(starter);
     let selected = if let Some(path) = &launch.0 {
         match ShipBlueprint::load(path).and_then(|s| s.compile(&cat.0)) {

@@ -13,6 +13,9 @@ use toy_sim_ui::bevy_egui::{EguiGlobalSettings, EguiPrimaryContextPass};
 #[derive(Resource)]
 pub struct Editor {
     pub ship: ShipBlueprint,
+    pub layout: Vec<PreparedPart>,
+    pub plug: usize,
+    pub ghost_pose: Option<PreparedPart>,
     pub catalogue: Catalogue,
     pub descriptions: Vec<toy_sim_ui::parts::PartDescription>,
     pub catalogue_search: String,
@@ -54,6 +57,9 @@ impl Default for Editor {
             .collect();
         Self {
             ship: ShipBlueprint::default(),
+            layout: vec![],
+            plug: 0,
+            ghost_pose: None,
             catalogue,
             descriptions,
             catalogue_search: String::new(),
@@ -108,6 +114,7 @@ impl Editor {
 
     pub fn pick_up(&mut self, prototype: String) {
         self.place = Some(prototype);
+        self.plug = 0;
         self.placement_tanks.clear();
         self.ghost = None;
         self.inspector = ui::InspectorTab::Part;
@@ -115,7 +122,7 @@ impl Editor {
 
     pub fn duplicate_for_placement(&mut self, part: &PlacedPart) {
         self.pick_up(part.prototype.clone());
-        self.orientation = part.orientation;
+        self.orientation = part.attachment.as_ref().map_or(0, |a| a.roll);
         self.placement_tanks = part.tanks.clone();
     }
 
@@ -136,13 +143,10 @@ impl Editor {
     pub fn frame_ship(&mut self) {
         let mut minimum = Vec3::splat(f32::INFINITY);
         let mut maximum = Vec3::splat(f32::NEG_INFINITY);
-        for part in &self.ship.parts {
-            let Some(definition) = self.catalogue.part(&part.prototype) else {
-                continue;
-            };
-            let (lo, hi) = occupied(part, definition);
-            minimum = minimum.min(Vec3::from_array(lo.map(|v| v as f32 * GRID as f32)));
-            maximum = maximum.max(Vec3::from_array(hi.map(|v| v as f32 * GRID as f32)));
+        for part in &self.layout {
+            let (lo, hi) = part.bounds();
+            minimum = minimum.min(lo.as_vec3());
+            maximum = maximum.max(hi.as_vec3());
         }
         if minimum.is_finite() && maximum.is_finite() {
             self.camera_target = (minimum + maximum) * 0.5;
@@ -172,6 +176,7 @@ impl Editor {
         self.validate();
     }
     pub fn validate(&mut self) {
+        self.layout = self.ship.layout(&self.catalogue).unwrap_or_default();
         self.validation = self
             .ship
             .compile(&self.catalogue)
@@ -227,8 +232,26 @@ impl Editor {
     }
     pub fn delete_part(&mut self, id: u64) {
         self.edit(|s| {
-            s.parts.retain(|p| p.id != id);
-            s.avionics.excluded_actuators.retain(|p| *p != id);
+            let mut removed = std::collections::BTreeSet::from([id]);
+            loop {
+                let before = removed.len();
+                for part in &s.parts {
+                    if part
+                        .attachment
+                        .as_ref()
+                        .is_some_and(|a| removed.contains(&a.parent))
+                    {
+                        removed.insert(part.id);
+                    }
+                }
+                if before == removed.len() {
+                    break;
+                }
+            }
+            s.parts.retain(|p| !removed.contains(&p.id));
+            s.avionics
+                .excluded_actuators
+                .retain(|p| !removed.contains(p));
         });
         self.selected = None;
     }
@@ -307,8 +330,8 @@ fn main() -> anyhow::Result<()> {
         );
         editor.ship = ShipBlueprint::load(path)?;
         editor.file = path.to_string_lossy().into_owned();
-        editor.frame_ship();
         editor.validate();
+        editor.frame_ship();
     }
     App::new()
         .add_plugins(
@@ -328,6 +351,13 @@ fn main() -> anyhow::Result<()> {
         )
         .add_plugins(toy_sim_ui::UiPlugin)
         .add_plugins(toy_sim_ship_view::plume::PlumePlugin)
+        .add_plugins(toy_sim_ship_view::mechanisms::MechanismPlugin)
+        .add_systems(
+            Update,
+            |time: Res<Time>, mut clock: ResMut<toy_sim_ship_view::mechanisms::MechanismTime>| {
+                clock.0 = time.elapsed_secs_f64();
+            },
+        )
         .insert_resource(EguiGlobalSettings {
             enable_absorb_bevy_input_system: true,
             auto_create_primary_context: false,

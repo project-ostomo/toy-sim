@@ -21,7 +21,7 @@ fn temperature_boost(event_ns: u64, now_ns: u64) -> f32 {
 pub(super) fn update_flashes(
     clock: Res<RenderTime>,
     publications: Query<&CombatPublication>,
-    contacts: Query<&Contact>,
+    contacts: Query<(Option<&Contact>, Option<&crate::state::DisplayVisual>)>,
     ships: Query<&RenderSource>,
     mut shields: Query<(&ChildOf, &mut ThermalSphere), With<Shield>>,
 ) {
@@ -43,14 +43,17 @@ pub(super) fn update_flashes(
         }
     }
     for (parent, mut shield) in &mut shields {
-        let Some(contact) = ships
+        let Some(reference) = ships
             .get(parent.parent())
             .ok()
             .and_then(|source| contacts.get(source.0).ok())
+            .and_then(|(contact, visual)| {
+                contact.map(|c| c.1).or_else(|| visual.map(|v| v.0.contact))
+            })
         else {
             continue;
         };
-        if let Some(boost) = boosts.get(&(contact.1.group, contact.1.track)) {
+        if let Some(boost) = boosts.get(&(reference.group, reference.track)) {
             shield.temperature_k += boost;
         }
     }

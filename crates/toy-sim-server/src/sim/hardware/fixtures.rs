@@ -121,7 +121,7 @@ fn command_module_powers_standard_avionics_and_logical_devices() {
         assert!(design.part_for_device(handle).is_none());
         assert_eq!(design.device_catalogue[handle.0 as usize].part_id, 0);
     }
-    fixture.set_inventory(|inventory| inventory.quantities[1] = 0.0);
+    fixture.set_inventory(|inventory| inventory.quantities[1] = 0);
     let before = fixture.state().inventory.energy_j;
     fixture.advance();
     assert!((before - fixture.state().inventory.energy_j - 100_300.0).abs() < 1e-6);
@@ -169,10 +169,25 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
     else {
         unreachable!()
     };
-    let fraction = 0.05 / (propellant_kg_s * 0.1);
+    let part = fixture
+        .app
+        .world()
+        .get::<PartDevices>(fixture.ship)
+        .unwrap()
+        .0[fixture
+        .design
+        .part_for_device(fixture.device("main_engine"))
+        .unwrap()];
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<devices::Engine>(part)
+        .unwrap()
+        .propellant_kg_s = propellant_kg_s * 20.0;
+    let fraction = 1.0 / (propellant_kg_s * 20.0 * 0.1);
     let expected_thrust = thrust_n * fraction;
     let expected_energy = power_w * fraction * 0.1;
-    fixture.set_inventory(|inventory| inventory.quantities[0] = 0.05);
+    fixture.set_inventory(|inventory| inventory.quantities[0] = 1);
     let energy = fixture.state().inventory.energy_j;
     fixture
         .commands(&[DeviceCommand {
@@ -184,7 +199,7 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
     assert!((wrench.force.z + expected_thrust).abs() < 1e-8);
     assert!(wrench.torque.length() < 1e-8);
     let state = fixture.state();
-    assert_eq!(state.inventory.quantities[0], 0.0);
+    assert_eq!(state.inventory.quantities[0], 0);
     assert!((energy - state.inventory.energy_j - auxiliary_energy - expected_energy).abs() < 1e-6);
     assert_eq!(state.sensor_range, 100_000_000.0);
     let mass = fixture.app.world().get::<MassProps>(fixture.ship).unwrap();
@@ -197,7 +212,12 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
 #[test]
 fn off_axis_engine_generates_lever_arm_torque() {
     let mut blueprint = starter(EXAMPLE_CONTROLLER.to_vec());
-    blueprint.parts[6].position = [10, 0, 50];
+    blueprint.parts[6].attachment = Some(Attachment {
+        parent: 6,
+        socket: "right".into(),
+        plug: "left".into(),
+        roll: 0,
+    });
     let mut fixture = HardwareFixture::new(blueprint);
     fixture
         .commands(&[DeviceCommand {
@@ -220,7 +240,7 @@ fn computer_power_loss_and_failure_neutralize_outputs() {
         let capacity = fixture.design.battery_j;
         fixture.set_inventory(|inventory| {
             inventory.energy_j = if failed { capacity } else { 5.0 };
-            inventory.quantities[1] = 0.0;
+            inventory.quantities[1] = 0;
         });
         fixture.set_operational(fixture.design.avionics_handles[0], !failed);
         let engine = fixture.device("main_engine");
@@ -317,7 +337,7 @@ fn sensor_reading_tracks_power_and_enable_setting() {
 #[test]
 fn rcs_scales_all_axes_when_fuel_runs_out_and_applies_mount_torque() {
     let mut fixture = HardwareFixture::new(armed_starter());
-    fixture.set_inventory(|inventory| inventory.quantities[0] = 0.05);
+    fixture.set_inventory(|inventory| inventory.quantities[0] = 1);
     let device = fixture
         .design
         .device_catalogue
@@ -325,6 +345,18 @@ fn rcs_scales_all_axes_when_fuel_runs_out_and_applies_mount_torque() {
         .find(|device| matches!(device.kind, DeviceKind::Rcs { .. }))
         .unwrap()
         .handle;
+    let entity = fixture
+        .app
+        .world()
+        .get::<PartDevices>(fixture.ship)
+        .unwrap()
+        .0[fixture.design.part_for_device(device).unwrap()];
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<devices::ReactionControl>(entity)
+        .unwrap()
+        .propellant_kg_s *= 20.0;
     fixture
         .commands(&[DeviceCommand {
             device,
@@ -337,7 +369,7 @@ fn rcs_scales_all_axes_when_fuel_runs_out_and_applies_mount_torque() {
     let wrench = fixture.advance();
     assert!(wrench.force.distance(expected) < 1e-8);
     assert!(wrench.torque.distance(torque) < 1e-8);
-    assert_eq!(fixture.state().inventory.quantities[0], 0.0);
+    assert_eq!(fixture.state().inventory.quantities[0], 0);
     let wrench = fixture.advance();
     assert_eq!(wrench.force, DVec3::ZERO);
     assert_eq!(wrench.torque, DVec3::ZERO);
@@ -354,7 +386,12 @@ fn every_shield_generator_must_be_powered_for_the_combined_field() {
         .clone();
     second.id = blueprint.parts.iter().map(|part| part.id).max().unwrap() + 1;
     second.alias = "second_shield".into();
-    second.position = [10, 0, 30];
+    second.attachment = Some(Attachment {
+        parent: 4,
+        socket: "right".into(),
+        plug: "left".into(),
+        roll: 0,
+    });
     blueprint.parts.push(second);
     let mut fixture = HardwareFixture::new(blueprint);
     fixture.advance();

@@ -1,4 +1,4 @@
-use crate::{Editor, Firmware, orientation, previews::PartPreviews};
+use crate::{Editor, Firmware, previews::PartPreviews};
 use toy_sim_ui::{egui, parts};
 
 use super::InspectorTab;
@@ -64,19 +64,15 @@ fn part(ui: &mut egui::Ui, editor: &mut Editor, previews: &PartPreviews) {
                 .char_limit(64)
                 .desired_width(f32::INFINITY),
         );
-        ui.label("Position · 0.1 m grid");
-        ui.horizontal(|ui| {
-            for (axis, value) in ["X", "Y", "Z"].into_iter().zip(&mut changed.position) {
-                ui.add(
-                    egui::DragValue::new(value)
-                        .prefix(format!("{axis} "))
-                        .speed(1.),
-                );
-            }
-        });
-        ui.add(egui::Slider::new(&mut changed.orientation, 0..=23).text("Orientation"));
-        let forward = orientation(changed.orientation) * bevy::math::DVec3::NEG_Z;
-        ui.small(format!("Forward: {}", axis_label(forward)));
+        if let Some(mount) = &mut changed.attachment {
+            ui.label(format!(
+                "Part {} · {} ↔ {}",
+                mount.parent, mount.socket, mount.plug
+            ));
+            ui.add(egui::Slider::new(&mut mount.roll, 0..=3).text("Quarter turns"));
+        } else {
+            ui.weak("Assembly root");
+        }
         tanks(
             ui,
             &mut changed.tanks,
@@ -101,22 +97,6 @@ fn part(ui: &mut egui::Ui, editor: &mut Editor, previews: &PartPreviews) {
     }
 
     parts::specifications(ui, &editor.descriptions[index]);
-}
-
-fn axis_label(direction: bevy::math::DVec3) -> &'static str {
-    if direction.x > 0.5 {
-        "+X"
-    } else if direction.x < -0.5 {
-        "−X"
-    } else if direction.y > 0.5 {
-        "+Y"
-    } else if direction.y < -0.5 {
-        "−Y"
-    } else if direction.z > 0.5 {
-        "+Z"
-    } else {
-        "−Z"
-    }
 }
 
 fn ship(ui: &mut egui::Ui, editor: &mut Editor) {

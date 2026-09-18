@@ -96,7 +96,7 @@ pub struct Observation {
     pub time_s: f64,
     pub flight: abi::FlightState,
     pub resources: abi::ShipResources,
-    pub inventory: Vec<f64>,
+    pub inventory: Vec<u64>,
 }
 
 impl std::ops::Deref for Observation {

@@ -483,7 +483,7 @@ A debug account is a configured account named by `debug_account`. It has no sepa
 
 Commands other than clock, reset and inspect go into a queue of at most 256 and are applied before the next ticks. They name ships by UUID and are not limited to ships the debug account controls. A command naming an unknown ship is ignored.
 
-**Dormant ships.** Docked, in-transit, stored and destroyed ships are dormant. `Relocate` and `RelocateToBody` ignore dormant ships. `Recover` accepts only a ship in space or a destroyed ship; a docked, in-transit or stored ship is refused. A destroyed ship is recovered only if none of its bays is occupied and it holds no stored mass. Recovery rebuilds the hardware with a fresh test loadout, returns the ship to space, cancels pending travel operations, sets travel to `Paused`, reboots the computer and clears its requests and world actions. Recovery keeps the ship's UUID.
+**Dormant ships.** Docked, in-transit, stored and destroyed ships are dormant. `Relocate` and `RelocateToBody` ignore dormant ships. `Recover` accepts only a ship in space or a destroyed ship; a docked, in-transit or stored ship is refused. A destroyed ship is recovered only if its stored-ship inventory is empty and it holds no stored mass. Recovery rebuilds the hardware with a fresh test loadout, returns the ship to space, cancels pending travel operations, sets travel to `Paused`, reboots the computer and clears its requests and world actions. Recovery keeps the ship's UUID.
 
 **Diagnostics.** While inspection is on, debug frames include entity count, active and dormant ship counts, the last tick's duration, and per-stage times: ship preparation, WASM callbacks, sensor queries, publication, hardware, and collision indexing, queries, solving and total, plus collision counters.
 
@@ -508,30 +508,30 @@ Docking and travel are implemented in [travel.rs](../crates/toy-sim-server/src/s
 
 ### Presence
 
-`Presence` is one of `Space`, `Docked { host, bay }`, `SlipTransit(id)`, `StoredInWreck(host)` or `Destroyed`. Telemetry includes a pose only in `Space`.
+`Presence` is one of `Space`, `Docked { host, bay }`, `SlipTransit(id)`, `StoredInWreck(host)` or `Destroyed`. Private telemetry includes an appearance hash, radius and presentation pose in space, docking storage and slip transit. Docked poses follow the host bay; transit poses follow the declared slip segment. Only space presence participates in normal physics.
 
 Leaving space makes a ship dormant. Its hardware is shut down (default device settings, avionics unpowered, sensor range 0), and its velocity, rigid body, collision body and spatial body are removed and remembered. Dormant ships take no part in physics, sensing, programs, world services or displays. Their hull and shield thermal state advances once per simulated second. Returning to space restores the remembered components.
 
 ### Bays and docking
 
-A bay belongs to a host ship. It has a centre and rotation in host axes, a radius, a mass capacity, public or allow-list access, an optional reservation and an occupant.
+A bay belongs to a host ship. It has a centre and rotation in host axes, a radius, a mass capacity, public or allow-list access, an optional reservation. Docked ships are stored through the ECS `DockedIn` / `StoredShips` relationship; a stored ship releases the bay for the next arrival.
 
 - **`reserve_bay`** requires:
   - the ship is not the host, both are in space, and the ship's containment tree is less than 8 deep with no cycles
   - access: the bay is public, the host has the same owner, or the ship's owner is on the allow list
-  - an empty bay that fits the ship's radius and mass
+  - a bay that fits the ship's radius and mass
   - no unexpired reservation by another ship
 
   A reservation lasts 600 ticks.
-- **`dock`** reserves the bay, then requires the whole ship to be inside the bay sphere, within 0.5 m/s of the bay's velocity and within 5° of its orientation. On success the ship becomes dormant with presence `Docked`, the host's stored mass and mass increase by the ship's mass, the bay records the occupant, a current `Dock` leg completes its order, and `docked` is emitted.
-- **`undock`** requires the ship not to be destroyed, the host to be in space, and departure access. The ship leaves along the bay's +Z axis, offset by host radius + ship radius + 10 m, and inherits the host's velocity plus ω × r at that point. The exit point must be clear of other active ships and bodies. `undocked` is emitted.
+- **`dock`** reserves the bay, then requires the whole ship to be inside the bay sphere, within 0.5 m/s of the bay's velocity and within 5° of its orientation. On success the ship becomes dormant with presence `Docked`, the host's stored mass and mass increase by the ship's mass, the ship joins the host's stored inventory and releases the reservation, a current `Dock` leg completes its order, and `docked` is emitted.
+- **`undock`** requires the ship not to be destroyed, the host to be in space, and departure access. The ship leaves along the bay's −Z axis, offset by host radius + ship radius + 10 m, and inherits the host's velocity plus ω × r at that point. The exit point must be clear of other active ships and bodies. `undocked` is emitted.
 - Destroying a host changes its docked ships to `StoredInWreck`. Their inventory stays inside the wreck.
 
-A docked ship with an `Undock` or due `WaitUntil` order completes it without running its program.
+A docked ship with an `Undock` or due `WaitUntil` order completes it without running its program. A queued space order automatically undocks the ship and then resumes planning the same order; docking at the current host completes immediately.
 
 ### Gates
 
-A gate is a ship with a `Gate` record paired to another gate. `ProgramAction::Gate(entry)` validates entry and schedules the transfer one tick later. The transfer re-validates everything.
+A gate is fixed navigation infrastructure with a `Gate` record paired to another gate. It has no rigid body. The demo gates follow prescribed circular ephemerides, so they remain near their local traffic frame without consuming rigid-body physics. Their apertures are spherical and accept entry from any direction. `ProgramAction::Gate(entry)` validates entry and schedules the transfer one tick later. The transfer re-validates everything.
 
 **Entry requirements:**
 
@@ -567,12 +567,13 @@ A `SlipDrive` defaults to 100 MW and is ready at once. The scenario gives one to
 
 ### Travel orders and firmware planning
 
-Player orders are `TravelTo(Destination)`, `Dock(station)`, `Undock` and `WaitUntil(tick)`. A destination is a beacon, a galactic position, or an offset from a celestial body or beacon in galactic or body-fixed axes. Body-fixed offsets add ω × r to the resolved velocity.
+Player orders are `TravelTo(Destination)`, `Jump(entry_gate)`, `Dock(station)`, `Undock`, `WaitUntil(tick)` and `Guidance { mode, target, range_m }`. Guidance modes are align, approach, keep range and engage. The latter two remain active until interrupted or removed. Targets are destinations or authorized fused contacts. A destination is a beacon, a galactic position, or an offset from a celestial body or beacon in galactic or body-fixed axes. Body-fixed offsets add ω × r to the resolved velocity.
 
 The server holds the authoritative travel shell: orders, revision, status, legs and the current leg, and the operations that change presence. It does not plan routes. The ship's flight program does, through `world_query` and `world_command` ([ship-abi.md](ship-abi.md#world-services)).
 
 | `ProgramQuery` | Reply |
 | --- | --- |
+| `Contact(reference)` | Current fused pose, radius and opaque firmware handle; only the ship's group and public picture are accessible |
 | `Travel` | Travel state, own pose and whether the slipdrive is ready |
 | `Resolve(destination)` | The destination's pose. Celestial references resolve from the universe catalogue, so inactive systems work too. |
 | `Beacon(id)`, `Beacons { after, limit }` | Beacons in UUID order, `limit` from 1 to 256. Each has pose, radius, IFF, the bays this ship could use now, and the paired exit if the ship may use the gate. |
@@ -591,7 +592,7 @@ World actions are applied after all ships have run, in ship ID order. If an acti
 
 The stock firmware's planner ([world.rs](../crates/toy-sim-example-controller/src/world.rs), [graph.rs](../crates/toy-sim-example-controller/src/world/graph.rs)) runs inside `ship_tick`:
 
-- **Target.** A beacon destination becomes a point on the beacon's galactic +Z axis, beacon radius + own radius + 100 m away, plus 1e7 m for a gate. Other destinations are resolved directly.
+- **Target.** A beacon destination becomes a point on the beacon's body-fixed −Z axis, beacon radius + own radius + 100 m away, plus 1e7 m for a gate. Other destinations are resolved directly.
 - **Short trips.** If the target is less than 1e7 m away, the route is a single sublight leg, followed by a dock leg for a `Dock` order.
 - **Beacon scan.** Otherwise the planner pages through beacons 16 per callback, collecting gates with a visible exit. It gives up with `ERR_UNAVAILABLE` beyond 4096 beacons or 256 gates.
 - **Route graph.** It runs Dijkstra over the origin, the target and the collected gates. Edge cost is straight-line distance, except that a gate's edge to its paired exit costs at most 1e6 m. The search does at most 128 relaxations per callback and resumes on the next callback, so a large catalogue spreads over several ticks. Routes can chain any number of gate pairs.
@@ -599,7 +600,7 @@ The stock firmware's planner ([world.rs](../crates/toy-sim-example-controller/sr
 - **Gate legs.** Otherwise, for each gate pair on the path, the route has a sublight leg to the entry gate's centre and a `Gate` leg, followed by a final sublight leg (and a dock leg for `Dock`).
 - **Sublight.** The planner feeds the resolved relative position and velocity to the braking navigation law as a synthetic contact (ID `u64::MAX`). It completes the leg within 2 m and 0.5 m/s ([rendezvous.md](rendezvous.md)).
 - **Slip and gate legs.** The planner sends `Slip` while the drive is ready, or `Gate` on each callback. The server advances the leg.
-- **Dock.** The planner picks the lowest-numbered bay the beacon reports as usable, reserves it, and renews the reservation every 100 ticks. Within 2 m and 0.3 m/s of the bay it holds the bay's attitude, and within 5° it sends `Dock`.
+- **Dock.** The planner picks the lowest-numbered bay the beacon reports as usable, reserves it, and renews the reservation every 100 ticks. It first rendezvous with a point outside the mouth on the bay's −Z axis, then enters the bay. Within 2 m and 0.3 m/s of the berth it holds the bay's attitude, and within 5° it sends `Dock`.
 - **Errors.** If a query or command fails while travel is active, the planner sends `Block` with "Routing query failed (code); retrying" and plans again 50 ticks later. It also retries from a `Blocked` state.
 
 The planner uses straight-line distances rather than flight time or energy. Gate access and bay availability come from the beacon replies; enablement, obstruction and curvature are checked only by the server when the action is applied.
@@ -765,3 +766,9 @@ This three-second sample checks the small idle scenario. Dense views, sustained 
 Native fused scans cost 3000 gas per requested contact, covering both group and public queries. The standard firmware starts with 32 contacts, grows when its buffer fills and shrinks when results are sparse. It budgets scans and forecasts against remaining gas, preserving flight control, publication and the next callback. Dense-sensor regression tests exercise repeated callbacks under the existing runtime limits.
 
 Unused information groups are collected periodically. Account defaults, ship memberships, public information and active session subscriptions keep their groups alive.
+
+## Station and navigation expansion
+
+Protocol version 7 adds the public navigation catalogue and integer cargo/consumable telemetry. The client replicates moving beacons into ECS pose samples so their markers interpolate on the same clock as ships. Gate topology supports a subway-style map and shortest-hop route previews; selected routes become explicit `Jump` orders for the flight computer. Queue controls can remove, reorder, pause and resume commands. The HUD shows the active action, destination markers and slip ETA. Ship camera focus is limited to visible nearby contacts within 100 km.
+
+Docked and transiting ships have private meshes independent of sensor contacts. Docking opens a client-rendered hangar with orbit-camera controls; slip transit uses a procedural streak tunnel. Neither view reactivates ship physics. Gates use a sparse GLB frame, an animated spherical distortion material and a shadow-casting point light. See [stations-navigation.md](stations-navigation.md) for the catalogue, controls and verification commands.

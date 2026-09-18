@@ -16,7 +16,16 @@ fn fixture() -> (App, Entity, Id) {
         world.despawn(ship);
     }
     let account = Id::new();
-    let design = toy_sim_ships::starter(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec())
+    let mut blueprint = toy_sim_ships::starter(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec());
+    // Provide a fuel reserve for the full 600-second guidance deadline.
+    for tank in &mut blueprint.parts[0].tanks {
+        match tank.resource.as_str() {
+            "propellant" => tank.volume_m3 = 0.69,
+            "fuel" => tank.volume_m3 = 0.08,
+            _ => {}
+        }
+    }
+    let design = blueprint
         .compile(&world.resource::<vessel::ShipCatalogue>().0)
         .unwrap();
     let ship = vessel::spawn_ship(
@@ -89,8 +98,12 @@ fn travel_order_runs_in_stock_wasm_and_brakes_at_destination() {
     assert_eq!(
         travel.status,
         Status::Completed,
-        "pose {pose:?}, fault {:?}, travel {travel:?}",
+        "pose {pose:?}, fault {:?}, travel {travel:?}, inventory {:?}",
         software.controller.fault,
+        world
+            .get::<crate::sim::hardware::ShipInventory>(ship)
+            .unwrap()
+            .0,
     );
     assert!(software.controller.fault.is_none());
     assert!(!software.controller.is_booting());
@@ -126,7 +139,6 @@ fn rejected_dock_does_not_complete_the_order() {
             public: true,
             allowed: BTreeSet::new(),
             reservation: Some((Id::new(), 1000)),
-            occupant: None,
         }]),
     ));
     world.get_mut::<Travel>(ship).unwrap().0 = TravelState {
@@ -162,8 +174,8 @@ fn rejected_dock_does_not_complete_the_order() {
             .is_none()
     );
     assert!(
-        app.world().get::<DockingBays>(station).unwrap().0[0]
-            .occupant
-            .is_none()
+        app.world()
+            .get::<super::StoredShips>(station)
+            .is_none_or(|ships| ships.is_empty())
     );
 }

@@ -92,6 +92,7 @@ pub(super) fn apply(
     info.groups = frame.tracks.keys().copied().collect();
     info.diagnostics = frame.presentation.diagnostics.clone();
     info.universe = frame.presentation.universe.clone();
+    info.navigation = frame.presentation.navigation.clone();
     info.results.extend(publications.results);
     let excess = info.results.len().saturating_sub(128);
     info.results.drain(..excess);
@@ -119,6 +120,22 @@ pub(super) fn apply(
             replication.deaths.remove(&key);
         }
     }
+
+    let mut seen_beacons = BTreeSet::new();
+    for beacon in &frame.presentation.navigation.beacons {
+        seen_beacons.insert(beacon.id);
+        let entity = indexed(&mut commands, &mut replication.beacons, beacon.id);
+        let old = old_samples
+            .get(entity)
+            .ok()
+            .map(|(_, poses, _)| &poses.current);
+        commands.entity(entity).insert((
+            NavigationObject(beacon.clone()),
+            SpatialInstance(beacon.id),
+            samples(old, &beacon.pose),
+        ));
+    }
+    retain(&mut commands, &mut replication.beacons, &seen_beacons);
 
     let visuals: BTreeMap<_, _> = frame
         .presentation
@@ -192,11 +209,7 @@ pub(super) fn apply(
         seen.insert(ship.ship);
         let entity = indexed(&mut commands, &mut replication.ships, ship.ship);
         commands.entity(entity).insert(OwnedShip(ship.clone()));
-        if let Some(pose) = ship
-            .pose
-            .as_ref()
-            .filter(|_| ship.presence == travel::Presence::Space)
-        {
+        if let Some(pose) = ship.pose.as_ref() {
             let old = old_samples
                 .get(entity)
                 .ok()
@@ -444,6 +457,8 @@ mod tests {
         let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
         let ship = Id([4; 16]);
         first.ships.push(ShipTelemetry {
+            appearance: None,
+            radius_m: 10.,
             dock_services: Default::default(),
             info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {

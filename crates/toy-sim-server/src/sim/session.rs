@@ -331,13 +331,23 @@ impl Session {
                         expected_revision,
                         orders,
                     } => {
-                        let mut state = world
-                            .get_mut::<super::travel::Travel>(entity)
-                            .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?;
                         ensure!(
-                            state.0.revision == expected_revision,
+                            !matches!(
+                                world
+                                    .get::<super::travel::PresenceState>(entity)
+                                    .map(|p| &p.0),
+                                Some(travel::Presence::SlipTransit(_))
+                            ),
+                            "wait for slip arrival before changing the queue"
+                        );
+                        ensure!(
+                            world
+                                .get::<super::travel::Travel>(entity)
+                                .is_some_and(|state| state.0.revision == expected_revision),
                             "stale travel revision"
                         );
+                        super::travel::cancel_pending(world, entity);
+                        let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
                         state.0 = travel::TravelState {
                             revision: state.0.revision + 1,
                             orders,
@@ -346,6 +356,7 @@ impl Session {
                         };
                     }
                     ShipCommand::PauseTravel => {
+                        super::travel::cancel_pending(world, entity);
                         world
                             .get_mut::<super::travel::Travel>(entity)
                             .unwrap()
@@ -370,6 +381,20 @@ impl Session {
                     ShipCommand::Dock { station, bay } => {
                         let station = identity::lookup(world, station)?;
                         super::travel::dock(world, entity, station, bay)?;
+                    }
+                    ShipCommand::TransferCargo {
+                        target,
+                        resource,
+                        quantity,
+                    } => {
+                        let destination = control(world, self.account, target, None)?;
+                        super::hardware::utilities::transfer_cargo(
+                            world,
+                            entity,
+                            destination,
+                            &resource,
+                            quantity,
+                        )?;
                     }
                     ShipCommand::SetDockServices { cargo, power } => {
                         ensure!(
@@ -569,6 +594,7 @@ impl Session {
             .filter_map(|(_, entity)| telemetry(world, *entity))
             .collect();
         let mut presentation = PresentationFrame::default();
+        presentation.navigation = super::infrastructure::catalogue(world);
         presentation.ships = owned
             .iter()
             .filter(|(id, _)| focused.contains(id))
@@ -757,6 +783,31 @@ impl Session {
 
 pub fn ship_pose(world: &World, entity: Entity) -> Option<Pose> {
     let pose = world.get::<super::precision::PreciseTransform>(entity)?;
+    if let Some(super::travel::PresenceState(travel::Presence::Docked { host, bay })) =
+        world.get::<super::travel::PresenceState>(entity)
+    {
+        let station = identity::lookup(world, *host).ok()?;
+        let host_pose = ship_pose(world, station)?;
+        return Some(super::travel::bay_pose(
+            &host_pose,
+            world
+                .get::<super::travel::DockingBays>(station)?
+                .0
+                .get(*bay as usize)?,
+        ));
+    }
+    if let Some(transit) = world.get::<super::travel::Transit>(entity) {
+        let now = world.resource::<SimulationCounters>().ticks;
+        let duration = transit.next_attempt.saturating_sub(transit.departed).max(1) as f64;
+        let progress = (now.saturating_sub(transit.departed) as f64 / duration).clamp(0., 1.);
+        let delta = transit.destination.relative_to(transit.origin);
+        return Some(Pose {
+            position: transit.origin.offset_by(delta * progress),
+            rotation: pose.rotation.to_array(),
+            velocity: (delta / (duration * 0.1)).to_array(),
+            angular_velocity: [0.; 3],
+        });
+    }
     Some(super::intelligence::pose(
         pose,
         world.get::<super::physics::Velocity>(entity),
@@ -771,6 +822,10 @@ fn telemetry(world: &World, entity: Entity) -> Option<ShipTelemetry> {
     let authority = world.get::<Control>(entity)?;
     let group = world.get::<Membership>(entity)?.0;
     Some(ShipTelemetry {
+        appearance: world
+            .get::<super::identity::Appearance>(entity)
+            .map(|appearance| appearance.0),
+        radius_m: design.radius,
         dock_services: world
             .get::<super::hardware::utilities::DockServiceRequest>(entity)
             .map_or_else(DockServiceSettings::default, |request| {
@@ -790,7 +845,14 @@ fn telemetry(world: &World, entity: Entity) -> Option<ShipTelemetry> {
             .unwrap_or(travel::Presence::Space),
         pose: world
             .get::<super::travel::PresenceState>(entity)
-            .is_none_or(|presence| presence.0 == travel::Presence::Space)
+            .is_none_or(|presence| {
+                matches!(
+                    presence.0,
+                    travel::Presence::Space
+                        | travel::Presence::Docked { .. }
+                        | travel::Presence::SlipTransit(_)
+                )
+            })
             .then(|| ship_pose(world, entity))
             .flatten(),
         battery_j: inventory.energy_j,

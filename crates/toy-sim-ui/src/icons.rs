@@ -2,6 +2,7 @@ use crate::egui::{self, FontFamily, FontId};
 
 #[derive(Clone, Copy, Debug)]
 pub enum Icon {
+    Cargo,
     Overview,
     Ship,
     Navigation,
@@ -28,6 +29,7 @@ pub enum Icon {
 impl Icon {
     pub fn glyph(self) -> &'static str {
         match self {
+            Self::Cargo => "\u{e1da}",
             Self::Overview => "\u{e2f2}",
             Self::Ship => "\u{e3fc}",
             Self::Navigation => "\u{e1c8}",

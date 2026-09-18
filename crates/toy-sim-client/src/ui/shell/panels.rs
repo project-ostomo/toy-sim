@@ -19,7 +19,9 @@ pub(super) fn draw(
             (OVERVIEW, Icon::Overview, "Overview"),
             (SELECTED, Icon::Target, "Selected item"),
             (SHIP, Icon::Ship, "Ship status"),
+            (INVENTORY, Icon::Cargo, "Inventory"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
+            (MAP, Icon::Planet, "Gate network map"),
         ] {
             if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
                 shell.desktop.toggle(spec);
@@ -123,6 +125,36 @@ pub(super) fn draw(
                                 );
                             }
                         });
+                        if let Some(order) = ship.travel.orders.get(ship.travel.order) {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{} / {}   {}",
+                                    ship.travel.order + 1,
+                                    ship.travel.orders.len(),
+                                    instruments::order_label(order, model.navigation)
+                                ))
+                                .color(ACCENT),
+                            );
+                        }
+                        if let Some(arrival) = ship.travel.estimated_arrival_tick {
+                            let seconds =
+                                (arrival as f64 * 0.1 - model.time_ns as f64 * 1e-9).max(0.);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "SLIP TRANSIT   ETA {:02}:{:02}",
+                                    seconds as u64 / 60,
+                                    seconds as u64 % 60
+                                ))
+                                .size(18.)
+                                .color(ACCENT),
+                            );
+                        }
+                        if matches!(ship.presence, travel::Presence::Docked { .. }) {
+                            ui.label(egui::RichText::new("DOCKED · Hangar").color(ACCENT));
+                            if ui.button("Undock").clicked() {
+                                intents.push(Intent::Queue(vec![travel::Order::Undock], false));
+                            }
+                        }
                     }
                 });
         });
@@ -196,7 +228,7 @@ pub(super) fn draw(
                                 .add_enabled(can_control, egui::Button::new("Keep range"))
                                 .clicked()
                             {
-                                intents.push(Intent::Approach(reference, stand_off));
+                                intents.push(Intent::KeepRange(reference, stand_off));
                                 ui.close();
                             }
                         }
@@ -228,6 +260,12 @@ pub(super) fn draw(
     shell
         .desktop
         .show(ctx, NAVIGATION, |ui| navigation(ui, model, intents));
+    shell.desktop.show(ctx, INVENTORY, |ui| {
+        inventory::draw(ui, &mut shell.inventory, model, intents)
+    });
+    shell
+        .desktop
+        .show(ctx, MAP, |ui| map::draw(ui, &mut shell.map, model, intents));
     let mut locked = shell.desktop.locked;
     let mut reset = false;
     shell.desktop.show(ctx, SETTINGS, |ui| {

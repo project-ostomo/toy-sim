@@ -35,6 +35,8 @@ pub enum Destination {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Order {
+    Jump(EntityId),
+    Guidance(Guidance),
     TravelTo(Destination),
     Dock(EntityId),
     Undock,
@@ -43,6 +45,7 @@ pub enum Order {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Leg {
+    Guidance(Guidance),
     Sublight(Destination),
     Gate { entry: EntityId, exit: EntityId },
     Slip { destination: GalacticPosition },
@@ -71,4 +74,25 @@ pub struct TravelState {
     pub leg: usize,
     pub status: Status,
     pub estimated_arrival_tick: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Target {
+    Destination(Destination),
+    Contact(crate::ContactRef),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GuidanceMode {
+    Align,
+    Approach,
+    KeepRange,
+    Engage,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Guidance {
+    pub mode: GuidanceMode,
+    pub target: Target,
+    pub range_m: f64,
 }

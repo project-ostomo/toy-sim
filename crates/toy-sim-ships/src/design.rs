@@ -2,11 +2,8 @@ use crate::*;
 use anyhow::{Context, Result, ensure};
 use glam::{DMat3, DVec3};
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
-pub const SHIP_FORMAT_VERSION: u32 = 2;
+use std::{collections::BTreeMap, path::Path};
+pub const SHIP_FORMAT_VERSION: u32 = 3;
 pub const AVIONICS_MASS_KG: f64 = 71.;
 pub const AVIONICS_POWER_W: f64 = 101.;
 pub const SENSOR_POWER_W: f64 = 1000.;
@@ -69,8 +66,7 @@ pub struct PlacedPart {
     #[serde(default)]
     pub tanks: Vec<Tank>,
     pub prototype: String,
-    pub position: [i32; 3],
-    pub orientation: u8,
+    pub attachment: Option<crate::Attachment>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShipBlueprint {
@@ -122,13 +118,6 @@ pub fn orientation(index: u8) -> DMat3 {
         }
     }
     rotations[index as usize % 24]
-}
-pub fn occupied(part: &PlacedPart, def: &PartDef) -> ([i64; 3], [i64; 3]) {
-    let dimensions =
-        orientation(part.orientation).abs() * DVec3::from_array(def.dimensions.map(|d| d as f64));
-    let lo = part.position.map(i64::from);
-    let hi = std::array::from_fn(|i| lo[i] + dimensions[i].round() as i64);
-    (lo, hi)
 }
 #[derive(Clone, Debug)]
 pub struct PreparedPart {
@@ -266,11 +255,12 @@ impl ShipBlueprint {
             !self.controller_bytes().is_empty(),
             "attach controller WASM to the computer"
         );
-        let mut parts = vec![];
+        let parts = self.layout(cat)?;
         let mut ids = BTreeMap::new();
         let mut boxes = vec![];
         let mut aliases = std::collections::BTreeSet::new();
-        for p in &self.parts {
+        for (index, prepared) in parts.iter().enumerate() {
+            let p = &prepared.placed;
             ensure!(p.valid_labels(), "invalid device names/groups");
             if !p.alias.is_empty() {
                 ensure!(
@@ -284,9 +274,8 @@ impl ShipBlueprint {
                     p.alias
                 );
             }
-            ensure!(p.orientation < 24, "invalid part orientation");
             ensure!(
-                ids.insert(p.id, parts.len()).is_none(),
+                ids.insert(p.id, index).is_none(),
                 "duplicate part ID {}",
                 p.id
             );
@@ -323,47 +312,28 @@ impl ShipBlueprint {
                 "tank volume exceeds capacity on part {}",
                 p.id
             );
-            let (lo, hi) = occupied(p, &def);
-            let centre =
-                DVec3::from_array(std::array::from_fn(|i| (lo[i] + hi[i]) as f64 * GRID / 2.));
-            boxes.push((lo, hi));
-            parts.push(PreparedPart {
-                placed: p.clone(),
-                definition: def,
-                centre,
-                rotation: orientation(p.orientation),
-            });
+            boxes.push(prepared.bounds());
         }
-        let mut links = vec![vec![]; parts.len()];
         for a in 0..parts.len() {
             for b in a + 1..parts.len() {
-                let overlaps: [i64; 3] = std::array::from_fn(|k| {
-                    boxes[a].1[k].min(boxes[b].1[k]) - boxes[a].0[k].max(boxes[b].0[k])
-                });
                 ensure!(
-                    !overlaps.iter().all(|&d| d > 0),
+                    !crate::collision::parts_overlap(&parts[a], &parts[b]),
                     "parts {} and {} overlap",
                     parts[a].placed.id,
                     parts[b].placed.id
                 );
-                if overlaps.iter().filter(|&&d| d == 0).count() == 1
-                    && overlaps.iter().filter(|&&d| d > 0).count() == 2
-                {
-                    links[a].push(b);
-                    links[b].push(a);
-                }
             }
         }
-        let mut seen = BTreeSet::new();
-        let mut stack = vec![0];
-        while let Some(i) = stack.pop() {
-            if seen.insert(i) {
-                stack.extend(&links[i]);
-            }
-        }
+        let voxel_work: f64 = parts
+            .iter()
+            .map(|p| {
+                let (lo, hi) = p.bounds();
+                (hi - lo + DVec3::splat(2.0)).ceil().element_product()
+            })
+            .sum();
         ensure!(
-            seen.len() == parts.len(),
-            "assembly must be connected by faces"
+            voxel_work <= 16_000_000.0,
+            "assembly exceeds collision voxel budget"
         );
         let part_mass = |p: &PreparedPart| {
             p.definition.mass_kg
@@ -576,16 +546,7 @@ impl ShipBlueprint {
 }
 /// A small connected test craft. Its WASM is supplied by the caller, never synthesized by hardware code.
 pub fn starter(controller: Vec<u8>) -> ShipBlueprint {
-    let names = [
-        "structure",
-        "storage",
-        "battery",
-        "generator",
-        "torquer",
-        "shield",
-        "engine",
-    ];
-    let mut s = ShipBlueprint {
+    let mut ship = ShipBlueprint {
         name: "Starter".into(),
         firmware: if controller == EXAMPLE_CONTROLLER {
             Firmware::Standard
@@ -594,49 +555,47 @@ pub fn starter(controller: Vec<u8>) -> ShipBlueprint {
         },
         ..Default::default()
     };
-    for (i, name) in names.iter().enumerate() {
-        s.parts.push(PlacedPart {
-            tanks: vec![],
-            id: i as u64 + 1,
-            name: String::new(),
-            alias: match *name {
-                "engine" => "main_engine",
-                "torquer" => "attitude_control",
-                "structure" => "",
-                other => other,
-            }
-            .into(),
-            groups: vec![],
-            prototype: (*name).into(),
-            position: if *name == "engine" {
-                [-5, -5, i as i32 * 10]
-            } else {
-                [0, 0, i as i32 * 10]
-            },
-            orientation: 0,
-        });
+    let mut parent = 0;
+    for prototype in [
+        "structure",
+        "storage",
+        "battery",
+        "generator",
+        "torquer",
+        "shield",
+        "engine",
+    ] {
+        parent = ship.attach(prototype, parent, "back", "front", 0);
+        ship.parts.last_mut().unwrap().alias = match prototype {
+            "structure" => "",
+            "engine" => "main_engine",
+            "torquer" => "attitude_control",
+            other => other,
+        }
+        .into();
     }
-    s.parts.push(PlacedPart {
-        tanks: vec![],
-        id: 14,
-        name: String::new(),
-        alias: String::new(),
-        groups: vec![],
-        prototype: "coolant_tank".into(),
-        position: [0, 0, -10],
-        orientation: 0,
-    });
-    s.parts.push(PlacedPart {
-        tanks: vec![],
-        id: 15,
-        name: String::new(),
-        alias: String::new(),
-        groups: vec![],
-        prototype: "command_2m".into(),
-        position: [-5, -5, -30],
-        orientation: 0,
-    });
-    s
+    ship.attach("coolant_tank", 1, "front", "back", 0);
+    let coolant = ship.parts.last_mut().unwrap();
+    coolant.id = 14;
+    ship.attach("command_2m", 14, "front", "back", 0);
+    ship.parts[0].tanks = vec![
+        Tank {
+            resource: "propellant".into(),
+            volume_m3: 0.76,
+            initial_fill: 1.0,
+        },
+        Tank {
+            resource: "fuel".into(),
+            volume_m3: 0.01,
+            initial_fill: 1.0,
+        },
+        Tank {
+            resource: "bearing".into(),
+            volume_m3: 0.02,
+            initial_fill: 1.0,
+        },
+    ];
+    ship
 }
 
 impl PlacedPart {
@@ -703,28 +662,19 @@ fn exposed_area(parts: &[PreparedPart]) -> f64 {
 pub fn armed_starter() -> ShipBlueprint {
     let mut ship = starter(EXAMPLE_CONTROLLER.to_vec());
     ship.name = "Armed explorer".into();
-    for (id, prototype, position) in [
-        (8, "railgun_turret", [15, 0, -25]),
-        (9, "coilgun_turret", [0, 15, -30]),
-        (10, "rcs", [-5, 0, 0]),
-        (11, "rcs", [5, -5, 0]),
-        (12, "rcs", [-5, 5, 50]),
-        (13, "rcs", [10, 0, 50]),
+    for (id, prototype, parent, socket, plug) in [
+        (8, "railgun_turret", 15, "right", "left"),
+        (9, "coilgun_turret", 15, "top", "bottom"),
+        (10, "rcs", 1, "left", "right"),
+        (11, "rcs", 1, "bottom", "top"),
+        (12, "rcs", 6, "top", "bottom"),
+        (13, "rcs", 6, "right", "left"),
     ] {
-        ship.parts.push(PlacedPart {
-            tanks: vec![],
-            id,
-            name: String::new(),
-            alias: format!("{prototype}_{id}"),
-            groups: vec![if prototype == "rcs" {
-                "rcs".into()
-            } else {
-                "weapons".into()
-            }],
-            prototype: prototype.into(),
-            position,
-            orientation: 0,
-        });
+        ship.attach(prototype, parent, socket, plug, 0);
+        let part = ship.parts.last_mut().unwrap();
+        part.id = id;
+        part.alias = format!("{prototype}_{id}");
+        part.groups = vec![if prototype == "rcs" { "rcs" } else { "weapons" }.into()];
     }
     ship
 }
@@ -734,31 +684,49 @@ pub fn micropulse_starter() -> ShipBlueprint {
         name: "Micropulse demonstrator".into(),
         ..Default::default()
     };
-    for (id, prototype, alias, position) in [
-        (1, "fuselage_8m", "", [0, 0, 0]),
-        (2, "micropulse_engine_8m", "main_engine", [0, 0, 160]),
-        (3, "fuselage_end_8m", "", [0, 0, -20]),
-        (4, "battery", "battery", [80, 35, 20]),
-        (5, "shield", "shield", [80, 35, 40]),
-        (6, "coolant_tank", "", [80, 35, 60]),
-        (7, "torquer", "attitude_control", [80, 35, 80]),
-        (8, "command_2m", "", [80, 30, 100]),
-    ] {
-        ship.parts.push(PlacedPart {
-            id,
-            name: String::new(),
-            alias: alias.into(),
-            groups: vec![],
-            prototype: prototype.into(),
-            position,
-            orientation: 0,
-            tanks: vec![],
-        });
+    ship.attach("fuselage_8m", 0, "", "", 0);
+    ship.attach("micropulse_engine_8m", 1, "aft", "fore", 0);
+    ship.parts[1].alias = "main_engine".into();
+    ship.attach("fuselage_end_8m", 1, "fore", "aft", 0);
+    let mut parent = 3;
+    for prototype in ["battery", "shield", "coolant_tank", "torquer", "command_2m"] {
+        parent = ship.attach(prototype, parent, "front", "back", 0);
     }
     ship.parts[0].tanks.push(Tank {
         resource: "micropulse_charge".into(),
-        volume_m3: 500.,
+        volume_m3: 500.0,
         initial_fill: 0.2,
     });
+    ship
+}
+
+pub fn ntr_patrol() -> ShipBlueprint {
+    let mut ship = ShipBlueprint {
+        name: "Kestrel NTR patrol".into(),
+        ..Default::default()
+    };
+    ship.attach("fuselage_2m", 0, "", "", 0);
+    ship.attach("fuselage_end_2m", 1, "fore", "aft", 0);
+    ship.attach("ntr_water_2m", 1, "aft", "fore", 0);
+    ship.attach("command_2m", 2, "front", "back", 0);
+    ship.attach("reactor_compact_2m", 4, "front", "back", 0);
+    ship.attach("battery", 1, "right", "left", 0);
+    ship.attach("shield", 1, "left", "right", 0);
+    ship.attach("coolant_tank", 7, "left", "right", 0);
+    ship.attach("torquer_agile", 1, "top", "bottom", 0);
+    ship.attach("autocannon_compact", 1, "bottom", "top", 0);
+    ship.attach("storage", 6, "right", "left", 0);
+    for (resource, volume_m3, initial_fill) in [
+        ("water", 4.0, 0.75),
+        ("reactor_fuel", 0.05, 0.5),
+        ("spent_fuel", 0.05, 0.0),
+        ("autocannon_round", 0.15, 1.0),
+    ] {
+        ship.parts[0].tanks.push(Tank {
+            resource: resource.into(),
+            volume_m3,
+            initial_fill,
+        });
+    }
     ship
 }

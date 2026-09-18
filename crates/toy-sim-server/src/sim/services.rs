@@ -166,6 +166,28 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                     && self.admissible(self.origin)
                     && self.admissible(destination),
             },
+            ProgramQuery::Contact(reference) => {
+                let snapshot = if reference.group == self.group {
+                    &self.snapshot
+                } else if reference.group == PUBLIC_GROUP {
+                    &self.public
+                } else {
+                    anyhow::bail!("contact group unavailable");
+                };
+                let track = snapshot
+                    .tracks
+                    .get(&reference.track)
+                    .ok_or_else(|| anyhow::anyhow!("contact unavailable"))?;
+                ProgramReply::Contact {
+                    pose: track.pose.clone(),
+                    radius_m: track.radius_m.unwrap_or(1.),
+                    handle: self.handles.lock().unwrap().get(
+                        reference.group,
+                        reference.track,
+                        self.snapshot.tick,
+                    ),
+                }
+            }
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: self.travel.clone(),
                 pose: self.pose.clone(),
@@ -337,7 +359,6 @@ impl FusedScan {
         beacon.bays.retain(|id, _| {
             let bay = &publication.bays[*id as usize];
             (bay.public || publication.owner == self.account || bay.allowed.contains(&self.account))
-                && bay.occupant.is_none()
                 && bay
                     .reservation
                     .is_none_or(|(ship, until)| ship == self.own || until < self.snapshot.tick)
@@ -397,11 +418,11 @@ pub fn publish_indexes(
         (
             &Identity,
             &PreciseTransform,
-            &Velocity,
-            &AngularVelocity,
+            Option<&Velocity>,
+            Option<&AngularVelocity>,
             &super::identity::Transponder,
             &super::identity::Control,
-            &super::vessel::ShipDesign,
+            &super::spatial::SpatialBody,
             Option<&super::travel::DockingBays>,
             Option<&super::travel::Gate>,
         ),
@@ -449,12 +470,12 @@ pub fn publish_indexes(
             .iter()
             .map(
                 |(id, transform, velocity, angular, iff, control, design, bays, gate)| {
-                    let pose = super::intelligence::pose(transform, Some(velocity), Some(angular));
+                    let pose = super::intelligence::pose(transform, velocity, angular);
                     let bays = bays.map_or_else(Vec::new, |bays| bays.0.clone());
                     let publication = PublishedBeacon {
                         beacon: Beacon {
                             entity: id.0,
-                            radius_m: design.0.radius,
+                            radius_m: gate.map_or(design.radius_m, |gate| gate.radius_m),
                             iff: iff.0.clone(),
                             bays: bays
                                 .iter()
@@ -964,7 +985,6 @@ mod tests {
             public: true,
             allowed: Default::default(),
             reservation: None,
-            occupant: None,
         };
         let mut denied = bay.clone();
         denied.public = false;

@@ -1,0 +1,9 @@
+name = "Aurora system"
+position_um = ["18921460000000000000000", "28382190000000000000000", "0"]
+[[bodies]]
+name = "Aurora"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = "696000 km"
+rotation_period = "25 d"

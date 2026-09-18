@@ -20,6 +20,7 @@ pub(super) struct Selection {
 pub(super) enum SelectedTarget {
     Contact(ContactRef),
     Celestial(Id),
+    Beacon(Id),
 }
 
 impl Selection {

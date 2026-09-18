@@ -47,22 +47,17 @@ pub struct Geometry {
 
 impl Geometry {
     pub fn ship(d: &CompiledShipDesign) -> Self {
-        let radius = d.radius;
-        let mut feature = f64::INFINITY;
-        let parts = d
-            .parts
+        let boxes = toy_sim_ships::collision::voxel_boxes(d);
+        let radius = boxes
             .iter()
-            .map(|part| {
-                let dimensions = DVec3::from_array(
-                    part.definition
-                        .dimensions
-                        .map(|v| v as f64 * toy_sim_ships::GRID),
-                );
-                let half = dimensions * 0.5;
-                let centre = part.centre - d.centre;
-                feature = feature.min(dimensions.min_element());
+            .map(|(center, half)| (center.abs() + half).length())
+            .fold(d.radius, f64::max);
+        let feature = 1.0;
+        let parts = boxes
+            .into_iter()
+            .map(|(center, half)| {
                 (
-                    pose(centre, DQuat::from_mat3(&part.rotation)),
+                    pose(center, DQuat::IDENTITY),
                     SharedShape::cuboid(half.x, half.y, half.z),
                 )
             })

@@ -25,6 +25,9 @@ pub(super) struct OwnedShip(pub ShipTelemetry);
 pub(super) struct ShipDetails(pub ShipPresentation);
 
 #[derive(Component)]
+pub(super) struct NavigationObject(pub NavigationBeacon);
+
+#[derive(Component)]
 pub(super) struct ViewObservation(pub ViewState);
 
 #[derive(Component)]
@@ -80,6 +83,7 @@ pub(super) struct SessionInfo {
     pub groups: Vec<GroupId>,
     pub diagnostics: Option<Diagnostics>,
     pub universe: Option<UniverseStatus>,
+    pub navigation: NavigationCatalogue,
     pub results: Vec<CommandResult>,
     pub target_frames: usize,
     pub underruns: u64,
@@ -109,6 +113,7 @@ struct BufferedPlayback(Playback);
 struct Replication {
     contacts: BTreeMap<(Id, Id), Entity>,
     ships: BTreeMap<Id, Entity>,
+    beacons: BTreeMap<Id, Entity>,
     views: BTreeMap<u64, Entity>,
     events: BTreeMap<u64, (Entity, u64)>,
     deaths: BTreeMap<(Id, Id, Id), u64>,

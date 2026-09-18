@@ -276,6 +276,7 @@ impl HardwareWriteItem<'_, '_> {
             inventory: Inventory {
                 tank_capacities_m3: Vec::new(),
                 quantities: Vec::new(),
+                cargo: Vec::new(),
                 energy_j: 0.0,
             },
             weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
@@ -330,6 +331,7 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
         inventory: Inventory {
             tank_capacities_m3: Vec::new(),
             quantities: Vec::new(),
+            cargo: Vec::new(),
             energy_j: 0.0,
         },
         weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
@@ -579,7 +581,7 @@ pub(crate) fn actuate(
                             .into_iter()
                             .flatten()
                     {
-                        let available = hardware.inventory.0.quantities[resource];
+                        let available = hardware.inventory.0.available(resource);
                         fraction = fraction.min(if requested > 0.0 {
                             (available / requested).min(1.0)
                         } else {
@@ -587,8 +589,8 @@ pub(crate) fn actuate(
                         });
                     }
                     for (available, requested) in [
-                        hardware.inventory.0.quantities[0],
-                        hardware.inventory.0.quantities[1],
+                        hardware.inventory.0.available(0),
+                        hardware.inventory.0.available(1),
                         hardware.inventory.0.energy_j,
                     ]
                     .into_iter()
@@ -598,41 +600,35 @@ pub(crate) fn actuate(
                             fraction = fraction.min(available / requested);
                         }
                     }
-                    if let Some((output_resource, output_quantity)) = demand.resource_output {
-                        let inventory = &hardware.inventory.0;
-                        let mut cargo_after = inventory.cargo_volume(&catalogue.0);
-                        for (resource, change) in [
-                            demand.resource_input.map(|(i, q)| (i, -q)),
-                            demand.secondary_resource_input.map(|(i, q)| (i, -q)),
-                            Some((output_resource, output_quantity)),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        {
-                            let volume = catalogue.0.resources[resource].volume_m3;
-                            let reserved = inventory.tank_capacities_m3[resource];
-                            let before = inventory.quantities[resource] * volume;
-                            cargo_after += (before + change * fraction * volume - reserved)
-                                .max(0.0)
-                                - (before - reserved).max(0.0);
-                        }
-                        if cargo_after > design.0.capacity_m3 + 1e-9 * design.0.capacity_m3.max(1.0)
-                        {
-                            fraction = 0.0;
-                        }
-                    }
-                    for (resource, requested) in
-                        [demand.resource_input, demand.secondary_resource_input]
-                            .into_iter()
-                            .flatten()
-                    {
-                        hardware.inventory.0.quantities[resource] -= requested * fraction;
-                    }
-                    hardware.inventory.0.quantities[0] -= demand.inputs[0] * fraction;
-                    hardware.inventory.0.quantities[1] -= demand.inputs[1] * fraction;
-                    hardware.inventory.0.energy_j -= demand.inputs[2] * fraction;
                     if let Some((resource, quantity)) = demand.resource_output {
-                        hardware.inventory.0.quantities[resource] += quantity * fraction;
+                        let room = hardware.inventory.0.tank_room(resource, &catalogue.0);
+                        if quantity > 0.0 {
+                            fraction = fraction.min(room as f64 / quantity);
+                        }
+                    }
+                    let mut converted_units = 0;
+                    for (slot, input) in [demand.resource_input, demand.secondary_resource_input]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        if let Some((resource, requested)) = input {
+                            let before = hardware.inventory.0.quantities[resource];
+                            hardware.inventory.0.consume(resource, requested * fraction);
+                            if slot == 1 {
+                                converted_units =
+                                    before - hardware.inventory.0.quantities[resource];
+                            }
+                        }
+                    }
+                    hardware.inventory.0.consume(0, demand.inputs[0] * fraction);
+                    hardware.inventory.0.consume(1, demand.inputs[1] * fraction);
+                    hardware.inventory.0.energy_j -= demand.inputs[2] * fraction;
+                    if let Some((resource, _)) = demand.resource_output {
+                        hardware
+                            .inventory
+                            .0
+                            .insert_consumable(resource, converted_units, &catalogue.0)
+                            .expect("reserved output tank space");
                     }
                     fraction
                 } else {
@@ -823,8 +819,8 @@ pub fn shutdown(world: &mut World, ship: Entity) {
 
 fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
     let available = [
-        inventory.quantities[0],
-        inventory.quantities[1],
+        inventory.available(0),
+        inventory.available(1),
         inventory.energy_j,
     ];
     let mut fraction = 1f64;
@@ -833,8 +829,8 @@ fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
             fraction = fraction.min((available[i] / demand[i]).clamp(0., 1.));
         }
     }
-    inventory.quantities[0] = (inventory.quantities[0] - demand[0] * fraction).max(0.);
-    inventory.quantities[1] = (inventory.quantities[1] - demand[1] * fraction).max(0.);
+    inventory.consume(0, demand[0] * fraction);
+    inventory.consume(1, demand[1] * fraction);
     inventory.energy_j = (inventory.energy_j - demand[2] * fraction).max(0.);
     fraction
 }

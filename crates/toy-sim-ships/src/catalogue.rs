@@ -53,6 +53,10 @@ impl ResourceStorage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartDef {
+    #[serde(default)]
+    pub collision: crate::collision::CollisionVolume,
+    #[serde(default)]
+    pub nodes: Vec<crate::AttachmentNode>,
     pub id: String,
     pub title: String,
     pub dimensions: [u32; 3],
@@ -450,6 +454,33 @@ impl Catalogue {
         }
         ids.clear();
         for p in &self.parts {
+            ensure!(p.collision.valid(), "invalid collision volume");
+            let nodes = p.attachment_nodes();
+            ensure!(nodes.len() <= 128, "too many attachment nodes");
+            let mut names = std::collections::BTreeSet::new();
+            for node in &nodes {
+                let normal = glam::DVec3::from_array(node.normal);
+                ensure!(
+                    !node.name.is_empty() && node.name.len() <= 64 && names.insert(&node.name),
+                    "duplicate/invalid attachment node"
+                );
+                ensure!(
+                    !node.connector.is_empty() && node.connector.len() <= 64,
+                    "invalid connector type"
+                );
+                ensure!(
+                    node.position_m
+                        .iter()
+                        .all(|p| p.is_finite() && p.abs() <= 100_000.0),
+                    "invalid node position"
+                );
+                ensure!(
+                    normal.is_finite()
+                        && normal.abs().max_element() == 1.0
+                        && normal.length_squared() == 1.0,
+                    "node normal must be a unit assembly axis"
+                );
+            }
             ensure!(
                 p.model_scale.is_finite() && p.model_scale > 0.,
                 "invalid model scale for {}",
@@ -566,7 +597,7 @@ impl Catalogue {
                 "invalid mass/hull"
             );
             ensure!(
-                p.dimensions.iter().all(|&d| d > 0 && d <= 1000),
+                p.dimensions.iter().all(|&d| d > 0 && d <= 10000),
                 "invalid dimensions"
             );
         }

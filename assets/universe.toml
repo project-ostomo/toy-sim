@@ -1,1 +1,1 @@
-systems = ["stars/helion.star.toml"]
+systems = ["stars/helion.star.toml", "stars/sol.star.toml", "stars/vesper.star.toml", "stars/aurora.star.toml"]

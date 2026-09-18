@@ -147,6 +147,10 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
         .resource_mut::<AppearanceAssets>()
         .0
         .insert(appearance, bytes);
+    let name = world
+        .get::<super::vessel::Vessel>(ship)
+        .map(|v| v.vessel_name.to_string())
+        .filter(|n| !n.is_empty());
     world.entity_mut(ship).insert((
         Control {
             account: owner,
@@ -157,7 +161,7 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
         Transponder(IffIdentity {
             owner,
             faction: None,
-            labels: BTreeSet::new(),
+            labels: name.into_iter().collect(),
             enabled: true,
             range_m: 1e8,
         }),

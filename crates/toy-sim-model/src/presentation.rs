@@ -9,6 +9,7 @@ pub struct ContactRef {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresentationFrame {
+    pub navigation: NavigationCatalogue,
     pub ships: Vec<ShipPresentation>,
     pub visuals: Vec<TrackVisual>,
     pub combat: Vec<CombatEvent>,
@@ -34,6 +35,8 @@ pub struct ShipPresentation {
     pub power_generated_w: f64,
     pub power_consumed_w: f64,
     pub inventory: Vec<ResourceAmount>,
+    pub cargo_capacity_m3: f64,
+    pub cargo_used_m3: f64,
     pub devices: Vec<DeviceTelemetry>,
     pub computer: ComputerStatus,
     pub instruments: Option<Instruments>,
@@ -42,6 +45,11 @@ pub struct ShipPresentation {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceAmount {
+    pub resource: String,
+    pub quantity: u64,
+    pub cargo_quantity: u64,
+    pub unit_mass_kg: f64,
+    pub unit_volume_m3: f64,
     pub name: String,
     pub amount_kg: f64,
     pub capacity_kg: f64,
@@ -464,4 +472,28 @@ pub struct CelestialSystemRef {
     pub definition: [u8; 32],
     pub epoch_mjd_utc: f64,
     pub sim_time_origin_ns: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NavigationCatalogue {
+    pub systems: Vec<NavigationSystem>,
+    pub beacons: Vec<NavigationBeacon>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NavigationSystem {
+    pub id: EntityId,
+    pub name: String,
+    pub position: GalacticPosition,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct NavigationBeacon {
+    pub id: EntityId,
+    pub system: EntityId,
+    pub name: String,
+    pub pose: Pose,
+    pub radius_m: f64,
+    pub gate_exit: Option<EntityId>,
+    pub docking: bool,
 }

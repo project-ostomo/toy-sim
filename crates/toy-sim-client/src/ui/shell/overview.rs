@@ -61,7 +61,7 @@ pub(super) fn selected_item(
         )
         .clicked()
         {
-            intents.push(Intent::Approach(contact.unwrap(), *stand_off));
+            intents.push(Intent::KeepRange(contact.unwrap(), *stand_off));
         }
         if action_button(
             ui,
@@ -86,6 +86,38 @@ pub(super) fn selected_item(
             intents.push(Intent::Engage(contact.unwrap()));
         }
     });
+    if let Some(SelectedTarget::Beacon(id)) = target {
+        ui.horizontal(|ui| {
+            let append = ui.input(|i| i.modifiers.shift);
+            if ui
+                .add_enabled(can_control, egui::Button::new("Approach"))
+                .clicked()
+            {
+                intents.push(Intent::Queue(
+                    vec![travel::Order::TravelTo(travel::Destination::Beacon(id))],
+                    append,
+                ));
+            }
+            let gate = row.is_some_and(|r| r.kind == "Stargate");
+            if ui
+                .add_enabled(
+                    can_control,
+                    egui::Button::new(if gate { "Jump" } else { "Dock" }),
+                )
+                .clicked()
+            {
+                intents.push(Intent::Queue(
+                    vec![if gate {
+                        travel::Order::Jump(id)
+                    } else {
+                        travel::Order::Dock(id)
+                    }],
+                    append,
+                ));
+            }
+            ui.weak("Shift: add to queue");
+        });
+    }
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Stand-off").size(11.).color(MUTED));
         ui.add(
@@ -105,10 +137,7 @@ pub(super) fn selected_item(
             .on_hover_text("Stop automatic guidance; the ship retains its velocity")
             .clicked()
         {
-            intents.push(Intent::Command(
-                ShipCommand::Flight(FlightCommand::StopGuidance),
-                "Stop guidance",
-            ));
+            intents.push(Intent::Command(ShipCommand::PauseTravel, "Stop guidance"));
         }
     });
 }

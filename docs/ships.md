@@ -1,6 +1,6 @@
 # Ships
 
-A ship is a set of box-shaped parts placed on a grid, plus integrated standard avionics and a flight computer program. This guide covers the data model and the native hardware simulation in [toy-sim-ships](../crates/toy-sim-ships). It also describes how the simulator runs ships and what the standard firmware does.
+A ship is an attachment tree of catalogue parts, plus integrated standard avionics and a flight computer program. Stations use the same design format. This guide covers the data model and the native hardware simulation in [toy-sim-ships](../crates/toy-sim-ships). It also describes how the simulator runs ships and what the standard firmware does.
 
 Related guides: [ship-editor.md](ship-editor.md) for building designs, [ship-abi.md](ship-abi.md) for firmware, [weapons.md](weapons.md), [collisions.md](collisions.md), and the [server architecture](server-client.md).
 
@@ -23,7 +23,7 @@ The catalogue is [crates/toy-sim-ships/data/catalogue.toml](../crates/toy-sim-sh
 
 ### Part fields
 
-Every part has `id`, `title`, `dimensions` (grid cells, each 1 to 1000), `mass_kg` (positive), `hull` (positive hit points), `color` (RGB in [0, 1]), an optional `model` (see [assets/models/parts/README.md](../assets/models/parts/README.md)), and `kind` with kind-specific fields. All rates and capacities must be finite and positive.
+Every part has `id`, `title`, `dimensions` (decimetres, each 1 to 10000), `mass_kg` (positive), `hull` (positive hit points), `color` (RGB in [0, 1]), an optional `model` (see [assets/models/parts/README.md](../assets/models/parts/README.md)), and `kind` with kind-specific fields. All rates and capacities must be finite and positive.
 
 | `kind` | Fields | Device | Tick priority |
 | --- | --- | --- | --- |
@@ -81,7 +81,7 @@ A `ShipBlueprint` ([design.rs](../crates/toy-sim-ships/src/design.rs)) contains:
 
 | Field | Type | Default |
 | --- | --- | --- |
-| `format_version` | u32 | Must equal `SHIP_FORMAT_VERSION` = 2. A missing value reads as 0 and is rejected. |
+| `format_version` | u32 | Must equal `SHIP_FORMAT_VERSION` = 3. A missing value reads as 0 and is rejected. |
 | `name` | string | "Untitled ship" in a new design; at most 256 bytes |
 | `catalogue_revision` | u32 | 3 |
 | `parts` | list of `PlacedPart` | |
@@ -95,8 +95,8 @@ A `ShipBlueprint` ([design.rs](../crates/toy-sim-ships/src/design.rs)) contains:
 - `alias`: optional device alias for firmware. At most 64 bytes of ASCII letters, digits and `_`, unique within the ship. `computer`, `accelerometer` and `radar` are reserved. Structural parts cannot have an alias.
 - `groups`: up to 16 unique labels using the same character rules. Structural parts cannot have groups.
 - `prototype`: catalogue part ID.
-- `position`: `[i32; 3]` grid coordinates of the minimum corner.
-- `orientation`: 0 to 23, one of the 24 proper cube rotations. 0 is the identity.
+- `attachment`: absent for the single root; otherwise `{ parent, socket, plug, roll }`. The named parent socket and child plug must have equal connector types. `roll` is 0–3 quarter turns around the connection axis. Ports have single occupancy, and every part must lead to the root.
+- `tanks`: resource, volume and starting-fill allocations within the part's tank volume.
 
 `Avionics` fields (unknown keys rejected):
 
@@ -122,12 +122,12 @@ A design saved with an older format version fails with "incompatible ship format
 - the catalogue is invalid, the format or catalogue revision does not match, or an orientation is out of range
 - there are no parts or more than 4096, the controller is empty or larger than 1 MiB, or there are more than 4096 actuator exclusions
 - a part ID is duplicated, a prototype is unknown, or labels are invalid
-- two part boxes overlap with positive volume
-- the parts are not all connected by faces (two parts connect when they share a face patch with positive area)
+- part volumes overlap; the habitat hub/ring and hollow hangar profiles allow equipment in their open spaces
+- the attachment graph has missing parts, cycles, duplicate port use, incompatible connectors, or more than one root
 - an exclusion names a missing part or a part that is not an actuator
 - the logical device count exceeds 4096
 
-A part occupies `[position, position + |R|·dimensions)` cells, where R is its orientation matrix. One grid cell is 0.1 m (`GRID`).
+Connector transforms determine all part poses. Catalogue dimensions retain decimetre units (`GRID = 0.1`); placement has no positional grid. Server collision rasterization uses 1 m voxels, merged into cuboids. Compilation caps estimated rasterization work at 16 million cells.
 
 The compiled design holds:
 
@@ -140,7 +140,7 @@ The compiled design holds:
 
 ## Hardware simulation
 
-`ShipState` ([runtime.rs](../crates/toy-sim-ships/src/runtime.rs)) is the mutable hardware state. Inventory quantities are fractional units per resource, and energy is stored in joules.
+`ShipState` ([runtime.rs](../crates/toy-sim-ships/src/runtime.rs)) is the mutable hardware state. Consumable and cargo quantities are separate `u64` arrays. Energy remains continuous in joules. A fractional consumable demand uses `rand::rng()` to debit the floor or ceiling with the corresponding probabilities: 2.4 units becomes 2 with probability 0.6 or 3 with probability 0.4. Consumers receive the available continuous supply fraction for smooth thrust and power. Actual removed integers determine inventory mass.
 
 ### Settings
 
@@ -310,9 +310,9 @@ cargo test -p toy-sim-example-controller
 
 A catalogue part can declare `tank_volume_m3` (zero by default). An installed part's `tanks` array allocates this space through entries containing `resource` (catalogue ID), `volume_m3`, and `initial_fill` (0–1). An empty tank still reserves its full allocated volume. Compilation checks resource IDs, finite positive volumes, bounded fills, at most 32 tanks per part, and the sum against the part's capacity.
 
-Resource definitions specify mass and occupied volume per inventory unit. Density is `mass_kg / volume_m3`; a tank starts with `allocated_volume_m3 * storage.usable_fraction * initial_fill / resource.volume_m3` units. Loaded contents contribute to ship mass and decrease as engines, generators, and weapons consume resources. Storage coefficients add containment mass and reduce usable volume. Stored hydrogen remains available without refrigeration or passive loss.
+Resource definitions specify mass and occupied volume per inventory unit. Density is `mass_kg / volume_m3`; a tank starts with the floor of `allocated_volume_m3 * storage.usable_fraction * initial_fill / resource.volume_m3` units. Loaded contents contribute to ship mass and decrease as engines, generators, and weapons consume resources. Storage coefficients add containment mass and reduce usable volume. Stored hydrogen remains available without refrigeration or passive loss.
 
-At runtime, tanks for a resource share one supply. Inventory tracks aggregate quantities and dedicated volume per resource; it does not simulate individual valves or draining order. Ordinary storage provides shared cargo volume in addition to those dedicated capacities. Resources cannot occupy a tank allocated to another resource. Insertion and transfer validate capacity before mutation. The debug loadout fills ordinary cargo independently and preserves the configured starting tank quantities. Client inventory telemetry includes dedicated capacity for each resource plus shared cargo capacity; shared capacity is not independently available to every resource at once.
+At runtime, tanks for a resource share one consumable supply. Cargo has a separate array and uses only cargo-hold capacity. Cargo never feeds engines, guns or reactors, and consumables cannot be transferred between ships. Explicit cargo transfers require control of both ships and a shared docking host, or a host/guest relationship. The transfer validates integer quantity, available stock and destination volume before mutation. Client telemetry reports both pools; the inventory window shows tank fill bars and cargo icon stacks in separate tabs.
 
 The existing physics approximation scales dry inertia with total loaded mass. Loaded tank contents do not yet shift the centre of mass individually. Containment fittings contribute to compiled dry mass, centre of mass, and inertia at their installed part positions.
 

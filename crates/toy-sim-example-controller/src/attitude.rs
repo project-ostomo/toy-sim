@@ -2,7 +2,7 @@
 use crate::Bindings;
 use glam::{DMat3, DQuat, DVec3};
 
-pub const MAX_RATE: f64 = 0.5;
+pub const MAX_RATE: f64 = 2.5;
 
 pub fn valid_rotation(raw: [f64; 4]) -> Option<DQuat> {
     let q = DQuat::from_array(raw);
@@ -39,9 +39,9 @@ pub fn torque(q: DQuat, omega: DVec3, inertia: DMat3, target: DQuat, b: &Binding
     let rate = (2. * alpha * error.length())
         .sqrt()
         .min(MAX_RATE)
-        .min(error.length() * 1.5);
+        .min(error.length() * 3.0);
     let body_w = q.inverse() * omega;
-    let angular_a = (axis * rate - body_w) * 4.;
+    let angular_a = (axis * rate - body_w) * 6.;
     let body_torque = inertia * angular_a + body_w.cross(inertia * body_w);
     (b.torquer_rotation.inverse() * body_torque).clamp(-b.torque_capacity, b.torque_capacity)
 }

@@ -18,3 +18,7 @@ pub mod weapons;
 pub mod reactors;
 
 pub mod utilities;
+
+pub mod attachments;
+pub use attachments::*;
+pub mod collision;

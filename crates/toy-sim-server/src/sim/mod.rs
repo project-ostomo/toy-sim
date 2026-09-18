@@ -4,6 +4,7 @@ pub mod displays;
 #[cfg(test)]
 mod firmware_tests;
 pub mod hardware;
+pub mod infrastructure;
 pub mod presentation;
 pub mod registry;
 pub mod services;
@@ -59,6 +60,10 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
         (services::publish_indexes, services::prepare_sources)
             .chain()
             .before(simulation::SimulationSystems::PrepareBodies),
+    );
+    app.add_systems(
+        FixedPostUpdate,
+        infrastructure::move_gates.in_set(simulation::SimulationSystems::Celestials),
     );
     app.add_systems(
         FixedPostUpdate,

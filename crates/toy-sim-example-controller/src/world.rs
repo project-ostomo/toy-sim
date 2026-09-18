@@ -45,6 +45,9 @@ pub struct Planner {
     pub active: bool,
     state_revision: u64,
     pub docking_attitude: Option<[f64; 4]>,
+    pub aim_direction: Option<[f64; 3]>,
+    pub engagement: Option<abi::Contact>,
+    docking_entry: bool,
     search: Option<Search>,
     retry_at: u64,
     bay: Option<(EntityId, u32)>,
@@ -73,6 +76,23 @@ impl Planner {
             return Ok(Some(Vec::new()));
         };
         let destination = match order {
+            Order::Jump(entry) => {
+                let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacon(*entry))? else {
+                    return Err(abi::ERR_ARGUMENT);
+                };
+                let exit = beacons
+                    .first()
+                    .and_then(|b| b.gate_exit)
+                    .ok_or(abi::ERR_UNAVAILABLE)?;
+                return Ok(Some(vec![
+                    Leg::Sublight(Destination::Beacon(*entry)),
+                    Leg::Gate {
+                        entry: *entry,
+                        exit,
+                    },
+                ]));
+            }
+            Order::Guidance(guidance) => return Ok(Some(vec![Leg::Guidance(guidance.clone())])),
             Order::TravelTo(destination) => destination.clone(),
             Order::Dock(station) => Destination::Beacon(*station),
             Order::Undock => return Ok(Some(vec![Leg::Undock])),
@@ -96,8 +116,8 @@ impl Planner {
                     };
                 Destination::Relative {
                     reference: Reference::Beacon(id),
-                    offset: GalacticPosition::from_meters(DVec3::Z * clearance),
-                    axes: Axes::Galactic,
+                    offset: GalacticPosition::from_meters(DVec3::NEG_Z * clearance),
+                    axes: Axes::BodyFixed,
                 }
             } else {
                 destination
@@ -222,6 +242,8 @@ impl Planner {
 
     fn step(&mut self, tick: u64) -> Result<Option<abi::Contact>, i32> {
         self.docking_attitude = None;
+        self.aim_direction = None;
+        self.engagement = None;
         let ProgramReply::Travel {
             state,
             pose,
@@ -235,6 +257,7 @@ impl Planner {
             self.revision = Some((state.revision, state.order));
             self.search = None;
             self.bay = None;
+            self.docking_entry = false;
             self.retry_at = tick;
         }
         self.active = matches!(
@@ -268,6 +291,58 @@ impl Planner {
             return Ok(None);
         };
         match leg {
+            Leg::Guidance(guidance) => {
+                let (target, handle, radius) = match &guidance.target {
+                    Target::Destination(destination) => {
+                        let ProgramReply::Pose(pose) =
+                            query(&ProgramQuery::Resolve(destination.clone()))?
+                        else {
+                            return Err(abi::ERR_ARGUMENT);
+                        };
+                        (pose, u64::MAX, 0.)
+                    }
+                    Target::Contact(reference) => {
+                        let ProgramReply::Contact {
+                            pose,
+                            handle,
+                            radius_m,
+                        } = query(&ProgramQuery::Contact(*reference))?
+                        else {
+                            return Err(abi::ERR_ARGUMENT);
+                        };
+                        (pose, handle, radius_m)
+                    }
+                };
+                let mut relative = contact(&pose, &target);
+                let offset = DVec3::from_array(relative.position_m);
+                if guidance.mode == GuidanceMode::Align {
+                    let direction = offset.try_normalize().ok_or(abi::ERR_UNAVAILABLE)?;
+                    self.aim_direction = Some(direction.to_array());
+                    let forward = glam::DQuat::from_array(pose.rotation) * DVec3::NEG_Z;
+                    if forward.angle_between(direction) < 0.02
+                        && DVec3::from_array(pose.angular_velocity).length() < 0.05
+                    {
+                        complete()?;
+                    }
+                    return Ok(None);
+                }
+                if guidance.mode == GuidanceMode::Engage {
+                    let mut enemy = relative;
+                    enemy.id = handle;
+                    enemy.radius_m = radius;
+                    self.engagement = Some(enemy);
+                }
+                let range = guidance.range_m.max(radius + sdk::flight()?.radius_m + 2.);
+                relative.position_m = (offset - offset.normalize_or_zero() * range).to_array();
+                if guidance.mode == GuidanceMode::Approach
+                    && DVec3::from_array(relative.position_m).length() < 5.
+                    && DVec3::from_array(relative.velocity_m_s).length() < 0.5
+                {
+                    complete()?;
+                    return Ok(None);
+                }
+                Ok(Some(relative))
+            }
             Leg::Sublight(destination) => {
                 let ProgramReply::Pose(target) =
                     query(&ProgramQuery::Resolve(destination.clone()))?
@@ -326,7 +401,22 @@ impl Planner {
                     self.bay = Some((*station, bay));
                     self.reserve_at = tick.saturating_add(100);
                 }
-                let target = beacon.bays.get(&bay).ok_or(abi::ERR_UNAVAILABLE)?;
+                let berth = beacon.bays.get(&bay).ok_or(abi::ERR_UNAVAILABLE)?;
+                let mut entry = berth.clone();
+                entry.position = entry.position.offset_by(
+                    glam::DQuat::from_array(berth.rotation)
+                        * DVec3::NEG_Z
+                        * (beacon.radius_m + sdk::flight()?.radius_m + 30.),
+                );
+                if !self.docking_entry
+                    && entry.position.relative_to(pose.position).length() < 5.
+                    && (DVec3::from_array(entry.velocity) - DVec3::from_array(pose.velocity))
+                        .length()
+                        < 0.5
+                {
+                    self.docking_entry = true;
+                }
+                let target = if self.docking_entry { berth } else { &entry };
                 self.docking_attitude = Some(target.rotation);
                 let contact = contact(&pose, target);
                 if DVec3::from_array(contact.position_m).length() > 2.
@@ -339,6 +429,9 @@ impl Planner {
                     .abs()
                     > 5_f64.to_radians()
                 {
+                    return Ok(None);
+                }
+                if !self.docking_entry {
                     return Ok(None);
                 }
                 command(ProgramAction::Dock {

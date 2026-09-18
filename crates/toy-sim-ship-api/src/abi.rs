@@ -1,9 +1,9 @@
-//! Ship ABI 14: fixed little-endian records and Postcard world services.
+//! Ship ABI 15: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v14";
-pub const VERSION: u32 = 14;
+pub const IMPORT_MODULE: &str = "ship_v15";
+pub const VERSION: u32 = 15;
 pub const ERR_GAS: i32 = -1;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
@@ -540,6 +540,7 @@ pub struct WeaponSpec {
     pub pitch_rate_rad_s: f64,
     pub beam_power_w: f64,
     pub beam_range_m: f64,
+    pub chemical: u64,
 }
 
 impl private::Sealed for WeaponSpec {}
@@ -561,7 +562,8 @@ const _: () = assert!(core::mem::offset_of!(WeaponSpec, yaw_rate_rad_s) == 136);
 const _: () = assert!(core::mem::offset_of!(WeaponSpec, pitch_rate_rad_s) == 144);
 const _: () = assert!(core::mem::offset_of!(WeaponSpec, beam_power_w) == 152);
 const _: () = assert!(core::mem::offset_of!(WeaponSpec, beam_range_m) == 160);
-const _: () = assert!(size_of::<WeaponSpec>() == 168 && align_of::<WeaponSpec>() == 8);
+const _: () = assert!(core::mem::offset_of!(WeaponSpec, chemical) == 168);
+const _: () = assert!(size_of::<WeaponSpec>() == 176 && align_of::<WeaponSpec>() == 8);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -759,7 +761,7 @@ const _: () = assert!(core::mem::offset_of!(ResourceInfo, unit_volume_m3) == 88)
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct ResourceAmount {
-    pub units: f64,
+    pub units: u64,
 }
 
 impl private::Sealed for ResourceAmount {}
@@ -1235,7 +1237,7 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v14")]
+    #[link(wasm_import_module = "ship_v15")]
     unsafe extern "C" {
         pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
         pub fn world_command(input: *const u8, bytes: u32) -> i32;

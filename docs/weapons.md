@@ -1,6 +1,6 @@
 # Weapons
 
-Weapons are ship parts that launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Each shot draws its energy directly from the shared ship battery.
+Weapons are ship parts that launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Electric weapons draw shot energy from the shared ship battery. Conventional guns use cartridges and draw no shot electricity or separate counterpropellant.
 
 Source:
 
@@ -15,6 +15,7 @@ A weapon part uses `kind = "weapon"` and a `[parts.weapon]` table. Unknown keys 
 
 | Field | Validation | Meaning |
 | --- | --- | --- |
+| `drive` | `electric` (default) or `chemical` | Shot-energy source |
 | `ammunition` | Must name a catalogue resource | One unit of that resource is one projectile. The projectile mass is the resource's unit mass. |
 | `projectile_radius_m` | > 0 | Collision sphere radius |
 | `muzzle_speed_m_s` | > 0 | Speed relative to the muzzle |
@@ -30,7 +31,7 @@ The derived `WeaponSpec` (the ABI record returned by `device_spec`) adds fixed v
 - A pivot at the device origin.
 - Travel limits. A turret (slew rate above zero) gets yaw −π to π and pitch −80° to 80°. A fixed gun gets zero travel on both axes.
 
-Shot energy is `½·m·v² / efficiency`. Each shot also consumes 10% of the projectile mass in propellant (kg). If the ammunition resource is itself propellant, one additional kilogram of propellant must remain.
+Electric shot energy is `½·m·v² / efficiency`. An electric shot also consumes 10% of the projectile mass in counterpropellant, rounded stochastically to integer units. Chemical weapons consume one cartridge instead; their cartridge energy is `½·m·v² / efficiency`, and the difference from kinetic energy becomes heat. If the ammunition resource is itself propellant, one additional kilogram of propellant must remain.
 
 ### Bundled weapons
 
@@ -139,4 +140,6 @@ These cover:
 
 ## Laser equipment
 
-Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. ABI 14 exposes the beam fields to firmware.
+Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. ABI 15 exposes the beam fields to firmware.
+
+The default NTR patrol uses `autocannon_compact`: 0.1 kg rounds at 1100 m/s and 40 shots/s, with 35% efficiency. It can fire with an empty battery and no counterpropellant. Avionics still need power to issue aim and trigger commands.

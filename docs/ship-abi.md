@@ -1,8 +1,8 @@
-# Ship controller ABI (version 14)
+# Ship controller ABI (version 15)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v14`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v15`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
 
-ABI 14 adds `beam_power_w` and `beam_range_m` to `WeaponSpec` for laser weapons. Laser specifications use zero ammunition and projectile fields. World messages also carry crew support and explicit dock-service settings. Rebuild firmware against the current ABI and `toy-sim-model`; the host rejects older ABI versions.
+ABI 15 stores resource quantities as `u64` and appends `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `toy-sim-model`.
 
 ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
 
@@ -19,14 +19,14 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v14` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v15` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 
-Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `12`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
+Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `15`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
 For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=1048576` to the linker.
 
@@ -111,7 +111,7 @@ The simulator sets `interest` only for the controlled ship, and only while the o
 | `device_read(device, expected_kind, out, bytes)` | Current reading for this callback |
 | `device_write(device, setting, in, bytes)` | Stage a setting. A later write to the same device in the same callback replaces it. |
 | `resource_info(index, out, bytes)` | `ResourceInfo` (96): id, key, unit mass, unit volume |
-| `resource_read(resource, out, bytes)` | `ResourceAmount` (8): units held |
+| `resource_read(resource, out, bytes)` | `ResourceAmount` (8): unsigned 64-bit consumable units held |
 
 `CONTROL_ENABLED` reflects the design's actuator exclusions. It is advisory: the host accepts writes to excluded devices, and the standard firmware chooses to skip them.
 
@@ -128,7 +128,7 @@ The simulator sets `interest` only for the controlled ship, and only while the o
 | Generator | 6 | `GeneratorSpec` (32) | `GeneratorReading` (16) | `SET_GENERATOR_DEMAND` |
 | Shield | 7 | `ShieldSpec` (40) | `ShieldReading` (72) | `SET_SHIELD_ENABLED` |
 | Sensor | 8 | `SensorSpec` (16) | `SensorReading` (16) | `SET_SENSOR_ENABLED` |
-| Weapon | 9 | `WeaponSpec` (168) | `WeaponReading` (72) | `SET_WEAPON` |
+| Weapon | 9 | `WeaponSpec` (176) | `WeaponReading` (72) | `SET_WEAPON` |
 | RCS | 10 | `RcsSpec` (32) | `RcsReading` (32) | `SET_RCS` |
 
 Every reading begins with a `DeviceStatus` whose flags are `OPERATIONAL` (1) and `POWERED` (2). A sensor reports powered only while its range is non-zero.
@@ -338,7 +338,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v14", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v15", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 

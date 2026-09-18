@@ -576,6 +576,19 @@ impl PartDescription {
                         );
                         performance.quantity("Projectile mass", spec.projectile_mass_kg, Mass);
                         performance.quantity(
+                            "Muzzle energy",
+                            0.5 * spec.projectile_mass_kg * spec.muzzle_speed_m_s.powi(2),
+                            Energy,
+                        );
+                        performance.text(
+                            "Launch mechanism",
+                            if spec.chemical != 0 {
+                                "Chemical cartridge"
+                            } else {
+                                "Electromagnetic"
+                            },
+                        );
+                        performance.quantity(
                             "Projectile diameter",
                             spec.projectile_radius_m * 2.,
                             Metres,
@@ -608,7 +621,7 @@ impl PartDescription {
                         }
                         requirements.text("Ammunition", ammunition.title.clone());
                         requirements.quantity(
-                            "Energy per shot",
+                            "Electrical energy per shot",
                             weapons::shot_energy(&spec),
                             Energy,
                         );
@@ -719,7 +732,7 @@ mod tests {
             .mass_kg;
         *mass = 0.02;
         let weapon = PartDescription::new(catalogue.part("railgun_turret").unwrap(), &catalogue);
-        assert!((quantity(&weapon, "Energy per shot") - 250000. / 0.3).abs() < 1e-6);
+        assert!((quantity(&weapon, "Electrical energy per shot") - 250000. / 0.3).abs() < 1e-6);
         assert!((quantity(&weapon, "Sustained power") - 250000. / 0.3 / 0.05).abs() < 1e-6);
         assert_eq!(quantity(&weapon, "Propellant per shot"), 0.002);
         let generator = PartDescription::new(catalogue.part("generator").unwrap(), &catalogue);

@@ -35,7 +35,7 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, previews: &PartPreviews) {
     ui.weak(format!("{} {noun}", filtered.len()));
     ui.separator();
 
-    let footer_height = if editor.place.is_some() { 132. } else { 54. };
+    let footer_height = if editor.place.is_some() { 190. } else { 54. };
     let height = (ui.available_height() - footer_height).max(64.);
     let mut picked = None;
     egui::ScrollArea::vertical()
@@ -87,24 +87,42 @@ pub fn show(ui: &mut egui::Ui, editor: &mut Editor, previews: &PartPreviews) {
     }
 
     ui.separator();
-    if let Some(prototype) = &editor.place {
-        if let Some(definition) = editor.catalogue.part(prototype) {
+    if let Some(prototype) = editor.place.clone() {
+        if let Some(definition) = editor.catalogue.part(&prototype) {
             ui.strong(&definition.title);
         }
         ui.weak(format!(
-            "Placement rotation {} / 24",
+            "Attachment rotation {} / 4",
             editor.orientation + 1
         ));
         ui.horizontal_wrapped(|ui| {
             if ui.button("Rotate (R)").clicked() {
-                editor.orientation = (editor.orientation + 1) % 24;
+                editor.orientation = (editor.orientation + 1) % 4;
             }
             if ui.button("Select mode").clicked() {
                 editor.cancel_placement();
             }
         });
-        ui.small("Click in the assembly to place · Esc to cancel");
-        ui.small("Hold Shift to snap to a 1 m grid");
+        if let Some(definition) = editor.catalogue.part(&prototype) {
+            let nodes = definition.attachment_nodes();
+            editor.plug = editor.plug.min(nodes.len().saturating_sub(1));
+            egui::ComboBox::from_id_salt("attachment_plug")
+                .selected_text(
+                    nodes
+                        .get(editor.plug)
+                        .map_or("No connector", |n| n.name.as_str()),
+                )
+                .show_ui(ui, |ui| {
+                    for (index, node) in nodes.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut editor.plug,
+                            index,
+                            format!("{} · {}", node.name, node.connector),
+                        );
+                    }
+                });
+        }
+        ui.small("Click a matching socket · R rotates around the connection");
     } else {
         ui.weak("Click a part to pick it up.");
     }

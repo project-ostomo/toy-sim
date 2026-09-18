@@ -6,7 +6,7 @@ ends within 2 m and 0.5 m/s of the aim point. The same law flies sublight travel
 legs. The law, its forecast and its instrument fields are described in
 [rendezvous.md](rendezvous.md#guidance-law).
 
-The implemented spatial interface is [ABI 14](ship-abi.md). ABI 12 added
+The implemented spatial interface is [ABI 15](ship-abi.md). ABI 12 added
 `world_query`, `world_command` and the separate `ship_display` entry point. None
 of the trajectory extensions proposed below were added: no timed
 position/velocity knots, burn events or published target reference paths. The

@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v14"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v15"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (14)
+#define SHIP_API_VERSION (15)
 #define SHIP_ERR_GAS (-1)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
@@ -393,6 +393,7 @@ typedef struct {
     double pitch_rate_rad_s;
     double beam_power_w;
     double beam_range_m;
+    uint64_t chemical;
 } ship_weapon_spec_record;
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, ammunition_resource) == 0, "WeaponSpec.ammunition_resource");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, projectile_mass_kg) == 8, "WeaponSpec.projectile_mass_kg");
@@ -411,7 +412,8 @@ SHIP_ASSERT(offsetof(ship_weapon_spec_record, yaw_rate_rad_s) == 136, "WeaponSpe
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, pitch_rate_rad_s) == 144, "WeaponSpec.pitch_rate_rad_s");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, beam_power_w) == 152, "WeaponSpec.beam_power_w");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, beam_range_m) == 160, "WeaponSpec.beam_range_m");
-SHIP_ASSERT(sizeof(ship_weapon_spec_record) == 168, "WeaponSpec size");
+SHIP_ASSERT(offsetof(ship_weapon_spec_record, chemical) == 168, "WeaponSpec.chemical");
+SHIP_ASSERT(sizeof(ship_weapon_spec_record) == 176, "WeaponSpec size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_weapon_spec_record) == 8, "WeaponSpec alignment");
 typedef struct {
     double aim_direction[3];
@@ -538,7 +540,7 @@ SHIP_ASSERT(offsetof(ship_resource_info_record, unit_volume_m3) == 88, "Resource
 SHIP_ASSERT(sizeof(ship_resource_info_record) == 96, "ResourceInfo size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_resource_info_record) == 8, "ResourceInfo alignment");
 typedef struct {
-    double units;
+    uint64_t units;
 } ship_resource_amount_record;
 SHIP_ASSERT(offsetof(ship_resource_amount_record, units) == 0, "ResourceAmount.units");
 SHIP_ASSERT(sizeof(ship_resource_amount_record) == 8, "ResourceAmount size");

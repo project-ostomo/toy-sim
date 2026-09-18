@@ -1,4 +1,5 @@
 pub mod drawing;
+pub mod navigation;
 pub mod presentation;
 pub mod travel;
 pub use presentation::*;
@@ -191,6 +192,8 @@ pub struct DockServiceSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipTelemetry {
+    pub appearance: Option<[u8; 32]>,
+    pub radius_m: f64,
     pub dock_services: DockServiceSettings,
     pub spatial_instance: Id,
     pub info_group: InfoGroupKey,
@@ -305,6 +308,11 @@ pub enum ShipCommand {
     },
     PauseTravel,
     ResumeTravel,
+    TransferCargo {
+        target: EntityId,
+        resource: String,
+        quantity: u64,
+    },
     SetDockServices {
         cargo: bool,
         power: bool,
@@ -342,6 +350,7 @@ pub struct InputFrame {
 pub enum ProgramQuery {
     SlipEligibility { destination: GalacticPosition },
     Travel,
+    Contact(ContactRef),
     Beacon(EntityId),
     Resolve(travel::Destination),
     Tracks(TrackQuery),
@@ -361,6 +370,11 @@ pub struct Beacon {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramReply {
+    Contact {
+        pose: Pose,
+        handle: u64,
+        radius_m: f64,
+    },
     SlipEligibility {
         ready: bool,
     },

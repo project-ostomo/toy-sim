@@ -110,10 +110,12 @@ pub fn run(
                 }
                 let resource = &cat.0.resources[water];
                 let mass = (emergency.max_flow_kg_s * dt)
-                    .min(inventory.0.quantities[water] * resource.mass_kg);
+                    .min(inventory.0.available(water) * resource.mass_kg);
                 let removed = remove_heat(state, mass * emergency.heat_removed_j_kg, false);
-                inventory.0.quantities[water] -=
-                    removed / emergency.heat_removed_j_kg / resource.mass_kg;
+                inventory.0.consume(
+                    water,
+                    removed / emergency.heat_removed_j_kg / resource.mass_kg,
+                );
                 device.0.actual = removed / dt;
             }
         }
@@ -181,13 +183,13 @@ mod tests {
             .unwrap()
             .0
             .hull_energy_j = heat;
-        fixture.set_inventory(|inventory| inventory.quantities[water] = 0.5);
+        fixture.set_inventory(|inventory| inventory.quantities[water] = 1);
         fixture.app.world_mut().run_system_once(run).unwrap();
         let state = fixture.state();
-        assert_eq!(state.inventory.quantities[water], 0.0);
-        assert!((state.thermal.hull_energy_j - (heat - 1.5e6)).abs() < 1e-6);
+        assert_eq!(state.inventory.quantities[water], 0);
+        assert!((state.thermal.hull_energy_j - (heat - 3e6)).abs() < 1e-6);
 
-        fixture.set_inventory(|inventory| inventory.quantities[water] = 1.0);
+        fixture.set_inventory(|inventory| inventory.quantities[water] = 1);
         fixture
             .app
             .world_mut()
@@ -196,7 +198,7 @@ mod tests {
             .0
             .operational = false;
         fixture.app.world_mut().run_system_once(run).unwrap();
-        assert_eq!(fixture.state().inventory.quantities[water], 1.0);
+        assert_eq!(fixture.state().inventory.quantities[water], 1);
         assert_eq!(
             fixture.state().thermal.hull_energy_j,
             state.thermal.hull_energy_j

@@ -18,8 +18,7 @@ fn micropulse_charge_tanks_and_engine_metadata_use_complete_charge_mass() {
                 alias: String::new(),
                 groups: vec![],
                 prototype: "fuselage_8m".into(),
-                position: [0; 3],
-                orientation: 0,
+                attachment: None,
                 tanks: vec![Tank {
                     resource: "micropulse_charge".into(),
                     volume_m3: 100.,
@@ -32,8 +31,12 @@ fn micropulse_charge_tanks_and_engine_metadata_use_complete_charge_mass() {
                 alias: "main_engine".into(),
                 groups: vec![],
                 prototype: "micropulse_engine_8m".into(),
-                position: [0, 0, 160],
-                orientation: 0,
+                attachment: Some(Attachment {
+                    parent: 1,
+                    socket: "aft".into(),
+                    plug: "fore".into(),
+                    roll: 0,
+                }),
                 tanks: vec![],
             },
         ],
@@ -42,8 +45,8 @@ fn micropulse_charge_tanks_and_engine_metadata_use_complete_charge_mass() {
     let design = blueprint.compile(&catalogue).unwrap();
     let mut state = ShipState::new(&design, &catalogue);
     state.test_loadout(&design, &catalogue);
-    assert_eq!(state.inventory.quantities[charge_index], 90_000.);
-    assert_eq!(state.inventory.quantities[0], 0.);
+    assert_eq!(state.inventory.quantities[charge_index], 90_000);
+    assert_eq!(state.inventory.quantities[0], 0);
     assert_eq!(state.inventory.mass(&catalogue), 90_000.);
 
     let device = design
@@ -127,7 +130,7 @@ fn micropulse_demonstrator_has_startup_power_cooling_and_charge_reserves() {
     state.test_loadout(&design, &catalogue);
     assert_eq!(state.inventory.mass(&catalogue), 180_000.);
     assert_eq!(state.inventory.energy_j, 300_000_000.);
-    assert_eq!(state.inventory.quantities[0], 0.);
+    assert_eq!(state.inventory.quantities[0], 0);
     assert!(design.shield_radiator_area_m2 > 0.);
     assert!(design.shield_reserve_capacity_kg > 0.);
     assert!(design.max_torque > 0.);

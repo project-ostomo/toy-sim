@@ -17,6 +17,7 @@ impl Row {
         match self.target {
             SelectedTarget::Contact(reference) => (0, reference.group, reference.track),
             SelectedTarget::Celestial(id) => (1, id, id),
+            SelectedTarget::Beacon(id) => (2, id, id),
         }
     }
 
@@ -24,11 +25,14 @@ impl Row {
         match self.target {
             SelectedTarget::Contact(_) => Icon::Ship,
             SelectedTarget::Celestial(_) => Icon::Planet,
+            SelectedTarget::Beacon(_) => Icon::Navigation,
         }
     }
 }
 
 pub(super) struct FrameModel<'a> {
+    pub navigation: &'a NavigationCatalogue,
+    pub ships: Vec<&'a ShipTelemetry>,
     pub rows: Vec<Row>,
     pub ship: Option<&'a ShipTelemetry>,
     pub details: Option<&'a ShipPresentation>,

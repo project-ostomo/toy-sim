@@ -128,10 +128,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                     .on_hover_text("Cancel automatic guidance; the ship retains its velocity")
                     .clicked()
                 {
-                    intents.push(Intent::Command(
-                        ShipCommand::Flight(FlightCommand::StopGuidance),
-                        "Stop guidance",
-                    ));
+                    intents.push(Intent::Command(ShipCommand::PauseTravel, "Stop guidance"));
                 }
             });
         },
@@ -145,19 +142,61 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     egui::ScrollArea::vertical()
         .max_height(180.)
         .show(ui, |ui| {
-            for (index, order) in ship.travel.orders.iter().enumerate() {
-                ui.label(
-                    egui::RichText::new(format!("{}  {}", index + 1, order_name(order))).color(
-                        if index == ship.travel.order {
+            for (index, order) in ship
+                .travel
+                .orders
+                .iter()
+                .enumerate()
+                .skip(ship.travel.order)
+            {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  {}",
+                            index + 1,
+                            order_label(order, model.navigation)
+                        ))
+                        .color(if index == ship.travel.order {
                             ACCENT
                         } else {
                             MUTED
-                        },
-                    ),
-                );
+                        }),
+                    );
+                    if ui
+                        .small_button("×")
+                        .on_hover_text("Remove command")
+                        .clicked()
+                    {
+                        let mut orders: Vec<_> = ship
+                            .travel
+                            .orders
+                            .iter()
+                            .skip(ship.travel.order)
+                            .cloned()
+                            .collect();
+                        orders.remove(index - ship.travel.order);
+                        intents.push(Intent::Queue(orders, false));
+                    }
+                    if index > ship.travel.order
+                        && ui.small_button("↑").on_hover_text("Move earlier").clicked()
+                    {
+                        let mut orders: Vec<_> = ship
+                            .travel
+                            .orders
+                            .iter()
+                            .skip(ship.travel.order)
+                            .cloned()
+                            .collect();
+                        orders.swap(index - ship.travel.order, index - ship.travel.order - 1);
+                        intents.push(Intent::Queue(orders, false));
+                    }
+                });
             }
         });
     if !ship.travel.orders.is_empty() {
+        if ui.button("Clear queue").clicked() {
+            intents.push(Intent::Queue(Vec::new(), false));
+        }
         let paused = ship.travel.status == travel::Status::Paused;
         if ui
             .add_enabled(
@@ -182,8 +221,12 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     }
 }
 
-fn order_name(order: &travel::Order) -> String {
+pub(super) fn order_name(order: &travel::Order) -> String {
     match order {
+        travel::Order::Guidance(guidance) => {
+            format!("{:?} · {}", guidance.mode, distance(guidance.range_m))
+        }
+        travel::Order::Jump(id) => format!("Jump via {}", short_id(*id)),
         travel::Order::TravelTo(travel::Destination::Beacon(id)) => {
             format!("Travel to beacon {}", short_id(*id))
         }
@@ -196,5 +239,24 @@ fn order_name(order: &travel::Order) -> String {
         travel::Order::Dock(id) => format!("Dock at {}", short_id(*id)),
         travel::Order::Undock => "Undock".into(),
         travel::Order::WaitUntil(time) => format!("Wait until tick {time}"),
+    }
+}
+
+pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
+    let reference = match order {
+        travel::Order::Jump(id)
+        | travel::Order::Dock(id)
+        | travel::Order::TravelTo(travel::Destination::Beacon(id)) => Some(*id),
+        _ => None,
+    };
+    if let Some(beacon) = reference.and_then(|id| navigation.beacons.iter().find(|b| b.id == id)) {
+        let action = match order {
+            travel::Order::Jump(_) => "Jump",
+            travel::Order::Dock(_) => "Dock",
+            _ => "Travel",
+        };
+        format!("{action} · {}", beacon.name)
+    } else {
+        order_name(order)
     }
 }

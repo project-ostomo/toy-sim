@@ -268,7 +268,7 @@ fn draw_coasts(
         })
         .collect();
     for (camera, transform, projection, camera_state, options, systems) in &cameras {
-        if !options.enabled {
+        if camera_state.private || !options.enabled {
             continue;
         }
         let (Some(viewport), Projection::Perspective(projection)) =

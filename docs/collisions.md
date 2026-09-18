@@ -12,7 +12,7 @@ Docked ships are station inventory. Docking removes their motion, collision and 
 
 Geometry:
 
-- **Ship hull:** a Parry compound of one cuboid per part, placed at the part centre relative to the dry centre of mass and rotated by the part orientation.
+- **Ship hull:** a Parry compound built by rasterizing the compiled assembly onto a 1 m grid and merging adjacent occupied cells into boxes. Cylinders, habitat hubs/rings and hangar interiors have explicit occupancy profiles. Moving habitat spokes reserve their swept region. Geometry is cached per compiled design. Sub-metre barrels clear the conservative voxel envelope by at most 3 m; real part geometry still rejects obstructed fire.
 - **Ship shield:** a ball of `shield_radius(r) = r + max(0.1·r, 0.5 m)`, where `r` is the design radius.
 - **Projectile:** a ball of the projectile radius for both hull and shield.
 

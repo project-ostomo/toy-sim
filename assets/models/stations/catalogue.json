@@ -1,0 +1,56 @@
+[
+  {
+    "model": "models/stations/station-core-32m.glb",
+    "dimensions_m": [
+      32,
+      32,
+      64
+    ],
+    "objects": 1
+  },
+  {
+    "model": "models/stations/station-end-32m.glb",
+    "dimensions_m": [
+      32,
+      32,
+      8
+    ],
+    "objects": 1
+  },
+  {
+    "model": "models/stations/station-habitat-200m.glb",
+    "dimensions_m": [
+      200,
+      200,
+      48
+    ],
+    "objects": 5
+  },
+  {
+    "model": "models/stations/station-hangar-64m.glb",
+    "dimensions_m": [
+      64,
+      64,
+      96
+    ],
+    "objects": 1
+  },
+  {
+    "model": "models/stations/station-beacon-48m.glb",
+    "dimensions_m": [
+      48,
+      48,
+      64
+    ],
+    "objects": 1
+  },
+  {
+    "model": "models/stations/wormhole-frame-512m.glb",
+    "dimensions_m": [
+      512,
+      512,
+      512
+    ],
+    "objects": 1
+  }
+]
