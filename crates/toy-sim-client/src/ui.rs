@@ -2,11 +2,11 @@ mod celestials;
 mod input;
 mod scene;
 mod selection;
+mod shell;
 
 use crate::{Endpoint, state};
 use bevy::prelude::*;
 use selection::{SelectedTarget, Selection};
-use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn run(endpoint: Endpoint, local: bool) {
     let mut app = App::new();
@@ -36,7 +36,7 @@ pub fn run(endpoint: Endpoint, local: bool) {
     app.add_observer(state::reset_resource::<selection::Subscriptions>);
     app.add_observer(state::reset_resource::<input::FlightControls>);
 
-    app.add_plugins(scene::install)
+    app.add_plugins((scene::install, shell::install))
         .add_systems(Startup, toy_sim_ship_view::prepare_visuals)
         .add_systems(Update, toy_sim_ship_view::add_weapon_visuals)
         .add_systems(
@@ -53,15 +53,7 @@ pub fn run(endpoint: Endpoint, local: bool) {
                 .after(bevy::transform::TransformSystems::Propagate)
                 .after(bevy::camera::CameraUpdateSystems),
         )
-        .add_systems(EguiPrimaryContextPass, hello_world)
         .run();
-}
-
-fn hello_world(mut contexts: EguiContexts) -> Result {
-    egui::Window::new("Hello world").show(contexts.ctx_mut()?, |ui| {
-        ui.label("Hello world");
-    });
-    Ok(())
 }
 
 #[cfg(test)]

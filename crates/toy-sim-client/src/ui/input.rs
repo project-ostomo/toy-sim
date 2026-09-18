@@ -37,7 +37,7 @@ pub(super) fn manual(
 ) {
     let captured = contexts
         .ctx_mut()
-        .is_ok_and(|ctx| ctx.egui_wants_keyboard_input());
+        .is_ok_and(|ctx| ctx.egui_wants_keyboard_input() || ctx.egui_is_using_pointer());
     let Some(ship) = ships
         .iter()
         .map(|ship| &ship.0)

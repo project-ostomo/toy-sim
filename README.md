@@ -148,7 +148,7 @@ When the explorer engages another ship with its weapons, the server orders that 
 
 Keyboard input is ignored while an egui widget has keyboard focus. Mouse drags that start over a window do not move the camera. Flight keys act on the automatically selected controlled ship. Manual throttle and steering are sent to the server as `Manual` commands, which pause travel and reach the flight computer as requests ([docs/rendezvous.md](docs/rendezvous.md)).
 
-The client currently shows the 3D scene, contact and celestial HUD labels, orbit overlays, and one "Hello world" egui window. It automatically opens a view of the first controlled ship. The former control, debug, browser and MFD windows have been removed as the starting point for a new UI ([docs/server-client.md](docs/server-client.md#the-client-ui)).
+The client combines the 3D scene and orbit HUD with a desktop interface: a left launcher, simulation clock, location indicator, sortable Overview, selected-item flight and weapon controls, and ship/navigation panels. The windows can be moved, resized, collapsed and closed; Interface settings provide layout locking and reset. It automatically opens a view of the first controlled ship. See [the client UI guide](docs/server-client.md#the-client-ui).
 
 ### Ship editor
 

@@ -15,7 +15,7 @@ use toy_sim_model::*;
 use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 #[derive(Component)]
-pub(super) struct ViewOptions {
+pub(in crate::ui) struct ViewOptions {
     pub enabled: bool,
     pub instruments: Instruments,
     horizon: f64,

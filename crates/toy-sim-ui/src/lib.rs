@@ -1,6 +1,8 @@
 pub use bevy_egui;
 pub use bevy_egui::egui;
 
+pub mod desktop;
+pub mod icons;
 pub mod instruments;
 pub mod mfd;
 pub mod parts;

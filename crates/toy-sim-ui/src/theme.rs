@@ -8,10 +8,15 @@ use crate::egui::{
 const FONT: &[u8] = include_bytes!("../data/fonts/SarasaUiSC-Regular.ttf");
 
 pub fn install(ctx: &egui::Context) {
+    crate::icons::install(ctx);
     ctx.add_font(FontInsert::new(
         "Sarasa UI SC",
         egui::FontData::from_static(FONT),
         vec![
+            InsertFontFamily {
+                family: FontFamily::Name("Phosphor".into()),
+                priority: FontPriority::Lowest,
+            },
             InsertFontFamily {
                 family: FontFamily::Proportional,
                 priority: FontPriority::Highest,

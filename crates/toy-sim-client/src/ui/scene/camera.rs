@@ -12,7 +12,7 @@ use bevy::{
 use toy_sim_model::{GalacticPosition, Id};
 
 #[derive(Component, Default)]
-pub(super) struct CameraOptions {
+pub(in crate::ui) struct CameraOptions {
     pub focus: Option<SelectedTarget>,
 }
 

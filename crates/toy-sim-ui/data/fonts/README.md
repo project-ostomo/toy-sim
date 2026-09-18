@@ -1,6 +1,6 @@
 # Embedded fonts
 
-Both fonts are included with `include_bytes!`. Applications need no installed
+The fonts are included with `include_bytes!`. Applications need no installed
 fonts or runtime font files.
 
 ## Sarasa UI SC
@@ -41,3 +41,12 @@ Screen text occupies one 8 × 16 pixel cell per Unicode scalar, with glyphs fitt
 to the cell at the current scale. Coverage is checked against the embedded font's
 character map through `skrifa`; missing glyphs become `?`. See
 [the MFD guide](../../../../docs/mfds.md) for the drawing protocol.
+
+## Phosphor
+
+`Phosphor.ttf` is the unmodified regular icon font from
+[Phosphor Web v2.1.1](https://github.com/phosphor-icons/web/tree/v2.1.1/src/regular).
+The MIT license is included as [PHOSPHOR-LICENSE](PHOSPHOR-LICENSE).
+[icons.rs](../../src/icons.rs) embeds the font and exposes named icons and a
+separate `Phosphor` font family. The theme also installs Sarasa as that family's
+fallback, so icon codepoints do not change the application's text font selection.
