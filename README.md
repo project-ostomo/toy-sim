@@ -29,7 +29,8 @@ The server binary `toy-sim-server` and the remote client binary `toy-sim-client`
 | `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI version 13: fixed C records, constants, raw imports (including the postcard-based `world_query`/`world_command`) and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
 | `toy-sim-ships` | [crates/toy-sim-ships](crates/toy-sim-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
-| `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy/egui presentation used by the client and the editor: part meshes, plumes, shield fields, tracers, explosions, instruments and programmable screens. |
+| `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
+| `toy-sim-ui` | [crates/toy-sim-ui](crates/toy-sim-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
 | `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and a travel planner with a multi-gate route search. |
 | `toy-sim-model` | [crates/toy-sim-model](crates/toy-sim-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
 | `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing (protocol version 3), sections and validation limits. |
@@ -120,10 +121,10 @@ The client UI reads assets from the repository's `assets/` directory through a p
 The server builds its world in [bootstrap.rs](crates/toy-sim-server/src/sim/bootstrap.rs) from the scenario constants in [scenario.rs](crates/toy-sim-server/src/sim/scenario.rs):
 
 - The universe is the Helion system ([assets/stars/helion.star.toml](assets/stars/helion.star.toml)).
-- The first ship, "Orbital explorer", starts on the day side of Helion I Neris, in a circular orbit 40,000 km above the surface and facing along its velocity. Its tangential direction comes from a seeded sequence (seed 42), and the client initially places the camera on the illuminated side. Its design is the `ship` blueprint from the server configuration, or the armed starter from `toy_sim_ships::armed_starter()`.
-- One traffic ship, "Traffic 001", uses the armed starter and spawns 100 km from the first ship on the same orbit, pointed at it.
-- The first configured account controls the explorer. Each further account gets an "Explorer *n*" ship 1,000 m further along +Y. The traffic ship belongs to a neutral account that no configuration knows.
-- Every player ship has a slipdrive. A demo station and a pair of gates are placed near the explorer ([docs/server-client.md](docs/server-client.md#scenario)).
+- The first ship, "Patrol ship", starts on the day side of Helion I Neris, in a circular orbit 40,000 km above the surface and facing along its velocity. Its tangential direction comes from a seeded sequence (seed 42), and the client initially places the camera on the illuminated side. Its design is the `ship` blueprint from the server configuration, or `assets/ships/micropulse-patrol.ship`.
+- A second patrol ship, "Hostile patrol 001", spawns 1 km away with the same initial orbital velocity, pointed at the player. It aims and fires after its computer boots.
+- The first configured account controls the explorer. Each further account gets an "Explorer *n*" ship 1,000 m further along +Y. The hostile patrol belongs to a separate account that no configuration knows.
+- Every player ship has a slipdrive. The default single-player scenario contains the two patrol ships.
 - Every ship receives a test loadout: a full battery, generator fuel, ammunition and propellant filling the remaining storage.
 - Each flight computer spends its first 5 simulated seconds booting (a 50-tick startup reserve) before it runs.
 
@@ -142,11 +143,12 @@ When the explorer engages another ship with its weapons, the server orders that 
 | Left or right mouse drag | Orbit the camera around its focus |
 | Mouse wheel | Zoom |
 | O | Toggle trajectories in the orbit overlay |
+| Escape | Return the active camera to the controlled ship |
 | `+` or `=` / `-` | Exposure up / down by half a stop |
 
-Keyboard input is ignored while an egui widget has keyboard focus. Mouse drags that start over a window do not move the camera. Flight keys act on the focused ship; select a ship in "Ship controls" to focus it. Manual throttle and steering are sent to the server as `Manual` commands, which pause travel and reach the flight computer as requests ([docs/rendezvous.md](docs/rendezvous.md)).
+Keyboard input is ignored while an egui widget has keyboard focus. Mouse drags that start over a window do not move the camera. Flight keys act on the automatically selected controlled ship. Manual throttle and steering are sent to the server as `Manual` commands, which pause travel and reach the flight computer as requests ([docs/rendezvous.md](docs/rendezvous.md)).
 
-Windows: Ship controls, Views, Flight computer, Contacts, Navigation, Weapons, Ship hardware, Universe, Sky and exposure, one Orbit window per view, one window per subscribed screen, and Server debug when the account has debug capabilities ([docs/server-client.md](docs/server-client.md#the-client-ui)).
+The client currently shows the 3D scene, contact and celestial HUD labels, orbit overlays, and one "Hello world" egui window. It automatically opens a view of the first controlled ship. The former control, debug, browser and MFD windows have been removed as the starting point for a new UI ([docs/server-client.md](docs/server-client.md#the-client-ui)).
 
 ### Ship editor
 
@@ -170,7 +172,7 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | [docs/asset-workflow.md](docs/asset-workflow.md) | Editing universe, star system, catalogue, model and generated assets |
 | [docs/ship-step-profile.md](docs/ship-step-profile.md) | Historical ship-step measurements and the current fleet profiling test |
 
-Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [crates/toy-sim-stars/data/README.md](crates/toy-sim-stars/data/README.md), [crates/toy-sim-ship-view/data/fonts/README.md](crates/toy-sim-ship-view/data/fonts/README.md).
+Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [crates/toy-sim-stars/data/README.md](crates/toy-sim-stars/data/README.md), [crates/toy-sim-ui/data/fonts/README.md](crates/toy-sim-ui/data/fonts/README.md).
 
 ## Architecture overview
 

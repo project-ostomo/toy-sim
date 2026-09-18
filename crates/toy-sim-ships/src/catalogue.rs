@@ -1,24 +1,76 @@
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
+
+pub const STANDARD_GRAVITY_M_S2: f64 = 9.80665;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ResourceDef {
     pub id: String,
     pub title: String,
     pub mass_kg: f64,
     pub volume_m3: f64,
+    #[serde(default)]
+    pub storage: ResourceStorage,
 }
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum StorageClass {
+    #[default]
+    Bulk,
+    Liquid,
+    Cryogenic,
+    Nuclear,
+    Charges,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResourceStorage {
+    pub class: StorageClass,
+    pub usable_fraction: f64,
+    pub containment_kg_m3: f64,
+}
+
+impl Default for ResourceStorage {
+    fn default() -> Self {
+        Self {
+            class: StorageClass::Bulk,
+            usable_fraction: 1.,
+            containment_kg_m3: 0.,
+        }
+    }
+}
+
+impl ResourceStorage {
+    fn valid(&self) -> bool {
+        self.usable_fraction.is_finite()
+            && self.usable_fraction > 0.
+            && self.usable_fraction <= 1.
+            && self.containment_kg_m3.is_finite()
+            && self.containment_kg_m3 >= 0.
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PartDef {
     pub id: String,
     pub title: String,
     pub dimensions: [u32; 3],
+    #[serde(default)]
+    pub tank_volume_m3: f64,
     pub mass_kg: f64,
     pub hull: f64,
     pub color: [f32; 3],
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default = "default_model_scale")]
+    pub model_scale: f32,
     #[serde(flatten)]
     pub equipment: Equipment,
+}
+
+fn default_model_scale() -> f32 {
+    1.0
 }
 
 /// Full-output vacuum plume appearance. These are authored visual parameters,
@@ -78,9 +130,21 @@ impl VacuumPlume {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Equipment {
+    Utility {
+        utility: crate::utilities::UtilityDef,
+    },
     Structure,
     CoolantTank {
         capacity_kg: f64,
+    },
+    Radiator {
+        area_m2: f64,
+        emissivity: f64,
+    },
+    EmergencyCooling {
+        max_flow_kg_s: f64,
+        heat_removed_j_kg: f64,
+        activation_fraction: f64,
     },
     HeatSink {
         capacity_j: f64,
@@ -95,13 +159,33 @@ pub enum Equipment {
         capacity_j: f64,
     },
     Engine {
+        propellant_resource: String,
         thrust_n: f64,
         propellant_kg_s: f64,
         power_w: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plume: Option<VacuumPlume>,
     },
+    ThermalEngine {
+        thrust_n: f64,
+        specific_impulse_s: f64,
+        propellant_resource: String,
+        thermal_efficiency: f64,
+        fuel_energy_j_kg: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plume: Option<VacuumPlume>,
+    },
+    MicropulseEngine {
+        thrust_n: f64,
+        specific_impulse_s: f64,
+        charge_energy_j_kg: f64,
+        electric_fraction: f64,
+        absorbed_heat_fraction: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        plume: Option<VacuumPlume>,
+    },
     Rcs {
+        propellant_resource: String,
         thrust_n: f64,
         propellant_kg_s: f64,
         power_w: f64,
@@ -109,6 +193,12 @@ pub enum Equipment {
     Torquer {
         torque_nm: f64,
         power_w: f64,
+    },
+    Reactor {
+        spec: crate::reactors::ReactorSpec,
+    },
+    FuelProcessor {
+        spec: crate::reactors::FuelProcessorSpec,
     },
     Generator {
         power_w: f64,
@@ -127,12 +217,18 @@ impl Equipment {
     pub fn device_kind(&self) -> Option<crate::DeviceKind> {
         use crate::DeviceKind as D;
         Some(match *self {
-            Self::Structure | Self::CoolantTank { .. } | Self::HeatSink { .. } => return None,
+            Self::Radiator { .. }
+            | Self::EmergencyCooling { .. }
+            | Self::Utility { .. }
+            | Self::Structure
+            | Self::CoolantTank { .. }
+            | Self::HeatSink { .. } => return None,
             Self::Weapon { .. } => D::Weapon,
             Self::Rcs {
                 thrust_n,
                 propellant_kg_s,
                 power_w,
+                ..
             } => D::Rcs {
                 thrust_n,
                 propellant_kg_s,
@@ -141,16 +237,43 @@ impl Equipment {
             Self::Storage { capacity_m3 } => D::Storage { capacity_m3 },
             Self::Battery { capacity_j } => D::Battery { capacity_j },
             Self::Engine {
+                ref propellant_resource,
                 thrust_n,
                 propellant_kg_s,
                 power_w,
                 ..
             } => D::Engine {
+                propellant_resource: propellant_resource.clone(),
                 thrust_n,
                 propellant_kg_s,
                 power_w,
             },
+            Self::ThermalEngine {
+                thrust_n,
+                specific_impulse_s,
+                ref propellant_resource,
+                ..
+            } => D::Engine {
+                propellant_resource: propellant_resource.clone(),
+                thrust_n,
+                propellant_kg_s: thrust_n / (STANDARD_GRAVITY_M_S2 * specific_impulse_s),
+                power_w: 0.0,
+            },
+            Self::MicropulseEngine {
+                thrust_n,
+                specific_impulse_s,
+                ..
+            } => D::Engine {
+                propellant_resource: "micropulse_charge".into(),
+                thrust_n,
+                propellant_kg_s: thrust_n / (STANDARD_GRAVITY_M_S2 * specific_impulse_s),
+                power_w: 0.,
+            },
             Self::Torquer { torque_nm, .. } => D::Torquer { torque_nm },
+            Self::Reactor { spec } => D::Generator {
+                power_w: spec.thermal_power_w * spec.efficiency(300.0),
+            },
+            Self::FuelProcessor { .. } => return None,
             Self::Generator { power_w, .. } => D::Generator { power_w },
             Self::Shield {
                 deployed_mass_kg,
@@ -166,14 +289,35 @@ impl Equipment {
     pub fn priority(&self) -> Option<u8> {
         match self {
             Self::Weapon { .. } => Some(5),
-            Self::Generator { .. } => Some(0),
-            Self::Engine { .. } | Self::Torquer { .. } | Self::Rcs { .. } => Some(3),
+            Self::Generator { .. } | Self::Reactor { .. } | Self::FuelProcessor { .. } => Some(0),
+            Self::Engine { .. }
+            | Self::MicropulseEngine { .. }
+            | Self::ThermalEngine { .. }
+            | Self::Torquer { .. }
+            | Self::Rcs { .. } => Some(3),
             Self::Shield { .. } => Some(4),
             _ => None,
         }
     }
     fn validate(&self) -> bool {
         let values: Vec<f64> = match *self {
+            Self::Reactor { spec } => return spec.valid(),
+            Self::FuelProcessor { spec } => return spec.valid(),
+            Self::Utility { ref utility } => return utility.valid(),
+            Self::Radiator {
+                area_m2,
+                emissivity,
+            } => {
+                if emissivity > 1.0 {
+                    return false;
+                }
+                vec![area_m2, emissivity]
+            }
+            Self::EmergencyCooling {
+                max_flow_kg_s,
+                heat_removed_j_kg,
+                activation_fraction,
+            } => vec![max_flow_kg_s, heat_removed_j_kg, activation_fraction],
             Self::Structure => vec![],
             Self::CoolantTank { capacity_kg } => vec![capacity_kg],
             Self::HeatSink { capacity_j } => vec![capacity_j],
@@ -185,12 +329,66 @@ impl Equipment {
                 propellant_kg_s,
                 power_w,
                 ..
-            } => vec![thrust_n, propellant_kg_s, power_w],
+            } => {
+                if 0.5 * thrust_n.powi(2) / propellant_kg_s > power_w * (1.0 + 1e-10) {
+                    return false;
+                }
+                vec![thrust_n, propellant_kg_s, power_w]
+            }
+            Self::ThermalEngine {
+                thrust_n,
+                specific_impulse_s,
+                thermal_efficiency,
+                fuel_energy_j_kg,
+                ..
+            } => {
+                if thermal_efficiency > 0.94 {
+                    return false;
+                }
+                vec![
+                    thrust_n,
+                    specific_impulse_s,
+                    thermal_efficiency,
+                    fuel_energy_j_kg,
+                ]
+            }
+            Self::MicropulseEngine {
+                thrust_n,
+                specific_impulse_s,
+                charge_energy_j_kg,
+                electric_fraction,
+                absorbed_heat_fraction,
+                ..
+            } => {
+                let exhaust_velocity = STANDARD_GRAVITY_M_S2 * specific_impulse_s;
+                let jet_energy_j_kg = 0.5 * exhaust_velocity * exhaust_velocity;
+                let charge_flow_kg_s = thrust_n / exhaust_velocity;
+                let reaction_power_w = charge_flow_kg_s * charge_energy_j_kg;
+                if ![electric_fraction, absorbed_heat_fraction]
+                    .iter()
+                    .all(|fraction| fraction.is_finite() && (0.0..=1.0).contains(fraction))
+                    || !jet_energy_j_kg.is_finite()
+                    || !reaction_power_w.is_finite()
+                    || jet_energy_j_kg / charge_energy_j_kg
+                        + electric_fraction
+                        + absorbed_heat_fraction
+                        > 1.0
+                {
+                    return false;
+                }
+                vec![thrust_n, specific_impulse_s, charge_energy_j_kg]
+            }
             Self::Rcs {
                 thrust_n,
                 propellant_kg_s,
                 power_w,
-            } => vec![thrust_n, propellant_kg_s, power_w],
+                ..
+            } => {
+                if 0.5 * thrust_n.powi(2) / propellant_kg_s > power_w * (1.0 + 1e-10) {
+                    return false;
+                }
+                vec![thrust_n, propellant_kg_s, power_w]
+            }
             Self::Torquer { torque_nm, power_w } => vec![torque_nm, power_w],
             Self::Generator {
                 power_w,
@@ -248,19 +446,108 @@ impl Catalogue {
                     && r.volume_m3 > 0.,
                 "invalid resource units"
             );
+            ensure!(r.storage.valid(), "invalid resource storage: {}", r.id);
         }
         ids.clear();
         for p in &self.parts {
+            ensure!(
+                p.model_scale.is_finite() && p.model_scale > 0.,
+                "invalid model scale for {}",
+                p.id
+            );
+            ensure!(
+                p.tank_volume_m3.is_finite() && p.tank_volume_m3 >= 0.,
+                "invalid tank volume for {}",
+                p.id
+            );
+            if matches!(
+                p.equipment,
+                Equipment::Reactor { .. } | Equipment::FuelProcessor { .. }
+            ) {
+                for name in [
+                    "reactor_fuel",
+                    "spent_fuel",
+                    "fertile_feedstock",
+                    "bred_fuel",
+                ] {
+                    ensure!(
+                        self.resources
+                            .iter()
+                            .any(|r| r.id == name && r.mass_kg == 1.0),
+                        "nuclear equipment requires kilogram resource {name}"
+                    );
+                }
+            }
+            if matches!(p.equipment, Equipment::FuelProcessor { spec } if spec.produces_charges) {
+                for name in ["repair_material", "micropulse_charge"] {
+                    ensure!(
+                        self.resources
+                            .iter()
+                            .any(|r| r.id == name && r.mass_kg == 1.0),
+                        "charge production requires kilogram resource {name}"
+                    );
+                }
+            }
             if let Equipment::Weapon { weapon } = &p.equipment {
                 weapon
                     .spec(self)
                     .ok_or_else(|| anyhow::anyhow!("unknown ammunition"))?;
             }
             if let Equipment::Engine {
+                propellant_resource,
+                ..
+            }
+            | Equipment::ThermalEngine {
+                propellant_resource,
+                ..
+            }
+            | Equipment::Rcs {
+                propellant_resource,
+                ..
+            } = &p.equipment
+            {
+                ensure!(
+                    self.resources.iter().any(|r| r.id == *propellant_resource),
+                    "unknown propellant resource for {}",
+                    p.id
+                );
+            }
+            if let Equipment::ThermalEngine {
+                propellant_resource,
+                ..
+            } = &p.equipment
+            {
+                ensure!(
+                    propellant_resource != "reactor_fuel" && propellant_resource != "spent_fuel",
+                    "thermal engine propellant must differ from reactor fuel"
+                );
+            }
+            if matches!(p.equipment, Equipment::ThermalEngine { .. }) {
+                ensure!(
+                    self.resources.iter().any(|r| r.id == "reactor_fuel")
+                        && self.resources.iter().any(|r| r.id == "spent_fuel"),
+                    "thermal engines require reactor and spent fuel resources"
+                );
+            }
+            if let Equipment::Engine {
+                plume: Some(plume), ..
+            }
+            | Equipment::ThermalEngine {
+                plume: Some(plume), ..
+            }
+            | Equipment::MicropulseEngine {
                 plume: Some(plume), ..
             } = &p.equipment
             {
                 ensure!(plume.valid(), "invalid vacuum plume for {}", p.id);
+            }
+            if matches!(p.equipment, Equipment::MicropulseEngine { .. }) {
+                ensure!(
+                    self.resources
+                        .iter()
+                        .any(|resource| resource.id == "micropulse_charge"),
+                    "micropulse engines require micropulse_charge resource"
+                );
             }
             ensure!(
                 p.equipment.validate(),

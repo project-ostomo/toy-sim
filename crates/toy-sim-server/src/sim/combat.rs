@@ -406,6 +406,7 @@ mod tests {
                 Identity(id),
                 Appearance(appearance),
                 ShipInventory(toy_sim_ships::Inventory {
+                    tank_capacities_m3: Vec::new(),
                     quantities: Vec::new(),
                     energy_j: 80.0,
                 }),

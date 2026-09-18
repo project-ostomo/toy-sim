@@ -245,7 +245,7 @@ The six states are absent, off, active, depleted, unpowered and blocked. Activat
 
 ## Starter designs
 
-- `starter(controller)`: seven main parts stacked along +Z at 1 m spacing, plus a coolant tank ahead of the hull block. In order: structure, storage (`storage`), battery (`battery`), generator (`generator`), torquer (`attitude_control`), shield (`shield`), engine (`main_engine`). The unarmed starter used by `toy-ship-editor --example` and the editor's Starter button.
+- `starter(controller)`: seven main parts stacked along +Z at 1 m spacing, plus a coolant tank and command module ahead of the hull block. In order: structure, storage (`storage`), battery (`battery`), generator (`generator`), torquer (`attitude_control`), shield (`shield`), engine (`main_engine`). The unarmed starter used by `toy-ship-editor --example` and the editor's Starter button.
 - `armed_starter()`: the starter named "Armed explorer" with the standard firmware, plus `railgun_turret_8`, `coilgun_turret_9` (group `weapons`) and four RCS blocks `rcs_10` to `rcs_13` (group `rcs`). The simulator uses it for traffic and as the default player ship. [assets/ships/starter.ship](../assets/ships/starter.ship) contains this design.
 
 ## Ships in the simulator
@@ -305,3 +305,23 @@ cargo test -p toy-sim-example-controller
 ```
 
 [tests/ships.rs](../crates/toy-sim-ships/tests/ships.rs) covers avionics mass and power, format version rejection, the 24 rotations, CBOR round trips, overlap and connectivity checks, inventory capacity, fractional propellant, lever-arm torque, power loss, the stable tick plan, device metadata, atomic commands, alias uniqueness, sensor power and RCS behaviour.
+
+## Configurable resource tanks
+
+A catalogue part can declare `tank_volume_m3` (zero by default). An installed part's `tanks` array allocates this space through entries containing `resource` (catalogue ID), `volume_m3`, and `initial_fill` (0–1). An empty tank still reserves its full allocated volume. Compilation checks resource IDs, finite positive volumes, bounded fills, at most 32 tanks per part, and the sum against the part's capacity.
+
+Resource definitions specify mass and occupied volume per inventory unit. Density is `mass_kg / volume_m3`; a tank starts with `allocated_volume_m3 * storage.usable_fraction * initial_fill / resource.volume_m3` units. Loaded contents contribute to ship mass and decrease as engines, generators, and weapons consume resources. Storage coefficients add containment mass and reduce usable volume. Stored hydrogen remains available without refrigeration or passive loss.
+
+At runtime, tanks for a resource share one supply. Inventory tracks aggregate quantities and dedicated volume per resource; it does not simulate individual valves or draining order. Ordinary storage provides shared cargo volume in addition to those dedicated capacities. Resources cannot occupy a tank allocated to another resource. Insertion and transfer validate capacity before mutation. The debug loadout fills ordinary cargo independently and preserves the configured starting tank quantities. Client inventory telemetry includes dedicated capacity for each resource plus shared cargo capacity; shared capacity is not independently available to every resource at once.
+
+The existing physics approximation scales dry inertia with total loaded mass. Loaded tank contents do not yet shift the centre of mass individually. Containment fittings contribute to compiled dry mass, centre of mass, and inertia at their installed part positions.
+
+## Fission propulsion and equipment
+
+The catalogue uses fission micropulse drives, nuclear thermal engines, and electric propulsion. See [the equipment catalogue](parts-catalogue.md) for their fuel cycles, reactor and cooling behaviour, utility hardware, and example ships.
+
+`micropulse_engine` consumes complete manufactured `micropulse_charge` units. It requires no separate propellant. Thrust divided by exhaust velocity gives charge flow, with exhaust velocity equal to `9.80665 * specific_impulse_s`. The released energy is apportioned between directed exhaust, recoverable electricity, absorbed heat, and outgoing radiation. Validation prevents these allocations from exceeding the available energy. Charge shortages reduce all outputs together. Electrical recovery fills available battery capacity; unused recovery remains in outgoing energy.
+
+The four engine widths are 1, 2, 4, and 8 metres. Their authored specific impulses are 2,500, 3,500, 4,500, and 5,000 seconds. They share a scaled model, but performance is explicitly authored rather than inferred from mesh scale. The charge energy and manufacturing coefficients are provisional game balance values for fictional equipment.
+
+The script interface exposes micropulse, thermal, and electric propulsion as engine actuators with explicit propellant resource identifiers. Thermal engines additionally consume reactor fuel and retain spent fuel. Computers require installed, operational command hardware and electricity; batteries provide startup power.

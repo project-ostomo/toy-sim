@@ -124,6 +124,11 @@ impl WeaponsController {
                 + barrel * DVec3::from_array(spec.muzzle_offset_m);
             let bore = barrel * DVec3::NEG_Z;
             let solution = contact.and_then(|c| {
+                if spec.beam_power_w > 0.0 {
+                    let offset = DVec3::from_array(c.position_m) - muzzle;
+                    return (offset.length() <= spec.beam_range_m)
+                        .then(|| (offset.normalize(), 0.0));
+                }
                 intercept(
                     DVec3::from_array(c.position_m) - muzzle,
                     DVec3::from_array(c.velocity_m_s) - angular.cross(muzzle),
@@ -139,6 +144,12 @@ impl WeaponsController {
                     .clamp(0.0, 0.005)
             });
             let next = contact.and_then(|c| {
+                if spec.beam_power_w > 0.0 {
+                    let offset = DVec3::from_array(c.position_m)
+                        + DVec3::from_array(c.velocity_m_s) * dt
+                        - muzzle;
+                    return Some((offset.normalize(), 0.0));
+                }
                 intercept(
                     DVec3::from_array(c.position_m) + DVec3::from_array(c.velocity_m_s) * dt
                         - muzzle,

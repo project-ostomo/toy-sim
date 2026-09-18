@@ -195,3 +195,27 @@ fn weapon_energy_reading_recovers_when_the_shared_battery_recharges() {
         assert_eq!(reading.inhibit_flags & abi::WEAPON_ENERGY, expected);
     }
 }
+
+#[test]
+fn model_scaling_is_validated_and_does_not_change_physics_dimensions() {
+    let mut catalogue = Catalogue::builtin();
+    assert_eq!(catalogue.part("fuselage_8m").unwrap().model_scale, 1.);
+    assert_eq!(
+        catalogue.part("micropulse_engine_4m").unwrap().model_scale,
+        0.5
+    );
+    let blueprint = armed_starter();
+    let before = blueprint.compile(&catalogue).unwrap();
+    catalogue.parts[0].model_scale = 0.5;
+    let after = blueprint.compile(&catalogue).unwrap();
+    assert_eq!(before.dry_mass, after.dry_mass);
+    assert_eq!(before.inertia, after.inertia);
+    assert_eq!(
+        before.parts[0].definition.dimensions,
+        after.parts[0].definition.dimensions
+    );
+    for scale in [0., -1., f32::NAN, f32::INFINITY] {
+        catalogue.parts[0].model_scale = scale;
+        assert!(catalogue.validate().is_err());
+    }
+}

@@ -1,5 +1,5 @@
 use bevy::math::{DQuat, DVec3};
-use bevy_egui::egui;
+use toy_sim_ui::egui;
 
 pub(super) struct View {
     pub(super) rect: egui::Rect,
@@ -8,7 +8,6 @@ pub(super) struct View {
     pub(super) sx: f64,
     pub(super) sy: f64,
 }
-#[cfg(test)]
 impl View {
     pub(super) fn camera(&self, p: DVec3) -> DVec3 {
         self.rotation * (p - self.eye)
@@ -60,6 +59,23 @@ impl View {
         let out = [self.screen(a), self.screen(b)];
         out.iter().all(|p| p.is_finite()).then_some(out)
     }
+    pub(super) fn marker(&self, p: DVec3) -> (egui::Pos2, bool) {
+        if let Some(p) = self.point(p).filter(|p| self.rect.shrink(16.).contains(*p)) {
+            return (p, false);
+        }
+        let p = self.camera(p);
+        let direction = bevy::math::DVec2::new(
+            p.x * self.sx * self.rect.width() as f64,
+            -p.y * self.sy * self.rect.height() as f64,
+        )
+        .try_normalize()
+        .unwrap_or(bevy::math::DVec2::NEG_Y);
+        let direction = egui::vec2(direction.x as f32, direction.y as f32);
+        let half = (self.rect.size() * 0.5 - egui::vec2(22., 22.)).max(egui::vec2(1., 1.));
+        let factor =
+            (half.x / direction.x.abs().max(1e-8)).min(half.y / direction.y.abs().max(1e-8));
+        (self.rect.center() + direction * factor, true)
+    }
 }
 pub(super) fn occluded(eye: DVec3, p: DVec3, bodies: &[(DVec3, f64)]) -> bool {
     let ray = p - eye;
@@ -92,6 +108,25 @@ mod tests {
             sy: 1280. / 720.,
         }
     }
+    #[test]
+    fn offscreen_markers_stay_inside_the_view_and_point_toward_the_target() {
+        let view = view();
+        let (center, offscreen) = view.marker(DVec3::new(0., 0., -10.));
+        assert_eq!(center, view.rect.center());
+        assert!(!offscreen);
+
+        for point in [DVec3::new(100., 20., -1.), DVec3::new(100., 20., 1.)] {
+            let (marker, offscreen) = view.marker(point);
+            assert!(offscreen && view.rect.shrink(20.).contains(marker));
+            let direction = marker - view.rect.center();
+            assert!(direction.x > 0. && direction.y < 0.);
+            assert!((direction.y / direction.x + 0.2).abs() < 1e-5);
+        }
+        let (behind, offscreen) = view.marker(DVec3::Z);
+        assert!(offscreen && behind.is_finite());
+        assert!(view.rect.shrink(20.).contains(behind));
+    }
+
     #[test]
     fn clips_near_plane_and_viewport_before_float_conversion() {
         let view = view();

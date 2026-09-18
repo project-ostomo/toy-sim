@@ -52,12 +52,6 @@ pub(super) struct CombatPublication(pub CombatEvent);
 pub(super) struct DestroyedAt(pub u64);
 
 #[derive(Component)]
-pub(super) struct ScreenPublication {
-    pub update: ScreenUpdate,
-    pub definition: Option<toy_sim_model::presentation::ScreenDefinition>,
-}
-
-#[derive(Component)]
 struct PoseSamples {
     previous: Pose,
     current: Pose,
@@ -116,7 +110,6 @@ struct Replication {
     contacts: BTreeMap<(Id, Id), Entity>,
     ships: BTreeMap<Id, Entity>,
     views: BTreeMap<u64, Entity>,
-    screens: BTreeMap<(Id, u8), Entity>,
     events: BTreeMap<u64, (Entity, u64)>,
     deaths: BTreeMap<(Id, Id, Id), u64>,
 }

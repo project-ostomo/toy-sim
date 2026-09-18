@@ -49,11 +49,13 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         .resources
         .iter()
         .zip(&state.inventory.quantities)
-        .map(|(resource, quantity)| ResourceAmount {
+        .enumerate()
+        .map(|(index, (resource, quantity))| ResourceAmount {
             name: bounded(&resource.title, 128),
             amount_kg: quantity * resource.mass_kg,
             capacity_kg: if resource.volume_m3 > 0.0 {
-                design.capacity_m3 / resource.volume_m3 * resource.mass_kg
+                state.inventory.capacity_m3(index, design.capacity_m3) / resource.volume_m3
+                    * resource.mass_kg
             } else {
                 0.0
             },
@@ -229,6 +231,15 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 pressure_pa: env.pressure,
             }),
         health: Some(ShipHealth {
+            crew_people: world
+                .get::<hardware::utilities::Crew>(entity)
+                .map_or(0, |crew| crew.people),
+            crew_capacity: world
+                .get::<hardware::utilities::Crew>(entity)
+                .map_or(0, |crew| crew.capacity),
+            life_support_fraction: world
+                .get::<hardware::utilities::Crew>(entity)
+                .map_or(1., |crew| crew.support_fraction),
             hull_hp: state.hull,
             hull_max_hp: design.hull,
             shield_reserve_capacity_kg: design.shield_reserve_capacity_kg,

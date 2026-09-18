@@ -1,4 +1,4 @@
-use super::instruments;
+use super::input;
 use crate::state::{Celestial, Contact, Outgoing, OwnedShip, SessionInfo, ViewObservation};
 use bevy::prelude::*;
 use toy_sim_model::*;
@@ -38,18 +38,10 @@ impl Selection {
     }
 }
 
-#[derive(Message)]
-pub(super) struct FocusRequest {
-    pub view: Option<u64>,
-    pub target: SelectedTarget,
-}
-
 pub(super) fn synchronize(
     session: Res<SessionInfo>,
     mut subscriptions: ResMut<Subscriptions>,
-    mut flight: ResMut<instruments::FlightControls>,
-    mut navigation: ResMut<instruments::NavigationControls>,
-    mut contact_controls: ResMut<instruments::ContactControls>,
+    mut flight: ResMut<input::FlightControls>,
     mut selection: ResMut<Selection>,
     mut outgoing: ResMut<Outgoing>,
     ships: Query<&OwnedShip>,
@@ -63,11 +55,10 @@ pub(super) fn synchronize(
     {
         selection.target = None;
     }
-    if selection.contact().is_some_and(|selected| {
-        !contacts
-            .iter()
-            .any(|contact| contact.1 == selected && instruments::is_ship_contact(&contact.0))
-    }) {
+    if selection
+        .contact()
+        .is_some_and(|selected| !contacts.iter().any(|contact| contact.1 == selected))
+    {
         selection.target = None;
     }
     if selection
@@ -85,13 +76,11 @@ pub(super) fn synchronize(
     if subscriptions.focused != selection.ship {
         if let Some(previous) = subscriptions.focused {
             if let Some(ship) = ships.iter().find(|ship| ship.0.ship == previous) {
-                instruments::release_manual(&mut flight, &mut outgoing, &ship.0);
+                input::release_manual(&mut flight, &mut outgoing, &ship.0);
             }
             outgoing.push(Action::InstrumentUnsubscribe { ship: previous });
         }
-        *flight = instruments::FlightControls::default();
-        *navigation = instruments::NavigationControls::default();
-        *contact_controls = instruments::ContactControls::default();
+        *flight = input::FlightControls::default();
         subscriptions.focused = selection.ship;
         if let Some(ship) = selection.ship {
             outgoing.push(Action::InstrumentSubscribe { ship });
@@ -117,11 +106,4 @@ pub(super) fn synchronize(
             subscriptions.initial = true;
         }
     }
-}
-
-pub(super) fn reset_focus_requests(
-    _: On<crate::state::SessionReset>,
-    mut requests: ResMut<Messages<FocusRequest>>,
-) {
-    requests.clear();
 }

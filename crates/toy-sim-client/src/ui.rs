@@ -1,18 +1,12 @@
-mod asset_status;
 mod celestials;
-mod controls;
-mod debug;
-mod instruments;
-mod selection;
-mod views;
-use selection::{FocusRequest, SelectedTarget, Selection};
-mod mfd;
+mod input;
 mod scene;
-use crate::state;
-mod universe;
-use crate::Endpoint;
+mod selection;
+
+use crate::{Endpoint, state};
 use bevy::prelude::*;
-use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
+use selection::{SelectedTarget, Selection};
+use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub fn run(endpoint: Endpoint, local: bool) {
     let mut app = App::new();
@@ -21,50 +15,33 @@ pub fn run(endpoint: Endpoint, local: bool) {
         file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(),
         ..default()
     }))
-    .add_plugins(EguiPlugin::default())
+    .add_plugins(toy_sim_ui::UiPlugin)
     .add_plugins((
         toy_sim_ship_view::plume::PlumePlugin,
         toy_sim_ship_view::thermal::ThermalPlugin,
-        toy_sim_ship_view::mfd::MfdFontPlugin,
     ))
-    .init_resource::<controls::ControlPanel>()
-    .init_resource::<controls::TravelControls>()
-    .init_resource::<views::ViewControls>()
     .init_resource::<selection::Subscriptions>()
-    .init_resource::<instruments::FlightControls>()
-    .init_resource::<instruments::NavigationControls>()
-    .init_resource::<instruments::ContactControls>()
-    .init_resource::<debug::DebugControls>()
-    .init_resource::<mfd::MfdWindows>()
-    .init_resource::<Selection>()
-    .init_resource::<universe::Browser>()
-    .add_message::<FocusRequest>();
+    .init_resource::<input::FlightControls>()
+    .init_resource::<Selection>();
+    #[cfg(feature = "profile")]
+    app.add_plugins((
+        bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
+        bevy::diagnostic::LogDiagnosticsPlugin::default(),
+        bevy::render::diagnostic::RenderDiagnosticsPlugin,
+    ));
     crate::assets::install(&mut app);
     state::install(&mut app, endpoint, local);
     celestials::install(&mut app);
-    app.add_observer(universe::reset);
-    app.add_observer(selection::reset_focus_requests);
     app.add_observer(state::reset_resource::<Selection>);
     app.add_observer(state::reset_resource::<selection::Subscriptions>);
-    app.add_observer(state::reset_resource::<controls::ControlPanel>);
-    app.add_observer(state::reset_resource::<controls::TravelControls>);
-    app.add_observer(state::reset_resource::<views::ViewControls>);
-    app.add_observer(state::reset_resource::<instruments::FlightControls>);
-    app.add_observer(state::reset_resource::<instruments::NavigationControls>);
-    app.add_observer(state::reset_resource::<instruments::ContactControls>);
-    app.add_observer(state::reset_resource::<debug::DebugControls>);
-    app.add_observer(state::reset_resource::<mfd::MfdWindows>);
+    app.add_observer(state::reset_resource::<input::FlightControls>);
 
     app.add_plugins(scene::install)
         .add_systems(Startup, toy_sim_ship_view::prepare_visuals)
         .add_systems(Update, toy_sim_ship_view::add_weapon_visuals)
         .add_systems(
             Update,
-            (
-                selection::synchronize,
-                instruments::manual,
-                universe::synchronize,
-            )
+            (selection::synchronize, input::manual)
                 .chain()
                 .after(state::PresentationSet::Interpolate)
                 .after(celestials::CelestialSystems::Evaluate)
@@ -72,24 +49,19 @@ pub fn run(endpoint: Endpoint, local: bool) {
         )
         .configure_sets(
             PostUpdate,
-            bevy_egui::EguiPostUpdateSet::EndPass
+            toy_sim_ui::bevy_egui::EguiPostUpdateSet::EndPass
                 .after(bevy::transform::TransformSystems::Propagate)
                 .after(bevy::camera::CameraUpdateSystems),
         )
-        .add_systems(
-            EguiPrimaryContextPass,
-            (
-                controls::window,
-                views::window,
-                instruments::windows,
-                debug::window,
-                mfd::windows,
-                universe::windows,
-                asset_status::window,
-            )
-                .chain(),
-        )
+        .add_systems(EguiPrimaryContextPass, hello_world)
         .run();
+}
+
+fn hello_world(mut contexts: EguiContexts) -> Result {
+    egui::Window::new("Hello world").show(contexts.ctx_mut()?, |ui| {
+        ui.label("Hello world");
+    });
+    Ok(())
 }
 
 #[cfg(test)]
@@ -101,6 +73,7 @@ mod tests {
 
     pub(super) fn ship(id: Id) -> OwnedShip {
         OwnedShip(ShipTelemetry {
+            dock_services: Default::default(),
             info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {
                 owner: Id([1; 16]),
@@ -126,9 +99,7 @@ mod tests {
     fn focus_subscribes_once_and_recovers_when_owned_ship_disappears() {
         let mut world = World::new();
         world.init_resource::<selection::Subscriptions>();
-        world.init_resource::<instruments::FlightControls>();
-        world.init_resource::<instruments::NavigationControls>();
-        world.init_resource::<instruments::ContactControls>();
+        world.init_resource::<input::FlightControls>();
         world.init_resource::<Selection>();
         world.init_resource::<Outgoing>();
         world.insert_resource(SessionInfo {
@@ -154,10 +125,11 @@ mod tests {
     }
 
     #[test]
-    fn world_change_resets_contact_view_and_closed_display_preferences() {
+    fn world_change_resets_contact_view_and_flight_controls() {
         let mut world = World::new();
-        world.insert_resource(mfd::MfdWindows {
-            closed: std::collections::BTreeSet::from([(Id([2; 16]), 0)]),
+        world.insert_resource(input::FlightControls {
+            throttle: 1.,
+            steering: [1.; 3],
         });
         world.insert_resource(Selection {
             ship: Some(Id([2; 16])),
@@ -168,7 +140,7 @@ mod tests {
             view: Some(7),
         });
         world.add_observer(state::reset_resource::<Selection>);
-        world.add_observer(state::reset_resource::<mfd::MfdWindows>);
+        world.add_observer(state::reset_resource::<input::FlightControls>);
         world.init_resource::<Outgoing>();
         world.insert_resource(SessionInfo {
             world: Some(Id([5; 16])),
@@ -182,7 +154,9 @@ mod tests {
                 && selection.view.is_none()
                 && selection.celestial().is_none()
         );
-        assert!(world.resource::<mfd::MfdWindows>().closed.is_empty());
+        let flight = world.resource::<input::FlightControls>();
+        assert_eq!(flight.throttle, 0.);
+        assert_eq!(flight.steering, [0.; 3]);
         assert!(world.resource::<Outgoing>().pending().is_empty());
     }
 }

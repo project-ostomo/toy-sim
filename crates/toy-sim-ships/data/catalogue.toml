@@ -1,7 +1,7 @@
 revision = 3
 [[resources]]
 id = "propellant"
-title = "Propellant (kg)"
+title = "Electric thruster propellant (kg)"
 mass_kg = 1.0
 volume_m3 = 0.001
 [[resources]]
@@ -23,7 +23,73 @@ hull = 1000.0
 color = [0.45,0.48,0.52]
 kind = "structure"
 [[parts]]
+id = "fuselage_8m"
+tank_volume_m3 = 500.0
+title = "8m fuselage section"
+dimensions = [80,80,160]
+mass_kg = 20000.0
+hull = 40000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-8m.glb"
+kind = "structure"
+[[parts]]
+id = "fuselage_end_8m"
+tank_volume_m3 = 40.0
+title = "8m fuselage end"
+dimensions = [80,80,20]
+mass_kg = 4000.0
+hull = 8000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-end-8m.glb"
+kind = "structure"
+[[parts]]
+id = "fuselage_4m"
+tank_volume_m3 = 62.5
+title = "4m fuselage section"
+dimensions = [40,40,80]
+mass_kg = 5000.0
+hull = 10000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-8m.glb"
+model_scale = 0.5
+kind = "structure"
+[[parts]]
+id = "fuselage_end_4m"
+tank_volume_m3 = 5.0
+title = "4m fuselage end"
+dimensions = [40,40,10]
+mass_kg = 1000.0
+hull = 2000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-end-8m.glb"
+model_scale = 0.5
+kind = "structure"
+[[parts]]
+id = "fuselage_2m"
+tank_volume_m3 = 7.8125
+title = "2m fuselage section"
+dimensions = [20,20,40]
+mass_kg = 1250.0
+hull = 2500.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-8m.glb"
+model_scale = 0.25
+kind = "structure"
+[[parts]]
+id = "fuselage_end_2m"
+tank_volume_m3 = 0.625
+title = "2m fuselage end"
+dimensions = [20,20,5]
+mass_kg = 250.0
+hull = 500.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuselage-end-8m.glb"
+model_scale = 0.25
+kind = "structure"
+[[parts]]
 id = "storage"
+model = "models/parts/storage-1m.glb"
+model_scale = 1.0
 title = "Cargo storage"
 dimensions = [10,10,10]
 mass_kg = 80.0
@@ -33,6 +99,8 @@ kind = "storage"
 capacity_m3 = 0.8
 [[parts]]
 id = "battery"
+model = "models/parts/battery-2m.glb"
+model_scale = 0.5
 title = "Battery"
 dimensions = [10,10,10]
 mass_kg = 200.0
@@ -42,16 +110,18 @@ kind = "battery"
 capacity_j = 300000000
 [[parts]]
 id = "engine"
-title = "Electric propellant engine"
-dimensions = [10,10,20]
+title = "2m electric engine"
+model = "models/parts/electric-engine-2m.glb"
+dimensions = [20,20,20]
 mass_kg = 500.0
 hull = 300.0
 color = [0.8,0.35,0.15]
 kind = "engine"
-# 200 km/s effective exhaust velocity: 10x thrust at the original flow and power.
-thrust_n = 200000.0
+propellant_resource = "propellant"
+# 20 km/s exhaust velocity with 80% electrical-to-jet efficiency.
+thrust_n = 20000.0
 propellant_kg_s = 1.0
-power_w = 200000000.0
+power_w = 250000000.0
 # Full-output vacuum appearance. Exhaust points along part-local +Z.
 [parts.plume]
 origin_m = [0.0, 0.0, 1.0]
@@ -68,6 +138,8 @@ noise_scale_m = 0.4
 noise_speed_m_s = 5.0
 [[parts]]
 id = "torquer"
+model = "models/parts/torquer-1m.glb"
+model_scale = 1.0
 title = "Powered torque actuator"
 dimensions = [10,10,10]
 mass_kg = 100.0
@@ -78,17 +150,21 @@ torque_nm = 20000.0
 power_w = 1000000.0
 [[parts]]
 id = "generator"
-title = "Fuel generator"
+model = "models/parts/auxiliary-generator-1m.glb"
+model_scale = 1.0
+title = "Auxiliary fuel generator"
 dimensions = [10,10,10]
 mass_kg = 500.0
 hull = 400.0
 color = [0.8,0.7,0.2]
 kind = "generator"
-power_w = 300000000.0
-fuel_kg_s = 0.0001
+power_w = 200000.0
+fuel_kg_s = 0.02
 efficiency = 0.4
 [[parts]]
 id = "shield"
+model = "models/parts/shield-emitter-2m.glb"
+model_scale = 0.5
 title = "Shield generator"
 dimensions = [10,10,10]
 mass_kg = 200.0
@@ -144,6 +220,8 @@ slew_rate_rad_s = 1.0471975511965976
 
 [[parts]]
 id = "coilgun"
+model = "models/parts/railgun-2m.glb"
+model_scale = 0.5
 title = "Fixed heavy coilgun"
 dimensions = [10, 10, 30]
 mass_kg = 600.0
@@ -162,19 +240,24 @@ slew_rate_rad_s = 0.0
 
 [[parts]]
 id = "rcs"
+model = "models/parts/resistojet-1m.glb"
+model_scale = 0.5
 title = "Six-direction RCS block"
 dimensions = [5, 5, 5]
 mass_kg = 40.0
 hull = 100.0
 color = [0.65, 0.65, 0.7]
 kind = "rcs"
+propellant_resource = "propellant"
 # Each opposing nozzle pair has this rating; diagonal burns consume the sum.
 thrust_n = 2000.0
 propellant_kg_s = 0.5
-power_w = 20000.0
+power_w = 5000000.0
 
 [[parts]]
 id = "coolant_tank"
+model = "models/parts/coolant-tank-1m.glb"
+model_scale = 1.0
 title = "Shield coolant tank"
 dimensions = [10,10,10]
 mass_kg = 50.0
@@ -185,6 +268,8 @@ capacity_kg = 100.0
 
 [[parts]]
 id = "heat_sink"
+model = "models/parts/heat-sink-2m.glb"
+model_scale = 0.5
 title = "Heat sink"
 dimensions = [10,10,10]
 mass_kg = 150.0
@@ -192,3 +277,1015 @@ hull = 200.0
 color = [0.55,0.3,0.2]
 kind = "heat_sink"
 capacity_j = 300000000.0
+
+[[resources]]
+id = "micropulse_charge"
+title = "Micropulse charges (kg)"
+mass_kg = 1.0
+volume_m3 = 0.0005
+storage = { class = "charges", usable_fraction = 0.9, containment_kg_m3 = 25.0 }
+
+[[parts]]
+id = "micropulse_engine_8m"
+title = "8m micropulse engine"
+dimensions = [80,80,120]
+mass_kg = 40000.0
+hull = 40000.0
+color = [0.36,0.40,0.44]
+model = "models/parts/micropulse-engine-8m.glb"
+model_scale = 1.0
+kind = "micropulse_engine"
+thrust_n = 10000000.0
+specific_impulse_s = 5000.0
+charge_energy_j_kg = 3000000000.0
+electric_fraction = 0.0005
+absorbed_heat_fraction = 0.001
+[parts.plume]
+origin_m = [0.0, 0.0, 6.0]
+length_m = 200.0
+nozzle_radius_m = 3.0
+expansion_half_angle_rad = 0.025
+color_linear_rgb = [0.35, 0.55, 1.0]
+intensity = 100.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 2.0
+noise_speed_m_s = 20.0
+
+[[parts]]
+id = "micropulse_engine_4m"
+title = "4m micropulse engine"
+dimensions = [40,40,60]
+mass_kg = 10000.0
+hull = 10000.0
+color = [0.36,0.40,0.44]
+model = "models/parts/micropulse-engine-8m.glb"
+model_scale = 0.5
+kind = "micropulse_engine"
+thrust_n = 2500000.0
+specific_impulse_s = 4500.0
+charge_energy_j_kg = 3000000000.0
+electric_fraction = 0.0005
+absorbed_heat_fraction = 0.001
+[parts.plume]
+origin_m = [0.0, 0.0, 3.0]
+length_m = 100.0
+nozzle_radius_m = 1.5
+expansion_half_angle_rad = 0.025
+color_linear_rgb = [0.35, 0.55, 1.0]
+intensity = 100.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 1.0
+noise_speed_m_s = 20.0
+
+[[parts]]
+id = "micropulse_engine_2m"
+title = "2m micropulse engine"
+dimensions = [20,20,30]
+mass_kg = 2500.0
+hull = 2500.0
+color = [0.36,0.40,0.44]
+model = "models/parts/micropulse-engine-8m.glb"
+model_scale = 0.25
+kind = "micropulse_engine"
+thrust_n = 625000.0
+specific_impulse_s = 3500.0
+charge_energy_j_kg = 3000000000.0
+electric_fraction = 0.0005
+absorbed_heat_fraction = 0.001
+[parts.plume]
+origin_m = [0.0, 0.0, 1.5]
+length_m = 50.0
+nozzle_radius_m = 0.75
+expansion_half_angle_rad = 0.025
+color_linear_rgb = [0.35, 0.55, 1.0]
+intensity = 100.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.5
+noise_speed_m_s = 20.0
+
+[[parts]]
+id = "micropulse_engine_1m"
+title = "1m micropulse engine"
+dimensions = [10,10,15]
+mass_kg = 625.0
+hull = 625.0
+color = [0.36,0.40,0.44]
+model = "models/parts/micropulse-engine-8m.glb"
+model_scale = 0.125
+kind = "micropulse_engine"
+thrust_n = 156250.0
+specific_impulse_s = 2500.0
+charge_energy_j_kg = 3000000000.0
+electric_fraction = 0.0005
+absorbed_heat_fraction = 0.001
+[parts.plume]
+origin_m = [0.0, 0.0, 0.75]
+length_m = 25.0
+nozzle_radius_m = 0.375
+expansion_half_angle_rad = 0.025
+color_linear_rgb = [0.35, 0.55, 1.0]
+intensity = 100.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.25
+noise_speed_m_s = 20.0
+
+[[parts]]
+id = "reactor_compact_2m"
+title = "2m compact fission reactor"
+dimensions = [20,20,30]
+mass_kg = 4000.0
+hull = 4000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/reactor-compact-2m.glb"
+kind = "reactor"
+[parts.spec]
+thermal_power_w = 20000000.0
+hot_temperature_k = 1400.0
+conversion_quality = 0.55
+core_heat_capacity_j_k = 2000000.0
+heat_transfer_w_k = 18181.81818181818
+shutdown_temperature_k = 1600.0
+meltdown_temperature_k = 2000.0
+fuel_energy_j_kg = 60000000000000.0
+breeding_ratio = 0.0
+decay_fraction = 0.06
+decay_time_s = 300.0
+
+[[parts]]
+id = "reactor_hot_4m"
+title = "4m high-temperature fission reactor"
+dimensions = [40,40,60]
+mass_kg = 22000.0
+hull = 22000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/reactor-hot-4m.glb"
+kind = "reactor"
+[parts.spec]
+thermal_power_w = 250000000.0
+hot_temperature_k = 2300.0
+conversion_quality = 0.65
+core_heat_capacity_j_k = 11000000.0
+heat_transfer_w_k = 100000.0
+shutdown_temperature_k = 2500.0
+meltdown_temperature_k = 2900.0
+fuel_energy_j_kg = 60000000000000.0
+breeding_ratio = 0.0
+decay_fraction = 0.06
+decay_time_s = 300.0
+
+[[parts]]
+id = "reactor_breeder_4m"
+title = "4m breeder power reactor"
+dimensions = [40,40,80]
+mass_kg = 40000.0
+hull = 40000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/reactor-breeder-4m.glb"
+kind = "reactor"
+[parts.spec]
+thermal_power_w = 100000000.0
+hot_temperature_k = 1600.0
+conversion_quality = 0.6
+core_heat_capacity_j_k = 20000000.0
+heat_transfer_w_k = 76923.07692307692
+shutdown_temperature_k = 1800.0
+meltdown_temperature_k = 2200.0
+fuel_energy_j_kg = 60000000000000.0
+breeding_ratio = 1.05
+decay_fraction = 0.06
+decay_time_s = 300.0
+
+[[parts]]
+id = "fuel_processor_4m"
+title = "4m breeder fuel processor"
+dimensions = [40,40,40]
+mass_kg = 20000.0
+hull = 20000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuel-processor-4m.glb"
+kind = "fuel_processor"
+[parts.spec]
+throughput_kg_s = 0.0001
+power_w = 2000000.0
+recovery_fraction = 0.95
+produces_charges = false
+fissile_fraction = 1.0
+
+[[parts]]
+id = "fuel_plant_8m"
+title = "8m micropulse charge plant"
+dimensions = [80,80,80]
+mass_kg = 100000.0
+hull = 100000.0
+color = [0.38,0.42,0.45]
+model = "models/parts/fuel-plant-8m.glb"
+kind = "fuel_processor"
+[parts.spec]
+throughput_kg_s = 0.01
+power_w = 20000000.0
+recovery_fraction = 1.0
+produces_charges = true
+fissile_fraction = 0.01
+
+[[resources]]
+id = "reactor_fuel"
+title = "Reactor fuel"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "fertile_feedstock"
+title = "Fertile feedstock"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "spent_fuel"
+title = "Spent reactor fuel"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "bred_fuel"
+title = "Bred fuel awaiting processing"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "water"
+title = "Water"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "liquid", usable_fraction = 0.98, containment_kg_m3 = 8.0 }
+
+[[resources]]
+id = "hydrogen"
+title = "Liquid hydrogen"
+mass_kg = 1.0
+volume_m3 = 0.014114326040931546
+storage = { class = "cryogenic", usable_fraction = 0.85, containment_kg_m3 = 20.0 }
+
+[[parts]]
+id = "ntr_hydrogen_2m"
+title = "2m hydrogen nuclear thermal engine"
+dimensions = [20,20,30]
+mass_kg = 1500.0
+hull = 1500.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 0.5
+kind = "thermal_engine"
+thrust_n = 250000.0
+specific_impulse_s = 900.0
+propellant_resource = "hydrogen"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,1.5]
+length_m = 16.0
+nozzle_radius_m = 0.7
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "ntr_water_2m"
+title = "2m water nuclear thermal engine"
+dimensions = [20,20,30]
+mass_kg = 1500.0
+hull = 1500.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 0.5
+kind = "thermal_engine"
+thrust_n = 250000.0
+specific_impulse_s = 300.0
+propellant_resource = "water"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,1.5]
+length_m = 16.0
+nozzle_radius_m = 0.7
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "ntr_hydrogen_4m"
+title = "4m hydrogen nuclear thermal engine"
+dimensions = [40,40,60]
+mass_kg = 6000.0
+hull = 6000.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 1.0
+kind = "thermal_engine"
+thrust_n = 1000000.0
+specific_impulse_s = 900.0
+propellant_resource = "hydrogen"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,3.0]
+length_m = 32.0
+nozzle_radius_m = 1.4
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "ntr_water_4m"
+title = "4m water nuclear thermal engine"
+dimensions = [40,40,60]
+mass_kg = 6000.0
+hull = 6000.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 1.0
+kind = "thermal_engine"
+thrust_n = 1000000.0
+specific_impulse_s = 300.0
+propellant_resource = "water"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,3.0]
+length_m = 32.0
+nozzle_radius_m = 1.4
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "ntr_hydrogen_8m"
+title = "8m hydrogen nuclear thermal engine"
+dimensions = [80,80,120]
+mass_kg = 24000.0
+hull = 24000.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 2.0
+kind = "thermal_engine"
+thrust_n = 4000000.0
+specific_impulse_s = 900.0
+propellant_resource = "hydrogen"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,6.0]
+length_m = 64.0
+nozzle_radius_m = 2.8
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "ntr_water_8m"
+title = "8m water nuclear thermal engine"
+dimensions = [80,80,120]
+mass_kg = 24000.0
+hull = 24000.0
+color = [0.4,0.45,0.5]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 2.0
+kind = "thermal_engine"
+thrust_n = 4000000.0
+specific_impulse_s = 300.0
+propellant_resource = "water"
+thermal_efficiency = 0.9
+fuel_energy_j_kg = 60000000000000.0
+[parts.plume]
+origin_m = [0.0,0.0,6.0]
+length_m = 64.0
+nozzle_radius_m = 2.8
+expansion_half_angle_rad = 0.03
+color_linear_rgb = [0.4,0.65,1.0]
+intensity = 20.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "electric_engine_1m"
+title = "1m electric engine"
+dimensions = [10,10,10]
+mass_kg = 125.0
+hull = 125.0
+color = [0.4,0.45,0.5]
+model = "models/parts/electric-engine-2m.glb"
+model_scale = 0.5
+kind = "engine"
+propellant_resource = "propellant"
+thrust_n = 5000.0
+propellant_kg_s = 0.25
+power_w = 62500000.0
+[parts.plume]
+origin_m = [0.0, 0.0, 0.5]
+length_m = 15.0
+nozzle_radius_m = 0.3
+expansion_half_angle_rad = 0.01
+color_linear_rgb = [0.15,0.35,1.0]
+intensity = 30.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "electric_engine_4m"
+title = "4m electric engine"
+dimensions = [40,40,40]
+mass_kg = 2000.0
+hull = 2000.0
+color = [0.4,0.45,0.5]
+model = "models/parts/electric-engine-2m.glb"
+model_scale = 2.0
+kind = "engine"
+propellant_resource = "propellant"
+thrust_n = 80000.0
+propellant_kg_s = 4.0
+power_w = 1000000000.0
+[parts.plume]
+origin_m = [0.0, 0.0, 2.0]
+length_m = 60.0
+nozzle_radius_m = 1.2
+expansion_half_angle_rad = 0.01
+color_linear_rgb = [0.15,0.35,1.0]
+intensity = 30.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.1
+noise_scale_m = 0.4
+noise_speed_m_s = 5.0
+
+[[parts]]
+id = "resistojet_water_1m"
+title = "1m water resistojet block"
+dimensions = [10,10,10]
+mass_kg = 100.0
+hull = 200.0
+color = [0.4,0.45,0.5]
+model = "models/parts/resistojet-1m.glb"
+kind = "rcs"
+propellant_resource = "water"
+thrust_n = 1000.0
+propellant_kg_s = 0.6666666666666666
+power_w = 937500.0
+
+[[parts]]
+id = "resistojet_hydrogen_1m"
+title = "1m hydrogen resistojet block"
+dimensions = [10,10,10]
+mass_kg = 100.0
+hull = 200.0
+color = [0.4,0.45,0.5]
+model = "models/parts/resistojet-1m.glb"
+kind = "rcs"
+propellant_resource = "hydrogen"
+thrust_n = 1000.0
+propellant_kg_s = 0.16666666666666666
+power_w = 3750000.0
+
+[[resources]]
+id = "life_support_supplies"
+title = "Life support supplies"
+mass_kg = 1.0
+volume_m3 = 0.001
+
+[[resources]]
+id = "repair_material"
+title = "Repair material"
+mass_kg = 1.0
+volume_m3 = 0.0003333333333333333
+
+[[parts]]
+id = "command_2m"
+title = "2m Command module"
+dimensions = [20, 20, 20]
+mass_kg = 600.0
+hull = 600.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/command-2m.glb"
+kind = "utility"
+[parts.utility]
+type = "command"
+power_w = 2000.0
+
+[[parts]]
+id = "sensor_passive_2m"
+title = "2m Passive sensor"
+dimensions = [20, 20, 20]
+mass_kg = 400.0
+hull = 400.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/sensor-passive-2m.glb"
+kind = "utility"
+[parts.utility]
+type = "sensor"
+range_m = 200000000.0
+power_w = 5000.0
+active = false
+
+[[parts]]
+id = "sensor_active_4m"
+title = "4m Active sensor"
+dimensions = [40, 40, 20]
+mass_kg = 1600.0
+hull = 1600.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/sensor-active-4m.glb"
+kind = "utility"
+[parts.utility]
+type = "sensor"
+range_m = 1000000000.0
+power_w = 1000000.0
+active = true
+
+[[parts]]
+id = "beacon_4m"
+title = "4m Subspace beacon"
+dimensions = [40, 40, 80]
+mass_kg = 5000.0
+hull = 5000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/beacon-4m.glb"
+kind = "utility"
+[parts.utility]
+type = "beacon"
+power_w = 2000000.0
+
+[[parts]]
+id = "docking_port_2m"
+title = "2m Docking port"
+dimensions = [20, 20, 10]
+mass_kg = 400.0
+hull = 400.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/docking-port-2m.glb"
+kind = "utility"
+[parts.utility]
+type = "docking"
+radius_m = 4.0
+mass_capacity_kg = 100000.0
+
+[[parts]]
+id = "hangar_8m"
+title = "8m Hangar bay"
+dimensions = [80, 80, 160]
+mass_kg = 20000.0
+hull = 20000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/hangar-8m.glb"
+kind = "utility"
+[parts.utility]
+type = "docking"
+radius_m = 3.5
+mass_capacity_kg = 1000000.0
+
+[[parts]]
+id = "crew_4m"
+title = "4m Crew compartment"
+dimensions = [40, 40, 80]
+mass_kg = 5000.0
+hull = 5000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/crew-4m.glb"
+kind = "utility"
+[parts.utility]
+type = "crew"
+capacity = 8
+
+[[parts]]
+id = "life_support_2m"
+title = "2m Life support"
+dimensions = [20, 20, 20]
+mass_kg = 1200.0
+hull = 1200.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/life-support-2m.glb"
+kind = "utility"
+[parts.utility]
+type = "life_support"
+capacity = 16
+power_w = 16000.0
+supplies_kg_per_person_s = 0.00003
+
+[[parts]]
+id = "workshop_4m"
+title = "4m Repair workshop"
+dimensions = [40, 40, 40]
+mass_kg = 6000.0
+hull = 6000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/workshop-4m.glb"
+kind = "utility"
+[parts.utility]
+type = "workshop"
+repair_hp_s = 5.0
+material_kg_hp = 0.2
+power_w = 100000.0
+
+[[parts]]
+id = "cargo_handler_4m"
+title = "4m Cargo handler"
+dimensions = [40, 40, 40]
+mass_kg = 4000.0
+hull = 4000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/cargo-handler-4m.glb"
+kind = "utility"
+[parts.utility]
+type = "cargo_handler"
+transfer_kg_s = 1000.0
+power_w = 50000.0
+
+[[parts]]
+id = "power_coupler_2m"
+title = "2m Dock power coupler"
+dimensions = [20, 20, 10]
+mass_kg = 500.0
+hull = 500.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/power-coupler-2m.glb"
+kind = "utility"
+[parts.utility]
+type = "power_coupler"
+transfer_w = 10000000.0
+
+[[parts]]
+id = "cargo_hold_4m"
+title = "4m Cargo hold"
+dimensions = [40, 40, 80]
+mass_kg = 4000.0
+hull = 4000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/cargo-hold-4m.glb"
+model_scale = 1.0
+kind = "storage"
+capacity_m3 = 90.0
+
+[[parts]]
+id = "cargo_hold_8m"
+title = "8m Cargo hold"
+dimensions = [80, 80, 160]
+mass_kg = 32000.0
+hull = 32000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/cargo-hold-4m.glb"
+model_scale = 2.0
+kind = "storage"
+capacity_m3 = 720.0
+
+[[parts]]
+id = "battery_2m"
+title = "2m Battery"
+dimensions = [20, 20, 20]
+mass_kg = 2000.0
+hull = 2000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/battery-2m.glb"
+model_scale = 1.0
+kind = "battery"
+capacity_j = 2000000000.0
+
+[[parts]]
+id = "battery_4m"
+title = "4m Battery"
+dimensions = [40, 40, 40]
+mass_kg = 16000.0
+hull = 16000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/battery-2m.glb"
+model_scale = 2.0
+kind = "battery"
+capacity_j = 16000000000.0
+
+[[parts]]
+id = "shield_emitter_2m"
+title = "2m Shield emitter"
+dimensions = [20, 20, 20]
+mass_kg = 1000.0
+hull = 1000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/shield-emitter-2m.glb"
+model_scale = 1.0
+kind = "shield"
+deployed_mass_kg = 50.0
+radiator_area_m2 = 1000.0
+feed_rate_kg_s = 10.0
+power_w = 1000000.0
+
+[[parts]]
+id = "shield_emitter_4m"
+title = "4m Shield emitter"
+dimensions = [40, 40, 40]
+mass_kg = 8000.0
+hull = 8000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/shield-emitter-2m.glb"
+model_scale = 2.0
+kind = "shield"
+deployed_mass_kg = 400.0
+radiator_area_m2 = 4000.0
+feed_rate_kg_s = 80.0
+power_w = 8000000.0
+
+[[parts]]
+id = "shield_reservoir_2m"
+title = "2m Shield reservoir"
+dimensions = [20, 20, 40]
+mass_kg = 600.0
+hull = 600.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/shield-reservoir-2m.glb"
+model_scale = 1.0
+kind = "coolant_tank"
+capacity_kg = 10000.0
+
+[[parts]]
+id = "shield_reservoir_4m"
+title = "4m Shield reservoir"
+dimensions = [40, 40, 80]
+mass_kg = 4800.0
+hull = 4800.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/shield-reservoir-2m.glb"
+model_scale = 2.0
+kind = "coolant_tank"
+capacity_kg = 80000.0
+
+[[parts]]
+id = "heat_sink_2m"
+title = "2m Heat sink"
+dimensions = [20, 20, 20]
+mass_kg = 5000.0
+hull = 5000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/heat-sink-2m.glb"
+model_scale = 1.0
+kind = "heat_sink"
+capacity_j = 10000000000.0
+
+[[parts]]
+id = "heat_sink_4m"
+title = "4m Heat sink"
+dimensions = [40, 40, 40]
+mass_kg = 40000.0
+hull = 40000.0
+color = [0.45, 0.5, 0.56]
+model = "models/parts/heat-sink-2m.glb"
+model_scale = 2.0
+kind = "heat_sink"
+capacity_j = 80000000000.0
+
+[[parts]]
+id = "truss_2m"
+title = "2m open truss"
+dimensions = [20, 20, 40]
+mass_kg = 200.0
+hull = 400.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/truss-4m.glb"
+model_scale = 0.5
+kind = "structure"
+
+[[parts]]
+id = "truss_4m"
+title = "4m open truss"
+dimensions = [40, 40, 80]
+mass_kg = 800.0
+hull = 1600.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/truss-4m.glb"
+model_scale = 1.0
+kind = "structure"
+
+[[parts]]
+id = "truss_8m"
+title = "8m open truss"
+dimensions = [80, 80, 160]
+mass_kg = 3200.0
+hull = 6400.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/truss-4m.glb"
+model_scale = 2.0
+kind = "structure"
+
+[[parts]]
+id = "mount_frame_2m"
+title = "2m equipment mounting frame"
+dimensions = [20, 20, 5]
+mass_kg = 100.0
+hull = 200.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/mount-frame-2m.glb"
+model_scale = 1.0
+kind = "structure"
+
+[[parts]]
+id = "mount_frame_4m"
+title = "4m equipment mounting frame"
+dimensions = [40, 40, 10]
+mass_kg = 400.0
+hull = 800.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/mount-frame-2m.glb"
+model_scale = 2.0
+kind = "structure"
+
+[[parts]]
+id = "mount_frame_8m"
+title = "8m equipment mounting frame"
+dimensions = [80, 80, 20]
+mass_kg = 1600.0
+hull = 3200.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/mount-frame-2m.glb"
+model_scale = 4.0
+kind = "structure"
+
+[[parts]]
+id = "adapter_4m"
+title = "4m to 2m adapter"
+dimensions = [40, 40, 20]
+mass_kg = 600.0
+hull = 1200.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/adapter-4m.glb"
+model_scale = 1.0
+kind = "structure"
+
+[[parts]]
+id = "adapter_8m"
+title = "8m to 4m adapter"
+dimensions = [80, 80, 40]
+mass_kg = 2400.0
+hull = 4800.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/adapter-4m.glb"
+model_scale = 2.0
+kind = "structure"
+
+[[parts]]
+id = "radiator_2m"
+title = "2m auxiliary radiator"
+dimensions = [20, 3, 20]
+mass_kg = 37.5
+hull = 75.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/radiator-8m.glb"
+model_scale = 0.25
+kind = "radiator"
+area_m2 = 8.0
+emissivity = 0.9
+
+[[parts]]
+id = "radiator_4m"
+title = "4m auxiliary radiator"
+dimensions = [40, 5, 40]
+mass_kg = 150.0
+hull = 300.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/radiator-8m.glb"
+model_scale = 0.5
+kind = "radiator"
+area_m2 = 32.0
+emissivity = 0.9
+
+[[parts]]
+id = "radiator_8m"
+title = "8m auxiliary radiator"
+dimensions = [80, 10, 80]
+mass_kg = 600.0
+hull = 1200.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/radiator-8m.glb"
+model_scale = 1.0
+kind = "radiator"
+area_m2 = 128.0
+emissivity = 0.9
+
+[[parts]]
+id = "emergency_cooler_2m"
+title = "2m emergency water cooler"
+dimensions = [20, 20, 20]
+mass_kg = 500.0
+hull = 1000.0
+color = [0.38, 0.42, 0.45]
+model = "models/parts/emergency-cooler-2m.glb"
+model_scale = 1.0
+kind = "emergency_cooling"
+max_flow_kg_s = 10.0
+heat_removed_j_kg = 3000000.0
+activation_fraction = 0.8
+
+[[parts]]
+id = "laser_2m"
+title = "2m Point defence laser"
+dimensions = [20, 20, 20]
+model = "models/parts/laser-2m.glb"
+mass_kg = 1500.0
+hull = 1500.0
+color = [0.40, 0.48, 0.55]
+kind = "weapon"
+[parts.weapon]
+ammunition = ""
+projectile_radius_m = 0.001
+muzzle_speed_m_s = 299792458.0
+cycle_interval_s = 0.1
+efficiency = 0.4
+dispersion_half_angle_rad = 0.00002
+muzzle_offset_m = [0.0, 0.0, -1.1]
+slew_rate_rad_s = 3.14159
+[parts.weapon.laser]
+optical_power_w = 2000000.0
+range_m = 100000.0
+
+[[parts]]
+id = "laser_4m"
+title = "4m Heavy laser"
+dimensions = [40, 40, 40]
+model = "models/parts/laser-4m.glb"
+mass_kg = 12000.0
+hull = 12000.0
+color = [0.40, 0.48, 0.55]
+kind = "weapon"
+[parts.weapon]
+ammunition = ""
+projectile_radius_m = 0.001
+muzzle_speed_m_s = 299792458.0
+cycle_interval_s = 0.1
+efficiency = 0.4
+dispersion_half_angle_rad = 0.00002
+muzzle_offset_m = [0.0, 0.0, -2.1]
+slew_rate_rad_s = 0.5
+[parts.weapon.laser]
+optical_power_w = 40000000.0
+range_m = 100000.0
+
+[[resources]]
+id = "railgun_dart"
+title = "1 g railgun darts"
+mass_kg = 0.001
+volume_m3 = 0.00000015
+
+[[parts]]
+id = "railgun_compact"
+title = "Compact railgun"
+dimensions = [5, 5, 15]
+model = "models/parts/railgun-2m.glb"
+model_scale = 0.25
+mass_kg = 75.0
+hull = 100.0
+color = [0.40, 0.48, 0.55]
+kind = "weapon"
+[parts.weapon]
+ammunition = "railgun_dart"
+projectile_radius_m = 0.0014
+muzzle_speed_m_s = 20000.0
+cycle_interval_s = 0.05
+efficiency = 0.5
+dispersion_half_angle_rad = 0.0001
+muzzle_offset_m = [0.0, 0.0, -0.8]
+slew_rate_rad_s = 0.0

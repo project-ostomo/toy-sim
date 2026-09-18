@@ -1,35 +1,28 @@
 mod conic;
 mod curves;
 mod geometry;
+mod paint;
 mod projection;
 
-use super::{
-    ViewCamera,
-    camera::{CameraOptions, Framing},
-};
+use super::{ViewCamera, camera::CameraOptions};
 use crate::state::{
     Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, PresentationSet, RenderTime,
-    SessionInfo, ShipDetails, SystemSubscription, ViewObservation,
+    ShipDetails, SystemSubscription, ViewObservation,
 };
-use crate::ui::{SelectedTarget, Selection, celestials::SystemDefinition};
+use crate::ui::celestials::SystemDefinition;
 use bevy::prelude::*;
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use toy_sim_model::*;
+use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 #[derive(Component)]
 pub(super) struct ViewOptions {
     pub enabled: bool,
     pub instruments: Instruments,
-    preview: f64,
     horizon: f64,
-    period: Option<f64>,
-    encounter: Option<(f64, f64, GalacticPosition)>,
-    own: Vec<TrajectoryVertex>,
     curves: Vec<geometry::AnalyticCurve>,
     curve_anchor: GalacticPosition,
+    encounter: Option<[glam::DVec3; 2]>,
     ship: Option<Id>,
-    orbit_origin: GalacticPosition,
-    orbit_distance: f32,
 }
 
 impl Default for ViewOptions {
@@ -37,16 +30,11 @@ impl Default for ViewOptions {
         Self {
             enabled: true,
             instruments: Instruments::default(),
-            preview: 0.,
             horizon: 0.,
-            period: None,
-            encounter: None,
-            own: Vec::new(),
             curves: Vec::new(),
             curve_anchor: GalacticPosition::ZERO,
+            encounter: None,
             ship: None,
-            orbit_origin: GalacticPosition::ZERO,
-            orbit_distance: 100.,
         }
     }
 }
@@ -59,7 +47,7 @@ pub(super) fn install(app: &mut App) {
             .after(super::camera::setup_views)
             .before(super::camera::update_views),
     )
-    .add_systems(EguiPrimaryContextPass, (controls, draw_coasts).chain());
+    .add_systems(EguiPrimaryContextPass, (toggle, draw_coasts).chain());
 }
 
 fn refresh_views(
@@ -90,10 +78,9 @@ fn refresh_views(
             .find(|(ship, _, _)| Some(ship.0.ship) == view.focused_ship)
         else {
             options.instruments = Instruments::default();
-            options.own.clear();
             options.curves.clear();
-            options.horizon = 0.;
             options.encounter = None;
+            options.horizon = 0.;
             continue;
         };
         let mut instruments = details
@@ -144,135 +131,11 @@ fn refresh_views(
     }
 }
 
-fn controls(
-    mut contexts: EguiContexts,
-    clock: Res<RenderTime>,
-    session: Res<SessionInfo>,
-    selection: Res<Selection>,
-    mut views: Query<(
-        &ViewObservation,
-        &ViewCamera,
-        &mut ViewOptions,
-        &mut CameraOptions,
-    )>,
-) -> Result {
-    if session.world.is_none() {
-        return Ok(());
-    }
+fn toggle(mut contexts: EguiContexts, mut views: Query<&mut ViewOptions>) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let toggle =
-        !ctx.egui_wants_keyboard_input() && ctx.input(|input| input.key_pressed(egui::Key::O));
-    for (observation, camera, mut options, mut framing) in &mut views {
-        let view = &observation.0;
-        let options = &mut *options;
-        if toggle {
+    if !ctx.egui_wants_keyboard_input() && ctx.input(|input| input.key_pressed(egui::Key::O)) {
+        for mut options in &mut views {
             options.enabled = !options.enabled;
-        }
-        egui::Window::new(format!("Orbit · view {}", view.id))
-            .default_open(false)
-            .show(ctx, |ui| {
-                ui.checkbox(&mut options.enabled, "Trajectories [O]");
-                ui.horizontal(|ui| {
-                    for (label, mode) in [
-                        ("Ship", Framing::Ship),
-                        ("Orbit", Framing::Orbit),
-                        ("Encounter", Framing::Encounter),
-                        ("Return", Framing::Return),
-                    ] {
-                        if ui
-                            .selectable_label(framing.framing == mode, label)
-                            .clicked()
-                        {
-                            if mode == Framing::Return {
-                                if let Some((distance, yaw, pitch)) = framing.saved.take() {
-                                    framing.distance = Some(distance);
-                                    framing.restore_angles = Some((yaw, pitch));
-                                }
-                            } else if framing.saved.is_none() {
-                                framing.saved = Some((camera.distance, camera.yaw, camera.pitch));
-                            }
-                            framing.framing = mode;
-                            framing.focus = None;
-                            options.preview = 0.;
-                            if mode != Framing::Return {
-                                framing.distance = Some(match mode {
-                                    Framing::Orbit => options.orbit_distance,
-                                    Framing::Encounter => {
-                                        options.encounter.map_or(100., |(_, range, _)| {
-                                            (range * 2.).max(100.) as f32
-                                        })
-                                    }
-                                    _ => 100.,
-                                });
-                            }
-                        }
-                    }
-                });
-                if ui
-                    .add_enabled(
-                        selection.contact().is_some(),
-                        egui::Button::new("Follow selected contact"),
-                    )
-                    .clicked()
-                {
-                    framing.focus = selection
-                        .contact()
-                        .map(|reference| SelectedTarget::Contact(reference));
-                    framing.framing = Framing::Ship;
-                    options.preview = 0.;
-                    framing.distance = Some(100.);
-                }
-                if ui.button("Restore ship focus").clicked() {
-                    framing.focus = None;
-                    framing.framing = Framing::Ship;
-                    options.preview = 0.;
-                    framing.distance = Some(100.);
-                }
-                if let Some(period) = options.period {
-                    ui.label(format!("Period {:.1} min", period / 60.));
-                } else {
-                    ui.label("Unbound / inertial");
-                }
-                if let Some((seconds, range, _)) = options.encounter {
-                    ui.label(format!(
-                        "Closest {:.1} km · T+{seconds:.0} s",
-                        range / 1000.
-                    ));
-                }
-                ui.add(
-                    egui::Slider::new(&mut options.preview, 0.0..=options.horizon.max(0.1))
-                        .text("Preview seconds"),
-                );
-                ui.small("Two-body estimate · external forces may change the path");
-            });
-        framing.origin = if framing.focus.is_some() {
-            None
-        } else {
-            match framing.framing {
-                Framing::Orbit => Some(options.orbit_origin),
-                Framing::Encounter => options.encounter.map(|(_, _, position)| position),
-                _ if options.preview > 0. => sample(
-                    &options.own,
-                    clock.display_ns + (options.preview * 1e9) as u64,
-                ),
-                _ => None,
-            }
-        };
-        options
-            .instruments
-            .markers
-            .retain(|marker| marker.id != u64::MAX - 201);
-        if options.preview > 0. {
-            let time = clock.display_ns + (options.preview * 1e9) as u64;
-            if let Some(position) = sample(&options.own, time) {
-                options.instruments.markers.push(NavigationMarker {
-                    id: u64::MAX - 201,
-                    kind: 0,
-                    position,
-                    sim_time_ns: time,
-                    label: format!("PREVIEW\nT+{:.1} s", options.preview),
-                });
-            }
         }
     }
     Ok(())
@@ -324,49 +187,20 @@ fn refresh(
         radius: primary.map_or(0., |(body, _)| body.radius_m),
     };
     let own = fit(ship_pose);
-    options.period = own.period().filter(|period| period.is_finite());
-    options.horizon = options.period.unwrap_or(3600.).clamp(60., 31_557_600.);
+    options.horizon = own
+        .period()
+        .filter(|period| period.is_finite())
+        .unwrap_or(3600.)
+        .clamp(60., 31_557_600.);
     let target = target_pose.map(fit);
-    options.own.clear();
     options.curves.clear();
     options.curve_anchor = anchor;
-    options.encounter = None;
-    let mut low = glam::DVec3::splat(f64::INFINITY);
-    let mut high = glam::DVec3::splat(f64::NEG_INFINITY);
-    for index in 0..=256 {
-        let seconds = options.horizon * index as f64 / 256.;
-        let Some((position, _)) = own.state(seconds) else {
-            break;
-        };
-        if !position.is_finite() || position.length() < own.radius {
-            break;
-        }
-        let galactic = anchor.offset_by(position);
-        let sim_time_ns = clock.display_ns + (seconds * 1e9) as u64;
-        options.own.push(TrajectoryVertex {
-            sim_time_ns,
-            position: galactic,
-        });
-        low = low.min(position);
-        high = high.max(position);
-        if let Some((target, _)) = target.as_ref().and_then(|target| target.state(seconds)) {
-            let range = target.distance(position);
-            if options
-                .encounter
-                .is_none_or(|(_, previous, _)| range < previous)
-            {
-                options.encounter =
-                    Some((seconds, range, anchor.offset_by((position + target) * 0.5)));
-            }
-        }
-    }
-    if let Some(target) = &target {
-        if let Some((seconds, a, b)) = closest(0., options.horizon, |seconds| {
+    let encounter = target.as_ref().and_then(|target| {
+        closest(0., options.horizon, |seconds| {
             Some((own.state(seconds)?.0, target.state(seconds)?.0))
-        }) {
-            options.encounter = Some((seconds, a.distance(b), anchor.offset_by((a + b) * 0.5)));
-        }
-    }
+        })
+    });
+    options.encounter = encounter.map(|(_, a, b)| [a, b]);
     options.instruments.markers.extend(coast_markers(
         &own,
         target.as_ref(),
@@ -388,18 +222,15 @@ fn refresh(
             });
         }
     }
-    if let Some((seconds, range, position)) = options.encounter {
+    if let Some((seconds, a, b)) = encounter {
+        let range = a.distance(b);
         options.instruments.markers.push(NavigationMarker {
             id: u64::MAX - 200,
             kind: 2,
-            position,
+            position: anchor.offset_by((a + b) * 0.5),
             sim_time_ns: clock.display_ns + (seconds * 1e9) as u64,
             label: format!("CA\n{range:.1} m separation · T+{seconds:.1} s"),
         });
-    }
-    if low.is_finite() && high.is_finite() {
-        options.orbit_origin = anchor.offset_by((low + high) * 0.5);
-        options.orbit_distance = ((high - low).length() * 1.2).max(100.) as f32;
     }
     options.curves.push(geometry::AnalyticCurve {
         conic: own,
@@ -415,6 +246,7 @@ fn refresh(
 
 fn draw_coasts(
     mut contexts: EguiContexts,
+    clock: Res<RenderTime>,
     cameras: Query<(
         &Camera,
         &Transform,
@@ -427,6 +259,14 @@ fn draw_coasts(
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let pixels_per_point = ctx.pixels_per_point();
+    let reserved: Vec<_> = ctx
+        .memory(|memory| memory.areas().visible_layer_ids())
+        .into_iter()
+        .filter(|layer| layer.order >= egui::Order::Middle)
+        .filter_map(|layer| {
+            egui::containers::AreaState::load(ctx, layer.id).map(|area| area.rect())
+        })
+        .collect();
     for (camera, transform, projection, camera_state, options, systems) in &cameras {
         if !options.enabled {
             continue;
@@ -465,65 +305,16 @@ fn draw_coasts(
                 egui::Id::new(("orbit_coasts", camera_state.view)),
             ))
             .with_clip_rect(rect);
-        for (index, curve) in options.curves.iter().enumerate() {
-            let end = curve
-                .conic
-                .impact(options.horizon)
-                .unwrap_or(options.horizon);
-            let Some(arcs) = curve.arcs(0., end) else {
-                continue;
-            };
-            let color = if index == 0 {
-                egui::Color32::from_rgb(80, 218, 255)
-            } else {
-                egui::Color32::from_rgb(233, 129, 213)
-            };
-            for arc in curves::project(&view, &arcs, pixels_per_point, &occluders) {
-                let shape = egui::epaint::CubicBezierShape::from_points_stroke(
-                    arc.points,
-                    false,
-                    egui::Color32::TRANSPARENT,
-                    egui::Stroke::new(1.5, color),
-                );
-                if arc.hidden {
-                    for pair in shape.flatten(Some(0.25 / pixels_per_point)).windows(2) {
-                        let delta = pair[1] - pair[0];
-                        let length = delta.length();
-                        for segment in 0..(length / 10.).ceil().min(512.) as usize {
-                            let start = segment as f32 * 10.;
-                            let end = (start + 4.).min(length);
-                            painter.line_segment(
-                                [
-                                    pair[0] + delta * (start / length.max(1e-6)),
-                                    pair[0] + delta * (end / length.max(1e-6)),
-                                ],
-                                egui::Stroke::new(1., color.gamma_multiply(0.35)),
-                            );
-                        }
-                    }
-                } else {
-                    painter.add(shape);
-                }
-            }
-        }
+        paint::draw(
+            &painter,
+            &view,
+            options,
+            &occluders,
+            clock.display_ns,
+            &reserved,
+        );
     }
     Ok(())
-}
-
-fn sample(vertices: &[TrajectoryVertex], time: u64) -> Option<GalacticPosition> {
-    let pair = vertices
-        .windows(2)
-        .find(|pair| pair[0].sim_time_ns <= time && pair[1].sim_time_ns >= time)?;
-    let fraction = (time - pair[0].sim_time_ns) as f64
-        / pair[1]
-            .sim_time_ns
-            .saturating_sub(pair[0].sim_time_ns)
-            .max(1) as f64;
-    Some(
-        pair[0]
-            .position
-            .offset_by(pair[1].position.relative_to(pair[0].position) * fraction),
-    )
 }
 
 fn closest(
@@ -716,31 +507,16 @@ mod tests {
                 None,
                 &clock,
             );
-            assert!(
-                options
-                    .own
-                    .first()
-                    .unwrap()
-                    .position
-                    .relative_to(ship_pose.position)
-                    .length()
-                    < 1e-4
-            );
-            assert!(
-                options
-                    .own
-                    .last()
-                    .unwrap()
-                    .position
-                    .relative_to(ship_pose.position)
-                    .length()
-                    < 0.01
-            );
-            assert!(options.own.iter().all(|vertex| {
-                (vertex.position.relative_to(primary_pose.position).length() - conic.r.length())
-                    .abs()
-                    < 0.01
-            }));
+            let coast = &options.curves[0].conic;
+            for time in [0., options.horizon] {
+                let position = options.curve_anchor.offset_by(coast.state(time).unwrap().0);
+                assert!(position.relative_to(ship_pose.position).length() < 0.01);
+            }
+            for index in 0..=256 {
+                let time = options.horizon * index as f64 / 256.;
+                let position = coast.state(time).unwrap().0;
+                assert!((position.length() - conic.r.length()).abs() < 0.01);
+            }
             assert_eq!(options.curve_anchor, primary_pose.position);
             assert!(options.curves[0].conic.r.distance(position) < 1e-4);
         }

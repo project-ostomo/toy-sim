@@ -1,7 +1,7 @@
 use super::{identity, intelligence, physics, precision, session, travel, vessel};
 use anyhow::Result;
 use bevy::{math::DVec3, prelude::*};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::path::PathBuf;
 use toy_sim_model::{AccountId, DebugCommand, Id};
 
 #[derive(Resource, Clone)]
@@ -28,8 +28,8 @@ pub fn provision(
     let player = world
         .query_filtered::<Entity, With<vessel::ControlledVessel>>()
         .single(world)?;
-    let neutral = Id::new();
-    let owner = accounts.first().copied().unwrap_or(neutral);
+    let hostile_account = Id::new();
+    let owner = accounts.first().copied().unwrap_or_else(Id::new);
     identity::attach_ship(world, player, owner)?;
     world
         .entity_mut(player)
@@ -56,13 +56,18 @@ pub fn provision(
         .query_filtered::<Entity, (With<vessel::Vessel>, Without<identity::Identity>)>()
         .iter(world)
         .collect::<Vec<_>>();
-    for ship in unowned {
-        identity::attach_ship(world, ship, neutral)?;
+    for &ship in &unowned {
+        identity::attach_ship(world, ship, hostile_account)?;
+        world
+            .get_mut::<identity::Transponder>(ship)
+            .unwrap()
+            .0
+            .labels
+            .insert("Hostile patrol".into());
     }
     if let Some(account) = debug_account {
         identity::add_account(world, account, true);
     }
-    setup_demo(world, player, neutral)?;
     travel::geometry::refresh(world);
     let mut publish = Schedule::default();
     publish.add_systems(
@@ -76,66 +81,16 @@ pub fn provision(
             .chain(),
     );
     publish.run(world);
-    Ok(app)
-}
-
-fn setup_demo(world: &mut World, reference: Entity, neutral: AccountId) -> Result<()> {
-    let design = world
-        .get::<vessel::ShipDesign>(reference)
-        .unwrap()
-        .0
-        .clone();
-    let origin = *world.get::<precision::PreciseTransform>(reference).unwrap();
-    let velocity = world.get::<physics::Velocity>(reference).unwrap().0;
-    let spawn = |world: &mut World, offset: DVec3, label: String| -> Result<Entity> {
-        let mut pose = origin;
-        pose.translation_um = pose.translation_um.offset_by(offset);
-        let entity = vessel::spawn_ship(world, design.clone(), pose, velocity, label.clone())?;
-        identity::attach_ship(world, entity, neutral)?;
-        world.entity_mut(entity).insert(identity::BeaconEmitter);
-        world
-            .get_mut::<identity::Transponder>(entity)
-            .unwrap()
-            .0
-            .labels
-            .insert(label);
-        Ok(entity)
-    };
-    let station = spawn(world, DVec3::Z * 10_000.0, "Demo station".into())?;
-    let bays = (0..8)
-        .map(|bay| travel::Bay {
-            centre_m: [100.0 + bay as f64 * 100.0, 0.0, 0.0],
-            rotation: [0.0, 0.0, 0.0, 1.0],
-            radius_m: 40.0,
-            mass_capacity_kg: 1e9,
-            public: true,
-            allowed: BTreeSet::new(),
-            reservation: None,
-            occupant: None,
-        })
-        .collect();
-    world.entity_mut(station).insert(travel::DockingBays(bays));
-    let first = spawn(world, DVec3::X * 20_000_000.0, "Demo gate 1".into())?;
-    let second = spawn(world, DVec3::X * 1e12, "Demo gate 2".into())?;
-    for (entity, paired) in [(first, second), (second, first)] {
-        let paired = world.get::<identity::Identity>(paired).unwrap().0;
-        world.entity_mut(entity).remove::<(
-            physics::collision::CollisionBody,
-            super::spatial::SpatialBody,
-        )>();
-        world
-            .entity_mut(entity)
-            .insert((identity::FixedBeacon, physics::Velocity::default()));
-        world.entity_mut(entity).insert(travel::Gate {
-            paired,
-            radius_m: 100.0,
-            exclusion_m: 1e7,
-            enabled: true,
-            public: true,
-            allowed: BTreeSet::new(),
+    for hostile in unowned {
+        let contact = super::services::handle_for_entity(world, hostile, player)?;
+        let mut software = world.get_mut::<vessel::ShipSoftware>(hostile).unwrap();
+        software.command(toy_sim_ship_wasm::Command::AimContact(contact));
+        software.command(toy_sim_ship_wasm::Command::EngageWeapons {
+            contact,
+            maximum_flight_time_s: 2.0,
         });
     }
-    Ok(())
+    Ok(app)
 }
 
 pub fn apply_debug_requests(world: &mut World) -> Result<()> {
@@ -259,4 +214,75 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_patrol_encounter_starts_close_and_hostile_fires_repeatedly_without_player_input() {
+        let account = Id::new();
+        let mut app = provision(&[account], Some(account), None).unwrap();
+        let world = app.world_mut();
+        let ships = world
+            .query_filtered::<Entity, With<vessel::Vessel>>()
+            .iter(world)
+            .collect::<Vec<_>>();
+        assert_eq!(ships.len(), 2);
+        let player = *ships
+            .iter()
+            .find(|&&ship| world.get::<vessel::ControlledVessel>(ship).is_some())
+            .unwrap();
+        let hostile = *ships.iter().find(|&&ship| ship != player).unwrap();
+        let player_pose = world.get::<precision::PreciseTransform>(player).unwrap();
+        let hostile_pose = world.get::<precision::PreciseTransform>(hostile).unwrap();
+        let separation = hostile_pose
+            .translation_um
+            .relative_to(player_pose.translation_um)
+            .length();
+        assert!((separation - 1_000.).abs() < 1.);
+        assert_ne!(
+            world.get::<identity::Control>(hostile).unwrap().account,
+            account
+        );
+        for &ship in &ships {
+            assert!(
+                world
+                    .get::<vessel::ShipDesign>(ship)
+                    .unwrap()
+                    .0
+                    .blueprint
+                    .parts
+                    .iter()
+                    .any(|part| part.prototype == "micropulse_engine_4m")
+            );
+        }
+        let mut previous_shots = 0;
+        let mut multiple_shots_in_tick = false;
+        for _ in 0..200 {
+            app.update();
+            let state = super::super::hardware::snapshot(app.world(), hostile).unwrap();
+            let shots = state
+                .weapons
+                .iter()
+                .map(|weapon| weapon.shots_fired)
+                .sum::<u64>();
+            multiple_shots_in_tick |= shots.saturating_sub(previous_shots) >= 2;
+            previous_shots = shots;
+            if shots >= 20 && multiple_shots_in_tick {
+                return;
+            }
+        }
+        let state = super::super::hardware::snapshot(app.world(), hostile).unwrap();
+        let software = app.world().get::<vessel::ShipSoftware>(hostile).unwrap();
+        panic!(
+            "hostile patrol did not fire repeatedly: weapons={:?}, energy={}, resources={:?}, controller={:?}, inbox={:?}",
+            state.weapons,
+            state.inventory.energy_j,
+            state.inventory.quantities,
+            software.controller.state.weapons,
+            software.inbox
+        );
+    }
 }

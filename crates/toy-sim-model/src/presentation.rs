@@ -393,6 +393,9 @@ pub struct FlightEnvironment {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipHealth {
+    pub crew_people: u32,
+    pub crew_capacity: u32,
+    pub life_support_fraction: f64,
     pub hull_hp: f64,
     pub hull_max_hp: f64,
     pub shield_reserve_capacity_kg: f64,

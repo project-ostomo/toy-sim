@@ -107,7 +107,7 @@ When a member's hull reaches zero (from impact or heat), a `Destruction` record 
 In the ECS, `combat_effects::destroy`:
 
 - Despawns destroyed projectiles.
-- Replaces a destroyed ship with a 10-second `Explosion`. The explosion has a hot gas cloud and one fragment per part, with momentum-neutral radial velocities from a share of the stored heat and electrical energy, plus small chips. If the ship had camera focus, focus moves to the explosion and the camera leaves any orbital framing.
+- Ship breakup produces a brief billboard flash and a glowing puff lasting at most two seconds. Fragments remain visible for up to ten seconds: one fragment per part, with momentum-neutral radial velocities from a share of the stored heat and electrical energy, plus small chips. Flashes and puffs share a quad, texture atlas, and material, with bounded screen size and at most 256 sprites per view. If the ship had camera focus, focus moves to the explosion and the camera leaves any orbital framing.
 - Despawns the ship.
 
 When the controlled ship is gone, a "Ship destroyed" window offers "Reset encounter".

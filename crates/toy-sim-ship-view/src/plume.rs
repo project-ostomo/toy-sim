@@ -105,13 +105,23 @@ pub(crate) fn prepare_plume(
         });
     }
 
-    let Equipment::Engine {
-        thrust_n,
-        plume: Some(p),
-        ..
-    } = &part.equipment
-    else {
-        return None;
+    let (thrust_n, p) = match &part.equipment {
+        Equipment::Engine {
+            thrust_n,
+            plume: Some(plume),
+            ..
+        }
+        | Equipment::ThermalEngine {
+            thrust_n,
+            plume: Some(plume),
+            ..
+        }
+        | Equipment::MicropulseEngine {
+            thrust_n,
+            plume: Some(plume),
+            ..
+        } => (*thrust_n, plume),
+        _ => return None,
     };
     let slope = p.expansion_half_angle_rad.tan();
     let radius = p.nozzle_radius_m + p.length_m * slope;
@@ -132,7 +142,7 @@ pub(crate) fn prepare_plume(
             animation: Vec4::new(p.noise_speed_m_s, 0., 0., 0.),
         }),
         origin: Vec3::from_array(p.origin_m) + Vec3::Z * p.length_m * 0.5,
-        max_thrust_n: *thrust_n,
+        max_thrust_n: thrust_n,
     })
 }
 

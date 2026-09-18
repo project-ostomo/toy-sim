@@ -1166,6 +1166,7 @@ mod tests {
         world.entity_mut(child).insert((
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                tank_capacities_m3: vec![0.; 2],
                 quantities: vec![0.; 2],
                 energy_j: 5.,
             }),

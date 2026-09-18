@@ -16,10 +16,9 @@ Source:
 - Syscalls: [imports/drawing.rs](../crates/toy-sim-ship-wasm/src/imports/drawing.rs), with event handling in [imports.rs](../crates/toy-sim-ship-wasm/src/imports.rs) and [computer.rs](../crates/toy-sim-ship-wasm/src/computer.rs)
 - Frame model and limits: [drawing.rs](../crates/toy-sim-model/src/drawing.rs) in `toy-sim-model`, re-exported as `toy_sim_ship_wasm::screens`. The types are serde-serializable so frames can be sent over the network.
 - Server display instances and screen input: [session.rs](../crates/toy-sim-server/src/sim/displays.rs)
-- Painter and bezel widget: [mfd.rs](../crates/toy-sim-ship-view/src/mfd.rs)
-- Custom screen widget and input mapping: [screens.rs](../crates/toy-sim-ship-view/src/screens.rs)
-- Simulator windows: [gui/mfds.rs](../crates/toy-sim-client/src/ui/mfd.rs)
-- Font: [crates/toy-sim-ship-view/data/fonts/README.md](../crates/toy-sim-ship-view/data/fonts/README.md)
+- Painter and bezel widget: [mfd.rs](../crates/toy-sim-ui/src/mfd.rs)
+- Custom screen widget and input mapping: [screens.rs](../crates/toy-sim-ui/src/screens.rs)
+- Font: [crates/toy-sim-ui/data/fonts/README.md](../crates/toy-sim-ui/data/fonts/README.md)
 
 ## Defining screens
 
@@ -108,7 +107,7 @@ Clicking the screen gives it keyboard focus. Key and text events are taken from 
 
 ## In the shared client
 
-The shared frontend opens MFD windows from the server's screen definitions. The "MFD slots" section also offers slots 1–8 before definitions are available, allowing the first subscription to start the display instance. Each window renders drawing primitives and forwards pointer, drag, key and text events. Closing a window unsubscribes and suppresses older buffered screen frames. The same frontend runs in the remote client and the debug launcher.
+The shared client currently displays the scene HUD and a single "Hello world" window. Its MFD windows and screen subscriptions have been removed during the UI rebuild. The server display protocol and shared drawing widgets remain available for a future frontend.
 
 Screens execute in separate server display instances through `ship_display`. The flight callback does not render an MFD. No host widgets are embedded in the drawing surface, so third-party clients can choose their own shell and visual presentation.
 
@@ -129,11 +128,11 @@ The shared UI supports every defined slot and complete input forwarding. [Displa
 
 ## The bezel MFD widget
 
-`toy_sim_ship_view::MfdRenderer::show(ui, id, frame)` draws a square screen with six bezel buttons on each side. Buttons show their labels in the MFD font, show "—" when unassigned, and are clickable only when labelled. Each button's tooltip names the key and an F-key hint (`F1`–`F6` for the left column, `Shift+F1`–`F6` for the right). The widget returns a `MfdResponse` with the clicked `BezelKey` values and whether the screen was clicked. It does not bind F-keys itself. The simulator does not use this widget at present. Its behaviour is covered by the tests in [mfd/tests.rs](../crates/toy-sim-ship-view/src/mfd/tests.rs).
+`toy_sim_ui::MfdRenderer::show(ui, id, frame)` draws a square screen with six bezel buttons on each side. Buttons show their labels in the MFD font, show "—" when unassigned, and are clickable only when labelled. Each button's tooltip names the key and an F-key hint (`F1`–`F6` for the left column, `Shift+F1`–`F6` for the right). The widget returns a `MfdResponse` with the clicked `BezelKey` values and whether the screen was clicked. It does not bind F-keys itself. The simulator does not use this widget at present. Its behaviour is covered by the tests in [mfd/tests.rs](../crates/toy-sim-ui/src/mfd/tests.rs).
 
 ## Painting
 
-`toy_sim_ship_view::mfd::paint(painter, rect, frame)` draws a complete frame:
+`toy_sim_ui::mfd::paint(painter, rect, frame)` draws a complete frame:
 
 - It returns false and draws nothing for an invalid frame or an empty destination.
 - The frame is scaled uniformly to fit the destination and centred. Drawing is clipped to the scaled surface.

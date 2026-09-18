@@ -5,11 +5,12 @@ edition.workspace = true
 
 [features]
 default = []
-ui = ["dep:bevy", "dep:bevy_egui", "dep:toy-sim-ship-view", "dep:toy-sim-stars", "dep:toy-sim-ship-api", "dep:toy-sim-space", "dep:toy-sim-universe", "dep:hifitime"]
+profile = ["ui", "bevy/trace_chrome"]
+ui = ["dep:bevy", "dep:toy-sim-ui", "dep:toy-sim-ship-view", "dep:toy-sim-stars", "dep:toy-sim-space", "dep:toy-sim-universe", "dep:hifitime"]
 
 [dependencies]
 bevy = { workspace = true, optional = true }
-bevy_egui = { workspace = true, optional = true }
+toy-sim-ui = { path = "../toy-sim-ui", optional = true }
 toy-sim-ship-view = { path = "../toy-sim-ship-view", optional = true }
 toy-sim-net = { path = "../toy-sim-net" }
 tokio = { version = "1.53", features = ["rt-multi-thread", "sync", "time"] }
@@ -20,13 +21,11 @@ blake3 = "1.8"
 toy-sim-ships = { path = "../toy-sim-ships" }
 toml.workspace = true
 serde.workspace = true
-postcard = { version = "=1.1.3", features = ["alloc"] }
 toy-sim-model = { path = "../toy-sim-model" }
 toy-sim-protocol = { path = "../toy-sim-protocol" }
 glam.workspace = true
 
 toy-sim-stars = { path = "../toy-sim-stars", optional = true }
-toy-sim-ship-api = { path = "../toy-sim-ship-api", optional = true }
 
 toy-sim-space = { path = "../toy-sim-space", optional = true }
 

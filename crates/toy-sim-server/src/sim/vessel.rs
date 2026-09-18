@@ -121,9 +121,12 @@ fn spawn(
     mut wasm: ResMut<WasmRuntime>,
     launch: Res<ShipLaunch>,
 ) {
-    let starter = toy_sim_ships::armed_starter()
-        .compile(&cat.0)
-        .expect("starter design");
+    let starter = ShipBlueprint::from_bytes(include_bytes!(
+        "../../../../assets/ships/micropulse-patrol.ship"
+    ))
+    .expect("bundled patrol ship")
+    .compile(&cat.0)
+    .expect("starter design");
     let starter = Arc::new(starter);
     let selected = if let Some(path) = &launch.0 {
         match ShipBlueprint::load(path).and_then(|s| s.compile(&cat.0)) {
@@ -150,7 +153,7 @@ fn spawn(
             player_position
                 + (player_position.normalize() * 0.5
                     + player_velocity.normalize() * (3.0_f64.sqrt() * 0.5))
-                    * 100_000.0,
+                    * 1_000.0,
             player_velocity,
         );
     }
@@ -183,9 +186,9 @@ fn spawn(
         pose.look_to(direction.normalize(), position.normalize());
         let software = ShipSoftware::new(controller);
         let name = if index == 0 {
-            "Orbital explorer".to_owned()
+            "Patrol ship".to_owned()
         } else {
-            format!("Traffic {index:03}")
+            format!("Hostile patrol {index:03}")
         };
         let entity = commands
             .spawn(ship_bundle(

@@ -11,9 +11,10 @@ fn guest(imports: &str, data: &str, body: &str) -> Vec<u8> {
         r#"(module
         {imports}
         (memory (export "memory") 1)
-        (func (export "ship_api_version") (result i32) i32.const 13)
+        (func (export "ship_api_version") (result i32) i32.const {version})
         {data}
-        (func (export "ship_tick") {body}))"#
+        (func (export "ship_tick") {body}))"#,
+        version = abi::VERSION
     ))
     .unwrap()
 }
@@ -36,6 +37,7 @@ fn ready(runtime: &mut ControllerRuntime, bytes: &[u8]) -> Controller {
         alias: "main_engine".into(),
         groups: vec![],
         kind: DeviceKind::Engine {
+            propellant_resource: "propellant".into(),
             thrust_n: 20_000.,
             propellant_kg_s: 1.,
             power_w: 200_000.,
@@ -178,7 +180,7 @@ fn runaway_callback_faults_and_requires_a_full_reboot() {
 
 #[test]
 fn exact_record_lengths_and_out_of_bounds_pointers_fail_without_writes() {
-    let imports = r#"(import "ship_v13" "flight_read" (func $read (param i32 i32) (result i32)))"#;
+    let imports = r#"(import "ship_v14" "flight_read" (func $read (param i32 i32) (result i32)))"#;
     let body = r#"
         i32.const 0 i32.const 123 i32.store
         i32.const 0 i32.const 169 call $read i32.const -2 i32.ne if unreachable end
@@ -195,10 +197,10 @@ fn exact_record_lengths_and_out_of_bounds_pointers_fail_without_writes() {
 }
 
 const PATH_IMPORTS: &str = r#"
-    (import "ship_v13" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
-    (import "ship_v13" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
-    (import "ship_v13" "snapshot_keep" (func $keep (param i64) (result i32)))
-    (import "ship_v13" "snapshot_drop" (func $drop (param i64) (result i32)))
+    (import "ship_v14" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
+    (import "ship_v14" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
+    (import "ship_v14" "snapshot_keep" (func $keep (param i64) (result i32)))
+    (import "ship_v14" "snapshot_drop" (func $drop (param i64) (result i32)))
 "#;
 
 fn path_data() -> String {
@@ -268,8 +270,8 @@ fn omissions_retain_leased_geometry_and_expiration_runs_when_callback_cannot() {
 fn trapped_callback_discards_spatial_instrument_and_hardware_publications() {
     let imports = format!(
         r#"{PATH_IMPORTS}
-        (import "ship_v13" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-        (import "ship_v13" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
+        (import "ship_v14" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v14" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
     "#
     );
     let attitude = abi::AttitudeState {
@@ -312,7 +314,7 @@ impl ScanSource for CountedSource {
 #[test]
 fn scan_reserves_full_cost_and_failure_never_calls_provider_or_overwrites_buffer() {
     let imports =
-        r#"(import "ship_v13" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
+        r#"(import "ship_v14" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
     let body = r#"(local $status i32)
         (loop $again
             i32.const 8192 i32.const 123 i32.store
@@ -344,8 +346,8 @@ fn scan_reserves_full_cost_and_failure_never_calls_provider_or_overwrites_buffer
 #[test]
 fn requests_survive_reboot_until_committed_acknowledgement() {
     let imports = r#"
-        (import "ship_v13" "request_info" (func $info (param i32 i32 i32) (result i32)))
-        (import "ship_v13" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v14" "request_info" (func $info (param i32 i32 i32) (result i32)))
+        (import "ship_v14" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 0 i32.const 24 call $info i32.const 0 i32.ne if unreachable end
@@ -372,9 +374,9 @@ fn requests_survive_reboot_until_committed_acknowledgement() {
 #[test]
 fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
     let imports = r#"
-        (import "ship_v13" "screen_define" (func $define (param i32 i32) (result i32)))
-        (import "ship_v13" "screen_begin" (func $begin (param i32 i32) (result i32)))
-        (import "ship_v13" "screen_end" (func $end (param i64) (result i32)))
+        (import "ship_v14" "screen_define" (func $define (param i32 i32) (result i32)))
+        (import "ship_v14" "screen_begin" (func $begin (param i32 i32) (result i32)))
+        (import "ship_v14" "screen_end" (func $end (param i64) (result i32)))
     "#;
     let definition = abi::ScreenDefinition {
         id: 0,
@@ -414,9 +416,9 @@ fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
 #[test]
 fn borrowed_snapshot_expires_and_retained_snapshot_quota_is_explicit() {
     let imports = r#"
-        (import "ship_v13" "tick_read" (func $tick (param i32 i32) (result i32)))
-        (import "ship_v13" "snapshot_keep" (func $keep (param i64) (result i32)))
-        (import "ship_v13" "snapshot_drop" (func $drop (param i64) (result i32)))
+        (import "ship_v14" "tick_read" (func $tick (param i32 i32) (result i32)))
+        (import "ship_v14" "snapshot_keep" (func $keep (param i64) (result i32)))
+        (import "ship_v14" "snapshot_drop" (func $drop (param i64) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 96 call $tick drop
@@ -489,7 +491,7 @@ fn weapon_syscalls_reject_invalid_records_and_discard_staged_fire_on_fault() {
         ),
     ] {
         let bytes = guest(
-            r#"(import "ship_v13" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
+            r#"(import "ship_v14" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
             &record_data(0, &setting),
             &format!(
                 "i64.const 1 i64.const {} i32.const 0 i32.const 72 call $write i32.const {status} i32.ne if unreachable end {}",
@@ -511,4 +513,29 @@ fn weapon_syscalls_reject_invalid_records_and_discard_staged_fire_on_fault() {
             assert!(!computer.is_booting());
         }
     }
+}
+
+#[test]
+fn micropulse_engine_metadata_names_its_charge_resource_without_electrical_input() {
+    use toy_sim_ships::{Catalogue, EXAMPLE_CONTROLLER, starter};
+
+    let catalogue = Catalogue::builtin();
+    let mut blueprint = starter(EXAMPLE_CONTROLLER.to_vec());
+    blueprint.parts.truncate(1);
+    blueprint.parts[0].prototype = "micropulse_engine_8m".into();
+    let design = blueprint.compile(&catalogue).unwrap();
+    let mut runtime = ControllerRuntime::new().unwrap();
+    let mut controller = runtime.instantiate(EXAMPLE_CONTROLLER).unwrap();
+    controller.configure_hardware(&design, &catalogue);
+    let device = design.part_devices[0].unwrap();
+    let spec = abi::EngineSpec::read(&controller.device_specs[device]).unwrap();
+    let charge_index = catalogue
+        .resources
+        .iter()
+        .position(|resource| resource.id == "micropulse_charge")
+        .unwrap();
+    assert_eq!(spec.propellant_resource, charge_index as u64 + 1);
+    assert_eq!(spec.max_power_w, 0.);
+    assert_eq!(spec.max_thrust_n, 10_000_000.);
+    assert!((spec.max_thrust_n / spec.propellant_units_s - 5000. * 9.80665).abs() < 1e-6);
 }

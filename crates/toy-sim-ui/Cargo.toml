@@ -1,0 +1,12 @@
+[package]
+name = "toy-sim-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_egui.workspace = true
+toy-sim-model = { path = "../toy-sim-model" }
+toy-sim-ship-api = { path = "../toy-sim-ship-api" }
+toy-sim-ships = { path = "../toy-sim-ships" }
+skrifa = { version = "0.44.0", default-features = false, features = ["std"] }

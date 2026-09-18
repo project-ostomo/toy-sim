@@ -5,15 +5,49 @@ use glam::DMat3;
 #[derive(Clone, Debug)]
 pub struct Inventory {
     pub quantities: Vec<f64>,
+    pub tank_capacities_m3: Vec<f64>,
     pub energy_j: f64,
 }
 impl Inventory {
     pub fn empty(cat: &Catalogue) -> Self {
         Self {
             quantities: vec![0.; cat.resources.len()],
+            tank_capacities_m3: vec![0.; cat.resources.len()],
             energy_j: 0.,
         }
     }
+    pub fn for_design(design: &CompiledShipDesign, cat: &Catalogue) -> Self {
+        let mut inventory = Self::empty(cat);
+        for part in &design.parts {
+            for tank in &part.placed.tanks {
+                let index = cat
+                    .resources
+                    .iter()
+                    .position(|r| r.id == tank.resource)
+                    .expect("validated tank resource");
+                let usable = tank.volume_m3 * cat.resources[index].storage.usable_fraction;
+                inventory.tank_capacities_m3[index] += usable;
+                inventory.quantities[index] +=
+                    usable * tank.initial_fill / cat.resources[index].volume_m3;
+            }
+        }
+        inventory
+    }
+
+    pub fn cargo_volume(&self, cat: &Catalogue) -> f64 {
+        self.quantities
+            .iter()
+            .enumerate()
+            .map(|(index, quantity)| {
+                (quantity * cat.resources[index].volume_m3 - self.tank_capacities_m3[index]).max(0.)
+            })
+            .sum()
+    }
+
+    pub fn capacity_m3(&self, resource: usize, cargo_capacity: f64) -> f64 {
+        self.tank_capacities_m3[resource] + cargo_capacity
+    }
+
     pub fn volume(&self, cat: &Catalogue) -> f64 {
         self.quantities
             .iter()
@@ -40,18 +74,17 @@ impl Inventory {
             "invalid inventory amount/capacity"
         );
         let r = cat.resources.get(resource).context("unknown resource")?;
+        let quantity = *self.quantities.get(resource).context("unknown resource")?;
+        let new_quantity = quantity + amount;
+        ensure!(new_quantity.is_finite(), "invalid resource amount");
+        let reserved = self.tank_capacities_m3[resource];
+        let old_cargo = (quantity * r.volume_m3 - reserved).max(0.);
+        let new_cargo = (new_quantity * r.volume_m3 - reserved).max(0.);
         ensure!(
-            self.volume(cat) + amount * r.volume_m3 <= capacity,
+            self.cargo_volume(cat) - old_cargo + new_cargo <= capacity + 1e-9 * capacity.max(1.),
             "inventory capacity exceeded"
         );
-        let q = self
-            .quantities
-            .get_mut(resource)
-            .context("unknown resource")?;
-        ensure!(
-            amount.is_finite() && amount >= 0. && (*q + amount).is_finite(),
-            "invalid resource amount"
-        );
+        let q = &mut self.quantities[resource];
         *q += amount;
         Ok(())
     }
@@ -104,10 +137,13 @@ pub struct ShipState {
 impl ShipState {
     pub fn new(design: &CompiledShipDesign, cat: &Catalogue) -> Self {
         Self {
-            inventory: Inventory::empty(cat),
+            inventory: Inventory::for_design(design, cat),
             weapons: vec![crate::weapons::WeaponState::default(); design.weapon_parts.len()],
             devices: vec![DeviceState::default(); design.parts.len()],
-            avionics: DeviceState::default(),
+            avionics: DeviceState {
+                powered: false,
+                ..DeviceState::default()
+            },
             hull: design.hull,
             thermal: crate::thermal::ThermalState::new(design.into()),
             settings: default_settings(design),
@@ -117,25 +153,29 @@ impl ShipState {
     }
     pub fn test_loadout(&mut self, d: &CompiledShipDesign, cat: &Catalogue) {
         self.inventory.energy_j = d.battery_j;
+        let mut cargo = Inventory::empty(cat);
         let fuel = (d.capacity_m3 * 10.).min(10.);
-        let _ = self.inventory.insert(1, fuel, d.capacity_m3, cat);
+        let _ = cargo.insert(1, fuel, d.capacity_m3, cat);
         for spec in &d.weapon_specs {
+            if spec.beam_power_w > 0.0 {
+                continue;
+            }
             let resource = spec.ammunition_resource as usize - 1;
             let wanted: f64 = if spec.projectile_mass_kg < 1.0 {
                 1000.0
             } else {
                 12.0
             };
-            let available = ((d.capacity_m3 - self.inventory.volume(cat)).max(0.0)
+            let available = ((d.capacity_m3 - cargo.volume(cat)).max(0.0)
                 / cat.resources[resource].volume_m3)
                 .floor();
-            let _ = self
-                .inventory
-                .insert(resource, wanted.min(available), d.capacity_m3, cat);
+            let _ = cargo.insert(resource, wanted.min(available), d.capacity_m3, cat);
         }
-        let propellant =
-            (d.capacity_m3 - self.inventory.volume(cat)).max(0.) / cat.resources[0].volume_m3;
-        let _ = self.inventory.insert(0, propellant, d.capacity_m3, cat);
+        let propellant = (d.capacity_m3 - cargo.volume(cat)).max(0.) / cat.resources[0].volume_m3;
+        let _ = cargo.insert(0, propellant, d.capacity_m3, cat);
+        for (amount, loaded) in self.inventory.quantities.iter_mut().zip(cargo.quantities) {
+            *amount += loaded;
+        }
     }
     pub fn computer_running(&self, _d: &CompiledShipDesign) -> bool {
         self.hull > 0. && self.avionics.operational && self.avionics.powered
@@ -204,7 +244,11 @@ impl ShipState {
                         let spec = &d.weapon_specs[index];
                         use toy_sim_ship_api::abi;
 
-                        let ammo = self.inventory.quantities[spec.ammunition_resource as usize - 1];
+                        let ammo = if spec.beam_power_w > 0.0 {
+                            f64::INFINITY
+                        } else {
+                            self.inventory.quantities[spec.ammunition_resource as usize - 1]
+                        };
                         let mut flags = weapon.inhibit_flags
                             & (abi::WEAPON_BLOCKED | abi::WEAPON_TRAVEL | abi::WEAPON_POINTING);
                         for (blocked, flag) in [
@@ -236,9 +280,7 @@ impl ShipState {
                         DeviceReading::Weapon(toy_sim_ship_api::abi::WeaponReading {
                             status: Default::default(),
                             inhibit_flags: flags,
-                            ammunition_units: self.inventory.quantities
-                                [spec.ammunition_resource as usize - 1]
-                                .floor() as u64,
+                            ammunition_units: ammo.floor() as u64,
                             shots_fired: weapon.shots_fired,
                             battery_energy_j: self.inventory.energy_j,
                             shot_energy_j: crate::weapons::shot_energy(spec),

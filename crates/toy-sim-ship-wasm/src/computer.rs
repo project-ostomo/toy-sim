@@ -300,20 +300,35 @@ impl crate::Controller {
                     .bytes()
                     .to_vec(),
                     Equipment::Rcs {
+                        ref propellant_resource,
                         thrust_n,
                         propellant_kg_s,
                         power_w,
                     } => abi::RcsSpec {
-                        propellant_resource: 1,
+                        propellant_resource: catalogue
+                            .resources
+                            .iter()
+                            .position(|r| r.id == *propellant_resource)
+                            .expect("validated RCS resource")
+                            as u64
+                            + 1,
                         per_axis_thrust_n: thrust_n,
                         per_axis_propellant_units_s: propellant_kg_s
-                            / catalogue.resources[0].mass_kg,
+                            / catalogue
+                                .resources
+                                .iter()
+                                .find(|r| r.id == *propellant_resource)
+                                .expect("validated RCS resource")
+                                .mass_kg,
                         per_axis_power_w: power_w,
                     }
                     .bytes()
                     .to_vec(),
-                    Equipment::Structure
+                    Equipment::Utility { .. }
+                    | Equipment::Structure
                     | Equipment::CoolantTank { .. }
+                    | Equipment::Radiator { .. }
+                    | Equipment::EmergencyCooling { .. }
                     | Equipment::HeatSink { .. } => Vec::new(),
                     Equipment::Storage { capacity_m3 } => {
                         abi::StorageSpec { capacity_m3 }.bytes().to_vec()
@@ -321,25 +336,53 @@ impl crate::Controller {
                     Equipment::Battery { capacity_j } => {
                         abi::BatterySpec { capacity_j }.bytes().to_vec()
                     }
-                    Equipment::Engine {
-                        thrust_n,
-                        propellant_kg_s,
-                        power_w,
-                        ..
-                    } => abi::EngineSpec {
-                        propellant_resource: 1,
-                        max_thrust_n: thrust_n,
-                        propellant_units_s: propellant_kg_s / catalogue.resources[0].mass_kg,
-                        max_power_w: power_w,
+                    Equipment::Engine { .. }
+                    | Equipment::MicropulseEngine { .. }
+                    | Equipment::ThermalEngine { .. } => {
+                        let DeviceKind::Engine {
+                            thrust_n,
+                            propellant_resource,
+                            propellant_kg_s,
+                            power_w,
+                        } = &design.device_catalogue[index].kind
+                        else {
+                            unreachable!("engine equipment has an engine descriptor");
+                        };
+                        let resource_index = catalogue
+                            .resources
+                            .iter()
+                            .position(|resource| resource.id == *propellant_resource)
+                            .expect("validated engine resource");
+                        abi::EngineSpec {
+                            propellant_resource: resource_index as u64 + 1,
+                            max_thrust_n: *thrust_n,
+                            propellant_units_s: propellant_kg_s
+                                / catalogue.resources[resource_index].mass_kg,
+                            max_power_w: *power_w,
+                        }
+                        .bytes()
+                        .to_vec()
                     }
-                    .bytes()
-                    .to_vec(),
                     Equipment::Torquer { torque_nm, power_w } => abi::TorquerSpec {
                         per_axis_limit_nm: torque_nm,
                         max_power_w: power_w,
                     }
                     .bytes()
                     .to_vec(),
+                    Equipment::Reactor { spec } => abi::GeneratorSpec {
+                        fuel_resource: catalogue
+                            .resources
+                            .iter()
+                            .position(|r| r.id == "reactor_fuel")
+                            .unwrap() as u64
+                            + 1,
+                        max_power_w: spec.thermal_power_w * spec.efficiency(300.0),
+                        efficiency: spec.efficiency(300.0),
+                        fuel_units_s: spec.thermal_power_w / spec.fuel_energy_j_kg,
+                    }
+                    .bytes()
+                    .to_vec(),
+                    Equipment::FuelProcessor { .. } => Vec::new(),
                     Equipment::Generator {
                         power_w,
                         fuel_kg_s,

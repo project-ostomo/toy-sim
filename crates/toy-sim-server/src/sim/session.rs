@@ -371,6 +371,20 @@ impl Session {
                         let station = identity::lookup(world, station)?;
                         super::travel::dock(world, entity, station, bay)?;
                     }
+                    ShipCommand::SetDockServices { cargo, power } => {
+                        ensure!(
+                            matches!(
+                                world
+                                    .get::<super::travel::PresenceState>(entity)
+                                    .map(|p| &p.0),
+                                Some(travel::Presence::Docked { .. })
+                            ),
+                            "ship must be docked to request services"
+                        );
+                        world.entity_mut(entity).insert(
+                            super::hardware::utilities::DockServiceRequest { cargo, power },
+                        );
+                    }
                     ShipCommand::Undock => super::travel::undock(world, entity)?,
                     ShipCommand::Manual { throttle, steering } => {
                         ensure!(
@@ -757,6 +771,14 @@ fn telemetry(world: &World, entity: Entity) -> Option<ShipTelemetry> {
     let authority = world.get::<Control>(entity)?;
     let group = world.get::<Membership>(entity)?.0;
     Some(ShipTelemetry {
+        dock_services: world
+            .get::<super::hardware::utilities::DockServiceRequest>(entity)
+            .map_or_else(DockServiceSettings::default, |request| {
+                DockServiceSettings {
+                    cargo: request.cargo,
+                    power: request.power,
+                }
+            }),
         spatial_instance: world.get::<super::identity::SpatialInstance>(entity)?.0,
         info_group: world.get::<Group>(group)?.key?,
         iff: world.get::<Transponder>(entity)?.0.clone(),

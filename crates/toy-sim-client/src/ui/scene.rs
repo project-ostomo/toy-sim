@@ -4,9 +4,9 @@ mod atmosphere;
 mod camera;
 pub(super) use camera::ViewCamera;
 mod combat;
-mod navigation;
 mod orbit;
 mod sensor_hud;
+mod shield;
 mod sky;
 
 use crate::state::{
@@ -65,7 +65,12 @@ pub(super) fn install(app: &mut App) {
         )
         .add_systems(
             Update,
-            (sync_ships, sync_celestials, apply_visuals)
+            (
+                sync_ships,
+                sync_celestials,
+                apply_visuals,
+                shield::update_flashes,
+            )
                 .chain()
                 .in_set(PresentationSet::Render),
         )
@@ -73,7 +78,6 @@ pub(super) fn install(app: &mut App) {
     sky::install(app);
     combat::install(app);
     atmosphere::install(app);
-    navigation::install(app);
     orbit::install(app);
     sensor_hud::install(app);
 }
@@ -81,7 +85,7 @@ pub(super) fn install(app: &mut App) {
 fn setup_ui_camera(mut commands: Commands) {
     commands.spawn((
         Camera2d,
-        bevy_egui::PrimaryEguiContext,
+        toy_sim_ui::bevy_egui::PrimaryEguiContext,
         Camera {
             order: 100,
             clear_color: ClearColorConfig::Custom(Color::NONE),

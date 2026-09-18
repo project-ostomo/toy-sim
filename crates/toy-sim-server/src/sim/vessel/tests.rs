@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v13" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v13" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v13" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v13" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v13" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v14" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v14" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v14" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v14" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v14" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -149,7 +149,19 @@ fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold()
             0
         );
         let force = world.get::<AccumulatedForce>(target).unwrap().0;
-        assert!((force.length() - 20_000.).abs() < 1.);
+        let design = &world.get::<ShipDesign>(target).unwrap().0;
+        let max_thrust: f64 = design
+            .device_catalogue
+            .iter()
+            .filter_map(|device| match device.kind {
+                DeviceKind::Engine { thrust_n, .. } => Some(thrust_n),
+                _ => None,
+            })
+            .sum();
+        assert!(
+            (force.length() - max_thrust * crate::sim::scenario::TRAFFIC_CHALLENGE_THROTTLE).abs()
+                < 1.
+        );
         directions.push(force.normalize());
     }
     assert!(directions.first().unwrap().dot(*directions.last().unwrap()) < 0.5);
@@ -286,6 +298,7 @@ fn sleeping_computers_keep_hardware_running_and_commands_wake_them() {
 #[test]
 fn simultaneous_startups_are_limited_per_tick() {
     let (mut app, entities) = fleet(toy_sim_ship_wasm::MAX_BOOTS_PER_TICK + 5);
+    step(&mut app);
     for &entity in &entities {
         app.world_mut()
             .get_mut::<ShipSoftware>(entity)

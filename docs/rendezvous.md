@@ -13,7 +13,6 @@ Source:
 - Forecast: [prediction.rs](../crates/toy-sim-example-controller/src/prediction.rs)
 - Travel planner: [world.rs](../crates/toy-sim-example-controller/src/world.rs)
 - Instrument publication: [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs)
-- Navigation window: [gui/instruments.rs](../crates/toy-sim-client/src/ui/instruments.rs)
 - Closed-loop tests: [physics/rendezvous_tests.rs](../crates/toy-sim-server/src/sim/physics/rendezvous_tests.rs)
 
 ## Request sequence
@@ -29,7 +28,7 @@ Source:
 
    On success, guidance enters `Pursuing`, the attitude reference is set to the current orientation, manual throttle and steering are cleared, and any aim command is dropped. The stand-off becomes a fixed offset: the aim point is `stand_off_m` short of the target, along the line of sight measured at the moment of engagement. The offset stays fixed in world axes afterwards. It does not follow later changes in the line of sight.
 
-Failures reply `REPLY_REJECTED` with a message. The Hardware diagnostics window lists these messages, and the reason field of the navigation instrument repeats the last one.
+Failures reply `REPLY_REJECTED` with a message. The reason field of the navigation instrument repeats the last one.
 
 | Message | Cause |
 | --- | --- |
@@ -122,24 +121,9 @@ It also publishes a contacts instrument that names the selected target, and a `M
 
 ## In the simulator
 
-**Contacts window.** Clicking a ship contact selects it and sends `SelectTarget`. The "Aim" button sends `AimContact`.
+The client currently shows the scene HUD and one "Hello world" window. The orbit overlay still consumes published navigation instruments. Guidance, target selection and weapon commands remain available through the session protocol, while their former control windows have been removed during the UI rebuild. Selecting a HUD contact changes the local selection without issuing a guidance command.
 
-**Navigation window.**
-
-- The orbit overlay controls ([orbital-navigation.md](orbital-navigation.md)).
-- The guidance status heading, target name and reason.
-- Range, closing speed and relative speed, taken from the host's track estimate at the presentation time.
-- Commanded throttle.
-- A "Throttle limit" slider (0.01 to 1, default 1).
-- "Engage", which sends the slider value and a stand-off of 100 m. The firmware applies that stand-off, so the ship stops about 100 m short of the target along the engagement line of sight. A stand-off entry field appears only when the instrument reports `NAV_STAND_OFF`, which the standard firmware never sets.
-- "Abort", which sends `StopGuidance`.
-- ETA and estimated propellant when `NAV_ARRIVAL` is present.
-
-**Flight computer window.** "Hold attitude" and "Manual / abort".
-
-The startup scene includes an orbital traffic ship. Travel orders and target pursuit are issued through the same session commands used by remote clients. Demo retaliation resolves targets through the ship's fused contact handles.
-
-Relocating the player with "Relocate ship" in the Universe window sends `StopGuidance` and a zero manual sample.
+The startup scene includes an orbital traffic ship. Travel orders and target pursuit use the same session commands available to remote clients. Demo retaliation resolves targets through the ship's fused contact handles.
 
 ## Checking designs
 

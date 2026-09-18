@@ -1,12 +1,14 @@
 mod debris;
 mod tracer;
 
-use super::ViewCamera;
-use crate::state::{CombatPublication, RenderTime};
-use bevy::{camera::visibility::RenderLayers, prelude::*};
-use std::collections::HashSet;
-use toy_sim_model::presentation::CombatEventKind;
-use toy_sim_ship_view::explosion::{ExplosionMaterial, flash_power};
+use super::{ViewCamera, ViewMember};
+use crate::state::{CombatPublication, Contact, DisplayPose, RenderTime};
+use bevy::{camera::visibility::RenderLayers, mesh::MeshTag, prelude::*};
+use std::collections::HashMap;
+use toy_sim_model::{CombatEvent, GalacticPosition, presentation::CombatEventKind};
+use toy_sim_ship_view::explosion::{ExplosionAssets, flash_power};
+
+const MAX_SPRITES_PER_VIEW: usize = 256;
 
 #[derive(Resource, Default)]
 struct EffectClock {
@@ -21,272 +23,225 @@ struct EffectOf(Entity);
 #[relationship_target(relationship = EffectOf, linked_spawn)]
 struct EventEffects(Vec<Entity>);
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Phase {
+    Flash,
+    Puff,
+}
+
 #[derive(Component)]
 struct EffectVisual {
     camera: Entity,
+    phase: Phase,
 }
 
-#[derive(Component)]
-struct CloudMaterial(Handle<ExplosionMaterial>);
-
-#[derive(Component, Clone, Copy)]
-struct CloudPhysics {
-    radius: f64,
-    initial_radius: f64,
-    temperature: f64,
-    initial_temperature: f64,
-    capacity: f64,
-    expansion: f64,
-    flash_j: f64,
-    advanced: f64,
+struct Effect {
+    position: GalacticPosition,
+    radius: f32,
+    brightness: f32,
+    tile: u32,
 }
 
-impl CloudPhysics {
-    fn new(kind: &CombatEventKind) -> Option<Self> {
-        let (radius, mass, temperature, kinetic, flash_j) = match kind {
-            CombatEventKind::Destroyed {
-                energy_j,
-                mass_kg,
-                radius_m,
-                ..
-            } => {
-                let baseline = toy_sim_ships::thermal::INITIAL_K;
-                let gas_mass = (mass_kg * 0.01).max(1e-6);
-                let chip_mass = (mass_kg * 0.001).max(1e-6);
-                let chip_heat = (energy_j * 0.10).min(chip_mass * 500. * (2500. - baseline));
-                let gas_heat = energy_j * 0.74 - chip_heat;
-                (
-                    radius_m * 0.1,
-                    gas_mass,
-                    baseline + gas_heat / (gas_mass * 1000.),
-                    energy_j * 0.125,
-                    energy_j * 0.01,
-                )
+fn sample(
+    event: &CombatEvent,
+    phase: Phase,
+    previous_ns: u64,
+    now: u64,
+    source_velocity: glam::DVec3,
+) -> Option<Effect> {
+    let age = now.checked_sub(event.sim_time_ns)? as f64 * 1e-9;
+    let previous_age = (previous_ns as f64 - event.sim_time_ns as f64) * 1e-9;
+    let (position, energy, scale, lifetime) = match &event.kind {
+        CombatEventKind::Fired {
+            position, energy_j, ..
+        } => {
+            if phase == Phase::Puff {
+                return None;
             }
-            CombatEventKind::Impact { energy_j, .. } | CombatEventKind::Fired { energy_j, .. } => {
-                let mass = (energy_j / 1e8).clamp(0.00001, 1.);
-                (
-                    0.05,
-                    mass,
-                    300. + energy_j * 0.1 / (mass * 1000.),
-                    energy_j * 0.01,
-                    energy_j * 0.01,
-                )
-            }
-            _ => return None,
-        };
-        Some(Self {
-            radius: radius.max(0.02),
-            initial_radius: radius.max(0.02),
-            temperature,
-            initial_temperature: temperature,
-            capacity: mass * 1000.,
-            expansion: (2. * kinetic.max(0.) / mass).sqrt(),
-            flash_j,
-            advanced: 0.,
-        })
-    }
-
-    fn advance(&mut self, age: f64) {
-        if age < self.advanced {
-            self.radius = self.initial_radius;
-            self.temperature = self.initial_temperature;
-            self.advanced = 0.;
+            (
+                position.offset_by(source_velocity * age),
+                *energy_j,
+                0.5,
+                0.08,
+            )
         }
-        while self.advanced + 1e-9 < age {
-            let dt = (age - self.advanced).min(1. / 240.);
-            let previous_radius = self.radius;
-            self.radius += self.expansion * dt;
-            self.temperature =
-                3. + (self.temperature - 3.) * (previous_radius / self.radius).powi(2);
-            let tau = 3. * (self.initial_radius / self.radius).powi(2);
-            self.temperature = toy_sim_ships::thermal::cooled(
-                self.temperature,
-                self.capacity,
-                4. * std::f64::consts::PI * self.radius.powi(2) * (1. - (-tau).exp()),
-                dt,
-            );
-            self.advanced += dt;
-        }
+        CombatEventKind::Impact {
+            position,
+            velocity_m_s,
+            energy_j,
+            ..
+        } => (
+            position.offset_by(glam::DVec3::from_array(*velocity_m_s) * age),
+            *energy_j,
+            (energy_j.max(0.) / 200_000.).cbrt().clamp(0.2, 4.),
+            0.45,
+        ),
+        CombatEventKind::Destroyed {
+            pose,
+            energy_j,
+            radius_m,
+            ..
+        } => (
+            pose.position
+                .offset_by(glam::DVec3::from_array(pose.velocity) * age),
+            *energy_j,
+            (radius_m * 0.7).clamp(2., 200.),
+            2.,
+        ),
+        CombatEventKind::Projectile { .. } => return None,
+    };
+    if !energy.is_finite() || energy <= 0. || !scale.is_finite() {
+        return None;
     }
-
-    fn material(&self, previous_age: f64, age: f64) -> ExplosionMaterial {
-        let power = flash_power(self.flash_j, previous_age, age);
-        let flash_temperature: f64 = 10000.;
-        let normalization = power
-            / (4.
-                * std::f64::consts::PI
-                * self.initial_radius.powi(2)
-                * toy_sim_ships::thermal::SIGMA
-                * flash_temperature.powi(4));
-        let rgb = toy_sim_ship_view::thermal::blackbody(self.temperature) * 0.8;
-        let flash_rgb =
-            toy_sim_ship_view::thermal::blackbody(flash_temperature) * normalization as f32;
-        ExplosionMaterial {
-            radiance: rgb.extend(0.),
-            optical_depth: Vec4::new(
-                (3. * (self.initial_radius / self.radius).powi(2)) as f32,
-                0.,
-                (self.initial_radius / self.radius) as f32,
-                0.,
-            ),
-            flash_radiance: flash_rgb.extend(0.),
+    let (radius, brightness, tile) = match phase {
+        Phase::Flash if age < 0.08 => (
+            scale * 0.5,
+            2_000_000. * flash_power(1., previous_age, age) * 0.01,
+            0,
+        ),
+        Phase::Puff if age < lifetime => {
+            let t = age / lifetime;
+            (
+                scale * (0.2 + 1.8 * t),
+                180_000. * (1. - t).powi(3),
+                1 + event.sequence as u32 % 3,
+            )
         }
-    }
+        _ => return None,
+    };
+    (brightness >= 64.).then_some(Effect {
+        position,
+        radius: radius as f32,
+        brightness: brightness as f32,
+        tile,
+    })
 }
 
 pub(super) fn install(app: &mut App) {
     app.add_plugins(toy_sim_ship_view::explosion::ExplosionPlugin)
         .init_resource::<EffectClock>()
         .add_observer(crate::state::reset_resource::<EffectClock>)
-        .add_systems(PostUpdate, (prepare, update, record_time).chain());
+        .add_systems(
+            PostUpdate,
+            (update, record_time)
+                .chain()
+                .before(bevy::transform::TransformSystems::Propagate),
+        );
     debris::install(app);
     tracer::install(app);
-}
-
-fn prepare(
-    mut commands: Commands,
-    clock: Res<RenderTime>,
-    publications: Query<(Entity, &CombatPublication), Without<CloudPhysics>>,
-) {
-    for (entity, publication) in &publications {
-        if publication.0.sim_time_ns <= clock.display_ns
-            && let Some(physics) = CloudPhysics::new(&publication.0.kind)
-        {
-            commands.entity(entity).insert(physics);
-        }
-    }
 }
 
 fn update(
     mut commands: Commands,
     clock: Res<RenderTime>,
     history: Res<EffectClock>,
-    mut publications: Query<(Entity, &CombatPublication, Option<&mut CloudPhysics>)>,
-    cameras: Query<(Entity, &ViewCamera)>,
+    assets: Res<ExplosionAssets>,
+    publications: Query<(Entity, &CombatPublication)>,
+    contacts: Query<(&Contact, &DisplayPose)>,
+    cameras: Query<(Entity, &ViewCamera, &Transform, &Camera, &Projection), Without<EffectVisual>>,
     mut visuals: Query<(
         Entity,
         &EffectOf,
         &EffectVisual,
         &mut Transform,
-        Option<&CloudMaterial>,
+        &mut MeshTag,
     )>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut clouds: ResMut<Assets<ExplosionMaterial>>,
 ) {
     let now = clock.display_ns;
-    let previous_ns = history.previous_ns.unwrap_or(now);
+    let previous_ns = history.previous_ns.unwrap_or(now).min(now);
+    let mut existing: HashMap<_, _> = visuals
+        .iter()
+        .map(|(entity, source, visual, ..)| ((source.0, visual.camera, visual.phase), entity))
+        .collect();
+    let mut events: Vec<_> = publications.iter().collect();
+    events.sort_unstable_by_key(|(_, publication)| std::cmp::Reverse(publication.0.sequence));
 
-    for (_, publication, physics) in &mut publications {
-        if let Some(mut physics) = physics {
-            let age = now.saturating_sub(publication.0.sim_time_ns) as f64 * 1e-9;
-            physics.advance(age);
-        }
-    }
-
-    let mut existing = HashSet::new();
-    for (entity, source, visual, mut transform, material) in &mut visuals {
-        let Ok((_, publication, physics)) = publications.get(source.0) else {
-            commands.entity(entity).despawn();
+    for (camera_entity, view, camera_transform, camera, projection) in &cameras {
+        let Projection::Perspective(projection) = projection else {
             continue;
         };
-        let Ok((_, camera)) = cameras.get(visual.camera) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
-        let Some(next) = visual_transform(&publication.0, camera, physics, now) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
+        let size = camera
+            .physical_viewport_size()
+            .unwrap_or(UVec2::new(1280, 720));
+        let tan = (projection.fov * 0.5).tan();
+        let aspect = size.x as f32 / size.y.max(1) as f32;
+        let mut count = 0;
 
-        *transform = next;
-        commands
-            .entity(entity)
-            .insert(RenderLayers::layer(camera.layer));
-        if let Some(physics) = physics
-            && let Some(mut material) = material.and_then(|handle| clouds.get_mut(&handle.0))
-        {
-            let previous_age = (previous_ns as f64 - publication.0.sim_time_ns as f64) * 1e-9;
-            let age = (now - publication.0.sim_time_ns) as f64 * 1e-9;
-            *material = physics.material(previous_age, age);
-        }
-        existing.insert((source.0, visual.camera));
-    }
-
-    for (source, publication, physics) in &publications {
-        for (camera_entity, camera) in &cameras {
-            if existing.contains(&(source, camera_entity)) {
-                continue;
-            }
-            let Some(transform) = visual_transform(&publication.0, camera, physics, now) else {
-                continue;
+        for &(source, publication) in &events {
+            let event = &publication.0;
+            let velocity = if let CombatEventKind::Fired { source, .. } = &event.kind {
+                contacts
+                    .iter()
+                    .find(|(contact, _)| contact.1 == *source)
+                    .map_or(glam::DVec3::ZERO, |(_, pose)| {
+                        glam::DVec3::from_array(pose.0.velocity)
+                    })
+            } else {
+                glam::DVec3::ZERO
             };
-
-            let mut entity = commands.spawn((
-                EffectOf(source),
-                EffectVisual {
-                    camera: camera_entity,
-                },
-                transform,
-                RenderLayers::layer(camera.layer),
-            ));
-            if let Some(physics) = physics {
-                let previous_age = (previous_ns as f64 - publication.0.sim_time_ns as f64) * 1e-9;
-                let age = (now - publication.0.sim_time_ns) as f64 * 1e-9;
-                let material = clouds.add(physics.material(previous_age, age));
-                entity.insert((
-                    Mesh3d(meshes.add(Sphere::new(1.).mesh().uv(16, 8))),
-                    MeshMaterial3d(material.clone()),
-                    CloudMaterial(material),
-                ));
+            for phase in [Phase::Flash, Phase::Puff] {
+                if count == MAX_SPRITES_PER_VIEW {
+                    break;
+                }
+                let Some(effect) = sample(event, phase, previous_ns, now, velocity) else {
+                    continue;
+                };
+                let center = effect.position.relative_to(view.origin).as_vec3();
+                let delta = center - camera_transform.translation;
+                let local = camera_transform.rotation.inverse() * delta;
+                let depth = -local.z;
+                if !delta.is_finite() || depth <= projection.near || depth > 1e7 {
+                    continue;
+                }
+                let radius = effect.radius.min(depth * tan * 0.12);
+                if radius / (depth * tan) * (size.y as f32) < 0.5
+                    || local.x.abs() > depth * tan * aspect + radius
+                    || local.y.abs() > depth * tan + radius
+                {
+                    continue;
+                }
+                let rotation = event.sequence.wrapping_mul(2654435761) as u32 as f32
+                    / u32::MAX as f32
+                    * std::f32::consts::TAU;
+                let transform = Transform {
+                    translation: center - delta.normalize() * (radius * 0.02).min(0.1),
+                    rotation: camera_transform.rotation * Quat::from_rotation_z(rotation),
+                    scale: Vec3::splat(radius),
+                };
+                let tag = MeshTag(((effect.brightness / 64.).round() as u32) << 2 | effect.tile);
+                if let Some(entity) = existing.remove(&(source, camera_entity, phase)) {
+                    let (_, _, _, mut old_transform, mut old_tag) =
+                        visuals.get_mut(entity).unwrap();
+                    old_transform.set_if_neq(transform);
+                    old_tag.set_if_neq(tag);
+                    commands
+                        .entity(entity)
+                        .insert(RenderLayers::layer(view.layer));
+                } else {
+                    commands.spawn((
+                        EffectOf(source),
+                        ViewMember(camera_entity),
+                        EffectVisual {
+                            camera: camera_entity,
+                            phase,
+                        },
+                        Mesh3d(assets.mesh.clone()),
+                        MeshMaterial3d(assets.material.clone()),
+                        tag,
+                        transform,
+                        RenderLayers::layer(view.layer),
+                    ));
+                }
+                count += 1;
+            }
+            if count == MAX_SPRITES_PER_VIEW {
+                break;
             }
         }
     }
-}
-
-fn visual_transform(
-    event: &toy_sim_model::CombatEvent,
-    camera: &ViewCamera,
-    physics: Option<&CloudPhysics>,
-    now: u64,
-) -> Option<Transform> {
-    if event.sim_time_ns > now {
-        return None;
+    for entity in existing.into_values() {
+        commands.entity(entity).despawn();
     }
-    let age = (now - event.sim_time_ns) as f64 * 1e-9;
-    let (mut transform, lifetime) = match &event.kind {
-        CombatEventKind::Projectile { .. } => return None,
-        CombatEventKind::Fired { position, .. } => (
-            Transform::from_translation(position.relative_to(camera.origin).as_vec3()),
-            0.1,
-        ),
-        CombatEventKind::Impact {
-            position,
-            velocity_m_s,
-            ..
-        } => (
-            Transform::from_translation(
-                position
-                    .offset_by(glam::DVec3::from_array(*velocity_m_s) * age)
-                    .relative_to(camera.origin)
-                    .as_vec3(),
-            ),
-            1.,
-        ),
-        CombatEventKind::Destroyed { pose, .. } => (
-            Transform::from_translation(
-                pose.position
-                    .offset_by(glam::DVec3::from_array(pose.velocity) * age)
-                    .relative_to(camera.origin)
-                    .as_vec3(),
-            ),
-            10.,
-        ),
-    };
-    if let Some(physics) = physics {
-        transform.scale = Vec3::splat(physics.radius as f32);
-    }
-    (age <= lifetime && transform.translation.length() <= 1e7).then_some(transform)
 }
 
 fn record_time(clock: Res<RenderTime>, mut history: ResMut<EffectClock>) {
@@ -298,25 +253,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn cloud_rewind_restores_the_requested_thermal_and_expansion_state() {
-        let kind = CombatEventKind::Impact {
-            normal: [0., 1., 0.],
-            target: None,
-            position: toy_sim_model::GalacticPosition::ZERO,
-            velocity_m_s: [0.; 3],
-            energy_j: 1e6,
-            shield: false,
-        };
-        let mut replay = CloudPhysics::new(&kind).unwrap();
-        replay.advance(0.8);
-        replay.advance(0.15);
-        let mut fresh = CloudPhysics::new(&kind).unwrap();
-        fresh.advance(0.15);
-        assert_eq!(replay.radius, fresh.radius);
-        assert_eq!(replay.temperature, fresh.temperature);
-        replay.advance(0.);
-        assert_eq!(replay.radius, replay.initial_radius);
-        assert_eq!(replay.temperature, replay.initial_temperature);
+    fn impact_sprites_follow_motion_and_expire_at_extreme_energies() {
+        for energy_j in [0.001, 200_000., 1e30] {
+            let event = CombatEvent {
+                sequence: 1,
+                sim_time_ns: 1_000_000_000,
+                kind: CombatEventKind::Impact {
+                    normal: [0., 1., 0.],
+                    target: None,
+                    position: GalacticPosition::ZERO,
+                    velocity_m_s: [3000., 0., 0.],
+                    energy_j,
+                    shield: false,
+                },
+            };
+            assert!(sample(&event, Phase::Puff, 0, 0, glam::DVec3::ZERO).is_none());
+            let puff = sample(
+                &event,
+                Phase::Puff,
+                1_100_000_000,
+                1_200_000_000,
+                glam::DVec3::ZERO,
+            )
+            .unwrap();
+            assert!(puff.radius.is_finite() && puff.radius <= 8.);
+            assert!((puff.position.relative_to(GalacticPosition::ZERO).x - 600.).abs() < 1e-6);
+            assert!(
+                sample(
+                    &event,
+                    Phase::Puff,
+                    1_400_000_000,
+                    1_500_000_000,
+                    glam::DVec3::ZERO
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]
@@ -325,9 +297,7 @@ mod tests {
         let publication = world.spawn_empty().id();
         let first_view = world.spawn(EffectOf(publication)).id();
         let second_view = world.spawn(EffectOf(publication)).id();
-
         world.despawn(publication);
-
         assert!(world.get_entity(first_view).is_err());
         assert!(world.get_entity(second_view).is_err());
     }

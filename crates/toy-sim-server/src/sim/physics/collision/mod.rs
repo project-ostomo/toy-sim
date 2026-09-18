@@ -801,6 +801,7 @@ fn record_motion(body: &Body, t: f64, report: &mut Report) {
 #[derive(Default)]
 pub struct Report {
     pub shots: Vec<weapons::ShotEvent>,
+    pub beams: Vec<weapons::BeamEvent>,
     pub impact_events: Vec<ImpactEvent>,
     pub motion: Vec<MotionSegment>,
     traced: std::collections::HashSet<Entity>,
@@ -1298,6 +1299,8 @@ pub fn simulate_with_workspace(
                     ) {
                         changed.push(bodies.len());
                         bodies.push(projectile);
+                    }
+                    if ship.weapons[weapon].shots_fired != sequence {
                         if let Some(next) = weapons::next_event(
                             event.a,
                             member,
@@ -1308,6 +1311,13 @@ pub fn simulate_with_workspace(
                             end,
                         ) {
                             events.push(next);
+                        }
+                    }
+                    while let Some(beam) = report.beams.pop() {
+                        if let Some(target) =
+                            weapons::resolve_beam(beam, bodies, event.t, &mut report)
+                        {
+                            changed.push(target);
                         }
                     }
                 }

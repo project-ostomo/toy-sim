@@ -1,5 +1,5 @@
 use super::*;
-use bevy_egui::egui;
+use toy_sim_ui::egui;
 
 /// Device metadata is part of the blueprint, independent of assembly selection.
 pub fn panel(ui: &mut egui::Ui, e: &mut Editor) {
@@ -113,6 +113,8 @@ pub fn panel(ui: &mut egui::Ui, e: &mut Editor) {
             matches!(
                 d.equipment,
                 Equipment::Engine { .. }
+                    | Equipment::MicropulseEngine { .. }
+                    | Equipment::ThermalEngine { .. }
                     | Equipment::Rcs { .. }
                     | Equipment::Torquer { .. }
                     | Equipment::Weapon { .. }

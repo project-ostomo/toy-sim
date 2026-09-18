@@ -29,6 +29,40 @@ use bevy::ecs::system::RunSystemOnce;
 use std::sync::Arc;
 use toy_sim_ships::*;
 
+fn guidance_catalogue() -> Catalogue {
+    let mut catalogue = Catalogue::builtin();
+    let engine = catalogue
+        .parts
+        .iter_mut()
+        .find(|part| part.id == "engine")
+        .unwrap();
+    engine.dimensions = [10, 10, 20];
+    if let Equipment::Engine {
+        thrust_n, power_w, ..
+    } = &mut engine.equipment
+    {
+        *thrust_n = 200_000.0;
+        *power_w = 25e9;
+    }
+    let generator = catalogue
+        .parts
+        .iter_mut()
+        .find(|part| part.id == "generator")
+        .unwrap();
+    generator.equipment = Equipment::Generator {
+        power_w: 100e9,
+        fuel_kg_s: 10_000.0,
+        efficiency: 0.4,
+    };
+    let battery = catalogue
+        .parts
+        .iter_mut()
+        .find(|part| part.id == "battery")
+        .unwrap();
+    battery.equipment = Equipment::Battery { capacity_j: 10e9 };
+    catalogue
+}
+
 fn fixture(design: &CompiledShipDesign, catalogue: &Catalogue) -> HardwareFixture {
     let mut app = App::new();
     app.add_plugins(bevy::app::TaskPoolPlugin::default());
@@ -59,6 +93,8 @@ struct AppliedForces {
 }
 
 fn advance(fixture: &mut HardwareFixture) -> AppliedForces {
+    let capacity = fixture.design.battery_j;
+    fixture.set_inventory(|inventory| inventory.energy_j = capacity);
     let wrench = fixture.advance();
     let mass = fixture.app.world().get::<MassProps>(fixture.ship).unwrap();
     AppliedForces {
@@ -102,8 +138,10 @@ impl Flight {
         target_velocity: DVec3,
         gravity: bool,
     ) -> Self {
-        let cat = Catalogue::builtin();
-        let design = starter(EXAMPLE_CONTROLLER.to_vec()).compile(&cat).unwrap();
+        let cat = guidance_catalogue();
+        let mut blueprint = starter(EXAMPLE_CONTROLLER.to_vec());
+        blueprint.parts[6].position = [0, 0, 60];
+        let design = blueprint.compile(&cat).unwrap();
         let hardware = fixture(&design, &cat);
         Self {
             pilot: Pilot::default(),
@@ -159,12 +197,22 @@ impl Flight {
                         thrust_n,
                         propellant_kg_s,
                         power_w,
-                    } => Capability::Engine(abi::EngineSpec {
-                        propellant_resource: 1,
-                        max_thrust_n: thrust_n,
-                        propellant_units_s: propellant_kg_s,
-                        max_power_w: power_w,
-                    }),
+                        ref propellant_resource,
+                    } => {
+                        let resource = self
+                            .cat
+                            .resources
+                            .iter()
+                            .position(|resource| resource.id == *propellant_resource)
+                            .unwrap();
+                        Capability::Engine(abi::EngineSpec {
+                            propellant_resource: resource as u64 + 1,
+                            max_thrust_n: thrust_n,
+                            propellant_units_s: propellant_kg_s
+                                / self.cat.resources[resource].mass_kg,
+                            max_power_w: power_w,
+                        })
+                    }
                     DeviceKind::Torquer { torque_nm } => Capability::Torquer(abi::TorquerSpec {
                         per_axis_limit_nm: torque_nm,
                         max_power_w: 0.,

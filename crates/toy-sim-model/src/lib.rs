@@ -183,8 +183,15 @@ pub struct ViewState {
     pub completion: Completion,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DockServiceSettings {
+    pub cargo: bool,
+    pub power: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipTelemetry {
+    pub dock_services: DockServiceSettings,
     pub spatial_instance: Id,
     pub info_group: InfoGroupKey,
     pub iff: IffIdentity,
@@ -298,6 +305,10 @@ pub enum ShipCommand {
     },
     PauseTravel,
     ResumeTravel,
+    SetDockServices {
+        cargo: bool,
+        power: bool,
+    },
     Undock,
     Dock {
         station: EntityId,

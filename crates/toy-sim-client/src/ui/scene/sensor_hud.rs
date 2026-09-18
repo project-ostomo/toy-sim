@@ -7,8 +7,8 @@ use crate::ui::{
     },
 };
 use bevy::{prelude::*, window::PrimaryWindow};
-use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use toy_sim_model::Tag;
+use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(EguiPrimaryContextPass, overlay);
@@ -23,7 +23,6 @@ fn overlay(
         &GlobalTransform,
         &ViewCamera,
         &ViewObservation,
-        &super::orbit::ViewOptions,
         &mut super::camera::CameraOptions,
         &SystemSubscription,
     )>,
@@ -42,8 +41,7 @@ fn overlay(
     let mut selection = None;
     let mut selection_distance = f32::INFINITY;
 
-    for (view_entity, camera, transform, view_camera, observation, options, framing, systems) in
-        &mut cameras
+    for (view_entity, camera, transform, view_camera, observation, framing, systems) in &mut cameras
     {
         let view = &observation.0;
         let Some(viewport) = camera.logical_viewport_rect() else {
@@ -59,47 +57,6 @@ fn overlay(
                 egui::Id::new(("sensor_hud", view.id)),
             ))
             .with_clip_rect(clip);
-        if options.enabled {
-            for marker in options.instruments.markers.iter().take(128) {
-                let relative = marker.position.relative_to(view_camera.origin);
-                let Ok(projected) = camera.world_to_viewport(transform, relative.as_vec3()) else {
-                    continue;
-                };
-                let point = egui::pos2(projected.x * scale, projected.y * scale);
-                if !clip.contains(point) {
-                    continue;
-                }
-                let color = match marker.kind {
-                    1 => egui::Color32::from_rgb(255, 192, 87),
-                    2 => egui::Color32::from_rgb(233, 129, 213),
-                    _ => egui::Color32::from_rgb(90, 221, 249),
-                };
-                painter.circle_stroke(point, 4., egui::Stroke::new(1., color));
-                painter.text(
-                    point + egui::vec2(7., -5.),
-                    egui::Align2::LEFT_BOTTOM,
-                    marker.label.lines().next().unwrap_or(""),
-                    egui::FontId::proportional(11.),
-                    color,
-                );
-                if let Some(pointer) = pointer.filter(|pointer| point.distance(*pointer) < 12.) {
-                    if ctx
-                        .layer_id_at(pointer)
-                        .is_none_or(|layer| layer.order <= egui::Order::Background)
-                    {
-                        egui::Area::new(egui::Id::new(("orbit_marker", view.id, marker.id)))
-                            .order(egui::Order::Tooltip)
-                            .fixed_pos(pointer + egui::vec2(16., 16.))
-                            .interactable(false)
-                            .show(ctx, |ui| {
-                                egui::Frame::popup(ui.style()).show(ui, |ui| {
-                                    ui.label(&marker.label);
-                                });
-                            });
-                    }
-                }
-            }
-        }
         let mut bodies: Vec<_> = celestials
             .iter()
             .filter(|(_, _, system)| {
@@ -238,9 +195,8 @@ fn overlay(
             }
             SelectedTarget::Celestial(id) => {
                 active.target = Some(SelectedTarget::Celestial(id));
-                if let Ok((_, _, _, _, _, _, mut framing, _)) = cameras.get_mut(entity) {
+                if let Ok((_, _, _, _, _, mut framing, _)) = cameras.get_mut(entity) {
                     framing.focus = Some(SelectedTarget::Celestial(id));
-                    framing.origin = None;
                 }
             }
         }

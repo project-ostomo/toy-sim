@@ -237,26 +237,6 @@ pub(super) fn apply(
     }
     retain(&mut commands, &mut replication.views, &seen);
 
-    let mut seen = BTreeSet::new();
-    for update in &frame.screens {
-        let key = (update.ship, update.slot);
-        seen.insert(key);
-        let entity = indexed(&mut commands, &mut replication.screens, key);
-        let definition = details
-            .get(&update.ship)
-            .and_then(|ship| {
-                ship.screens
-                    .iter()
-                    .find(|screen| screen.slot == update.slot)
-            })
-            .cloned();
-        commands.entity(entity).insert(ScreenPublication {
-            update: update.clone(),
-            definition,
-        });
-    }
-    retain(&mut commands, &mut replication.screens, &seen);
-
     for retained in publications.combat {
         let event = retained.event;
         let entity = commands
@@ -464,6 +444,7 @@ mod tests {
         let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
         let ship = Id([4; 16]);
         first.ships.push(ShipTelemetry {
+            dock_services: Default::default(),
             info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {
                 owner: Id([1; 16]),

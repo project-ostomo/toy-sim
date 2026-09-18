@@ -6,24 +6,9 @@ published maneuver, and magenta is the selected target's estimated track. Direct
 arrows follow time. Occluded segments are subdued and dashed. The overlay starts
 enabled and shows a coast orbit even without a selected target or maneuver.
 
-**O** or **Orbits** toggles the overlay. Keyboard shortcuts respect text fields and
-custom-screen keyboard focus. The Navigation panel retains the navigation
-controls; changing the display does not command the ship.
+**O** toggles the overlay. Keyboard shortcuts respect egui keyboard focus. The current client shows the HUD and one "Hello world" window; the orbit controls, camera framing buttons and preview slider have been removed during the UI rebuild. Mouse dragging and scrolling still orbit and zoom the camera. Clicking a celestial label focuses that body, and Escape restores the controlled ship as the camera focus.
 
-- **Ship** frames the controlled vessel.
-- **Orbit** fits its coast orbit and primary body, looking along the orbit normal.
-- **Encounter** fits the published plan and paired target positions, or the current
-  ship/target pair when no plan exists.
-- **Return** restores the focus, angles and distance from before the first shortcut.
-  Choosing an ordinary camera target exits this override.
-
-The bottom timeline previews simultaneous future positions without advancing time.
-Its logarithmic scale accommodates both seconds-long maneuvers and hours-long orbits.
-**NOW** clears the preview; **CA** previews closest approach. Hover a marker for its
-altitude, time or encounter detail. Apsis labels are omitted for nearly circular
-orbits; relative ascending/descending nodes require distinct orbital planes around
-the same primary. Labels avoid one another and native windows; offscreen markers
-point toward significant events.
+Apsis labels are omitted for nearly circular orbits. Relative ascending and descending nodes require distinct orbital planes around the same primary. Closest-approach and published path markers remain part of the HUD.
 
 ## Prediction and observation semantics
 
@@ -36,10 +21,7 @@ External forces, moving targets' future commands, other-body collisions and futu
 changes of primary are not forecast. Closest approach is a bounded sampled search
 with local refinement, using both positions at the same timestamp.
 
-The preview horizon is one ship period, extended for the remaining published plan,
-or one hour for an unbound coast. Near-parabolic periods and unusually long plans
-are capped at one year. The ship's closed coast ellipse is drawn once even when the
-preview horizon is longer. The target is propagated across the preview horizon.
+The coast horizon is one ship period, or one hour for an unbound coast, clamped between one minute and one year. The target is propagated across the same horizon.
 
 All curves share a translating, nonrotating frame centered on the ship's current
 primary. A common primary's future translation cancels exactly; targets around a
@@ -72,15 +54,13 @@ invalidates markers attached to its previous revision until firmware republishes
 
 Native navigation headings remain idle/active/suspended/unavailable. Range, closing
 speed and relative speed are derived from the same contact resolver as target boxes.
-Optional constraints, arrival time and predicted fuel come from firmware. The client
-owns framing, timeline controls, colors and layout.
+Optional constraints, arrival time and predicted fuel come from firmware. The client owns overlay colors and layout.
 
 ## Cost and validation
 
 Only the controlled vessel's visible overlay predicts trajectories. The event and
 encounter model refreshes with presentation time so estimated target and ship
-geometry agree during interpolation; paused frames reuse it. Its sampled curves
-remain available for framing and paths reconstructed across different primaries.
+geometry agree during interpolation; paused frames reuse it. Published paths use celestial ephemerides to translate their vertices into the display frame.
 
 Own and same-primary target coasts render as exact rational quadratic conic arcs.
 The client clips those arcs against the near plane and viewport in homogeneous
@@ -99,8 +79,7 @@ orbit to an earlier presentation pose. Published WASM trajectories retain their
 epochs, frame semantics and piecewise-linear corners. Dash and arrow phase carries
 across adjacent curve pieces instead of restarting at tessellation boundaries.
 
-The guest's existing trajectory interest bit remains the only display subscription;
-hover, framing, resize and scrubbing make no guest calls.
+The guest's trajectory interest bit controls publication. Camera movement and resizing make no guest calls.
 
 On the local Ryzen 9 5900XT, optimized development tests measured approximately:
 

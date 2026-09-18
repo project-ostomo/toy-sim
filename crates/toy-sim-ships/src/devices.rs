@@ -21,6 +21,7 @@ pub enum DeviceKind {
         capacity_j: f64,
     },
     Engine {
+        propellant_resource: String,
         thrust_n: f64,
         propellant_kg_s: f64,
         power_w: f64,

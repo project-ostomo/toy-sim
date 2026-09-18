@@ -28,14 +28,12 @@ use toy_sim_stars::{Star, StarCatalogue, StarId, VisibilityQuery};
 struct Settings {
     magnitude: f64,
     brightness: f32,
-    active: u64,
 }
 impl Default for Settings {
     fn default() -> Self {
         Self {
             magnitude: 6.,
             brightness: 1.,
-            active: 0,
         }
     }
 }
@@ -69,7 +67,6 @@ struct Skies {
     failed: bool,
     job: Option<Job>,
     generation: u64,
-    last_bake_seconds: f64,
 }
 
 #[derive(Clone)]
@@ -86,7 +83,10 @@ struct SkyUploads(Vec<Upload>);
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Skies>()
         .init_resource::<Settings>()
-        .add_systems(bevy_egui::EguiPrimaryContextPass, settings_window)
+        .add_systems(
+            toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
+            exposure_shortcuts,
+        )
         .init_resource::<SkyUploads>()
         .add_plugins(ExtractResourcePlugin::<SkyUploads>::default())
         .add_systems(PostUpdate, update);
@@ -221,7 +221,7 @@ fn update(
             skies.job = None;
             match result {
                 Ok(Some((snapshot, baked))) => {
-                    skies.last_bake_seconds = baked.seconds;
+                    debug!("Sky bake completed in {:.3} ms", baked.seconds * 1000.);
                     if cameras
                         .get(camera)
                         .is_ok_and(|(_, camera, transform, view, _)| {
@@ -380,10 +380,9 @@ fn bake_view(
     Ok(bake::bake(&snapshot, cancelled).map(|image| (snapshot, image)))
 }
 
-fn settings_window(
-    mut contexts: bevy_egui::EguiContexts,
-    mut settings: ResMut<Settings>,
-    skies: Res<Skies>,
+fn exposure_shortcuts(
+    mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
+    selection: Res<crate::ui::Selection>,
     mut exposures: Query<(
         &ViewCamera,
         &mut ExposureSettings,
@@ -391,91 +390,25 @@ fn settings_window(
     )>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    if !exposures
-        .iter()
-        .any(|(view, _, _)| view.view == settings.active)
-    {
-        settings.active = exposures.iter().next().map_or(0, |(view, _, _)| view.view);
+    if ctx.egui_wants_keyboard_input() {
+        return Ok(());
     }
-    if !ctx.egui_wants_keyboard_input() {
-        if let Some((_, mut adjustment, _)) = exposures
-            .iter_mut()
-            .find(|(view, _, _)| view.view == settings.active)
-        {
-            ctx.input(|input| {
-                if !input.modifiers.command && !input.modifiers.ctrl && !input.modifiers.alt {
-                    if input.key_pressed(bevy_egui::egui::Key::Plus)
-                        || input.key_pressed(bevy_egui::egui::Key::Equals)
-                    {
-                        adjustment.stops += 0.5;
-                    }
-                    if input.key_pressed(bevy_egui::egui::Key::Minus) {
-                        adjustment.stops -= 0.5;
-                    }
-                }
-            });
+    for (view, mut adjustment, mut exposure) in &mut exposures {
+        if Some(view.view) != selection.view {
+            continue;
         }
-    }
-    bevy_egui::egui::Window::new("Sky and exposure")
-        .default_open(false)
-        .default_pos(bevy_egui::egui::pos2(330., 10.))
-        .show(ctx, |ui| {
-            bevy_egui::egui::ComboBox::from_id_salt("exposure_view")
-                .selected_text(format!("View {}", settings.active))
-                .show_ui(ui, |ui| {
-                    for (view, _, _) in &exposures {
-                        ui.selectable_value(
-                            &mut settings.active,
-                            view.view,
-                            format!("View {}", view.view),
-                        );
-                    }
-                });
-            if let Some((_, mut adjustment, _)) = exposures
-                .iter_mut()
-                .find(|(view, _, _)| view.view == settings.active)
-            {
-                ui.add(
-                    bevy_egui::egui::Slider::new(&mut adjustment.stops, -24.0..=32.0)
-                        .text("Exposure stops (+/−)"),
-                );
+        ctx.input(|input| {
+            if !input.modifiers.command && !input.modifiers.ctrl && !input.modifiers.alt {
+                if input.key_pressed(toy_sim_ui::egui::Key::Plus)
+                    || input.key_pressed(toy_sim_ui::egui::Key::Equals)
+                {
+                    adjustment.stops += 0.5;
+                }
+                if input.key_pressed(toy_sim_ui::egui::Key::Minus) {
+                    adjustment.stops -= 0.5;
+                }
             }
-            ui.add(
-                bevy_egui::egui::Slider::new(&mut settings.magnitude, -2.0..=16.0)
-                    .text("Limiting magnitude"),
-            );
-            ui.add(
-                bevy_egui::egui::Slider::new(&mut settings.brightness, 0.01..=10000.0)
-                    .logarithmic(true)
-                    .text("Sky brightness"),
-            );
-            let status = if skies.failed {
-                "Catalogue error"
-            } else if skies.catalogue.is_none() {
-                "Loading catalogue"
-            } else if skies.job.is_some() {
-                "Baking"
-            } else {
-                "Ready"
-            };
-            ui.label(format!(
-                "Last CPU bake: {:.3} ms",
-                skies.last_bake_seconds * 1000.
-            ));
-            ui.label(format!(
-                "Sky: {status} · {} bakes · 2048 px/face",
-                skies.generation
-            ));
-            ui.label(format!(
-                "{} catalogue stars · {} views",
-                skies
-                    .catalogue
-                    .as_ref()
-                    .map_or(0, |catalogue| catalogue.len()),
-                exposures.iter().count()
-            ));
         });
-    for (_, mut adjustment, mut exposure) in &mut exposures {
         adjustment.stops = adjustment.stops.clamp(-24., 32.);
         exposure.ev100 = bevy::camera::Exposure::SUNLIGHT.ev100 - adjustment.stops;
     }

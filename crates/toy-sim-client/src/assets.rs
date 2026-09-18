@@ -7,7 +7,7 @@ use bevy::{
     prelude::*,
 };
 use std::path::Path;
-use toy_sim_model::{Id, UniverseCatalogue};
+use toy_sim_model::Id;
 use toy_sim_ships::{Catalogue, CompiledShipDesign, ShipBlueprint};
 use toy_sim_universe::{orrery_cfg::Body, replication::SystemAsset, solver::Orrery};
 
@@ -65,15 +65,10 @@ pub(crate) fn register_source(app: &mut App, client: AssetClient) {
 }
 
 pub(crate) fn install(app: &mut App) {
-    app.init_resource::<AssetProblems>()
-        .add_observer(crate::state::reset_resource::<AssetProblems>)
-        .add_systems(Update, record_failures)
-        .init_asset::<ShipDesign>()
+    app.init_asset::<ShipDesign>()
         .init_asset::<SystemDefinition>()
-        .init_asset::<StarCatalogue>()
         .init_asset_loader::<ShipLoader>()
         .init_asset_loader::<SystemLoader>()
-        .init_asset_loader::<CatalogueLoader>()
         .add_systems(
             Update,
             synchronize_appearances
@@ -84,9 +79,6 @@ pub(crate) fn install(app: &mut App) {
 
 #[derive(Asset, TypePath)]
 pub(crate) struct ShipDesign(pub CompiledShipDesign);
-
-#[derive(Asset, TypePath)]
-pub(crate) struct StarCatalogue(pub UniverseCatalogue);
 
 #[derive(Asset, TypePath)]
 pub(crate) struct SystemDefinition {
@@ -156,28 +148,6 @@ impl AssetLoader for SystemLoader {
     }
 }
 
-#[derive(Default, TypePath)]
-struct CatalogueLoader;
-
-impl AssetLoader for CatalogueLoader {
-    type Asset = StarCatalogue;
-    type Settings = ();
-    type Error = anyhow::Error;
-
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _: &(),
-        _: &mut LoadContext<'_>,
-    ) -> anyhow::Result<StarCatalogue> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        let catalogue = postcard::from_bytes(&bytes)?;
-        toy_sim_protocol::validate_catalogue(&catalogue)?;
-        Ok(StarCatalogue(catalogue))
-    }
-}
-
 #[derive(Component)]
 pub(crate) struct Appearance {
     pub hash: [u8; 32],
@@ -218,39 +188,6 @@ pub(crate) fn synchronize_appearances(
                 commands.entity(entity).remove::<Appearance>();
             }
             _ => {}
-        }
-    }
-}
-
-#[derive(Resource, Default)]
-pub(crate) struct AssetProblems(pub std::collections::BTreeMap<String, AssetProblem>);
-
-pub(crate) struct AssetProblem {
-    pub asset: bevy::asset::UntypedAssetId,
-    pub error: String,
-}
-
-fn record_failures(
-    mut failed: MessageReader<bevy::asset::UntypedAssetLoadFailedEvent>,
-    mut problems: ResMut<AssetProblems>,
-    server: Res<AssetServer>,
-) {
-    problems.0.retain(|_, problem| {
-        matches!(
-            server.get_load_state(problem.asset),
-            Some(bevy::asset::LoadState::Failed(_) | bevy::asset::LoadState::Loading)
-        )
-    });
-    for event in failed.read() {
-        let path = event.path.to_string();
-        if path.starts_with("server://") {
-            problems.0.insert(
-                path,
-                AssetProblem {
-                    asset: event.id,
-                    error: event.error.to_string(),
-                },
-            );
         }
     }
 }

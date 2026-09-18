@@ -1,4 +1,4 @@
-use super::{ViewLayer, navigation, orbit, sky, sun_direction};
+use super::{ViewLayer, orbit, sky, sun_direction};
 use crate::state::{
     Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, SystemSubscription,
     ViewObservation,
@@ -11,33 +11,13 @@ use bevy::{
 };
 use toy_sim_model::{GalacticPosition, Id};
 
-#[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum Framing {
-    #[default]
-    Ship,
-    Orbit,
-    Encounter,
-    Return,
-}
-
 #[derive(Component, Default)]
 pub(super) struct CameraOptions {
     pub focus: Option<SelectedTarget>,
-    pub origin: Option<GalacticPosition>,
-    pub distance: Option<f32>,
-    pub restore_angles: Option<(f32, f32)>,
-    pub saved: Option<(f32, f32, f32)>,
-    pub framing: Framing,
 }
 
 #[derive(Component)]
-#[require(
-    orbit::ViewOptions,
-    CameraOptions,
-    navigation::NavigationDrawing,
-    sky::ViewSky,
-    sky::ExposureSettings
-)]
+#[require(orbit::ViewOptions, CameraOptions, sky::ViewSky, sky::ExposureSettings)]
 pub(in crate::ui) struct ViewCamera {
     pub view: u64,
     pub origin: GalacticPosition,
@@ -74,6 +54,10 @@ pub(super) fn setup_views(
         let pitch = direction.y.clamp(-0.98, 0.98).asin();
         commands.entity(entity).insert((
             Camera3d::default(),
+            Msaa::Off,
+            bevy::anti_alias::fxaa::Fxaa::default(),
+            bevy::pbr::ContactShadows::default(),
+            bevy::pbr::ScreenSpaceAmbientOcclusion::default(),
             bevy::camera::Exposure::SUNLIGHT,
             Hdr,
             Camera::default(),
@@ -104,6 +88,7 @@ pub(super) fn setup_views(
             DirectionalLight {
                 illuminance: 0.,
                 shadow_maps_enabled: true,
+                contact_shadows_enabled: true,
                 ..default()
             },
             Transform::default(),
@@ -114,14 +99,12 @@ pub(super) fn setup_views(
 
 pub(super) fn update_views(
     mut commands: Commands,
-    mut focus: MessageReader<crate::ui::FocusRequest>,
-    selection: Res<Selection>,
     mut cameras: Query<(
         Entity,
         &ViewObservation,
         &mut Camera,
         &mut ViewCamera,
-        &mut CameraOptions,
+        &CameraOptions,
         Option<&SystemSubscription>,
     )>,
     owned: Query<(&OwnedShip, &DisplayPose)>,
@@ -140,25 +123,14 @@ pub(super) fn update_views(
         .map(|(entity, observation, ..)| (observation.0.id, entity))
         .collect();
     order.sort_unstable_by_key(|(id, _)| *id);
-    let requests: Vec<_> = focus
-        .read()
-        .map(|request| (request.view.or(selection.view), request.target))
-        .collect();
     let count = order.len().clamp(1, 8);
     for (index, (_, entity)) in order.into_iter().take(8).enumerate() {
-        let Ok((entity, observation, mut camera, mut state, mut options, systems)) =
+        let Ok((entity, observation, mut camera, mut state, options, systems)) =
             cameras.get_mut(entity)
         else {
             continue;
         };
         let view = &observation.0;
-        if let Some((_, target)) = requests
-            .iter()
-            .rev()
-            .find(|(requested_view, _)| requested_view.map_or(index == 0, |id| id == view.id))
-        {
-            options.focus = Some(*target);
-        }
         let mut origin = view
             .focused_ship
             .and_then(|id| {
@@ -174,10 +146,6 @@ pub(super) fn update_views(
             .find(|(contact, _)| contact.0.entity == followed)
             .and_then(|(contact, _)| contact.0.radius_m)
             .unwrap_or(1.) as f32;
-        if let Some(center) = options.origin {
-            origin = center;
-            followed = None;
-        }
         if let Some(focus) = options.focus {
             let selected = match focus {
                 SelectedTarget::Contact(reference) => contacts
@@ -231,13 +199,6 @@ pub(super) fn update_views(
             state.distance = (radius * 3.).max(30.);
             state.followed = followed;
         }
-        if let Some((yaw, pitch)) = options.restore_angles.take() {
-            state.yaw = yaw;
-            state.pitch = pitch;
-        }
-        if let Some(distance) = options.distance.take() {
-            state.distance = distance;
-        }
         commands
             .entity(entity)
             .insert((RenderLayers::layer(index + 1), ViewLayer(index + 1)));
@@ -249,8 +210,8 @@ pub(super) fn camera_controls(
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     windows: Query<&Window>,
-    mut cameras: Query<(&Camera, &mut ViewCamera, &mut Transform)>,
-    mut contexts: bevy_egui::EguiContexts,
+    mut cameras: Query<(&Camera, &mut ViewCamera, &mut Transform, &mut CameraOptions)>,
+    mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
     mut selection: ResMut<Selection>,
     mut gui_drag: Local<bool>,
 ) {
@@ -261,13 +222,17 @@ pub(super) fn camera_controls(
     let captured = contexts.ctx_mut().is_ok_and(|ctx| {
         ctx.egui_wants_pointer_input()
             || cursor.is_some_and(|cursor| {
-                let position = bevy_egui::egui::pos2(
+                let position = toy_sim_ui::egui::pos2(
                     cursor.x / ctx.pixels_per_point(),
                     cursor.y / ctx.pixels_per_point(),
                 );
                 ctx.layer_id_at(position)
-                    .is_some_and(|layer| layer.order >= bevy_egui::egui::Order::Middle)
+                    .is_some_and(|layer| layer.order >= toy_sim_ui::egui::Order::Middle)
             })
+    });
+    let restore_focus = contexts.ctx_mut().is_ok_and(|ctx| {
+        !ctx.egui_wants_keyboard_input()
+            && ctx.input(|input| input.key_pressed(toy_sim_ui::egui::Key::Escape))
     });
     if buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right) {
         *gui_drag = captured;
@@ -276,7 +241,10 @@ pub(super) fn camera_controls(
     if !dragging {
         *gui_drag = false;
     }
-    for (camera, mut state, mut transform) in &mut cameras {
+    for (camera, mut state, mut transform, mut options) in &mut cameras {
+        if restore_focus && selection.view == Some(state.view) {
+            options.focus = None;
+        }
         let over_view = cursor.is_some_and(|cursor| {
             camera.viewport.as_ref().is_none_or(|viewport| {
                 cursor.x >= viewport.physical_position.x as f32

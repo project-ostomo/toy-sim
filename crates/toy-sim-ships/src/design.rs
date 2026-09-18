@@ -51,6 +51,13 @@ pub enum DeviceSource {
 pub const GRID: f64 = 0.1;
 pub const MAX_FILE: usize = 16 * 1024 * 1024;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct Tank {
+    pub resource: String,
+    pub volume_m3: f64,
+    pub initial_fill: f64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct PlacedPart {
     pub id: u64,
     #[serde(default)]
@@ -59,6 +66,8 @@ pub struct PlacedPart {
     pub alias: String,
     #[serde(default)]
     pub groups: Vec<String>,
+    #[serde(default)]
+    pub tanks: Vec<Tank>,
     pub prototype: String,
     pub position: [i32; 3],
     pub orientation: u8,
@@ -290,6 +299,30 @@ impl ShipBlueprint {
                     || (p.alias.is_empty() && p.groups.is_empty()),
                 "structural parts have no device"
             );
+            let mut tank_volume = 0.;
+            for tank in &p.tanks {
+                ensure!(
+                    cat.resources.iter().any(|r| r.id == tank.resource),
+                    "unknown tank resource {}",
+                    tank.resource
+                );
+                ensure!(
+                    tank.volume_m3.is_finite() && tank.volume_m3 > 0.,
+                    "invalid tank volume on part {}",
+                    p.id
+                );
+                ensure!(
+                    tank.initial_fill.is_finite() && (0.0..=1.0).contains(&tank.initial_fill),
+                    "invalid tank fill on part {}",
+                    p.id
+                );
+                tank_volume += tank.volume_m3;
+            }
+            ensure!(
+                tank_volume <= def.tank_volume_m3,
+                "tank volume exceeds capacity on part {}",
+                p.id
+            );
             let (lo, hi) = occupied(p, &def);
             let centre =
                 DVec3::from_array(std::array::from_fn(|i| (lo[i] + hi[i]) as f64 * GRID / 2.));
@@ -332,12 +365,23 @@ impl ShipBlueprint {
             seen.len() == parts.len(),
             "assembly must be connected by faces"
         );
-        let dry_mass: f64 = parts.iter().map(|p| p.definition.mass_kg).sum();
-        let centre = parts
-            .iter()
-            .map(|p| p.centre * p.definition.mass_kg)
-            .sum::<DVec3>()
-            / dry_mass;
+        let part_mass = |p: &PreparedPart| {
+            p.definition.mass_kg
+                + p.placed
+                    .tanks
+                    .iter()
+                    .map(|tank| {
+                        let resource = cat
+                            .resources
+                            .iter()
+                            .find(|r| r.id == tank.resource)
+                            .unwrap();
+                        tank.volume_m3 * resource.storage.containment_kg_m3
+                    })
+                    .sum::<f64>()
+        };
+        let dry_mass: f64 = parts.iter().map(&part_mass).sum();
+        let centre = parts.iter().map(|p| p.centre * part_mass(p)).sum::<DVec3>() / dry_mass;
         let mut inertia = DMat3::ZERO;
         let mut lo = DVec3::splat(f64::INFINITY);
         let mut hi = -lo;
@@ -351,7 +395,7 @@ impl ShipBlueprint {
         let mut battery_j = 0.0f64;
 
         for p in &parts {
-            let m = p.definition.mass_kg;
+            let m = part_mass(p);
             let d = DVec3::from_array(p.definition.dimensions.map(|v| v as f64 * GRID));
             let r = p.centre - centre;
             let local = DMat3::from_diagonal(
@@ -396,6 +440,8 @@ impl ShipBlueprint {
                     && matches!(
                         p.definition.equipment,
                         Equipment::Engine { .. }
+                            | Equipment::MicropulseEngine { .. }
+                            | Equipment::ThermalEngine { .. }
                             | Equipment::Torquer { .. }
                             | Equipment::Weapon { .. }
                             | Equipment::Rcs { .. }
@@ -550,6 +596,7 @@ pub fn starter(controller: Vec<u8>) -> ShipBlueprint {
     };
     for (i, name) in names.iter().enumerate() {
         s.parts.push(PlacedPart {
+            tanks: vec![],
             id: i as u64 + 1,
             name: String::new(),
             alias: match *name {
@@ -561,11 +608,16 @@ pub fn starter(controller: Vec<u8>) -> ShipBlueprint {
             .into(),
             groups: vec![],
             prototype: (*name).into(),
-            position: [0, 0, i as i32 * 10],
+            position: if *name == "engine" {
+                [-5, -5, i as i32 * 10]
+            } else {
+                [0, 0, i as i32 * 10]
+            },
             orientation: 0,
         });
     }
     s.parts.push(PlacedPart {
+        tanks: vec![],
         id: 14,
         name: String::new(),
         alias: String::new(),
@@ -574,12 +626,24 @@ pub fn starter(controller: Vec<u8>) -> ShipBlueprint {
         position: [0, 0, -10],
         orientation: 0,
     });
+    s.parts.push(PlacedPart {
+        tanks: vec![],
+        id: 15,
+        name: String::new(),
+        alias: String::new(),
+        groups: vec![],
+        prototype: "command_2m".into(),
+        position: [-5, -5, -30],
+        orientation: 0,
+    });
     s
 }
 
 impl PlacedPart {
     pub fn metadata_within_limits(&self) -> bool {
-        self.name.len() <= 256
+        self.tanks.len() <= 32
+            && self.tanks.iter().all(|t| t.resource.len() <= 128)
+            && self.name.len() <= 256
             && self.alias.len() <= 64
             && self.groups.len() <= 16
             && self.groups.iter().all(|g| g.len() <= 64)
@@ -640,14 +704,15 @@ pub fn armed_starter() -> ShipBlueprint {
     let mut ship = starter(EXAMPLE_CONTROLLER.to_vec());
     ship.name = "Armed explorer".into();
     for (id, prototype, position) in [
-        (8, "railgun_turret", [10, 0, 20]),
-        (9, "coilgun_turret", [0, 10, 0]),
+        (8, "railgun_turret", [15, 0, -25]),
+        (9, "coilgun_turret", [0, 15, -30]),
         (10, "rcs", [-5, 0, 0]),
         (11, "rcs", [5, -5, 0]),
         (12, "rcs", [-5, 5, 50]),
         (13, "rcs", [10, 0, 50]),
     ] {
         ship.parts.push(PlacedPart {
+            tanks: vec![],
             id,
             name: String::new(),
             alias: format!("{prototype}_{id}"),
@@ -661,5 +726,39 @@ pub fn armed_starter() -> ShipBlueprint {
             orientation: 0,
         });
     }
+    ship
+}
+
+pub fn micropulse_starter() -> ShipBlueprint {
+    let mut ship = ShipBlueprint {
+        name: "Micropulse demonstrator".into(),
+        ..Default::default()
+    };
+    for (id, prototype, alias, position) in [
+        (1, "fuselage_8m", "", [0, 0, 0]),
+        (2, "micropulse_engine_8m", "main_engine", [0, 0, 160]),
+        (3, "fuselage_end_8m", "", [0, 0, -20]),
+        (4, "battery", "battery", [80, 35, 20]),
+        (5, "shield", "shield", [80, 35, 40]),
+        (6, "coolant_tank", "", [80, 35, 60]),
+        (7, "torquer", "attitude_control", [80, 35, 80]),
+        (8, "command_2m", "", [80, 30, 100]),
+    ] {
+        ship.parts.push(PlacedPart {
+            id,
+            name: String::new(),
+            alias: alias.into(),
+            groups: vec![],
+            prototype: prototype.into(),
+            position,
+            orientation: 0,
+            tanks: vec![],
+        });
+    }
+    ship.parts[0].tanks.push(Tank {
+        resource: "micropulse_charge".into(),
+        volume_m3: 500.,
+        initial_fill: 0.2,
+    });
     ship
 }

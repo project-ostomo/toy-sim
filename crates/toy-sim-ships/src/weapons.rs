@@ -8,12 +8,18 @@ use crate::Catalogue;
 /// Prototype counter-exhaust: ten percent of projectile mass, in kg of propellant.
 /// Exhaust energy and momentum are deliberately not simulated.
 pub fn shot_propellant_kg(spec: &abi::WeaponSpec) -> f64 {
-    spec.projectile_mass_kg * 0.1
+    if spec.beam_power_w > 0.0 {
+        0.0
+    } else {
+        spec.projectile_mass_kg * 0.1
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponDef {
+    #[serde(default)]
+    pub laser: Option<LaserDef>,
     pub ammunition: String,
     pub projectile_radius_m: f64,
     pub muzzle_speed_m_s: f64,
@@ -24,16 +30,37 @@ pub struct WeaponDef {
     pub slew_rate_rad_s: f64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LaserDef {
+    pub optical_power_w: f64,
+    pub range_m: f64,
+}
+
 impl WeaponDef {
     pub fn spec(&self, catalogue: &Catalogue) -> Option<abi::WeaponSpec> {
         let resource = catalogue
             .resources
             .iter()
-            .position(|r| r.id == self.ammunition)?;
+            .position(|r| r.id == self.ammunition)
+            .or_else(|| self.laser.as_ref().map(|_| 0))?;
         let turret = self.slew_rate_rad_s > 0.0;
         Some(abi::WeaponSpec {
-            ammunition_resource: resource as u64 + 1,
-            projectile_mass_kg: catalogue.resources[resource].mass_kg,
+            ammunition_resource: if self.laser.is_some() {
+                0
+            } else {
+                resource as u64 + 1
+            },
+            beam_power_w: self
+                .laser
+                .as_ref()
+                .map_or(0.0, |laser| laser.optical_power_w),
+            beam_range_m: self.laser.as_ref().map_or(0.0, |laser| laser.range_m),
+            projectile_mass_kg: if self.laser.is_some() {
+                0.0
+            } else {
+                catalogue.resources[resource].mass_kg
+            },
             projectile_radius_m: self.projectile_radius_m,
             muzzle_speed_m_s: self.muzzle_speed_m_s,
             cycle_interval_s: self.cycle_interval_s,
@@ -51,6 +78,14 @@ impl WeaponDef {
     }
 
     pub fn valid(&self) -> bool {
+        if self.laser.as_ref().is_some_and(|laser| {
+            !laser.optical_power_w.is_finite()
+                || laser.optical_power_w <= 0.0
+                || !laser.range_m.is_finite()
+                || laser.range_m <= 0.0
+        }) {
+            return false;
+        }
         [
             self.projectile_radius_m,
             self.muzzle_speed_m_s,
@@ -90,7 +125,11 @@ pub struct WeaponState {
 }
 
 pub fn shot_energy(spec: &abi::WeaponSpec) -> f64 {
-    0.5 * spec.projectile_mass_kg * spec.muzzle_speed_m_s.powi(2) / spec.efficiency
+    if spec.beam_power_w > 0.0 {
+        spec.beam_power_w * spec.cycle_interval_s / spec.efficiency
+    } else {
+        0.5 * spec.projectile_mass_kg * spec.muzzle_speed_m_s.powi(2) / spec.efficiency
+    }
 }
 
 pub fn valid_setting(value: &abi::WeaponSetting) -> bool {

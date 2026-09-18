@@ -80,6 +80,7 @@ fn ready(runtime: &mut ControllerRuntime, bytes: &[u8]) -> Controller {
         alias: "main_engine".into(),
         groups: vec![],
         kind: DeviceKind::Engine {
+            propellant_resource: "propellant".into(),
             thrust_n: 20_000.,
             propellant_kg_s: 1.,
             power_w: 200_000.,
@@ -300,9 +301,24 @@ fn bundled_firmware_finishes_full_forecasts_with_retained_sources_under_fuel_lim
     );
 }
 
+fn sustained_flight_catalogue() -> toy_sim_ships::Catalogue {
+    let mut catalogue = toy_sim_ships::Catalogue::builtin();
+    let generator = catalogue
+        .parts
+        .iter_mut()
+        .find(|part| part.id == "generator")
+        .unwrap();
+    generator.equipment = toy_sim_ships::Equipment::Generator {
+        power_w: 300_000_000.0,
+        fuel_kg_s: 0.02,
+        efficiency: 1.0,
+    };
+    catalogue
+}
+
 #[test]
 fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_budget() {
-    use toy_sim_ships::{Catalogue, DeviceSetting, armed_starter};
+    use toy_sim_ships::{DeviceSetting, armed_starter};
 
     struct Target;
     impl ScanSource for Target {
@@ -320,14 +336,17 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
         }
     }
 
-    let catalogue = Catalogue::builtin();
-    let design = armed_starter().compile(&catalogue).unwrap();
+    let catalogue = sustained_flight_catalogue();
+    let mut design = armed_starter().compile(&catalogue).unwrap();
+    design.hull_heat_capacity_j = 1e15;
     let mut fixture = HardwareFixture::new(&design, &catalogue);
     fixture.advance();
     let mut hardware = fixture.snapshot();
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut computer = ready(&mut runtime, toy_sim_ships::EXAMPLE_CONTROLLER);
     computer.configure_hardware(&design, &catalogue);
+    let mut manual_only = ready(&mut runtime, toy_sim_ships::EXAMPLE_CONTROLLER);
+    manual_only.configure_hardware(&design, &catalogue);
     computer.instrument_interest = abi::INTEREST_MARKERS;
     hardware.shield_activation(&design, true);
     fixture
@@ -371,6 +390,18 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
                 command: Command::HoldFire,
             });
         }
+        let mut manual_observation = observation.clone();
+        manual_observation.commands.retain(|request| {
+            !matches!(
+                request.command,
+                Command::EngageWeapons { .. } | Command::HoldFire
+            )
+        });
+        manual_only.advance(0.1);
+        let manual_output = manual_only
+            .run_with_scan(manual_observation, Some(Arc::new(Target)))
+            .unwrap()
+            .expect("manual callback ran out of reserve");
         computer.advance(0.1);
         let output = computer
             .run_with_scan(observation, Some(Arc::new(Target)))
@@ -398,13 +429,21 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
                 abi::WEAPONS_HOLD
             }
         );
-        assert!(
-            output
-                .devices
+        let flight_commands = |commands: &[toy_sim_ships::DeviceCommand]| {
+            commands
                 .iter()
-                .any(|command| matches!(command.setting,
-            DeviceSetting::Throttle(value) if (value - 0.1).abs() < 0.01))
+                .filter(|command| !matches!(command.setting, DeviceSetting::Weapon(_)))
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            flight_commands(&output.devices),
+            flight_commands(&manual_output.devices),
+            "weapon engagement changed manual flight at tick {tick}"
         );
+        assert!(output.devices.iter().any(
+            |command| matches!(command.setting, DeviceSetting::Throttle(value) if value > 0.0)
+        ));
 
         let trigger = output.devices.iter().any(|command| {
             matches!(command.setting,
@@ -454,7 +493,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
 
 #[test]
 fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
-    use toy_sim_ships::{Catalogue, DeviceSetting, armed_starter};
+    use toy_sim_ships::{DeviceSetting, armed_starter};
 
     struct Player;
     impl ScanSource for Player {
@@ -472,8 +511,9 @@ fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
         }
     }
 
-    let catalogue = Catalogue::builtin();
-    let design = armed_starter().compile(&catalogue).unwrap();
+    let catalogue = sustained_flight_catalogue();
+    let mut design = armed_starter().compile(&catalogue).unwrap();
+    design.hull_heat_capacity_j = 1e15;
     let mut fixture = HardwareFixture::new(&design, &catalogue);
     fixture.advance();
     let mut hardware = fixture.snapshot();
@@ -655,4 +695,88 @@ fn dense_sensor_results_keep_stock_callbacks_within_continuous_gas_refill() {
         assert!(!computer.is_booting());
         assert!(computer.memory_bytes() <= MEMORY_LIMIT);
     }
+}
+
+#[test]
+fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellant() {
+    use toy_sim_ships::{Catalogue, micropulse_starter};
+
+    let catalogue = Catalogue::builtin();
+    let design = micropulse_starter().compile(&catalogue).unwrap();
+    let charge = catalogue
+        .resources
+        .iter()
+        .position(|resource| resource.id == "micropulse_charge")
+        .unwrap();
+    let engine = design
+        .device_catalogue
+        .iter()
+        .find(|descriptor| descriptor.alias == "main_engine")
+        .unwrap();
+    assert!(matches!(&engine.kind,
+        DeviceKind::Engine { propellant_resource, power_w, .. }
+        if propellant_resource == "micropulse_charge" && *power_w == 0.0
+    ));
+
+    let mut fixture = HardwareFixture::new(&design, &catalogue);
+    fixture.app.add_systems(FixedUpdate, vessel::run);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<hardware::ShipInventory>(fixture.ship)
+        .unwrap()
+        .0
+        .quantities[0] = 0.0;
+    let initial_charges = fixture.snapshot().inventory.quantities[charge];
+    assert!(initial_charges > 0.0);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<vessel::ShipSoftware>(fixture.ship)
+        .unwrap()
+        .command(Command::Manual {
+            throttle: 0.5,
+            steering: [0.0; 3],
+        });
+
+    let mut accepted = false;
+    for _ in 0..100 {
+        fixture.advance();
+        let software = fixture
+            .app
+            .world()
+            .get::<vessel::ShipSoftware>(fixture.ship)
+            .unwrap();
+        assert!(
+            software.controller.fault.is_none(),
+            "{:?}",
+            software.controller.fault
+        );
+        accepted |= software
+            .results
+            .iter()
+            .any(|reply| reply.result == abi::REPLY_ACCEPTED);
+        let state = fixture.snapshot();
+        let status = &state.snapshot(&design)[engine.handle.0 as usize];
+        if let DeviceReading::Engine { thrust_n } = status.reading
+            && thrust_n > 0.0
+        {
+            assert!(state.avionics.powered);
+            assert!(state.inventory.quantities[charge] < initial_charges);
+            assert_eq!(state.inventory.quantities[0], 0.0);
+            assert!(
+                fixture
+                    .app
+                    .world()
+                    .get::<super::physics::AccumulatedForce>(fixture.ship)
+                    .unwrap()
+                    .0
+                    .length()
+                    > 0.0
+            );
+            assert!(accepted);
+            return;
+        }
+    }
+    panic!("standard firmware did not start the micropulse engine within ten seconds");
 }

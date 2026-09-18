@@ -1,6 +1,6 @@
 use super::*;
 use bevy::{camera::Viewport, math::DVec3};
-use bevy_egui::egui;
+use toy_sim_ui::egui;
 #[derive(Component)]
 pub struct EditorCamera;
 #[derive(Component)]
@@ -8,7 +8,7 @@ pub struct EditorPart;
 pub fn setup(mut commands: Commands) {
     // Keep the GUI camera full-window while the scene camera uses the centre panel.
     commands.spawn((
-        bevy_egui::PrimaryEguiContext,
+        toy_sim_ui::bevy_egui::PrimaryEguiContext,
         Camera2d,
         bevy::camera::visibility::RenderLayers::none(),
         Camera {
@@ -109,16 +109,8 @@ pub fn visuals(
                     Vec3::from_array(std::array::from_fn(|i| (lo[i] + hi[i]) as f32 * 0.05));
                 let tf = Transform::from_translation(centre)
                     .with_rotation(Quat::from_mat3(&orientation(p.orientation).as_mat3()));
-                let mut entity = commands.spawn((EditorPart, tf, Visibility::default()));
-                if let Some(model) = &def.model {
-                    entity.insert(WorldAssetRoot(loader.load(format!("{model}#Scene0"))));
-                } else {
-                    entity.insert((
-                        Mesh3d(assets.meshes[&p.prototype].clone()),
-                        MeshMaterial3d(assets.materials[&p.prototype].clone()),
-                    ));
-                }
-                let part = entity.id();
+                let part = commands.spawn((EditorPart, tf, Visibility::default())).id();
+                toy_sim_ship_view::attach_part_body(&mut commands, part, def, &assets, &loader);
                 if let Some(plume) = assets.plumes.get(&p.prototype) {
                     toy_sim_ship_view::plume::spawn_plume(&mut commands, part, plume);
                 }
@@ -151,7 +143,9 @@ pub fn visuals(
             gizmos.cube(Transform::from_translation(centre).with_scale(size), color);
         }
     };
-    if let Some(id) = e.selected {
+    if e.place.is_none()
+        && let Some(id) = e.selected
+    {
         if let Some(p) = e.ship.parts.iter().find(|p| p.id == id) {
             highlight(&mut gizmos, p, Color::srgb(1., 0.8, 0.2));
         }
@@ -168,6 +162,52 @@ pub fn visuals(
         );
     }
 }
+#[derive(Component)]
+pub struct PlacementGhost;
+
+pub fn ghost(
+    mut commands: Commands,
+    editor: Res<Editor>,
+    assets: Res<toy_sim_ship_view::PartVisualAssets>,
+    loader: Res<AssetServer>,
+    mut existing: Query<(&mut Transform, &mut Visibility), With<PlacementGhost>>,
+    mut current: Local<Option<(String, Entity)>>,
+) {
+    let candidate = editor.ghost.as_ref().filter(|_| !editor.devices_mode);
+    let Some(part) = candidate else {
+        if let Some((_, entity)) = current.as_ref() {
+            if let Ok((_, mut visibility)) = existing.get_mut(*entity) {
+                *visibility = Visibility::Hidden;
+            }
+        }
+        return;
+    };
+    let Some(definition) = editor.catalogue.part(&part.prototype) else {
+        return;
+    };
+    let (lo, hi) = occupied(part, definition);
+    let centre = Vec3::from_array(std::array::from_fn(|axis| {
+        (lo[axis] + hi[axis]) as f32 * 0.05
+    }));
+    let transform = Transform::from_translation(centre)
+        .with_rotation(Quat::from_mat3(&orientation(part.orientation).as_mat3()));
+    if let Some((prototype, entity)) = current.as_ref() {
+        if prototype == &part.prototype {
+            if let Ok((mut existing, mut visibility)) = existing.get_mut(*entity) {
+                *existing = transform;
+                *visibility = Visibility::Inherited;
+            }
+            return;
+        }
+        commands.entity(*entity).despawn();
+    }
+    let entity = commands
+        .spawn((PlacementGhost, transform, Visibility::Inherited))
+        .id();
+    toy_sim_ship_view::attach_part_body(&mut commands, entity, definition, &assets, &loader);
+    *current = Some((part.prototype.clone(), entity));
+}
+
 /// Slab ray/AABB hit with the normal of the entering face.
 fn hit(origin: DVec3, direction: DVec3, lo: DVec3, hi: DVec3) -> Option<(f64, DVec3)> {
     let mut near = 0f64;
@@ -224,13 +264,12 @@ pub fn interact(
     }
     if !ui.ctx().egui_wants_keyboard_input() {
         if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            e.place = None;
-            e.ghost = None;
+            e.cancel_placement();
         }
         if ui.input(|i| i.key_pressed(egui::Key::R)) {
             e.orientation = (e.orientation + 1) % 24;
         }
-        if ui.input(|i| i.key_pressed(egui::Key::Delete)) {
+        if e.place.is_none() && ui.input(|i| i.key_pressed(egui::Key::Delete)) {
             if let Some(id) = e.selected {
                 e.delete_part(id);
             }
@@ -260,12 +299,22 @@ pub fn interact(
         }
     }
     if let Some(proto) = e.place.clone() {
-        let def = e.catalogue.part(&proto).unwrap();
+        let Some(def) = e.catalogue.part(&proto) else {
+            e.cancel_placement();
+            return;
+        };
         let size =
             orientation(e.orientation).abs() * DVec3::from_array(def.dimensions.map(|d| d as f64));
+        let snap_step = if ui.input(|i| i.modifiers.shift) {
+            1.0 / GRID
+        } else {
+            1.0
+        };
+        let snap = |position: DVec3| (position / snap_step).round() * snap_step;
+
         let position = if let Some((_, t, n, lo, hi)) = nearest {
             let point = (origin + direction * t) / GRID;
-            let mut pos = (point - size / 2.).round();
+            let mut pos = snap(point - size / 2.);
             let axis = n.abs().max_element();
             for k in 0..3 {
                 if n[k].abs() == axis {
@@ -283,11 +332,13 @@ pub fn interact(
                 return;
             }
             let p = (origin + direction * t) / GRID;
-            DVec3::new((p.x - size.x / 2.).round(), 0., (p.z - size.z / 2.).round())
+            let snapped = snap(p - size / 2.);
+            DVec3::new(snapped.x, 0., snapped.z)
         } else {
             return;
         };
         let part = PlacedPart {
+            tanks: e.placement_tanks.clone(),
             name: String::new(),
             alias: String::new(),
             groups: vec![],
@@ -311,6 +362,7 @@ pub fn interact(
         }
     } else if response.clicked() {
         e.selected = nearest.map(|n| n.0);
+        e.inspector = crate::ui::InspectorTab::Part;
     }
 }
 

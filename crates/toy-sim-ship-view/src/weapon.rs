@@ -5,6 +5,9 @@ use bevy::prelude::*;
 pub struct WeaponDefinition(pub toy_sim_ships::weapons::WeaponDef);
 
 #[derive(Component)]
+pub struct ModeledWeapon(pub Entity);
+
+#[derive(Component)]
 pub struct WeaponVisual {
     pub part_index: usize,
 }
@@ -12,7 +15,7 @@ pub struct WeaponVisual {
 pub fn spawn(
     commands: &mut Commands,
     parent: Entity,
-    part_index: usize,
+    part_index: Option<usize>,
     definition: &toy_sim_ships::weapons::WeaponDef,
     meshes: &mut Assets<Mesh>,
     materials: &mut Assets<StandardMaterial>,
@@ -27,13 +30,11 @@ pub fn spawn(
         ..Default::default()
     });
     let pivot = commands
-        .spawn((
-            ChildOf(parent),
-            WeaponVisual { part_index },
-            Transform::default(),
-            Visibility::default(),
-        ))
+        .spawn((ChildOf(parent), Transform::default(), Visibility::default()))
         .id();
+    if let Some(part_index) = part_index {
+        commands.entity(pivot).insert(WeaponVisual { part_index });
+    }
     commands.spawn((
         ChildOf(pivot),
         Mesh3d(mesh),

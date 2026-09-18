@@ -1,0 +1,938 @@
+[
+  {
+    "id": "auxiliary-generator-1m",
+    "title": "Auxiliary generator",
+    "dimensions_m": [
+      1,
+      1,
+      1
+    ],
+    "bounds_m": [
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/auxiliary-generator-1m.glb",
+    "objects": 8,
+    "scene": "Part - Auxiliary generator"
+  },
+  {
+    "id": "torquer-1m",
+    "title": "Attitude torque actuator",
+    "dimensions_m": [
+      1,
+      1,
+      1
+    ],
+    "bounds_m": [
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/torquer-1m.glb",
+    "objects": 8,
+    "scene": "Part - Attitude torque actuator"
+  },
+  {
+    "id": "storage-1m",
+    "title": "Small cargo hold",
+    "dimensions_m": [
+      1,
+      1,
+      1
+    ],
+    "bounds_m": [
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/storage-1m.glb",
+    "objects": 8,
+    "scene": "Part - Small cargo hold"
+  },
+  {
+    "id": "coolant-tank-1m",
+    "title": "Small coolant tank",
+    "dimensions_m": [
+      1,
+      1,
+      1
+    ],
+    "bounds_m": [
+      [
+        -0.46000000834465027,
+        0.46000000834465027
+      ],
+      [
+        -0.46000000834465027,
+        0.46000000834465027
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/coolant-tank-1m.glb",
+    "objects": 1,
+    "scene": "Part - Small coolant tank"
+  },
+  {
+    "id": "adapter-4m",
+    "title": "4m to 2m adapter",
+    "dimensions_m": [
+      4,
+      4,
+      2
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/adapter-4m.glb",
+    "objects": 3,
+    "scene": "Part - 4m to 2m adapter"
+  },
+  {
+    "id": "truss-4m",
+    "title": "4m open truss",
+    "dimensions_m": [
+      4,
+      4,
+      8
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/truss-4m.glb",
+    "objects": 26,
+    "scene": "Part - 4m open truss"
+  },
+  {
+    "id": "mount-frame-2m",
+    "title": "2m mounting frame",
+    "dimensions_m": [
+      2,
+      2,
+      0.5
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -0.25,
+        0.25
+      ]
+    ],
+    "model": "models/parts/mount-frame-2m.glb",
+    "objects": 26,
+    "scene": "Part - 2m mounting frame"
+  },
+  {
+    "id": "reactor-compact-2m",
+    "title": "Compact power reactor",
+    "dimensions_m": [
+      2,
+      2,
+      3
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.5,
+        1.5
+      ]
+    ],
+    "model": "models/parts/reactor-compact-2m.glb",
+    "objects": 16,
+    "scene": "Part - Compact power reactor"
+  },
+  {
+    "id": "reactor-hot-4m",
+    "title": "High temperature reactor",
+    "dimensions_m": [
+      4,
+      4,
+      6
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -3.0,
+        3.0
+      ]
+    ],
+    "model": "models/parts/reactor-hot-4m.glb",
+    "objects": 18,
+    "scene": "Part - High temperature reactor"
+  },
+  {
+    "id": "reactor-breeder-4m",
+    "title": "Breeder power reactor",
+    "dimensions_m": [
+      4,
+      4,
+      8
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/reactor-breeder-4m.glb",
+    "objects": 19,
+    "scene": "Part - Breeder power reactor"
+  },
+  {
+    "id": "thermal-engine-4m",
+    "title": "Nuclear thermal engine",
+    "dimensions_m": [
+      4,
+      4,
+      6
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -3.0,
+        3.0
+      ]
+    ],
+    "model": "models/parts/thermal-engine-4m.glb",
+    "objects": 16,
+    "scene": "Part - Nuclear thermal engine"
+  },
+  {
+    "id": "electric-engine-2m",
+    "title": "Electric engine",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        0.9700000286102295
+      ]
+    ],
+    "model": "models/parts/electric-engine-2m.glb",
+    "objects": 13,
+    "scene": "Part - Electric engine"
+  },
+  {
+    "id": "resistojet-1m",
+    "title": "Resistojet",
+    "dimensions_m": [
+      1,
+      1,
+      1
+    ],
+    "bounds_m": [
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/resistojet-1m.glb",
+    "objects": 4,
+    "scene": "Part - Resistojet"
+  },
+  {
+    "id": "radiator-8m",
+    "title": "Radiator panel",
+    "dimensions_m": [
+      8,
+      1,
+      8
+    ],
+    "bounds_m": [
+      [
+        -3.950000047683716,
+        3.950000047683716
+      ],
+      [
+        -0.5,
+        0.5
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/radiator-8m.glb",
+    "objects": 58,
+    "scene": "Part - Radiator panel"
+  },
+  {
+    "id": "battery-2m",
+    "title": "Battery module",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/battery-2m.glb",
+    "objects": 11,
+    "scene": "Part - Battery module"
+  },
+  {
+    "id": "heat-sink-2m",
+    "title": "Heat sink",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/heat-sink-2m.glb",
+    "objects": 11,
+    "scene": "Part - Heat sink"
+  },
+  {
+    "id": "shield-emitter-2m",
+    "title": "Shield emitter",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/shield-emitter-2m.glb",
+    "objects": 17,
+    "scene": "Part - Shield emitter"
+  },
+  {
+    "id": "shield-reservoir-2m",
+    "title": "Shield medium reservoir",
+    "dimensions_m": [
+      2,
+      2,
+      4
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -2.0,
+        2.0
+      ]
+    ],
+    "model": "models/parts/shield-reservoir-2m.glb",
+    "objects": 5,
+    "scene": "Part - Shield medium reservoir"
+  },
+  {
+    "id": "emergency-cooler-2m",
+    "title": "Emergency cooler",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/emergency-cooler-2m.glb",
+    "objects": 11,
+    "scene": "Part - Emergency cooler"
+  },
+  {
+    "id": "command-2m",
+    "title": "Command module",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/command-2m.glb",
+    "objects": 11,
+    "scene": "Part - Command module"
+  },
+  {
+    "id": "sensor-passive-2m",
+    "title": "Passive sensor",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -0.8999999761581421,
+        0.8999999761581421
+      ],
+      [
+        -0.8999999761581421,
+        0.8999999761581421
+      ],
+      [
+        -1.0,
+        0.8999999761581421
+      ]
+    ],
+    "model": "models/parts/sensor-passive-2m.glb",
+    "objects": 6,
+    "scene": "Part - Passive sensor"
+  },
+  {
+    "id": "sensor-active-4m",
+    "title": "Active sensor array",
+    "dimensions_m": [
+      4,
+      4,
+      2
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -1.0,
+        0.5899999737739563
+      ]
+    ],
+    "model": "models/parts/sensor-active-4m.glb",
+    "objects": 18,
+    "scene": "Part - Active sensor array"
+  },
+  {
+    "id": "beacon-4m",
+    "title": "Subspace beacon",
+    "dimensions_m": [
+      4,
+      4,
+      8
+    ],
+    "bounds_m": [
+      [
+        -1.875,
+        1.875
+      ],
+      [
+        -1.875,
+        1.875
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/beacon-4m.glb",
+    "objects": 12,
+    "scene": "Part - Subspace beacon"
+  },
+  {
+    "id": "docking-port-2m",
+    "title": "Docking port",
+    "dimensions_m": [
+      2,
+      2,
+      1
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/docking-port-2m.glb",
+    "objects": 8,
+    "scene": "Part - Docking port"
+  },
+  {
+    "id": "power-coupler-2m",
+    "title": "Power coupler",
+    "dimensions_m": [
+      2,
+      2,
+      1
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -0.5,
+        0.5
+      ]
+    ],
+    "model": "models/parts/power-coupler-2m.glb",
+    "objects": 9,
+    "scene": "Part - Power coupler"
+  },
+  {
+    "id": "hangar-8m",
+    "title": "Hangar bay",
+    "dimensions_m": [
+      8,
+      8,
+      16
+    ],
+    "bounds_m": [
+      [
+        -4.0,
+        4.0
+      ],
+      [
+        -4.0,
+        4.0
+      ],
+      [
+        -8.0,
+        8.0
+      ]
+    ],
+    "model": "models/parts/hangar-8m.glb",
+    "objects": 10,
+    "scene": "Part - Hangar bay"
+  },
+  {
+    "id": "crew-4m",
+    "title": "Crew compartment",
+    "dimensions_m": [
+      4,
+      4,
+      8
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/crew-4m.glb",
+    "objects": 9,
+    "scene": "Part - Crew compartment"
+  },
+  {
+    "id": "cargo-hold-4m",
+    "title": "Cargo hold",
+    "dimensions_m": [
+      4,
+      4,
+      8
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/cargo-hold-4m.glb",
+    "objects": 7,
+    "scene": "Part - Cargo hold"
+  },
+  {
+    "id": "life-support-2m",
+    "title": "Life support",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0,
+        1.0
+      ]
+    ],
+    "model": "models/parts/life-support-2m.glb",
+    "objects": 10,
+    "scene": "Part - Life support"
+  },
+  {
+    "id": "workshop-4m",
+    "title": "Repair workshop",
+    "dimensions_m": [
+      4,
+      4,
+      4
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ]
+    ],
+    "model": "models/parts/workshop-4m.glb",
+    "objects": 8,
+    "scene": "Part - Repair workshop"
+  },
+  {
+    "id": "cargo-handler-4m",
+    "title": "Cargo manipulator",
+    "dimensions_m": [
+      4,
+      4,
+      4
+    ],
+    "bounds_m": [
+      [
+        -1.0,
+        1.4500000476837158
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -2.0,
+        1.866762399673462
+      ]
+    ],
+    "model": "models/parts/cargo-handler-4m.glb",
+    "objects": 6,
+    "scene": "Part - Cargo manipulator"
+  },
+  {
+    "id": "fuel-processor-4m",
+    "title": "Fuel processor",
+    "dimensions_m": [
+      4,
+      4,
+      4
+    ],
+    "bounds_m": [
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.0,
+        2.0
+      ]
+    ],
+    "model": "models/parts/fuel-processor-4m.glb",
+    "objects": 31,
+    "scene": "Part - Fuel processor"
+  },
+  {
+    "id": "fuel-plant-8m",
+    "title": "Fuel fabrication plant",
+    "dimensions_m": [
+      8,
+      8,
+      8
+    ],
+    "bounds_m": [
+      [
+        -4.0,
+        4.0
+      ],
+      [
+        -4.0,
+        4.0
+      ],
+      [
+        -4.0,
+        4.0
+      ]
+    ],
+    "model": "models/parts/fuel-plant-8m.glb",
+    "objects": 31,
+    "scene": "Part - Fuel fabrication plant"
+  },
+  {
+    "id": "railgun-2m",
+    "title": "Railgun",
+    "dimensions_m": [
+      2,
+      2,
+      6
+    ],
+    "bounds_m": [
+      [
+        -1.0000004768371582,
+        0.9999998211860657
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -3.0,
+        3.000000238418579
+      ]
+    ],
+    "model": "models/parts/railgun-2m.glb",
+    "objects": 9,
+    "scene": "Part - Railgun"
+  },
+  {
+    "id": "laser-2m",
+    "title": "Point defence laser",
+    "dimensions_m": [
+      2,
+      2,
+      2
+    ],
+    "bounds_m": [
+      [
+        -1.0000001192092896,
+        1.0000001192092896
+      ],
+      [
+        -1.0,
+        1.0
+      ],
+      [
+        -1.0000001192092896,
+        1.0000001192092896
+      ]
+    ],
+    "model": "models/parts/laser-2m.glb",
+    "objects": 8,
+    "scene": "Part - Point defence laser"
+  },
+  {
+    "id": "laser-4m",
+    "title": "Heavy laser",
+    "dimensions_m": [
+      4,
+      4,
+      4
+    ],
+    "bounds_m": [
+      [
+        -2.000000238418579,
+        2.000000238418579
+      ],
+      [
+        -2.0,
+        2.0
+      ],
+      [
+        -2.000000238418579,
+        2.000000238418579
+      ]
+    ],
+    "model": "models/parts/laser-4m.glb",
+    "objects": 8,
+    "scene": "Part - Heavy laser"
+  }
+]

@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v13"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v14"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (13)
+#define SHIP_API_VERSION (14)
 #define SHIP_ERR_GAS (-1)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
@@ -391,6 +391,8 @@ typedef struct {
     double pitch_max_rad;
     double yaw_rate_rad_s;
     double pitch_rate_rad_s;
+    double beam_power_w;
+    double beam_range_m;
 } ship_weapon_spec_record;
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, ammunition_resource) == 0, "WeaponSpec.ammunition_resource");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, projectile_mass_kg) == 8, "WeaponSpec.projectile_mass_kg");
@@ -407,7 +409,9 @@ SHIP_ASSERT(offsetof(ship_weapon_spec_record, pitch_min_rad) == 120, "WeaponSpec
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, pitch_max_rad) == 128, "WeaponSpec.pitch_max_rad");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, yaw_rate_rad_s) == 136, "WeaponSpec.yaw_rate_rad_s");
 SHIP_ASSERT(offsetof(ship_weapon_spec_record, pitch_rate_rad_s) == 144, "WeaponSpec.pitch_rate_rad_s");
-SHIP_ASSERT(sizeof(ship_weapon_spec_record) == 152, "WeaponSpec size");
+SHIP_ASSERT(offsetof(ship_weapon_spec_record, beam_power_w) == 152, "WeaponSpec.beam_power_w");
+SHIP_ASSERT(offsetof(ship_weapon_spec_record, beam_range_m) == 160, "WeaponSpec.beam_range_m");
+SHIP_ASSERT(sizeof(ship_weapon_spec_record) == 168, "WeaponSpec size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_weapon_spec_record) == 8, "WeaponSpec alignment");
 typedef struct {
     double aim_direction[3];

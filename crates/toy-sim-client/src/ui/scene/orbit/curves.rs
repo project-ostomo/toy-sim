@@ -4,7 +4,7 @@ use super::{
     projection::{View, occluded},
 };
 use bevy::math::{DVec2, DVec3, DVec4};
-use bevy_egui::egui;
+use toy_sim_ui::egui;
 
 const MAX_CUBICS: usize = 1024;
 const MAX_VISITS: usize = 8192;

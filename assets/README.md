@@ -74,5 +74,5 @@ Some data is embedded at build time and is not part of this directory. Editing i
 - the part and resource catalogue: [crates/toy-sim-ships/data/catalogue.toml](../crates/toy-sim-ships/data/catalogue.toml)
 - the standard firmware: [crates/toy-sim-ships/data/example-controller.wasm](../crates/toy-sim-ships/data/example-controller.wasm)
 - the star catalogue: [crates/toy-sim-stars/data/](../crates/toy-sim-stars/data/README.md)
-- the MFD font: [crates/toy-sim-ship-view/data/fonts/](../crates/toy-sim-ship-view/data/fonts/README.md)
+- the MFD font: [crates/toy-sim-ui/data/fonts/](../crates/toy-sim-ui/data/fonts/README.md)
 - the WGSL shaders in [crates/toy-sim-ship-view/src](../crates/toy-sim-ship-view/src)

@@ -1,14 +1,24 @@
+mod catalogue;
+mod inspector;
+
 use super::*;
-use bevy_egui::{EguiContexts, egui};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InspectorTab {
+    Part,
+    Ship,
+}
+
+use toy_sim_ui::bevy_egui::{EguiContexts, egui};
 pub fn editor(
     mut contexts: EguiContexts,
     mut e: ResMut<Editor>,
     camera: Single<(&Camera, &GlobalTransform), With<viewport::EditorCamera>>,
     window: Single<&Window>,
+    previews: Res<previews::PartPreviews>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     e.pixels_per_point = ctx.pixels_per_point();
-    toy_sim_ship_view::square_style(ctx);
     let mut root = egui::Ui::new(
         ctx.clone(),
         "editor-root".into(),
@@ -23,24 +33,21 @@ pub fn editor(
         }
     }
     egui::Panel::top("toolbar").show(&mut root, |ui| {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.strong("SHIP EDITOR");
             if ui.button("New").clicked() {
-                e.edit(|s| *s = ShipBlueprint::default());
-                e.selected = None;
+                e.replace_ship(ShipBlueprint::default());
             }
             if ui.button("Starter").clicked() {
-                e.edit(|s| *s = starter(EXAMPLE_CONTROLLER.to_vec()));
-                e.camera_target = Vec3::new(0.5, 0.5, 4.5);
+                e.replace_ship(micropulse_starter());
             }
             ui.separator();
             ui.add(egui::TextEdit::singleline(&mut e.file).desired_width(220.));
             if ui.button("Open").clicked() {
                 match ShipBlueprint::load(&e.file) {
                     Ok(s) => {
-                        e.edit(|old| *old = s);
+                        e.replace_ship(s);
                         e.dirty = false;
-                        e.selected = None;
                     }
                     Err(err) => e.status = format!("Open failed: {err:#}"),
                 }
@@ -76,7 +83,12 @@ pub fn editor(
             }
             ui.separator();
             ui.selectable_value(&mut e.devices_mode, false, "Assembly");
-            ui.selectable_value(&mut e.devices_mode, true, "Systems");
+            if ui
+                .selectable_value(&mut e.devices_mode, true, "Systems")
+                .clicked()
+            {
+                e.cancel_placement();
+            }
             if ui
                 .add_enabled(
                     e.validation.is_ok() && e.child.is_none(),
@@ -91,139 +103,43 @@ pub fn editor(
             }
         });
     });
-    egui::Panel::bottom("status").resizable(true).default_size(72.).show(&mut root,|ui|{
-        match &e.validation {Ok(s)=>{ui.colored_label(egui::Color32::LIGHT_GREEN,s);},Err(s)=>{ui.colored_label(egui::Color32::LIGHT_RED,s);}}
-        ui.label(&e.status);
-        if !e.devices_mode {
-            ui.small("Assembly: click to place/select · right-drag orbit · middle-drag pan · wheel zoom · R rotate · Delete remove · Esc cancel");
-        }
-    });
-    egui::Panel::left("palette")
+    egui::Panel::bottom("status")
         .resizable(true)
-        .default_size(190.)
+        .default_size(72.)
+        .show(&mut root, |ui| {
+            match &e.validation {
+                Ok(message) => {
+                    ui.colored_label(egui::Color32::LIGHT_GREEN, message);
+                }
+                Err(message) => {
+                    ui.colored_label(egui::Color32::LIGHT_RED, message);
+                }
+            }
+            ui.label(&e.status);
+            if !e.devices_mode {
+                ui.small("Click to place/select · Shift: 1 m grid · right-drag orbit · middle-drag pan · wheel zoom · R rotate · Delete remove · Esc cancel");
+            }
+        });
+    egui::Panel::left("parts-catalogue")
+        .resizable(true)
+        .default_size(288.)
+        .min_size(200.)
+        .max_size((ctx.viewport_rect().width() * 0.4).max(200.))
         .show(&mut root, |ui| {
             if e.devices_mode {
                 ui.heading("Ship systems");
                 ui.label("Standard avionics and automatic flight control.");
                 ui.small("Physical placement determines actuator capabilities.");
             } else {
-                ui.heading("Predefined parts");
-                for p in e.catalogue.parts.clone() {
-                    if ui
-                        .selectable_label(e.place.as_ref() == Some(&p.id), &p.title)
-                        .clicked()
-                    {
-                        e.place = Some(p.id);
-                        e.selected = None;
-                    }
-                }
-                if ui.button("Select mode").clicked() {
-                    e.place = None;
-                }
-                ui.separator();
-                ui.label(format!("Placement rotation {} / 24", e.orientation + 1));
-                if ui.button("Rotate placement (R)").clicked() {
-                    e.orientation = (e.orientation + 1) % 24;
-                }
+                catalogue::show(ui, &mut e, &previews);
             }
         });
-    egui::Panel::right("inspector")
+    egui::Panel::right("part-inspector")
         .resizable(true)
-        .default_size(270.)
-        .show(&mut root, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading("Ship");
-                if !e.devices_mode {
-                    ui.add(
-                        egui::Slider::new(&mut e.preview_thrust, 0.0..=1.0).text("Preview thrust"),
-                    );
-                }
-                let mut name = e.ship.name.clone();
-                if ui.text_edit_singleline(&mut name).changed() {
-                    e.edit(|s| s.name = name);
-                }
-                ui.separator();
-                ui.label("Flight computer");
-                if ui
-                    .radio(
-                        matches!(e.ship.firmware, Firmware::Standard),
-                        "Standard firmware",
-                    )
-                    .clicked()
-                {
-                    e.edit(|s| s.firmware = Firmware::Standard);
-                }
-                ui.small(match e.ship.firmware {
-                    Firmware::Standard => "Automatic hardware discovery and flight control",
-                    Firmware::Custom(_) => "Custom firmware installed",
-                });
-                ui.collapsing("Custom firmware (advanced)", |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut e.wasm_file)
-                            .hint_text("Path to compiled .wasm"),
-                    );
-                    if ui.button("Import WASM").clicked() {
-                        match std::fs::read(&e.wasm_file)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|bytes| {
-                                e.runtime.validate_program(&bytes)?;
-                                Ok(bytes)
-                            }) {
-                            Ok(bytes) => e.edit(|s| s.firmware = Firmware::Custom(bytes)),
-                            Err(err) => e.status = format!("WASM rejected: {err:#}"),
-                        }
-                    }
-                    ui.label(format!(
-                        "Program: {} bytes",
-                        e.ship.controller_bytes().len()
-                    ));
-                });
-                ui.collapsing("Launch settings", |ui| {
-                    ui.label("Optional toy-sim-debug executable override");
-                    ui.text_edit_singleline(&mut e.sim_path);
-                });
-                if !e.devices_mode
-                    && let Some(id) = e.selected
-                {
-                    if let Some(part) = e.ship.parts.iter().find(|p| p.id == id).cloned() {
-                        ui.separator();
-                        ui.heading(format!("Part {id}"));
-                        if let Some(def) = e.catalogue.part(&part.prototype) {
-                            ui.label(&def.title);
-                            ui.label(format!("{} kg · {} hull", def.mass_kg, def.hull));
-                            ui.label(format!("Dimensions: {:?} × 0.1 m", def.dimensions));
-                            ui.small(format!("{:?}", def.equipment));
-                        }
-                        let mut changed = part.clone();
-                        ui.label("Part name");
-                        ui.add(
-                            egui::TextEdit::singleline(&mut changed.name)
-                                .hint_text("Default part name")
-                                .char_limit(64),
-                        );
-                        ui.label("Position (0.1 m grid)");
-                        ui.horizontal(|ui| {
-                            for v in &mut changed.position {
-                                ui.add(egui::DragValue::new(v).speed(1.));
-                            }
-                        });
-                        ui.add(
-                            egui::Slider::new(&mut changed.orientation, 0..=23).text("Rotation"),
-                        );
-                        if changed != part {
-                            e.edit(|s| *s.parts.iter_mut().find(|p| p.id == id).unwrap() = changed);
-                        }
-                        if ui.button("Duplicate for placement").clicked() {
-                            e.place = Some(part.prototype);
-                            e.orientation = part.orientation;
-                        }
-                        if ui.button("Delete part").clicked() {
-                            e.delete_part(id);
-                        }
-                    }
-                }
-            });
-        });
+        .default_size(352.)
+        .min_size(280.)
+        .max_size((ctx.viewport_rect().width() * 0.45).max(280.))
+        .show(&mut root, |ui| inspector::show(ui, &mut e, &previews));
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE)
         .show(&mut root, |ui| {

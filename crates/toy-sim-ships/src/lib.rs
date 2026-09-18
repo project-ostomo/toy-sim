@@ -14,3 +14,7 @@ pub use devices::*;
 pub mod thermal;
 
 pub mod weapons;
+
+pub mod reactors;
+
+pub mod utilities;

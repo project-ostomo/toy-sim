@@ -31,6 +31,15 @@ impl HardwareFixture {
         )
         .unwrap();
         app.world_mut().run_system_once(initialize).unwrap();
+        app.world_mut().get_mut::<Avionics>(ship).unwrap().0.powered =
+            design.parts.iter().any(|part| {
+                matches!(
+                    part.definition.equipment,
+                    Equipment::Utility {
+                        utility: toy_sim_ships::utilities::UtilityDef::Command { .. }
+                    }
+                )
+            });
         install(&mut app);
         Self { app, ship, design }
     }
@@ -98,14 +107,14 @@ impl HardwareFixture {
 }
 
 #[test]
-fn standard_avionics_are_automatic_and_have_mass_power_and_logical_devices() {
+fn command_module_powers_standard_avionics_and_logical_devices() {
     let mut fixture = HardwareFixture::standard();
     let design = fixture.design.clone();
     assert!(matches!(
         ShipBlueprint::default().firmware,
         Firmware::Standard
     ));
-    assert_eq!(design.parts.len(), 8);
+    assert_eq!(design.parts.len(), 9);
     let physical: f64 = design.parts.iter().map(|p| p.definition.mass_kg).sum();
     assert_eq!(design.dry_mass, physical + 71.0);
     for handle in design.avionics_handles {
@@ -115,7 +124,7 @@ fn standard_avionics_are_automatic_and_have_mass_power_and_logical_devices() {
     fixture.set_inventory(|inventory| inventory.quantities[1] = 0.0);
     let before = fixture.state().inventory.energy_j;
     fixture.advance();
-    assert!((before - fixture.state().inventory.energy_j - 100_110.1).abs() < 1e-6);
+    assert!((before - fixture.state().inventory.energy_j - 100_300.0).abs() < 1e-6);
     fixture
         .commands(&[DeviceCommand {
             device: design.avionics_handles[2],
@@ -125,7 +134,7 @@ fn standard_avionics_are_automatic_and_have_mass_power_and_logical_devices() {
     let before = fixture.state().inventory.energy_j;
     fixture.advance();
     let state = fixture.state();
-    assert!((before - state.inventory.energy_j - 100_010.1).abs() < 1e-6);
+    assert!((before - state.inventory.energy_j - 100_200.0).abs() < 1e-6);
     assert_eq!(state.sensor_range, 0.0);
     fixture.set_operational(design.avionics_handles[0], false);
     fixture.advance();
@@ -144,7 +153,25 @@ fn standard_avionics_are_automatic_and_have_mass_power_and_logical_devices() {
 
 #[test]
 fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
+    let mut idle = HardwareFixture::standard();
+    let idle_energy = idle.state().inventory.energy_j;
+    idle.advance();
+    let auxiliary_energy = idle_energy - idle.state().inventory.energy_j;
+
     let mut fixture = HardwareFixture::standard();
+    let engine = &fixture.design.device_catalogue[fixture.device("main_engine").0 as usize];
+    let DeviceKind::Engine {
+        thrust_n,
+        propellant_kg_s,
+        power_w,
+        ..
+    } = engine.kind
+    else {
+        unreachable!()
+    };
+    let fraction = 0.05 / (propellant_kg_s * 0.1);
+    let expected_thrust = thrust_n * fraction;
+    let expected_energy = power_w * fraction * 0.1;
     fixture.set_inventory(|inventory| inventory.quantities[0] = 0.05);
     let energy = fixture.state().inventory.energy_j;
     fixture
@@ -154,11 +181,11 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
         }])
         .unwrap();
     let wrench = fixture.advance();
-    assert!((wrench.force.z + 100_000.0).abs() < 1e-8);
+    assert!((wrench.force.z + expected_thrust).abs() < 1e-8);
     assert!(wrench.torque.length() < 1e-8);
     let state = fixture.state();
     assert_eq!(state.inventory.quantities[0], 0.0);
-    assert!((energy - state.inventory.energy_j - 10_100_110.1).abs() < 1e-6);
+    assert!((energy - state.inventory.energy_j - auxiliary_energy - expected_energy).abs() < 1e-6);
     assert_eq!(state.sensor_range, 100_000_000.0);
     let mass = fixture.app.world().get::<MassProps>(fixture.ship).unwrap();
     assert!(mass.inertia.abs_diff_eq(
@@ -218,7 +245,7 @@ fn device_handles_are_dense_and_commands_are_checked_atomically() {
     let mut fixture = HardwareFixture::standard();
     assert_eq!(
         fixture.design.device_catalogue.len(),
-        fixture.design.parts.len() + 1
+        fixture.design.parts.len()
     );
     for (index, descriptor) in fixture.design.device_catalogue.iter().enumerate() {
         assert_eq!(descriptor.handle.0 as usize, index);
@@ -325,9 +352,9 @@ fn every_shield_generator_must_be_powered_for_the_combined_field() {
         .find(|p| p.prototype == "shield")
         .unwrap()
         .clone();
-    second.id = 15;
+    second.id = blueprint.parts.iter().map(|part| part.id).max().unwrap() + 1;
     second.alias = "second_shield".into();
-    second.position = [0, 0, -20];
+    second.position = [10, 0, 30];
     blueprint.parts.push(second);
     let mut fixture = HardwareFixture::new(blueprint);
     fixture.advance();
@@ -338,4 +365,51 @@ fn every_shield_generator_must_be_powered_for_the_combined_field() {
     assert!(!state.thermal.shield_powered);
     state.shield_activation(&fixture.design, true);
     assert!(!state.shield_active());
+}
+
+#[test]
+fn failed_command_module_stops_computer_and_clears_thrust_commands() {
+    let mut fixture = HardwareFixture::standard();
+    let command_index = fixture
+        .design
+        .parts
+        .iter()
+        .position(|part| {
+            matches!(
+                part.definition.equipment,
+                Equipment::Utility {
+                    utility: toy_sim_ships::utilities::UtilityDef::Command { .. }
+                }
+            )
+        })
+        .unwrap();
+    fixture.advance();
+    assert!(fixture.state().computer_running(&fixture.design));
+    let engine = fixture.device("main_engine");
+    fixture
+        .commands(&[DeviceCommand {
+            device: engine,
+            setting: DeviceSetting::Throttle(1.0),
+        }])
+        .unwrap();
+    let part = fixture
+        .app
+        .world()
+        .get::<PartDevices>(fixture.ship)
+        .unwrap()
+        .0[command_index];
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<Device>(part)
+        .unwrap()
+        .0
+        .operational = false;
+    assert_eq!(fixture.advance().force, DVec3::ZERO);
+    let state = fixture.state();
+    assert!(!state.computer_running(&fixture.design));
+    assert_eq!(
+        state.settings[engine.0 as usize],
+        Some(DeviceSetting::Throttle(0.0))
+    );
 }

@@ -178,14 +178,19 @@ pub fn fire(
     if ship.inventory.energy_j < shot_energy(&spec) {
         flags |= abi::WEAPON_ENERGY;
     }
-    let resource = spec.ammunition_resource as usize - 1;
+    let resource = spec.ammunition_resource.saturating_sub(1) as usize;
     let propellant = toy_sim_ships::weapons::shot_propellant_kg(&spec);
     // The native propellant resource is measured in kilograms.
-    let required_propellant = propellant + if resource == 0 { 1.0 } else { 0.0 };
+    let required_propellant = propellant
+        + if spec.ammunition_resource == 1 {
+            1.0
+        } else {
+            0.0
+        };
     if ship.inventory.quantities[0] < required_propellant {
         flags |= abi::WEAPON_PROPELLANT;
     }
-    if ship.inventory.quantities[resource] < 1.0 {
+    if spec.beam_power_w == 0.0 && ship.inventory.quantities[resource] < 1.0 {
         flags |= abi::WEAPON_AMMO;
     }
     if state.next_fire_s > now + 1e-8 {
@@ -205,8 +210,10 @@ pub fn fire(
         flags |= abi::WEAPON_POINTING;
     }
     let local_desired = mount.inverse() * desired;
-    if local_desired.y.clamp(-1.0, 1.0).asin() < spec.pitch_min_rad - 1e-6
-        || local_desired.y.clamp(-1.0, 1.0).asin() > spec.pitch_max_rad + 1e-6
+    let pitch = local_desired.y.clamp(-1.0, 1.0).asin();
+    let pointing_tolerance = command.setting.maximum_pointing_error_rad.max(1e-6);
+    if pitch < spec.pitch_min_rad - pointing_tolerance
+        || pitch > spec.pitch_max_rad + pointing_tolerance
     {
         flags |= abi::WEAPON_TRAVEL;
     }
@@ -233,6 +240,23 @@ pub fn fire(
         return None;
     }
     let state = &mut ship.weapons[index];
+    if spec.beam_power_w > 0.0 {
+        let optical = spec.beam_power_w * spec.cycle_interval_s;
+        let input = shot_energy(&spec);
+        ship.inventory.energy_j -= input;
+        body.members[member].thermal.add_hull_heat(input - optical);
+        state.next_fire_s = now + spec.cycle_interval_s;
+        state.shots_fired += 1;
+        report.beams.push(BeamEvent {
+            owner: body.members[member].entity,
+            position: body.position.offset_by(muzzle),
+            direction: barrel * DVec3::NEG_Z,
+            range_m: spec.beam_range_m,
+            energy_j: optical,
+            divergence_rad: spec.dispersion_half_angle_rad,
+        });
+        return None;
+    }
     // Deterministic uniform solid-angle dispersion; unrelated fights cannot perturb it.
     let mut seed =
         body.members[member].entity.to_bits() ^ (part.placed.id << 32) ^ state.shots_fired;
@@ -366,6 +390,49 @@ mod tests {
     use bevy::prelude::World;
     use toy_sim_ships::{Catalogue, ShipState, armed_starter, weapons::WeaponCommand};
 
+    #[test]
+    fn beam_hits_nearest_body_and_deposits_heat_without_projectiles() {
+        let mut world = World::new();
+        let owner = world.spawn_empty().id();
+        let mut bodies = vec![
+            projectile_body(
+                world.spawn_empty().id(),
+                GalacticPosition::default().offset_by(DVec3::new(0.0, 0.0, -10.0)),
+                DVec3::ZERO,
+                10.0,
+                1.0,
+                0.0,
+            ),
+            projectile_body(
+                world.spawn_empty().id(),
+                GalacticPosition::default().offset_by(DVec3::new(0.0, 0.0, -20.0)),
+                DVec3::ZERO,
+                10.0,
+                1.0,
+                0.0,
+            ),
+        ];
+        let mut report = Report::default();
+        let hit = resolve_beam(
+            BeamEvent {
+                owner,
+                position: GalacticPosition::default(),
+                direction: DVec3::NEG_Z,
+                range_m: 100.0,
+                energy_j: 1000.0,
+                divergence_rad: 0.00002,
+            },
+            &mut bodies,
+            0.0,
+            &mut report,
+        );
+        assert_eq!(hit, Some(0));
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(bodies[0].members[0].thermal.hull_energy_j, 1000.0);
+        assert_eq!(bodies[1].members[0].thermal.hull_energy_j, 0.0);
+        assert!(report.shots.is_empty());
+    }
+
     fn armed(world: &mut World) -> (Body, WeaponShip) {
         let catalogue = Catalogue::builtin();
         let design = Arc::new(armed_starter().compile(&catalogue).unwrap());
@@ -410,6 +477,80 @@ mod tests {
             ..Default::default()
         };
         (body, ship)
+    }
+
+    #[test]
+    fn laser_respects_range_and_shields_absorb_before_hull() {
+        let mut world = World::new();
+        let owner = world.spawn_empty().id();
+        let (mut body, _) = armed(&mut world);
+        body.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
+        let hull = body.members[0].hull;
+        let shield_energy = body.members[0].thermal.shield_energy_j;
+        let mut bodies = vec![body];
+        let beam = BeamEvent {
+            owner,
+            position: GalacticPosition::default().offset_by(DVec3::Z * 100.0),
+            direction: DVec3::NEG_Z,
+            range_m: 10.0,
+            energy_j: 1000.0,
+            divergence_rad: 0.00002,
+        };
+        let mut report = Report::default();
+        assert_eq!(
+            resolve_beam(beam.clone(), &mut bodies, 0.0, &mut report),
+            None
+        );
+        assert_eq!(
+            resolve_beam(
+                BeamEvent {
+                    range_m: 200.0,
+                    ..beam
+                },
+                &mut bodies,
+                0.0,
+                &mut report
+            ),
+            Some(0)
+        );
+        assert_eq!(bodies[0].members[0].hull, hull);
+        assert_eq!(
+            bodies[0].members[0].thermal.shield_energy_j - shield_energy,
+            1000.0
+        );
+    }
+
+    #[test]
+    fn laser_consumes_only_electricity_and_heats_its_emitter() {
+        let mut world = World::new();
+        let (mut body, mut ship) = armed(&mut world);
+        let spec = &mut Arc::make_mut(&mut ship.design).weapon_specs[0];
+        spec.beam_power_w = 1000.0;
+        spec.beam_range_m = 10000.0;
+        spec.ammunition_resource = 0;
+        spec.efficiency = 0.5;
+        spec.cycle_interval_s = 0.1;
+        ship.inventory.quantities.fill(0.0);
+        ship.inventory.energy_j = 1000.0;
+        let mass = body.mass;
+        let heat = body.members[0].thermal.hull_energy_j;
+        let mut report = Report::default();
+        let projectile = fire(
+            &mut body,
+            0,
+            0,
+            &mut ship,
+            0.0,
+            0.0,
+            &mut || panic!("laser allocated projectile"),
+            &mut report,
+        );
+        assert!(projectile.is_none());
+        assert_eq!(report.beams.len(), 1);
+        assert_eq!(ship.weapons[0].shots_fired, 1);
+        assert_eq!(ship.inventory.energy_j, 800.0);
+        assert_eq!(body.mass, mass);
+        assert_eq!(body.members[0].thermal.hull_energy_j - heat, 100.0);
     }
 
     #[test]
@@ -649,4 +790,72 @@ mod shield_firing_tests {
         assert!(report.impact_events[0].entities.contains(&target_id));
         assert_eq!(bodies[0].members[0].thermal.shield_energy_j, 0.0);
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct BeamEvent {
+    pub owner: Entity,
+    pub position: GalacticPosition,
+    pub direction: DVec3,
+    pub range_m: f64,
+    pub energy_j: f64,
+    pub divergence_rad: f64,
+}
+
+pub fn resolve_beam(
+    beam: BeamEvent,
+    bodies: &mut [Body],
+    t: f64,
+    report: &mut Report,
+) -> Option<usize> {
+    let ray = query::Ray::new(vector(DVec3::ZERO), vector(beam.direction));
+    let mut closest = None;
+    let mut distance = beam.range_m;
+    for (body_index, body) in bodies.iter().enumerate() {
+        for (member_index, member) in body.members.iter().enumerate() {
+            if member.destroyed {
+                continue;
+            }
+            let pose = body.shape_pose(member_index, t, beam.position);
+            let shape = if member.entity == beam.owner {
+                &member.geometry.hull
+            } else {
+                member.shape()
+            };
+            if let Some(hit) = shape.cast_ray(&pose, &ray, distance, true) {
+                distance = hit;
+                closest = Some((body_index, member_index));
+            }
+        }
+    }
+    let (body_index, member_index) = closest?;
+    let body = &mut bodies[body_index];
+    record_motion(body, t, report);
+    body.rebase(t);
+    body.advance_thermal(t);
+    let member = &mut body.members[member_index];
+    let shield = member.shielded() && member.entity != beam.owner;
+    let radius = if shield {
+        member.geometry.shield_radius
+    } else {
+        member.geometry.radius
+    };
+    let spot = (distance * beam.divergence_rad).max(0.001);
+    let energy = beam.energy_j * (radius * radius / (spot * spot)).min(1.0);
+    member.deposit(shield, energy);
+    report.impact_events.push(ImpactEvent {
+        entities: [beam.owner, member.entity],
+        time: t,
+        position: beam.position.offset_by(beam.direction * distance),
+        velocity: body.velocity,
+        normal: -beam.direction,
+        shields: [false, shield],
+        energy_j: energy,
+    });
+    report.impacts += 1;
+    report.dissipated_j += energy;
+    body.sync_mass();
+    body.generation += 1;
+    record_deaths(body, t, report);
+    Some(body_index)
 }

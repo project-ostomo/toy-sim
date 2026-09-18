@@ -108,7 +108,7 @@ The weapons instrument has a 2 s lease. Its reason text is "Tracking", "Firing" 
 
 ## In the simulator
 
-The Weapons window ([gui/instruments.rs](../crates/toy-sim-client/src/ui/instruments.rs)) has "Engage selected", which uses the contact selected in the Contacts window with a 2 s maximum flight time, and "Hold fire". For each weapon row it shows the mode, target, reason, rounds, battery energy versus shot energy, pointing error, flight time and active inhibit flags.
+Weapon commands and instrument records remain available through the session protocol. The current client renders combat effects but has no Weapons or Contacts window; its interface is the scene HUD and one "Hello world" window while the UI is rebuilt.
 
 When the player engages an uncontrolled ship, that ship is ordered to engage the player in return ([vessel README](server-client.md#server-tick)).
 
@@ -136,3 +136,7 @@ These cover:
 - setting validation, and fault rollback of staged fire
 - firmware engagement staying within budget
 - intercept solutions
+
+## Laser equipment
+
+Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. ABI 14 exposes the beam fields to firmware.

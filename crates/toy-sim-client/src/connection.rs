@@ -209,25 +209,34 @@ mod tests {
     #[cfg(feature = "ui")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bevy_assets_share_downloads_retry_explicitly_and_release_after_last_owner() {
-        use crate::assets::{self, StarCatalogue};
+        use crate::assets::{self, SystemDefinition};
         use bevy::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        let catalogue = UniverseCatalogue {
-            systems: Vec::new(),
+        use toy_sim_universe::replication::{BodyIdentity, SystemAsset};
+
+        let config = toy_sim_universe::example_config();
+        let definition = SystemAsset {
+            version: 1,
+            system_id: [200; 16],
+            body_ids: config
+                .bodies
+                .iter()
+                .enumerate()
+                .map(|(index, body)| BodyIdentity {
+                    name: body.name.to_string(),
+                    id: [(index + 1) as u8; 16],
+                })
+                .collect(),
+            config,
         };
-        let bytes = postcard::to_allocvec(&catalogue).unwrap();
+        let bytes = definition.encode().unwrap();
         let hash = *blake3::hash(&bytes).as_bytes();
-        let other = UniverseCatalogue {
-            systems: vec![UniverseSystem {
-                id: Id([1; 16]),
-                name: "Retry system".into(),
-                position: GalacticPosition::ZERO,
-                influence_radius_m: 1e12,
-                bodies: Vec::new(),
-            }],
+        let other = SystemAsset {
+            system_id: [201; 16],
+            ..definition
         };
-        let other_bytes = postcard::to_allocvec(&other).unwrap();
+        let other_bytes = other.encode().unwrap();
         let other_hash = *blake3::hash(&other_bytes).as_bytes();
         let (requests, mut requested) = tokio::sync::mpsc::channel::<AssetRequest>(8);
         let count = Arc::new(AtomicUsize::new(0));
@@ -253,8 +262,8 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()));
         assets::install(&mut app);
         let server = app.world().resource::<AssetServer>().clone();
-        let first: Handle<StarCatalogue> = server.load(assets::path(hash));
-        let second: Handle<StarCatalogue> = server.load(assets::path(hash));
+        let first: Handle<SystemDefinition> = server.load(assets::path(hash));
+        let second: Handle<SystemDefinition> = server.load(assets::path(hash));
         assert_eq!(first.id(), second.id());
 
         async fn settle(app: &mut App, ready: impl Fn(&World) -> bool) {
@@ -273,7 +282,7 @@ mod tests {
         }
         settle(&mut app, |world| {
             world
-                .resource::<Assets<StarCatalogue>>()
+                .resource::<Assets<SystemDefinition>>()
                 .get(&first)
                 .is_some()
         })
@@ -284,14 +293,18 @@ mod tests {
         for _ in 0..5 {
             app.update();
         }
-        assert!(app.world().resource::<Assets<StarCatalogue>>().contains(id));
+        assert!(
+            app.world()
+                .resource::<Assets<SystemDefinition>>()
+                .contains(id)
+        );
         drop(second);
         settle(&mut app, |world| {
-            !world.resource::<Assets<StarCatalogue>>().contains(id)
+            !world.resource::<Assets<SystemDefinition>>().contains(id)
         })
         .await;
 
-        let failed: Handle<StarCatalogue> = server.load(assets::path(other_hash));
+        let failed: Handle<SystemDefinition> = server.load(assets::path(other_hash));
         settle(&mut app, |_| {
             matches!(
                 server.load_state(failed.id()),
@@ -303,16 +316,10 @@ mod tests {
             app.update();
         }
         assert_eq!(count.load(Ordering::SeqCst), 2);
-        assert!(
-            app.world()
-                .resource::<assets::AssetProblems>()
-                .0
-                .contains_key(&assets::path(other_hash))
-        );
         server.reload(assets::path(other_hash));
         settle(&mut app, |world| {
             world
-                .resource::<Assets<StarCatalogue>>()
+                .resource::<Assets<SystemDefinition>>()
                 .get(&failed)
                 .is_some()
         })
@@ -320,16 +327,12 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
         assert_eq!(
             app.world()
-                .resource::<Assets<StarCatalogue>>()
+                .resource::<Assets<SystemDefinition>>()
                 .get(&failed)
                 .unwrap()
-                .0,
-            other
+                .system,
+            Id(other.system_id)
         );
-        settle(&mut app, |world| {
-            world.resource::<assets::AssetProblems>().0.is_empty()
-        })
-        .await;
         drop(failed);
         drop(server);
         drop(app);

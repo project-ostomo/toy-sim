@@ -5,7 +5,7 @@ edition.workspace = true
 [dependencies]
 anyhow.workspace = true
 bevy.workspace = true
-bevy_egui.workspace = true
+toy-sim-ui = { path = "../../crates/toy-sim-ui" }
 toy-sim-ships = { path = "../../crates/toy-sim-ships" }
 toy-sim-ship-api = { path = "../../crates/toy-sim-ship-api" }
 toy-sim-ship-wasm = { path = "../../crates/toy-sim-ship-wasm" }

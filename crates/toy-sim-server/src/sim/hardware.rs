@@ -6,7 +6,10 @@ use super::{
 use bevy::{ecs::query::QueryData, math::DVec3, prelude::*};
 use toy_sim_ships::*;
 
+pub(crate) mod cooling;
 pub(crate) mod devices;
+pub(crate) mod reactors;
+pub mod utilities;
 use devices::{Demand, Generator, Shield};
 
 #[derive(Component)]
@@ -86,6 +89,7 @@ struct DormantThermalElapsed(f64);
 pub struct DevicePower {
     pub requested_w: f64,
     pub supplied_w: f64,
+    pub recovered_w: f64,
 }
 
 #[derive(Component, Default, Clone, Copy)]
@@ -144,10 +148,15 @@ pub fn install(app: &mut App) {
         (
             (begin, reset_weapons),
             generators,
+            reactors::dock_heat_transfer,
+            reactors::generate,
             avionics,
             device_systems(),
-            publish_mass,
+            utilities::run,
+            utilities::service_docked,
+            cooling::run,
             power_totals,
+            publish_mass,
             dormant_thermal,
             sensor_overrides,
         )
@@ -166,12 +175,15 @@ pub(crate) fn initialize(
         &PendingHardwareReset,
         &PartDevices,
         Has<super::travel::Dormant>,
+        Option<&utilities::Crew>,
+        Option<&super::travel::DockingBays>,
     )>,
 ) {
-    for (ship, d, reset, old, dormant) in &ships {
+    for (ship, d, reset, old, dormant, crew, bays) in &ships {
         for part in &old.0 {
             commands.entity(*part).despawn();
         }
+        utilities::install_ship(&mut commands, ship, &d.0, crew, bays);
         let state = &reset.0;
         let mut parts = Vec::with_capacity(d.0.parts.len());
         for (index, device) in state.devices.iter().enumerate() {
@@ -185,6 +197,11 @@ pub(crate) fn initialize(
                 part.insert(ActiveDevice);
             }
             devices::install(&mut part, &d.0.parts[index].definition.equipment);
+            if let Equipment::Utility { utility } = &d.0.parts[index].definition.equipment {
+                part.insert(utilities::Utility(utility.clone()));
+            }
+            cooling::install(&mut part, &d.0.parts[index].definition.equipment);
+            reactors::install(&mut part, &d.0.parts[index].definition.equipment);
             if let Some(w) = d.0.part_weapons[index] {
                 part.insert(Weapon(state.weapons[w].clone()));
             }
@@ -257,6 +274,7 @@ impl HardwareWriteItem<'_, '_> {
     ) -> Vec<DeviceStatus> {
         let mut state = ShipState {
             inventory: Inventory {
+                tank_capacities_m3: Vec::new(),
                 quantities: Vec::new(),
                 energy_j: 0.0,
             },
@@ -310,6 +328,7 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
     let d = &world.get::<ShipDesign>(ship)?.0;
     let mut state = ShipState {
         inventory: Inventory {
+            tank_capacities_m3: Vec::new(),
             quantities: Vec::new(),
             energy_j: 0.0,
         },
@@ -398,13 +417,38 @@ fn reset_weapons(
 
 pub(crate) fn avionics(
     time: Res<Time<Fixed>>,
-    mut ships: Query<(&ShipDesign, HardwareWrite), Without<super::travel::Dormant>>,
+    mut ships: Query<
+        (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
+        Without<super::travel::Dormant>,
+    >,
+    parts: Query<&Device>,
 ) {
     let dt = time.delta_secs_f64();
-    ships.par_iter_mut().for_each(|(d, mut h)| {
-        h.avionics.0.powered = h.avionics.0.operational
-            && h.hull.0 > 0.
-            && spend(&mut h.inventory.0, [0., 0., AVIONICS_POWER_W * dt]) >= 1. - 1e-9;
+    ships.par_iter_mut().for_each(|(d, mut h, mut outputs)| {
+        h.avionics.0.powered = false;
+        if h.avionics.0.operational && h.hull.0 > 0. {
+            for (index, part) in d.0.parts.iter().enumerate() {
+                let Equipment::Utility {
+                    utility: toy_sim_ships::utilities::UtilityDef::Command { power_w },
+                } = part.definition.equipment
+                else {
+                    continue;
+                };
+                if !parts
+                    .get(h.parts.0[index])
+                    .is_ok_and(|device| device.0.operational)
+                {
+                    continue;
+                }
+                let fraction = spend(&mut h.inventory.0, [0., 0., power_w * dt]);
+                let output = &mut outputs.0[index];
+                output.power.requested_w = power_w;
+                output.power.supplied_w = power_w * fraction;
+                output.powered = fraction >= 1. - 1e-9;
+                h.avionics.0.powered |= output.powered;
+                h.thermal.0.add_waste_heat(power_w * fraction * dt, dt);
+            }
+        }
         if !h.avionics.0.powered {
             h.reset_commands(&d.0);
             return;
@@ -476,12 +520,16 @@ pub(crate) fn device_systems()
     (
         (
             devices::prepare_engines,
+            devices::prepare_micropulse_engines,
+            devices::prepare_thermal_engines,
             devices::prepare_rcs,
             devices::prepare_torquers,
             devices::prepare_shields,
         ),
         actuate,
+        devices::thermal_engine_decay,
         devices::prepare_weapons,
+        reactors::process,
         publish_devices,
     )
         .chain()
@@ -489,6 +537,7 @@ pub(crate) fn device_systems()
 
 pub(crate) fn actuate(
     time: Res<Time<Fixed>>,
+    catalogue: Res<ShipCatalogue>,
     mut ships: Query<
         (
             &ShipDesign,
@@ -524,13 +573,78 @@ pub(crate) fn actuate(
                     continue;
                 }
                 let fraction = if demand.enabled {
-                    spend(&mut hardware.inventory.0, demand.inputs)
+                    let mut fraction = 1.0_f64;
+                    for (resource, requested) in
+                        [demand.resource_input, demand.secondary_resource_input]
+                            .into_iter()
+                            .flatten()
+                    {
+                        let available = hardware.inventory.0.quantities[resource];
+                        fraction = fraction.min(if requested > 0.0 {
+                            (available / requested).min(1.0)
+                        } else {
+                            f64::from(available > 0.0)
+                        });
+                    }
+                    for (available, requested) in [
+                        hardware.inventory.0.quantities[0],
+                        hardware.inventory.0.quantities[1],
+                        hardware.inventory.0.energy_j,
+                    ]
+                    .into_iter()
+                    .zip(demand.inputs)
+                    {
+                        if requested > 0.0 {
+                            fraction = fraction.min(available / requested);
+                        }
+                    }
+                    if let Some((output_resource, output_quantity)) = demand.resource_output {
+                        let inventory = &hardware.inventory.0;
+                        let mut cargo_after = inventory.cargo_volume(&catalogue.0);
+                        for (resource, change) in [
+                            demand.resource_input.map(|(i, q)| (i, -q)),
+                            demand.secondary_resource_input.map(|(i, q)| (i, -q)),
+                            Some((output_resource, output_quantity)),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            let volume = catalogue.0.resources[resource].volume_m3;
+                            let reserved = inventory.tank_capacities_m3[resource];
+                            let before = inventory.quantities[resource] * volume;
+                            cargo_after += (before + change * fraction * volume - reserved)
+                                .max(0.0)
+                                - (before - reserved).max(0.0);
+                        }
+                        if cargo_after > design.0.capacity_m3 + 1e-9 * design.0.capacity_m3.max(1.0)
+                        {
+                            fraction = 0.0;
+                        }
+                    }
+                    for (resource, requested) in
+                        [demand.resource_input, demand.secondary_resource_input]
+                            .into_iter()
+                            .flatten()
+                    {
+                        hardware.inventory.0.quantities[resource] -= requested * fraction;
+                    }
+                    hardware.inventory.0.quantities[0] -= demand.inputs[0] * fraction;
+                    hardware.inventory.0.quantities[1] -= demand.inputs[1] * fraction;
+                    hardware.inventory.0.energy_j -= demand.inputs[2] * fraction;
+                    if let Some((resource, quantity)) = demand.resource_output {
+                        hardware.inventory.0.quantities[resource] += quantity * fraction;
+                    }
+                    fraction
                 } else {
                     0.0
                 };
                 let output = &mut outputs.0[index];
                 output.power.requested_w = demand.inputs[2] / dt;
                 output.power.supplied_w = output.power.requested_w * fraction;
+                let recovered = (demand.generated_energy_j * fraction)
+                    .min((design.0.battery_j - hardware.inventory.0.energy_j).max(0.0));
+                hardware.inventory.0.energy_j += recovered;
+                output.power.recovered_w = recovered / dt;
                 output.actual = demand.actual * fraction;
                 output.thrust_n = (demand.thrust * fraction).to_array();
                 output.powered = demand.enabled
@@ -588,22 +702,66 @@ fn publish_devices(
 
 pub(crate) fn publish_mass(
     cat: Res<ShipCatalogue>,
-    mut ships: Query<
-        (
-            &ShipDesign,
-            HardwareWrite,
-            &mut MassProps,
-            Option<&super::travel::StoredMass>,
-        ),
-        Without<super::travel::Dormant>,
-    >,
+    identities: Option<Res<super::identity::IdentityIndex>>,
+    mut ships: Query<(
+        Entity,
+        &ShipDesign,
+        HardwareWrite,
+        &mut MassProps,
+        Option<&mut super::travel::StoredMass>,
+        Option<&super::travel::PresenceState>,
+    )>,
 ) {
-    ships.par_iter_mut().for_each(|(d, h, mut mass, stored)| {
-        let (own, inertia) = h.mass_properties(&d.0, &cat.0);
-        mass.mass = own + stored.map_or(0., |s| s.0);
-        mass.inertia = inertia * (mass.mass / own);
+    let mut changes = Vec::new();
+    for (entity, design, hardware, mut mass, stored, _) in &mut ships {
+        let (own, inertia) = hardware.mass_properties(&design.0, &cat.0);
+        let updated = own + stored.map_or(0., |s| s.0);
+        let delta = updated - mass.mass;
+        mass.mass = updated;
+        mass.inertia = inertia * (updated / own);
         mass.inertia_inv = mass.inertia.inverse();
-    });
+        if delta != 0. {
+            changes.push((entity, delta));
+        }
+    }
+    let Some(identities) = identities else {
+        return;
+    };
+    for (entity, delta) in changes {
+        let mut descendant = entity;
+        let mut visited = Vec::new();
+        while visited.len() < identities.0.len() {
+            if visited.contains(&descendant) {
+                break;
+            }
+            visited.push(descendant);
+            let host_id = {
+                let Ok((_, _, _, _, _, Some(presence))) = ships.get(descendant) else {
+                    break;
+                };
+                match &presence.0 {
+                    toy_sim_model::travel::Presence::Docked { host, .. }
+                    | toy_sim_model::travel::Presence::StoredInWreck(host) => *host,
+                    _ => break,
+                }
+            };
+            let Some(&host) = identities.0.get(&host_id) else {
+                break;
+            };
+            let Ok((_, _, _, mut mass, Some(mut stored), _)) = ships.get_mut(host) else {
+                break;
+            };
+            let previous = mass.mass;
+            stored.0 = (stored.0 + delta).max(0.);
+            mass.mass = (mass.mass + delta).max(0.);
+            if previous > 0. {
+                let scale = mass.mass / previous;
+                mass.inertia *= scale;
+                mass.inertia_inv = mass.inertia.inverse();
+            }
+            descendant = host;
+        }
+    }
 }
 
 pub fn spend_travel_energy(world: &mut World, ship: Entity, requested_j: f64) -> f64 {
@@ -721,6 +879,7 @@ fn power_totals(
                 let Ok(power) = parts.get(*part) else {
                     continue;
                 };
+                flow.generated_w += power.recovered_w;
                 if matches!(
                     design.0.parts[index].definition.equipment,
                     Equipment::Generator { .. }
@@ -732,10 +891,6 @@ fn power_totals(
                 }
             }
 
-            flow.requested_w += AVIONICS_POWER_W;
-            if avionics.0.powered {
-                flow.supplied_w += AVIONICS_POWER_W;
-            }
             if sensor.0 > 0.0 {
                 flow.requested_w += SENSOR_POWER_W;
                 flow.supplied_w += SENSOR_POWER_W;
@@ -752,13 +907,19 @@ fn dormant_thermal(
             &mut Hull,
             &mut ShipThermal,
             &mut DormantThermalElapsed,
+            Option<&super::travel::PresenceState>,
         ),
         With<super::travel::Dormant>,
     >,
 ) {
     ships
         .par_iter_mut()
-        .for_each(|(design, mut hull, mut thermal, mut elapsed)| {
+        .for_each(|(design, mut hull, mut thermal, mut elapsed, presence)| {
+            if presence
+                .is_some_and(|p| matches!(p.0, toy_sim_model::travel::Presence::Docked { .. }))
+            {
+                return;
+            }
             elapsed.0 += time.delta_secs_f64();
             if elapsed.0 < 1.0 - 1e-9 {
                 return;

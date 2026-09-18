@@ -1,8 +1,8 @@
-# Ship controller ABI (version 13)
+# Ship controller ABI (version 14)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v13`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v14`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
 
-ABI 13 adds `spatial_instance` to tracks returned by `world_query`. This changes the Postcard reply layout. Rebuild firmware against the current `toy-sim-model`; the host rejects ABI 12 modules.
+ABI 14 adds `beam_power_w` and `beam_range_m` to `WeaponSpec` for laser weapons. Laser specifications use zero ammunition and projectile fields. World messages also carry crew support and explicit dock-service settings. Rebuild firmware against the current ABI and `toy-sim-model`; the host rejects older ABI versions.
 
 ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
 
@@ -19,7 +19,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v13` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v14` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.
@@ -128,7 +128,7 @@ The simulator sets `interest` only for the controlled ship, and only while the o
 | Generator | 6 | `GeneratorSpec` (32) | `GeneratorReading` (16) | `SET_GENERATOR_DEMAND` |
 | Shield | 7 | `ShieldSpec` (40) | `ShieldReading` (72) | `SET_SHIELD_ENABLED` |
 | Sensor | 8 | `SensorSpec` (16) | `SensorReading` (16) | `SET_SENSOR_ENABLED` |
-| Weapon | 9 | `WeaponSpec` (152) | `WeaponReading` (72) | `SET_WEAPON` |
+| Weapon | 9 | `WeaponSpec` (168) | `WeaponReading` (72) | `SET_WEAPON` |
 | RCS | 10 | `RcsSpec` (32) | `RcsReading` (32) | `SET_RCS` |
 
 Every reading begins with a `DeviceStatus` whose flags are `OPERATIONAL` (1) and `POWERED` (2). A sensor reports powered only while its range is non-zero.
@@ -334,11 +334,11 @@ The simulator embeds the standard firmware from `crates/toy-sim-ships/data/examp
 
 ### C
 
-Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<name>` imports with the correct import module and names, `ship_*_record` structs with layout assertions, and `SHIP_*` constants. [tests/fixtures/controller.c](../crates/toy-sim-ship-wasm/tests/fixtures/controller.c) is a freestanding example with no libc: it provides its own `memset`, exports `ship_api_version` and `ship_tick`, writes a throttle, and publishes an attitude record and a timed path. The repository does not record the compiler flags used to build `controller.wasm`.
+Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<name>` imports with the correct import module and names, `ship_*_record` structs with layout assertions, and `SHIP_*` constants. [tests/fixtures/controller.c](../crates/toy-sim-ship-wasm/tests/fixtures/controller.c) is a freestanding example with no libc: it provides its own `memset`, exports `ship_api_version` and `ship_tick`, writes a throttle, and publishes an attitude record and a timed path. Run `tools/build_ship_firmware.sh` to rebuild the standard controller and all C/Rust firmware fixtures with the current ABI.
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v13", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v14", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
