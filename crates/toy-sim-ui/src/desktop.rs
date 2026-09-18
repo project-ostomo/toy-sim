@@ -116,9 +116,10 @@ impl Desktop {
             .min_size(spec.min_size.min(bounds.size()))
             .max_size(maximum)
             .constrain_to(bounds)
+            .drag_area(egui::WindowDrag::Anywhere)
             .movable(!locked)
             .resizable(!locked)
-            .collapsible(true)
+            .collapsible(false)
             .title_frame(
                 egui::Frame::new()
                     .fill(egui::Color32::from_rgb(25, 37, 49))
@@ -153,9 +154,7 @@ impl Desktop {
                 .rect
                 .is_none_or(|rect| rect.min.distance(*position) > 0.1)
         }) {
-            // Egui's title-drag path restores the previous pivot after current_pos.
-            // Apply placement with dragging disabled for this pass.
-            window = window.current_pos(position).movable(false);
+            window = window.current_pos(position);
         }
 
         let output = window.show(ctx, |ui| {
@@ -406,7 +405,14 @@ mod tests {
                     modifiers: Default::default(),
                 }],
             );
-            frame(desktop, vec![egui::Event::PointerMoved(end)]);
+            for step in 1..=24 {
+                frame(
+                    desktop,
+                    vec![egui::Event::PointerMoved(
+                        start + delta * (step as f32 / 24.),
+                    )],
+                );
+            }
             frame(desktop, vec![]);
             frame(
                 desktop,
@@ -422,12 +428,9 @@ mod tests {
             }
         };
         let initial = desktop.rect(spec).unwrap();
-        drag(&mut desktop, egui::vec2(120., 80.));
+        drag(&mut desktop, egui::vec2(10., 10.));
         let moved = desktop.rect(spec).unwrap();
-        assert!(
-            moved.min.distance(initial.min) > 100.,
-            "{initial:?} -> {moved:?}"
-        );
+        assert_eq!(moved.min - initial.min, egui::vec2(10., 10.));
         desktop.locked = true;
         drag(&mut desktop, egui::vec2(80., 60.));
         assert_eq!(desktop.rect(spec).unwrap(), moved);

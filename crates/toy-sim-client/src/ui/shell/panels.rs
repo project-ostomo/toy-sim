@@ -233,7 +233,7 @@ pub(super) fn draw(
     shell.desktop.show(ctx, SETTINGS, |ui| {
         ui.label(egui::RichText::new("Workspace").strong().color(ACCENT));
         ui.checkbox(&mut locked, "Lock window positions and sizes");
-        ui.weak("Drag titles to move windows. Resize at the edges. Nearby windows snap together.");
+        ui.weak("Drag titles or empty window backgrounds to move windows. Resize at the edges. Nearby windows snap together.");
         let mut orbits = model.orbits;
         if ui.checkbox(&mut orbits, "Show orbital paths").changed() {
             intents.push(Intent::Orbits(orbits));

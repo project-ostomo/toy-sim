@@ -58,7 +58,8 @@ desktop.show(ctx, overview, |ui| {
 ```
 
 `toggle`, `open` and `is_open` connect launcher buttons to windows. Native egui
-windows provide focus, dragging, resizing, collapse and close. On drag release,
+windows provide focus, dragging from titles or unused backgrounds, resizing and
+close. Interactive controls retain their own input. On drag release,
 nearby edges snap to the workspace or neighboring windows. The workspace reserves
 space for the launcher and footer. Default windows shrink to the available height
 when the viewport shrinks; offscreen windows return within the workspace.
