@@ -1791,3 +1791,18 @@ runs returned 204,797 candidates and 68,734 visible results. These are local
 benchmark samples, not full snapshot-publication measurements or a demonstrated
 MMO population ceiling. The earlier 100,000-moving-body scalability concern
 remains open.
+
+### Stock installation defense verified — 2026-09-19
+
+The full physical acceptance test passed in 2.68 seconds of execution. Two
+incoming missiles were destroyed by station-launched interceptors, with the
+nearest interception 3,748.2 m from the installation. The station launched 28
+interceptors; every launch consumed a finite packaged round and moving missiles
+consumed finite propellant. The two parent stock computers remained the only
+flight VMs. Their shared missile/parent gas usage never exceeded 1,000,000 per
+tick, and account debits matched that usage. The installation survived without
+an incoming round reaching it.
+
+This establishes a working stock interception chain. It does not claim economical
+fire discipline: the salvo used many more interceptors than incoming missiles.
+The regression records this behavior without substituting idealized guidance.

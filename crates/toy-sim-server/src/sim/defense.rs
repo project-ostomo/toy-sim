@@ -505,3 +505,6 @@ fn update(world: &mut World) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod integration_tests;
