@@ -1,4 +1,6 @@
+mod cargo;
 mod chat;
+mod hangar;
 mod industry;
 mod instruments;
 mod inventory;
@@ -51,6 +53,24 @@ const INVENTORY: WindowSpec = WindowSpec {
     min_size: egui::vec2(370., 280.),
     anchor: egui::Align2::LEFT_TOP,
     offset: egui::vec2(0., 145.),
+    open: false,
+};
+const HANGAR: WindowSpec = WindowSpec {
+    id: "hangar",
+    title: "HANGAR",
+    size: egui::vec2(480., 460.),
+    min_size: egui::vec2(370., 280.),
+    anchor: egui::Align2::LEFT_TOP,
+    offset: egui::vec2(530., 145.),
+    open: false,
+};
+const CARGO: WindowSpec = WindowSpec {
+    id: "cargo",
+    title: "CARGO",
+    size: egui::vec2(450., 390.),
+    min_size: egui::vec2(370., 280.),
+    anchor: egui::Align2::LEFT_TOP,
+    offset: egui::vec2(220., 250.),
     open: false,
 };
 const MAP: WindowSpec = WindowSpec {
@@ -120,6 +140,10 @@ struct Shell {
     desktop: Desktop,
     inventory: inventory::State,
     industry: industry::State,
+    hangar: hangar::State,
+    cargo: cargo::PaneState,
+    cargo_inventory: Option<Id>,
+    transfers: cargo::Transfers,
     chat: chat::State,
     map: map::State,
     society: society::State,
@@ -160,6 +184,10 @@ impl Default for Shell {
             desktop: Desktop::default(),
             inventory: inventory::State::default(),
             industry: industry::State::default(),
+            hangar: hangar::State::default(),
+            cargo: cargo::PaneState::default(),
+            cargo_inventory: None,
+            transfers: cargo::Transfers::default(),
             chat: chat::State::default(),
             map: map::State::default(),
             society: society::State::default(),
@@ -177,6 +205,7 @@ enum Intent {
     Chat(String),
     FocusShip(Id),
     InspectInventory(Id),
+    OpenHangar,
     Industry(industry_model::IndustryCommand, &'static str),
     RetryNavigation,
     InspectAffiliation(ownership::Principal),
@@ -213,6 +242,10 @@ fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.map = map::State::default();
     shell.inventory = inventory::State::default();
     shell.industry = industry::State::default();
+    shell.hangar = hangar::State::default();
+    shell.cargo = cargo::PaneState::default();
+    shell.cargo_inventory = None;
+    shell.transfers = cargo::Transfers::default();
     shell.chat = chat::State::default();
 }
 
@@ -398,6 +431,7 @@ fn draw(
     }
     let model = FrameModel {
         industry: &session.industry.snapshot,
+        industry_ready: session.industry.ready(),
         navigation: &session.navigation,
         navigation_status: &session.navigation_status,
         navigation_hash: session.navigation_hash,
@@ -444,10 +478,17 @@ fn draw(
                 }
             }
             Intent::FocusShip(ship) => {
-                if model.ships.iter().any(|owned| owned.ship == ship) {
+                if model.ships.iter().any(|owned| owned.ship == ship)
+                    || model.industry.hangar.as_ref().is_some_and(|hangar| {
+                        hangar
+                            .ships
+                            .iter()
+                            .any(|entry| entry.inventory.entity == ship && entry.can_focus)
+                    })
+                {
                     selection.ship = Some(ship);
                     selection.target = None;
-                    shell.inventory.focus(ship);
+                    shell.inventory.focus();
                     for (view, _, mut camera, _) in &mut views {
                         if Some(view.0.id) == selection.view {
                             camera.focus = None;
@@ -456,9 +497,15 @@ fn draw(
                 }
             }
             Intent::InspectInventory(entity) => {
-                shell.inventory.focus(entity);
-                shell.desktop.open(INVENTORY);
+                if selection.ship == Some(entity) {
+                    shell.desktop.open(INVENTORY);
+                } else {
+                    shell.cargo_inventory = Some(entity);
+                    shell.cargo = cargo::PaneState::default();
+                    shell.desktop.open(CARGO);
+                }
             }
+            Intent::OpenHangar => shell.desktop.open(HANGAR),
             Intent::Industry(command, label) => {
                 if model.connected {
                     let id = outgoing.push(Action::Industry(command));
@@ -617,19 +664,12 @@ fn draw(
             }
         }
     }
-    let mut interest = industry_model::IndustrySubscription::default();
-    if shell.desktop.is_open(INDUSTRY) {
-        interest.directory = true;
-        interest.catalogue = true;
-        interest.directory_after = shell.industry.directory_after;
-        interest.inventories.extend(shell.industry.facility);
-    }
-    if shell.desktop.is_open(INVENTORY) {
-        interest.directory = true;
-        interest.inventories.extend(selection.ship);
-        interest.inventories.extend(shell.inventory.inventories());
-    }
-    let wanted = (interest.directory && model.connected).then_some(interest);
+    let wanted = inventory_subscription(
+        &shell,
+        selection.ship,
+        model.industry.hangar.as_ref(),
+        model.connected,
+    );
     drop(model);
     session.industry.subscribe(wanted, &mut outgoing);
 
@@ -649,6 +689,42 @@ fn draw(
         .flatten();
     session.chat.subscribe(focus, &mut outgoing);
     Ok(())
+}
+
+fn inventory_subscription(
+    shell: &Shell,
+    focused: Option<Id>,
+    hangar: Option<&industry_model::HangarView>,
+    connected: bool,
+) -> Option<industry_model::IndustrySubscription> {
+    let mut interest = industry_model::IndustrySubscription::default();
+    if shell.desktop.is_open(INDUSTRY) {
+        interest.directory = true;
+        interest.catalogue = true;
+        interest.directory_after = shell.industry.directory_after;
+        interest.inventories.extend(shell.industry.facility);
+    }
+    if shell.desktop.is_open(INVENTORY) {
+        interest.inventories.extend(focused);
+    }
+    if shell.desktop.is_open(HANGAR) {
+        interest.hangar = focused.map(|ship| industry_model::HangarSubscription {
+            ship,
+            after: shell.hangar.after,
+        });
+        if let Some(hangar) = hangar.filter(|view| Some(view.ship) == focused) {
+            interest
+                .inventories
+                .extend(hangar.host_inventory.as_ref().map(|host| host.entity));
+        }
+    }
+    if shell.desktop.is_open(CARGO) {
+        interest.inventories.extend(shell.cargo_inventory);
+    }
+    interest.inventories.extend(shell.transfers.inventories());
+    let wanted =
+        interest.directory || interest.hangar.is_some() || !interest.inventories.is_empty();
+    (connected && wanted).then_some(interest)
 }
 
 fn commands_for(

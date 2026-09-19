@@ -88,7 +88,7 @@ fn fit_budget(
     let overhead = postcard::to_allocvec(&snapshot)?.len() + 32 * MAX_SUBSCRIBED_INVENTORIES;
     if overhead > MAX_SNAPSHOT_BYTES {
         return Ok(error(
-            "Industry directory or catalogue exceeds the subscription byte limit.",
+            "Industry directory, hangar or catalogue exceeds the subscription byte limit.",
         ));
     }
     let mut used = overhead;
@@ -159,6 +159,57 @@ mod tests {
         assert_eq!(bounded.facilities[0].items.len(), 1024);
         assert_eq!(bounded.omitted_inventories, vec![Id([1; 16])]);
         assert!(postcard::to_allocvec(&bounded).unwrap().len() <= MAX_SNAPSHOT_BYTES);
+    }
+
+    #[test]
+    fn hangar_summaries_count_toward_the_shared_snapshot_byte_budget() {
+        let summary = |number| FacilitySummary {
+            entity: Id([number; 16]),
+            owner: Principal::Player(Id([1; 16])),
+            name: "H".repeat(128),
+            location: Some(Id([254; 16])),
+            capabilities: Vec::new(),
+            can_manage: false,
+            can_transfer: true,
+        };
+        let hangar = HangarView {
+            ship: Id([1; 16]),
+            host: Id([254; 16]),
+            host_name: "Local warehouse".into(),
+            host_inventory: Some(FacilitySummary {
+                entity: Id([254; 16]),
+                ..summary(254)
+            }),
+            ships: (1..=128)
+                .map(|number| HangarEntry {
+                    inventory: summary(number),
+                    can_focus: true,
+                    can_open_inventory: true,
+                    can_control: false,
+                })
+                .collect(),
+            next: None,
+        };
+        let subscription = IndustrySubscription {
+            revision: 6,
+            inventories: vec![Id([2; 16]), Id([1; 16])],
+            ..Default::default()
+        };
+        let mut snapshot = IndustrySnapshot {
+            subscription_revision: 6,
+            hangar: Some(hangar.clone()),
+            facilities: vec![large_facility(1, 900), large_facility(2, 900)],
+            ..Default::default()
+        };
+        toy_sim_protocol::validate_industry_snapshot_content(&snapshot).unwrap();
+        let with_hangar = fit_budget(snapshot.clone(), &subscription).unwrap();
+        snapshot.hangar = None;
+        let without_hangar = fit_budget(snapshot, &subscription).unwrap();
+        assert_eq!(without_hangar.facilities.len(), 2);
+        assert_eq!(with_hangar.facilities.len(), 1);
+        assert_eq!(with_hangar.omitted_inventories, vec![Id([1; 16])]);
+        assert_eq!(with_hangar.hangar, Some(hangar));
+        assert!(postcard::to_allocvec(&with_hangar).unwrap().len() <= MAX_SNAPSHOT_BYTES);
     }
 
     #[test]

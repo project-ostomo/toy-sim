@@ -118,6 +118,12 @@ pub(super) struct IndustryState {
 }
 
 impl IndustryState {
+    pub fn ready(&self) -> bool {
+        self.subscription.as_ref().is_some_and(|subscription| {
+            subscription.revision == self.snapshot.subscription_revision
+        })
+    }
+
     pub fn subscribe(
         &mut self,
         mut wanted: Option<industry::IndustrySubscription>,

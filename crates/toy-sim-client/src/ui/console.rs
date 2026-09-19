@@ -426,6 +426,7 @@ fn input(
     if windows.iter().any(|w| w.focused)
         && !ctx.egui_wants_keyboard_input()
         && !ctx.is_pointer_over_egui()
+        && !ctx.egui_is_using_pointer()
     {
         let modifiers = ctx.input(|i| i.modifiers);
         if !modifiers.alt && !modifiers.mac_cmd && modifiers.shift != modifiers.ctrl {

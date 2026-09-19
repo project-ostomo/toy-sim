@@ -154,8 +154,33 @@ pub struct IndustrySubscription {
     pub revision: u64,
     pub directory: bool,
     pub directory_after: Option<Id>,
+    pub hangar: Option<HangarSubscription>,
     pub inventories: Vec<EntityId>,
     pub catalogue: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HangarSubscription {
+    pub ship: Id,
+    pub after: Option<Id>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HangarView {
+    pub ship: Id,
+    pub host: Id,
+    pub host_name: String,
+    pub host_inventory: Option<FacilitySummary>,
+    pub ships: Vec<HangarEntry>,
+    pub next: Option<Id>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HangarEntry {
+    pub inventory: FacilitySummary,
+    pub can_focus: bool,
+    pub can_open_inventory: bool,
+    pub can_control: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -183,6 +208,7 @@ pub struct IndustrySnapshot {
     pub omitted_inventories: Vec<EntityId>,
     pub directory: Vec<FacilitySummary>,
     pub directory_next: Option<Id>,
+    pub hangar: Option<HangarView>,
     pub facilities: Vec<FacilityView>,
     pub catalogue: Option<IndustryCatalogue>,
 }

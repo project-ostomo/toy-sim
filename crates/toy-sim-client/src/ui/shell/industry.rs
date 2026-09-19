@@ -10,6 +10,7 @@ enum Tab {
     Factory,
     Shipyard,
     Jobs,
+    Storage,
 }
 
 #[derive(Default)]
@@ -25,12 +26,14 @@ pub(super) struct State {
     search: String,
     import_path: String,
     imported: Option<Result<BlueprintView, String>>,
+    cargo: cargo::PaneState,
 }
 
 pub(super) fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
+    transfers: &mut cargo::Transfers,
     intents: &mut Vec<Intent>,
 ) {
     ui.horizontal(|ui| {
@@ -60,9 +63,7 @@ pub(super) fn draw(
                     .iter()
                     .find(|facility| facility.entity == id)
                     .map(|facility| facility.name.as_str())
-                    .or_else(|| {
-                        inventory::facility(model, id).map(|facility| facility.name.as_str())
-                    })
+                    .or_else(|| cargo::facility(model, id).map(|facility| facility.name.as_str()))
             })
             .unwrap_or("Select a facility");
         egui::ComboBox::from_id_salt("industry_facility")
@@ -93,7 +94,7 @@ pub(super) fn draw(
             state.directory_after = model.industry.directory_next;
         }
     });
-    let Some(facility) = state.facility.and_then(|id| inventory::facility(model, id)) else {
+    let Some(facility) = state.facility.and_then(|id| cargo::facility(model, id)) else {
         ui.weak(if state.facility.is_some() {
             "Loading facility inventory and jobs…"
         } else {
@@ -113,6 +114,7 @@ pub(super) fn draw(
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, Tab::Factory, "Production");
         ui.selectable_value(&mut state.tab, Tab::Shipyard, "Shipyard");
+        ui.selectable_value(&mut state.tab, Tab::Storage, "Storage");
         ui.selectable_value(
             &mut state.tab,
             Tab::Jobs,
@@ -120,6 +122,18 @@ pub(super) fn draw(
         );
     });
     ui.separator();
+    if state.tab == Tab::Storage {
+        ui.weak("Facility storage · production inputs and finished goods");
+        cargo::draw(
+            ui,
+            &mut state.cargo,
+            facility.entity,
+            model,
+            transfers,
+            intents,
+        );
+        return;
+    }
     let height = ui.available_height().max(0.0);
     egui::ScrollArea::vertical()
         .id_salt("industry_content")
@@ -133,6 +147,7 @@ pub(super) fn draw(
                 Tab::Factory => production(ui, state, model, facility, intents),
                 Tab::Shipyard => shipyard(ui, state, model, facility, intents),
                 Tab::Jobs => jobs(ui, model, facility, intents),
+                Tab::Storage => unreachable!(),
             }
         });
 }
@@ -474,7 +489,7 @@ fn quantity_label(item: &CargoItem, quantity: u64, facility: &FacilityView) -> S
             .ok()
         })
         .unwrap_or(1.0);
-    inventory::quantity_label(item, quantity, mass)
+    cargo::quantity_label(item, quantity, mass)
 }
 
 fn requirements(
@@ -490,7 +505,7 @@ fn requirements(
             .items
             .iter()
             .find(|stack| stack.item == input.item)
-            .map_or(0, inventory::available);
+            .map_or(0, cargo::available);
         let satisfied = quantity.is_some_and(|quantity| available >= quantity);
         enough &= satisfied;
         ui.horizontal(|ui| {

@@ -41,6 +41,7 @@ impl Row {
 }
 
 pub(super) struct FrameModel<'a> {
+    pub industry_ready: bool,
     pub industry: &'a industry_model::IndustrySnapshot,
     pub society: &'a ownership::SocietySnapshot,
     pub navigation: &'a NavigationCatalogue,

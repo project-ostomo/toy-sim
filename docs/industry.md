@@ -11,19 +11,31 @@ shows the recipe, ingredients, products, duration and electrical cost. Jobs show
 progress and the reason for a pause. Management works across the universe; moving
 physical cargo requires inventories at the same dock.
 
-## Inventory
+## Inventory and Hangar
 
 Cargo holds contain integer quantities of resources and packaged part kits.
-Consumables occupy installed tanks. The Inventory window separates these two
-kinds of storage, and only displays consumables for which the ship has capacity.
-Cargo can be selected or dragged between the two inventory panes, then transferred
-with a chosen quantity. Refilling consumes cargo and adds it to the destination's
-tanks. Shield coolant cargo replenishes the installed shield reserve through the
-same interface. Dock power supplies electricity separately.
+Consumables occupy installed tanks. Inventory follows the focused ship and has
+Cargo hold and Consumables tabs. It only displays installed resource capacities.
+Hangar opens the current dock's accessible storage and docked ships. Open cargo
+on another ship to inspect its hold in a separate window, or activate it to switch
+ships. Hangar pages contain authorized ships at that dock, independently of the
+global facility directory and fleet telemetry limits.
+
+Industry has a Storage tab for the selected facility's inputs and finished goods.
+Drag a stack directly between cargo windows to transfer its available quantity.
+Hold Shift while dropping to choose a quantity first. Reserved stock stays in its
+source. Invalid destinations show the reason, including permissions, distance or
+insufficient capacity. Remote industry management does not move cargo remotely.
+
+Drag cargo fuel onto its matching bar in the ship's Consumables tab to refill up
+to the tank's remaining capacity. The Fill from own cargo button uses the ship's
+hold. Shield coolant replenishes the installed shield reserve the same way. Dock
+power supplies electricity separately. Installed consumables cannot be dragged
+out of tanks.
 
 Spent and bred reactor fuel remain in installed product reservoirs until unloaded.
-They appear in the Cargo tab under Reactor products. Select or drag a product,
-choose a destination hold and quantity, then use Unload product. A ship without a
+They appear in the Cargo tab under Reactor products. Drag a product into a cargo
+window to unload it; Shift-drop allows a partial quantity. A ship without a
 cargo hold can unload directly into its dock's warehouse. Both inventories require
 cargo-transfer permission and physical colocation; unloading into the ship's own
 hold is also possible. A full destination leaves the reservoir unchanged.

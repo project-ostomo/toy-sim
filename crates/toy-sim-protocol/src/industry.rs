@@ -16,6 +16,48 @@ fn nonnegative(value: f64) -> bool {
     value.is_finite() && value >= 0.
 }
 
+fn validate_summary(entry: &FacilitySummary) -> Result<()> {
+    ensure!(
+        text_valid(&entry.name)
+            && entry.capabilities.len() <= 4
+            && entry.capabilities.iter().collect::<BTreeSet<_>>().len() == entry.capabilities.len(),
+        "invalid industry directory entry"
+    );
+    Ok(())
+}
+
+fn validate_hangar(hangar: &HangarView) -> Result<()> {
+    ensure!(
+        text_valid(&hangar.host_name) && hangar.ships.len() <= MAX_DIRECTORY_ENTRIES,
+        "invalid hangar directory"
+    );
+    if let Some(host) = &hangar.host_inventory {
+        validate_summary(host)?;
+        ensure!(host.entity == hangar.host, "hangar inventory host mismatch");
+    }
+
+    let mut previous = None;
+    for entry in &hangar.ships {
+        validate_summary(&entry.inventory)?;
+        ensure!(
+            entry.inventory.entity != hangar.host
+                && entry.inventory.location == Some(hangar.host)
+                && previous.is_none_or(|id| id < entry.inventory.entity)
+                && (entry.can_focus || entry.can_open_inventory)
+                && (!entry.can_control || entry.can_focus)
+                && (entry.can_open_inventory
+                    || (!entry.inventory.can_manage && !entry.inventory.can_transfer)),
+            "invalid hangar ship"
+        );
+        previous = Some(entry.inventory.entity);
+    }
+    ensure!(
+        hangar.next.is_none() || hangar.next == previous,
+        "invalid hangar directory cursor"
+    );
+    Ok(())
+}
+
 fn validate_items(items: &[ItemStack]) -> Result<()> {
     let mut unique = BTreeSet::new();
     ensure!(items.len() <= 256, "industry item list exceeds limit");
@@ -129,13 +171,10 @@ pub fn validate_snapshot_content(snapshot: &IndustrySnapshot) -> Result<()> {
     );
     let mut directory = BTreeSet::new();
     for entry in &snapshot.directory {
+        validate_summary(entry)?;
         ensure!(
-            directory.insert(entry.entity)
-                && text_valid(&entry.name)
-                && entry.capabilities.len() <= 4
-                && entry.capabilities.iter().collect::<BTreeSet<_>>().len()
-                    == entry.capabilities.len(),
-            "invalid industry directory entry"
+            directory.insert(entry.entity),
+            "duplicate industry directory entry"
         );
     }
     ensure!(
@@ -143,6 +182,9 @@ pub fn validate_snapshot_content(snapshot: &IndustrySnapshot) -> Result<()> {
             || snapshot.directory.last().map(|entry| entry.entity) == snapshot.directory_next,
         "invalid industry directory cursor"
     );
+    if let Some(hangar) = &snapshot.hangar {
+        validate_hangar(hangar)?;
+    }
     let mut facilities = BTreeSet::new();
     for omitted in &snapshot.omitted_inventories {
         ensure!(facilities.insert(*omitted), "duplicate omitted inventory");
@@ -280,6 +322,55 @@ mod tests {
             .omitted_inventories
             .push(invalid.facilities[0].entity);
         assert!(validate_snapshot(&invalid).is_err());
+    }
+
+    #[test]
+    fn hangar_pages_validate_local_membership_permissions_and_cursor() {
+        let mut original = snapshot();
+        let summary = FacilitySummary {
+            entity: Id([2; 16]),
+            owner: Principal::Player(Id([8; 16])),
+            name: "Docked hull".into(),
+            location: Some(Id([3; 16])),
+            capabilities: Vec::new(),
+            can_manage: false,
+            can_transfer: true,
+        };
+        original.hangar = Some(HangarView {
+            ship: summary.entity,
+            host: Id([3; 16]),
+            host_name: "Local station".into(),
+            host_inventory: None,
+            ships: vec![HangarEntry {
+                inventory: summary,
+                can_focus: false,
+                can_open_inventory: true,
+                can_control: false,
+            }],
+            next: Some(Id([2; 16])),
+        });
+        validate_snapshot(&original).unwrap();
+        let bytes = postcard::to_allocvec(&original).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<IndustrySnapshot>(&bytes).unwrap(),
+            original
+        );
+
+        for case in 0..7 {
+            let mut invalid = original.clone();
+            let hangar = invalid.hangar.as_mut().unwrap();
+            match case {
+                0 => hangar.next = Some(Id([9; 16])),
+                1 => hangar.ships[0].inventory.location = Some(Id([4; 16])),
+                2 => hangar.ships[0].can_control = true,
+                3 => hangar.ships[0].can_open_inventory = false,
+                4 => hangar.host_inventory = Some(hangar.ships[0].inventory.clone()),
+                5 => hangar.ships.push(hangar.ships[0].clone()),
+                6 => hangar.host_name = "Private\nstation".into(),
+                _ => unreachable!(),
+            }
+            assert!(validate_snapshot(&invalid).is_err(), "case {case}");
+        }
     }
 
     #[test]

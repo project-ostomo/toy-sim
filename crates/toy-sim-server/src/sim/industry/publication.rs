@@ -1,5 +1,8 @@
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Resource, Default)]
 pub(super) struct InventoryDirectory(BTreeMap<Id, Entity>);
 
@@ -93,6 +96,109 @@ fn capabilities(world: &World, entity: Entity) -> Vec<FacilityCapability> {
         .collect()
 }
 
+fn summary(
+    world: &World,
+    entity: Entity,
+    can_manage: bool,
+    can_transfer: bool,
+) -> Option<FacilitySummary> {
+    let id = world.get::<identity::Identity>(entity)?.0;
+    let owner = world.get::<ownership::AssetOwner>(entity)?.0;
+    let capabilities = capabilities(world, entity)
+        .into_iter()
+        .map(|module| module.capability)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    Some(FacilitySummary {
+        entity: id,
+        owner,
+        name: name(world, entity),
+        location: inventory_location(world, entity),
+        capabilities,
+        can_manage,
+        can_transfer,
+    })
+}
+
+fn hangar(world: &World, account: AccountId, interest: &HangarSubscription) -> Option<HangarView> {
+    use toy_sim_model::travel::Presence;
+
+    let ship = crate::sim::commands::observe(world, account, interest.ship).ok()?;
+    if !available(world, ship) {
+        return None;
+    }
+    let host = match world.get::<travel::PresenceState>(ship)?.0 {
+        Presence::Docked { host, .. } => identity::lookup(world, host).ok()?,
+        Presence::Space
+            if world.get::<travel::StoredShips>(ship).is_some()
+                || world
+                    .get::<travel::DockingBays>(ship)
+                    .is_some_and(|bays| !bays.0.is_empty()) =>
+        {
+            ship
+        }
+        _ => return None,
+    };
+    if !available(world, host) {
+        return None;
+    }
+
+    let host_id = world.get::<identity::Identity>(host)?.0;
+    let host_inventory = access(world, account, host)
+        .filter(|_| world.get::<hardware::ShipInventory>(host).is_some())
+        .and_then(|(manage, transfer)| summary(world, host, manage, transfer));
+    let mut entries = Vec::new();
+    if let Some(stored) = world.get::<travel::StoredShips>(host) {
+        for entity in stored.iter() {
+            let Some(id) = world.get::<identity::Identity>(entity).map(|id| id.0) else {
+                continue;
+            };
+            if interest.after.is_some_and(|after| id <= after)
+                || !available(world, entity)
+                || !matches!(
+                    world.get::<travel::PresenceState>(entity).map(|presence| &presence.0),
+                    Some(Presence::Docked { host, .. }) if *host == host_id
+                )
+            {
+                continue;
+            }
+
+            let can_focus = crate::sim::commands::observe(world, account, id).is_ok();
+            let inventory_access = access(world, account, entity)
+                .filter(|_| world.get::<hardware::ShipInventory>(entity).is_some());
+            if !can_focus && inventory_access.is_none() {
+                continue;
+            }
+            let (can_manage, can_transfer) = inventory_access.unwrap_or_default();
+            let Some(inventory) = summary(world, entity, can_manage, can_transfer) else {
+                continue;
+            };
+            entries.push(HangarEntry {
+                inventory,
+                can_focus,
+                can_open_inventory: inventory_access.is_some(),
+                can_control: can_focus
+                    && ownership::can_access(world, account, entity, Permission::Control),
+            });
+        }
+    }
+
+    entries.sort_unstable_by_key(|entry| entry.inventory.entity);
+    let more = entries.len() > MAX_DIRECTORY_ENTRIES;
+    entries.truncate(MAX_DIRECTORY_ENTRIES);
+    let next = more.then(|| entries.last().unwrap().inventory.entity);
+    Some(HangarView {
+        ship: interest.ship,
+        host: host_id,
+        host_name: name(world, host),
+        host_inventory,
+        ships: entries,
+        next,
+    })
+}
+
 pub fn snapshot(
     world: &World,
     account: AccountId,
@@ -100,6 +206,10 @@ pub fn snapshot(
 ) -> IndustrySnapshot {
     let mut snapshot = IndustrySnapshot {
         subscription_revision: subscription.revision,
+        hangar: subscription
+            .hangar
+            .as_ref()
+            .and_then(|interest| hangar(world, account, interest)),
         ..Default::default()
     };
     let Some(directory) = world.get_resource::<InventoryDirectory>() else {
@@ -117,28 +227,14 @@ pub fn snapshot(
             let Some((can_manage, can_transfer)) = access(world, account, entity) else {
                 continue;
             };
-            let Some(owner) = world.get::<ownership::AssetOwner>(entity) else {
+            let Some(summary) = summary(world, entity, can_manage, can_transfer) else {
                 continue;
             };
             if snapshot.directory.len() == MAX_DIRECTORY_ENTRIES {
                 snapshot.directory_next = snapshot.directory.last().map(|entry| entry.entity);
                 break;
             }
-            let capabilities = capabilities(world, entity)
-                .into_iter()
-                .map(|module| module.capability)
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect();
-            snapshot.directory.push(FacilitySummary {
-                entity: id,
-                owner: owner.0,
-                name: name(world, entity),
-                location: inventory_location(world, entity),
-                capabilities,
-                can_manage,
-                can_transfer,
-            });
+            snapshot.directory.push(summary);
         }
     }
 

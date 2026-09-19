@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 25;
+pub const VERSION: u16 = 26;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -729,12 +729,16 @@ mod tests {
     #[test]
     fn industry_interest_and_commands_roundtrip_in_required_section() {
         use toy_sim_model::industry::{
-            CargoItem, IndustryCommand, IndustrySnapshot, IndustrySubscription,
+            CargoItem, HangarSubscription, IndustryCommand, IndustrySnapshot, IndustrySubscription,
         };
 
         let subscription = IndustrySubscription {
             revision: 3,
             directory: true,
+            hangar: Some(HangarSubscription {
+                ship: Id([2; 16]),
+                after: Some(Id([7; 16])),
+            }),
             inventories: vec![Id([2; 16])],
             catalogue: true,
             ..Default::default()

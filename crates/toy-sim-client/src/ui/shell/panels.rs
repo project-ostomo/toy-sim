@@ -19,7 +19,8 @@ pub(super) fn draw(
         for (spec, icon, label) in [
             (OVERVIEW, Icon::Overview, "Overview"),
             (SELECTED, Icon::Target, "Selected item"),
-            (INVENTORY, Icon::Cargo, "Inventory"),
+            (INVENTORY, Icon::Cargo, "Ship inventory"),
+            (HANGAR, Icon::Ship, "Hangar"),
             (INDUSTRY, Icon::Industry, "Industry"),
             (CHAT, Icon::Broadcast, "Local chat"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
@@ -216,7 +217,9 @@ pub(super) fn draw(
                         }
                         if matches!(ship.presence, travel::Presence::Docked { .. }) {
                             ui.label(egui::RichText::new("DOCKED · Hangar").color(ACCENT));
-                            inventory::hangar_selector(ui, model, intents);
+                            if ui.button("Open hangar").clicked() {
+                                intents.push(Intent::OpenHangar);
+                            }
                             if ui.button("Undock").clicked() {
                                 intents.push(Intent::Queue(vec![travel::Order::Undock], false));
                             }
@@ -366,10 +369,37 @@ pub(super) fn draw(
         .desktop
         .show(ctx, NAVIGATION, |ui| navigation(ui, model, intents));
     shell.desktop.show(ctx, INVENTORY, |ui| {
-        inventory::draw(ui, &mut shell.inventory, model, intents)
+        inventory::draw(
+            ui,
+            &mut shell.inventory,
+            model,
+            &mut shell.transfers,
+            intents,
+        )
+    });
+    shell.desktop.show(ctx, HANGAR, |ui| {
+        hangar::draw(ui, &mut shell.hangar, model, &mut shell.transfers, intents)
+    });
+    shell.desktop.show(ctx, CARGO, |ui| {
+        if let Some(inventory) = shell.cargo_inventory {
+            cargo::draw(
+                ui,
+                &mut shell.cargo,
+                inventory,
+                model,
+                &mut shell.transfers,
+                intents,
+            );
+        }
     });
     shell.desktop.show(ctx, INDUSTRY, |ui| {
-        industry::draw(ui, &mut shell.industry, model, intents)
+        industry::draw(
+            ui,
+            &mut shell.industry,
+            model,
+            &mut shell.transfers,
+            intents,
+        )
     });
     shell
         .desktop
@@ -380,6 +410,7 @@ pub(super) fn draw(
     shell.desktop.show(ctx, CHAT, |ui| {
         chat::draw(ui, &mut shell.chat, model, chat_log, intents);
     });
+    cargo::draw_dialog(ctx, &mut shell.transfers, model, intents);
     let mut locked = shell.desktop.locked;
     let mut reset = false;
     shell.desktop.show(ctx, SETTINGS, |ui| {

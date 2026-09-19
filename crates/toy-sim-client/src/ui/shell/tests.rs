@@ -32,6 +32,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
         industry: empty_industry(),
+        industry_ready: true,
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         celestial_systems: Default::default(),
@@ -321,6 +322,7 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
         industry: empty_industry(),
+        industry_ready: true,
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
@@ -428,4 +430,54 @@ fn planning_progress_reports_phases_and_disappears_after_planning() {
     );
     travel.status = travel::Status::Active;
     assert!(labels(&context, &travel).is_empty());
+}
+
+#[test]
+fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_pickers() {
+    let ship = Id([1; 16]);
+    let host = Id([2; 16]);
+    let other = Id([3; 16]);
+    let factory = Id([4; 16]);
+    let mut shell = Shell::default();
+    shell.desktop.open(INVENTORY);
+    let inventory = inventory_subscription(&shell, Some(ship), None, true).unwrap();
+    assert_eq!(inventory.inventories, vec![ship]);
+    assert!(!inventory.directory);
+    assert!(inventory.hangar.is_none());
+
+    let hangar = industry_model::HangarView {
+        ship,
+        host,
+        host_name: "Station".into(),
+        host_inventory: Some(industry_model::FacilitySummary {
+            entity: host,
+            owner: ownership::Principal::Player(Id([9; 16])),
+            name: "Station storage".into(),
+            location: Some(host),
+            capabilities: Vec::new(),
+            can_manage: false,
+            can_transfer: true,
+        }),
+        ships: Vec::new(),
+        next: None,
+    };
+    shell.desktop.open(HANGAR);
+    shell.desktop.open(CARGO);
+    shell.cargo_inventory = Some(other);
+    let local = inventory_subscription(&shell, Some(ship), Some(&hangar), true).unwrap();
+    assert!(!local.directory);
+    assert_eq!(local.hangar.as_ref().unwrap().ship, ship);
+    assert_eq!(local.inventories, vec![ship, host, other]);
+
+    shell.desktop.open(INDUSTRY);
+    shell.industry.facility = Some(factory);
+    let combined = inventory_subscription(&shell, Some(ship), Some(&hangar), true).unwrap();
+    assert!(combined.directory && combined.catalogue);
+    assert!(combined.inventories.contains(&factory));
+    assert!(combined.inventories.contains(&host));
+    assert!(combined.inventories.contains(&other));
+
+    let refocused = inventory_subscription(&shell, Some(other), Some(&hangar), true).unwrap();
+    assert!(!refocused.inventories.contains(&host));
+    assert!(inventory_subscription(&shell, Some(ship), Some(&hangar), false).is_none());
 }

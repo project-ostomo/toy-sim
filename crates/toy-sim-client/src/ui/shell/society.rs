@@ -1185,6 +1185,7 @@ mod tests {
         let navigation = NavigationCatalogue::default();
         let model = FrameModel {
             industry: empty_industry(),
+            industry_ready: true,
             navigation_status: &NavigationStatus::Ready,
             navigation_hash: None,
             celestial_systems: Default::default(),

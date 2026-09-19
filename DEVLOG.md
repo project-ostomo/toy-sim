@@ -1716,3 +1716,36 @@ deterministic WASM tests cover backlog draining and response timing. Evidence:
 
 The next piece is a shared authorized-inventory directory pager, so opening
 Inventory alone can reach endpoints beyond the first page.
+
+### Course correction: cargo belongs to places — 2026-09-19
+
+The user rejected the shared Inventory/Industry directory picker. Its pending
+changes were archived under `~/.local/state/toy-sim-mvp-sprint` and removed before
+the replacement was implemented. Inventory now follows the focused ship. A
+separate Hangar window shows the current station's accessible storage and docked
+ships; Industry retains remote facility selection and gains a Storage tab.
+Opening another inventory creates a separate Cargo inspection window. All cargo
+panes share rendering, drag payloads, validation and quantity entry.
+
+Ordinary drops move the available stack; Shift-drop asks for a quantity.
+Installed product reservoirs unload into cargo through the same interaction.
+Matching cargo can be dropped onto a consumable tank to refill it. Installed
+consumables remain non-transferable. Both endpoints still require authority and
+physical colocation. Shift dragging also suppresses the throttle keyboard
+shortcut while egui owns the pointer.
+
+Hangar publication has a separate station-local cursor and follows the actual
+docking relationship. It filters each tenant by authority before pagination and
+publishes host storage only when permitted. It can find ships beyond both the
+global inventory page and the 64-ship telemetry page. Focusing such a row keeps
+the selection while its prioritized telemetry arrives. Protocol version is 26.
+
+The initial checks passed: 120 client UI tests, six server Hangar-related tests
+and the protocol Hangar validation test. Coverage includes actual separate egui
+windows, partial transfers, reserved or inaccessible cargo, product unloading,
+tank capacity, local pagination and permission revocation. The native session
+completed docking and displayed the station's storage beside ship Inventory.
+At the user's request, live keyboard/mouse verification stopped; automated tests
+cover the transfer cases. The session exited normally and saved. Subsequent MVP
+verification will use automated checks, leaving interactive playtesting to the
+user. Evidence remains under `~/.local/state/toy-sim-mvp-sprint`.

@@ -106,6 +106,7 @@ impl Fixture {
     fn model(&self) -> FrameModel<'_> {
         FrameModel {
             industry: &self.snapshot,
+            industry_ready: true,
             society: &self.society,
             navigation: &self.navigation,
             navigation_status: &NavigationStatus::Ready,
@@ -198,10 +199,17 @@ fn production_and_shipyard_buttons_emit_typed_commands_and_respect_reserved_inpu
             ..Default::default()
         };
         let mut intents = Vec::new();
+        let mut transfers = cargo::Transfers::default();
         let mut labels = Vec::new();
         for frame in 0..3 {
             labels = render(&ctx, vec![], frame as f64 / 60.0, |ui| {
-                draw(ui, &mut state, &fixture.model(), &mut intents)
+                draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                )
             });
         }
         let label = if shipyard {
@@ -215,7 +223,15 @@ fn production_and_shipyard_buttons_emit_typed_commands_and_respect_reserved_inpu
                 &ctx,
                 click_events(position, pressed),
                 (frame + 3) as f64 / 60.0,
-                |ui| draw(ui, &mut state, &fixture.model(), &mut intents),
+                |ui| {
+                    draw(
+                        ui,
+                        &mut state,
+                        &fixture.model(),
+                        &mut transfers,
+                        &mut intents,
+                    )
+                },
             );
         }
         assert_eq!(intents.len(), 1);
@@ -237,7 +253,13 @@ fn production_and_shipyard_buttons_emit_typed_commands_and_respect_reserved_inpu
         fixture.snapshot.facilities[0].items[0].reserved = 9;
         for frame in 6..9 {
             labels = render(&ctx, vec![], frame as f64 / 60.0, |ui| {
-                draw(ui, &mut state, &fixture.model(), &mut intents)
+                draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                )
             });
         }
         let position = labels.iter().find(|(text, _)| text == label).unwrap().1;
@@ -246,7 +268,15 @@ fn production_and_shipyard_buttons_emit_typed_commands_and_respect_reserved_inpu
                 &ctx,
                 click_events(position, pressed),
                 (frame + 9) as f64 / 60.0,
-                |ui| draw(ui, &mut state, &fixture.model(), &mut intents),
+                |ui| {
+                    draw(
+                        ui,
+                        &mut state,
+                        &fixture.model(),
+                        &mut transfers,
+                        &mut intents,
+                    )
+                },
             );
         }
         assert!(intents.is_empty());
@@ -260,51 +290,261 @@ fn cargo_feedback_prevents_reserved_remote_unauthorized_and_overfull_transfers()
     let stack = &source.items[0];
     let mut target = source.clone();
     target.entity = Id([3; 16]);
+    assert!(cargo::transfer_error(source, &target, stack, 8, cargo::Storage::Cargo).is_none());
     assert!(
-        inventory::transfer_error(source, &target, stack, 8, inventory::Storage::Cargo).is_none()
-    );
-    assert!(
-        inventory::transfer_error(source, &target, stack, 9, inventory::Storage::Cargo)
+        cargo::transfer_error(source, &target, stack, 9, cargo::Storage::Cargo)
             .unwrap()
             .contains("reserved")
     );
     target.location = Some(Id([4; 16]));
     assert!(
-        inventory::transfer_error(source, &target, stack, 1, inventory::Storage::Cargo)
+        cargo::transfer_error(source, &target, stack, 1, cargo::Storage::Cargo)
             .unwrap()
             .contains("colocated")
     );
     target.location = Some(source.entity);
-    assert!(
-        inventory::transfer_error(source, &target, stack, 1, inventory::Storage::Cargo).is_none()
-    );
+    assert!(cargo::transfer_error(source, &target, stack, 1, cargo::Storage::Cargo).is_none());
     target.location = source.location;
     target.can_transfer = false;
     assert!(
-        inventory::transfer_error(source, &target, stack, 1, inventory::Storage::Cargo)
+        cargo::transfer_error(source, &target, stack, 1, cargo::Storage::Cargo)
             .unwrap()
             .contains("permission")
     );
     target.can_transfer = true;
     target.cargo_used_m3 = target.cargo_capacity_m3;
     assert!(
-        inventory::transfer_error(source, &target, stack, 1, inventory::Storage::Cargo)
+        cargo::transfer_error(source, &target, stack, 1, cargo::Storage::Cargo)
             .unwrap()
             .contains("space")
     );
 }
 
-#[test]
-fn reactor_product_dragging_confirms_unload_from_a_ship_without_a_cargo_hold() {
-    let context = egui::Context::default();
-    toy_sim_ui::theme::install(&context);
-    context.all_styles_mut(|style| style.animation_time = 0.0);
+struct CargoWindows {
+    context: egui::Context,
+    inventory: inventory::State,
+    storage: cargo::PaneState,
+    transfers: cargo::Transfers,
+    intents: Vec<Intent>,
+    frame: u64,
+    tank: bool,
+}
 
+impl CargoWindows {
+    fn new(tank: bool) -> Self {
+        let context = egui::Context::default();
+        toy_sim_ui::theme::install(&context);
+        context.all_styles_mut(|style| style.animation_time = 0.0);
+        Self {
+            context,
+            inventory: Default::default(),
+            storage: Default::default(),
+            transfers: Default::default(),
+            intents: Vec::new(),
+            frame: 0,
+            tank,
+        }
+    }
+
+    fn draw(
+        &mut self,
+        fixture: &Fixture,
+        mut events: Vec<egui::Event>,
+        shift: bool,
+    ) -> Vec<(String, egui::Pos2)> {
+        let modifiers = egui::Modifiers {
+            shift,
+            ..Default::default()
+        };
+        events.insert(0, egui::Event::ModifiersChanged(modifiers));
+        for event in &mut events {
+            if let egui::Event::PointerButton {
+                modifiers: current, ..
+            } = event
+            {
+                *current = modifiers;
+            }
+        }
+        let mut output = self.context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1100.0, 850.0),
+                )),
+                events,
+                time: Some(self.frame as f64 / 60.0),
+                ..Default::default()
+            },
+            |ui| {
+                let model = fixture.model();
+                egui::Window::new("Ship inventory")
+                    .fixed_pos(egui::pos2(if self.tank { 550.0 } else { 10.0 }, 10.0))
+                    .fixed_size(egui::vec2(420.0, 450.0))
+                    .show(ui.ctx(), |ui| {
+                        inventory::draw(
+                            ui,
+                            &mut self.inventory,
+                            &model,
+                            &mut self.transfers,
+                            &mut self.intents,
+                        );
+                    });
+                egui::Window::new("Station storage")
+                    .fixed_pos(egui::pos2(if self.tank { 10.0 } else { 550.0 }, 10.0))
+                    .fixed_size(egui::vec2(420.0, 450.0))
+                    .show(ui.ctx(), |ui| {
+                        cargo::draw(
+                            ui,
+                            &mut self.storage,
+                            Id([2; 16]),
+                            &model,
+                            &mut self.transfers,
+                            &mut self.intents,
+                        );
+                    });
+                cargo::draw_dialog(ui.ctx(), &mut self.transfers, &model, &mut self.intents);
+            },
+        );
+        output.textures_delta.clear();
+        self.frame += 1;
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, shape.clip_rect, &mut labels);
+        }
+        labels
+    }
+
+    fn settle(&mut self, fixture: &Fixture) -> Vec<(String, egui::Pos2)> {
+        let mut labels = Vec::new();
+        for _ in 0..3 {
+            labels = self.draw(fixture, Vec::new(), false);
+        }
+        labels
+    }
+
+    fn click(&mut self, fixture: &Fixture, text: &str) {
+        let labels = self.settle(fixture);
+        let position = labels
+            .iter()
+            .find(|(label, _)| label == text)
+            .unwrap_or_else(|| panic!("missing {text}: {labels:?}"))
+            .1;
+        self.draw(fixture, click_events(position, true), false);
+        self.draw(fixture, click_events(position, false), false);
+    }
+
+    fn drag(&mut self, fixture: &Fixture, text: &str, destination: &str, shift: bool) {
+        let labels = self.settle(fixture);
+        let source = labels
+            .iter()
+            .find(|(label, position)| label == text && position.x < 500.0)
+            .unwrap_or_else(|| panic!("missing source {text}: {labels:?}"))
+            .1;
+        let target = labels
+            .iter()
+            .find(|(label, position)| label == destination && position.x > 500.0)
+            .unwrap_or_else(|| panic!("missing target {destination}: {labels:?}"))
+            .1;
+        self.draw(fixture, click_events(source, true), shift);
+        self.draw(
+            fixture,
+            vec![egui::Event::PointerMoved(source + egui::vec2(12.0, 0.0))],
+            shift,
+        );
+        self.draw(fixture, vec![egui::Event::PointerMoved(target)], shift);
+        self.draw(fixture, click_events(target, false), shift);
+    }
+}
+
+fn cargo_fixture() -> Fixture {
     let mut fixture = Fixture::new();
+    let mut ship = fixture.snapshot.facilities[0].clone();
+    ship.entity = fixture.ship.ship;
+    ship.name = "Player cargo".into();
     fixture.snapshot.facilities[0].items.clear();
-    let mut source = fixture.snapshot.facilities[0].clone();
-    source.entity = fixture.ship.ship;
-    source.name = "Product ship".into();
+    fixture.snapshot.facilities.push(ship);
+    fixture
+}
+
+#[test]
+fn cargo_window_drop_transfers_available_stack_and_shift_requests_quantity() {
+    for shift in [false, true] {
+        let fixture = cargo_fixture();
+        let mut windows = CargoWindows::new(false);
+        windows.drag(&fixture, "Fuselage kit", "Cargo hold empty", shift);
+        if shift {
+            assert!(windows.intents.is_empty());
+            let retained: Vec<_> = windows.transfers.inventories().collect();
+            assert!(retained.contains(&fixture.ship.ship));
+            assert!(retained.contains(&Id([2; 16])));
+            let labels = windows.settle(&fixture);
+            let quantity = labels
+                .iter()
+                .find(|(text, _)| text.trim().starts_with('8'))
+                .unwrap_or_else(|| panic!("missing quantity editor: {labels:?}"))
+                .1;
+            windows.draw(&fixture, click_events(quantity, true), false);
+            windows.draw(&fixture, click_events(quantity, false), false);
+            windows.draw(&fixture, vec![egui::Event::Text("3".into())], false);
+            windows.draw(
+                &fixture,
+                vec![egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+                false,
+            );
+            windows.click(&fixture, "Confirm transfer");
+        }
+        let expected = if shift { 3 } else { 8 };
+        assert!(
+            matches!(&windows.intents[..], [Intent::Industry(IndustryCommand::Transfer {
+                source, target, quantity, ..
+            }, _)] if *source == fixture.ship.ship && *target == Id([2; 16]) && *quantity == expected)
+        );
+    }
+}
+
+#[test]
+fn cargo_window_drop_rejects_remote_full_and_revoked_destinations_and_reserved_stacks() {
+    for issue in ["remote", "space", "permission", "reserved"] {
+        let mut fixture = cargo_fixture();
+        match issue {
+            "remote" => fixture.snapshot.facilities[1].location = Some(Id([9; 16])),
+            "space" => fixture.snapshot.facilities[0].cargo_used_m3 = 1_000.0,
+            "permission" => fixture.snapshot.facilities[0].can_transfer = false,
+            "reserved" => fixture.snapshot.facilities[1].items[0].reserved = 10,
+            _ => unreachable!(),
+        }
+        let mut windows = CargoWindows::new(false);
+        windows.drag(&fixture, "Fuselage kit", "Cargo hold empty", false);
+        assert!(
+            windows.intents.is_empty(),
+            "invalid {issue} transfer was emitted"
+        );
+        if issue != "reserved" {
+            let expected = if issue == "remote" {
+                "colocated"
+            } else {
+                issue
+            };
+            let labels = windows.settle(&fixture);
+            assert!(
+                labels.iter().any(|(label, _)| label.contains(expected)),
+                "missing {issue} feedback: {labels:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn reactor_product_window_drop_unloads_without_a_source_cargo_hold() {
+    let mut fixture = cargo_fixture();
+    let source = &mut fixture.snapshot.facilities[1];
+    source.items.clear();
     source.cargo_capacity_m3 = 0.0;
     source.cargo_used_m3 = 0.0;
     source.products = vec![CargoStack {
@@ -315,78 +555,47 @@ fn reactor_product_dragging_confirms_unload_from_a_ship_without_a_cargo_hold() {
         unit_mass_kg: 1.0,
         unit_volume_m3: 0.001,
     }];
-    fixture.snapshot.facilities.push(source);
-
-    let mut state = inventory::State::default();
-    state.focus(fixture.ship.ship);
-    let mut intents = Vec::new();
-    let mut frame = 0;
-    let mut draw = |events| {
-        let labels = render(&context, events, frame as f64 / 60.0, |ui| {
-            inventory::draw(ui, &mut state, &fixture.model(), &mut intents);
-        });
-        frame += 1;
-        labels
-    };
-
-    for label in ["Destination inventory", "Test works"] {
-        let mut labels = Vec::new();
-        for _ in 0..3 {
-            labels = draw(Vec::new());
-        }
-        let point = labels.iter().find(|(text, _)| text == label).unwrap().1;
-        draw(click_events(point, true));
-        draw(click_events(point, false));
-    }
-
-    let labels = draw(Vec::new());
+    let mut windows = CargoWindows::new(false);
+    windows.drag(&fixture, "Spent reactor fuel", "Cargo hold empty", false);
     assert!(
-        labels
-            .iter()
-            .any(|(text, _)| text.contains("REACTOR PRODUCTS"))
+        matches!(&windows.intents[..], [Intent::Industry(IndustryCommand::UnloadProduct {
+        source, target, resource, quantity: 7,
+    }, _)] if *source == fixture.ship.ship && *target == Id([2; 16]) && resource == "spent_fuel")
     );
-    let source = labels
-        .iter()
-        .find(|(text, _)| text == "Spent reactor fuel")
-        .unwrap()
-        .1;
-    let target = labels
-        .iter()
-        .filter(|(text, _)| text == "Cargo hold empty")
-        .map(|(_, point)| *point)
-        .max_by(|a, b| a.x.total_cmp(&b.x))
-        .unwrap();
-
-    draw(click_events(source, true));
-    draw(vec![egui::Event::PointerMoved(
-        source + egui::vec2(12.0, 0.0),
-    )]);
-    draw(vec![egui::Event::PointerMoved(target)]);
-    draw(click_events(target, false));
-    let mut labels = Vec::new();
-    for _ in 0..3 {
-        labels = draw(Vec::new());
-    }
-    let confirm = labels
-        .iter()
-        .find(|(text, _)| text == "Unload product")
-        .unwrap_or_else(|| panic!("missing product confirmation after drag: {labels:?}"))
-        .1;
-    draw(click_events(confirm, true));
-    draw(click_events(confirm, false));
-
-    assert!(matches!(
-        &intents[..],
-        [Intent::Industry(IndustryCommand::UnloadProduct {
-            source, target, resource, quantity: 7,
-        }, _)] if *source == fixture.ship.ship
-            && *target == fixture.snapshot.facilities[0].entity
-            && resource == "spent_fuel"
-    ));
 }
 
 #[test]
-fn default_inventory_clips_product_tiles_above_footer_and_scrolls_to_them() {
+fn matching_resource_drop_refills_only_the_missing_tank_capacity() {
+    let mut fixture = cargo_fixture();
+    fixture.snapshot.facilities[0].items = vec![CargoStack {
+        item: CargoItem::Resource("water".into()),
+        quantity: 80,
+        reserved: 3,
+        name: "Water cargo".into(),
+        unit_mass_kg: 1.0,
+        unit_volume_m3: 0.001,
+    }];
+    fixture.details.inventory = vec![ResourceAmount {
+        resource: "water".into(),
+        name: "Water tank".into(),
+        quantity: 10,
+        unit_mass_kg: 1.0,
+        unit_volume_m3: 0.001,
+        amount_kg: 10.0,
+        capacity_kg: 50.0,
+    }];
+    let mut windows = CargoWindows::new(true);
+    windows.click(&fixture, "Consumables");
+    windows.drag(&fixture, "Water cargo", "Water tank", false);
+    assert!(
+        matches!(&windows.intents[..], [Intent::Industry(IndustryCommand::Refill {
+        source, ship, resource, quantity: 40,
+    }, _)] if *source == Id([2; 16]) && *ship == fixture.ship.ship && resource == "water")
+    );
+}
+
+#[test]
+fn default_inventory_clips_cargo_and_scrolls_to_product_reservoirs() {
     let context = egui::Context::default();
     toy_sim_ui::theme::install(&context);
     context.all_styles_mut(|style| style.animation_time = 0.0);
@@ -406,8 +615,16 @@ fn default_inventory_clips_product_tiles_above_footer_and_scrolls_to_them() {
         unit_volume_m3: 0.001,
     })
     .collect();
+    fixture.snapshot.facilities[0].entity = fixture.ship.ship;
+    fixture.snapshot.facilities[0].items = (0..20)
+        .map(|index| CargoStack {
+            item: CargoItem::Part(format!("part_{index}")),
+            name: format!("Part kit {index}"),
+            ..fixture.snapshot.facilities[0].items[0].clone()
+        })
+        .collect();
     let mut state = inventory::State::default();
-    state.focus(fixture.snapshot.facilities[0].entity);
+    let mut transfers = cargo::Transfers::default();
     let mut desktop = Desktop::default();
     desktop.open(INVENTORY);
     let mut settled_size = None;
@@ -418,7 +635,6 @@ fn default_inventory_clips_product_tiles_above_footer_and_scrolls_to_them() {
         shape: &egui::Shape,
         clip: egui::Rect,
         tiles: &mut Vec<egui::Rect>,
-        footer: &mut Option<f32>,
         product_visible: &mut bool,
     ) {
         match shape {
@@ -430,19 +646,13 @@ fn default_inventory_clips_product_tiles_above_footer_and_scrolls_to_them() {
                     tiles.push(visible);
                 }
             }
-            egui::Shape::LineSegment { points, .. }
-                if (points[1].x - points[0].x).abs() > 400.0
-                    && (points[1].y - points[0].y).abs() < 0.1 =>
-            {
-                *footer = Some(footer.map_or(points[0].y, |y| y.max(points[0].y)));
-            }
             egui::Shape::Text(text) if text.galley.job.text == "Bred fuel awaiting processing" => {
                 let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
                 *product_visible |= clip.contains_rect(bounds);
             }
             egui::Shape::Vec(shapes) => {
                 for shape in shapes {
-                    geometry(shape, clip, tiles, footer, product_visible);
+                    geometry(shape, clip, tiles, product_visible);
                 }
             }
             _ => {}
@@ -475,38 +685,41 @@ fn default_inventory_clips_product_tiles_above_footer_and_scrolls_to_them() {
             },
             |ui| {
                 desktop.show(ui.ctx(), INVENTORY, |ui| {
-                    inventory::draw(ui, &mut state, &fixture.model(), &mut Vec::new());
+                    inventory::draw(
+                        ui,
+                        &mut state,
+                        &fixture.model(),
+                        &mut transfers,
+                        &mut Vec::new(),
+                    );
                 });
             },
         );
         output.textures_delta.clear();
         let rect = desktop.rect(INVENTORY).unwrap();
         let mut tiles = Vec::new();
-        let mut footer = None;
         let mut product_visible = false;
         for shape in &output.shapes {
             geometry(
                 &shape.shape,
                 shape.clip_rect,
                 &mut tiles,
-                &mut footer,
                 &mut product_visible,
             );
         }
 
         if frame >= 5 {
-            let footer = footer.expect("transfer footer separator");
             assert!(!tiles.is_empty());
             assert!(
-                tiles.iter().all(|tile| tile.bottom() <= footer + 1.0),
-                "product tile paints over footer at {footer}: {tiles:?}"
+                tiles.iter().all(|tile| tile.bottom() <= rect.bottom()),
+                "cargo tile paints outside the inventory: {tiles:?}"
             );
             let size = *settled_size.get_or_insert(rect.size());
             assert!(
                 (rect.size() - size).length() < 1.0,
                 "inventory grew while scrolling"
             );
-            pointer = egui::pos2(rect.left() + rect.width() * 0.25, footer - 30.0);
+            pointer = rect.center();
             if frame >= 10 {
                 product_reached |= product_visible;
             }
@@ -532,21 +745,12 @@ fn product_unloading_into_own_cargo_requires_capacity_and_permission() {
         unit_volume_m3: 0.001,
     };
     let check = |source: &FacilityView, quantity| {
-        inventory::transfer_error(
-            source,
-            source,
-            &product,
-            quantity,
-            inventory::Storage::Product,
-        )
+        cargo::transfer_error(source, source, &product, quantity, cargo::Storage::Product)
     };
 
     assert!(check(&source, 8).is_none());
     assert!(check(&source, 9).is_some());
-    assert!(
-        inventory::transfer_error(&source, &source, &product, 8, inventory::Storage::Cargo,)
-            .is_some()
-    );
+    assert!(cargo::transfer_error(&source, &source, &product, 8, cargo::Storage::Cargo,).is_some());
 
     source.cargo_used_m3 = source.cargo_capacity_m3;
     assert!(check(&source, 8).unwrap().contains("space"));
@@ -579,10 +783,17 @@ fn installed_products_are_excluded_from_consumables_but_fuel_remains_visible() {
     .collect();
     let mut state = inventory::State::default();
     let mut intents = Vec::new();
+    let mut transfers = cargo::Transfers::default();
     let mut labels = Vec::new();
     for frame in 0..3 {
         labels = render(&context, Vec::new(), frame as f64 / 60.0, |ui| {
-            inventory::draw(ui, &mut state, &fixture.model(), &mut intents);
+            inventory::draw(
+                ui,
+                &mut state,
+                &fixture.model(),
+                &mut transfers,
+                &mut intents,
+            );
         });
     }
     let point = labels
@@ -596,12 +807,24 @@ fn installed_products_are_excluded_from_consumables_but_fuel_remains_visible() {
             click_events(point, pressed),
             (frame + 3) as f64 / 60.0,
             |ui| {
-                inventory::draw(ui, &mut state, &fixture.model(), &mut intents);
+                inventory::draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                );
             },
         );
     }
     let labels = render(&context, Vec::new(), 0.1, |ui| {
-        inventory::draw(ui, &mut state, &fixture.model(), &mut intents);
+        inventory::draw(
+            ui,
+            &mut state,
+            &fixture.model(),
+            &mut transfers,
+            &mut intents,
+        );
     });
 
     for resource in ["Reactor fuel", "Water"] {
@@ -635,11 +858,18 @@ fn default_inventory_height_is_stable_and_wheel_reaches_the_last_installed_tank(
     let mut desktop = Desktop::default();
     desktop.open(INVENTORY);
     let mut intents = Vec::new();
+    let mut transfers = cargo::Transfers::default();
     let mut labels = Vec::new();
     for frame in 0..5 {
         labels = render(&ctx, vec![], frame as f64 / 60.0, |ui| {
             desktop.show(ui.ctx(), INVENTORY, |ui| {
-                inventory::draw(ui, &mut state, &fixture.model(), &mut intents)
+                inventory::draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                )
             });
         });
     }
@@ -655,7 +885,13 @@ fn default_inventory_height_is_stable_and_wheel_reaches_the_last_installed_tank(
             (frame + 5) as f64 / 60.0,
             |ui| {
                 desktop.show(ui.ctx(), INVENTORY, |ui| {
-                    inventory::draw(ui, &mut state, &fixture.model(), &mut intents)
+                    inventory::draw(
+                        ui,
+                        &mut state,
+                        &fixture.model(),
+                        &mut transfers,
+                        &mut intents,
+                    )
                 });
             },
         );
@@ -675,7 +911,13 @@ fn default_inventory_height_is_stable_and_wheel_reaches_the_last_installed_tank(
         ];
         labels = render(&ctx, events, frame as f64 / 60.0, |ui| {
             desktop.show(ui.ctx(), INVENTORY, |ui| {
-                inventory::draw(ui, &mut state, &fixture.model(), &mut intents)
+                inventory::draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                )
             });
         });
         found |= labels.iter().any(|(label, _)| label == "Tank 29");
@@ -687,14 +929,11 @@ fn default_inventory_height_is_stable_and_wheel_reaches_the_last_installed_tank(
 #[test]
 fn industrial_mass_editor_converts_kilograms_to_bounded_integer_milligrams() {
     assert_eq!(
-        inventory::quantity_from_mass(100.0, 0.000001, u64::MAX),
+        cargo::quantity_from_mass(100.0, 0.000001, u64::MAX),
         100_000_000
     );
-    assert_eq!(
-        inventory::quantity_from_mass(0.0000016, 0.000001, u64::MAX),
-        2
-    );
-    assert_eq!(inventory::quantity_from_mass(100.0, 0.000001, 8), 8);
-    assert_eq!(inventory::quantity_from_mass(-1.0, 0.000001, 8), 0);
-    assert_eq!(inventory::quantity_from_mass(f64::NAN, 0.000001, 8), 0);
+    assert_eq!(cargo::quantity_from_mass(0.0000016, 0.000001, u64::MAX), 2);
+    assert_eq!(cargo::quantity_from_mass(100.0, 0.000001, 8), 8);
+    assert_eq!(cargo::quantity_from_mass(-1.0, 0.000001, 8), 0);
+    assert_eq!(cargo::quantity_from_mass(f64::NAN, 0.000001, 8), 0);
 }

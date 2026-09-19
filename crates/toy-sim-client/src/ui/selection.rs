@@ -61,10 +61,20 @@ pub(super) fn synchronize(
     {
         selection.target = None;
     }
-    if selection
-        .ship
-        .is_none_or(|selected| !ships.iter().any(|ship| ship.0.ship == selected))
-    {
+    if selection.ship.is_none_or(|selected| {
+        !ships.iter().any(|ship| ship.0.ship == selected)
+            && !session
+                .industry
+                .snapshot
+                .hangar
+                .as_ref()
+                .is_some_and(|hangar| {
+                    hangar
+                        .ships
+                        .iter()
+                        .any(|entry| entry.inventory.entity == selected && entry.can_focus)
+                })
+    }) {
         selection.ship = ships
             .iter()
             .filter(|ship| {

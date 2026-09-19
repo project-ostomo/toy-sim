@@ -37,6 +37,7 @@ impl Fixture {
     fn model(&self) -> FrameModel<'_> {
         FrameModel {
             industry: &self.industry,
+            industry_ready: true,
             society: &self.society,
             navigation: &self.navigation,
             navigation_status: &NavigationStatus::Ready,

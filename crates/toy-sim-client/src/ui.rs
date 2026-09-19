@@ -186,7 +186,28 @@ mod tests {
             host: Id([4; 16]),
             bay: 0,
         };
-        world.spawn(hull);
+        world.resource_mut::<SessionInfo>().industry.snapshot.hangar = Some(industry::HangarView {
+            ship: first,
+            host: Id([4; 16]),
+            host_name: "Test hangar".into(),
+            host_inventory: None,
+            ships: vec![industry::HangarEntry {
+                inventory: industry::FacilitySummary {
+                    entity: built,
+                    owner: ownership::Principal::Player(Id([1; 16])),
+                    name: "Built ship outside telemetry page".into(),
+                    location: Some(Id([4; 16])),
+                    capabilities: Vec::new(),
+                    can_manage: false,
+                    can_transfer: true,
+                },
+                can_focus: true,
+                can_control: true,
+                can_open_inventory: true,
+            }],
+            next: None,
+        });
+
         world.spawn(state::ViewObservation(ViewState {
             focused_ship: Some(first),
             origin: GalacticPosition::ZERO,
@@ -200,6 +221,12 @@ mod tests {
         world.resource_mut::<Selection>().ship = Some(built);
         world.run_system_once(selection::synchronize).unwrap();
         world.run_system_once(selection::synchronize).unwrap();
+
+        assert_eq!(world.resource::<Selection>().ship, Some(built));
+        world.spawn(hull);
+        world.resource_mut::<SessionInfo>().industry.snapshot.hangar = None;
+        world.run_system_once(selection::synchronize).unwrap();
+        assert_eq!(world.resource::<Selection>().ship, Some(built));
 
         let outgoing = world.resource::<Outgoing>();
         let subscriptions: Vec<_> = outgoing
