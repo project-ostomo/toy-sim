@@ -1,6 +1,9 @@
 use super::*;
 use toy_sim_model::local_space::{MAX_LOCAL_OBSTACLES, QUERY_WORK};
 
+#[cfg(test)]
+mod flight_tests;
+
 const EPHEMERIS_WORK: usize = 8;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -35,16 +38,34 @@ impl Budget {
         let tidal_reach = tidal_radius(index.mass);
         let radius = range_m + index.max_speed * after_seconds + tidal_reach;
         let mut cursor = index.spatial.range_cursor(centre, radius, true);
-        let batch =
-            index
-                .spatial
-                .advance_range(&mut cursor, self.remaining / 4, MAX_LOCAL_OBSTACLES * 2);
-        self.remaining = self
-            .remaining
-            .checked_sub(batch.stats.work())
-            .expect("spatial cursor respected its work allowance");
-        self.truncated |= !batch.complete || batch.invalidated;
-        batch.ids
+        let mut candidates = Vec::new();
+
+        loop {
+            let traversal_work = self.remaining.saturating_sub(EPHEMERIS_WORK);
+            let batch = index.spatial.advance_range(&mut cursor, traversal_work, 1);
+            self.remaining = self
+                .remaining
+                .checked_sub(batch.stats.work())
+                .expect("spatial cursor respected its work allowance");
+
+            if batch.invalidated || (!batch.complete && batch.stats.work() == 0) {
+                self.truncated = true;
+                return candidates;
+            }
+
+            for id in batch.ids {
+                assert!(self.charge(EPHEMERIS_WORK), "candidate work was reserved");
+                candidates.push(id);
+            }
+
+            if batch.complete {
+                return candidates;
+            }
+            if traversal_work == 0 || candidates.len() == MAX_LOCAL_OBSTACLES * 2 {
+                self.truncated = true;
+                return candidates;
+            }
+        }
     }
 }
 
@@ -192,9 +213,6 @@ impl FusedScan {
         volumes: &mut BTreeMap<Key, LocalObstacle>,
     ) {
         for slot in budget.candidates(index, centre, range_m, after_seconds) {
-            if !budget.charge(EPHEMERIS_WORK) {
-                break;
-            }
             let aperture = &index.bodies[slot as usize];
             let Some(reference) = &aperture.reference else {
                 continue;

@@ -1468,3 +1468,68 @@ Native travel exposed a rendering problem before the gate crossing: the visible
 gate disappeared and the camera briefly presented distant, overlapping markers.
 Escape restored the ship view in Sol. This remains the next integration issue;
 it is not being treated as a completed rendering check.
+
+### Gate rendering investigation
+
+The user's observation that these artifacts appeared during the sprint prompted
+a comparison with the pre-sprint replication and rendering paths. Gates still
+arrive as navigation objects, and planets as celestial definitions and orbital
+parameters. Neither depends on the new optical ship observations or camera
+orientation. During the missing-gate failure, the gate's three meshes remained
+present, on the correct render layer, at the expected position and marked
+visible. The planet surface textures also remained resident.
+
+An initial comparison at the starting position was inconclusive: both ordinary
+drawing and direct drawing could render that scene. A later saved scene in Sol
+reproduced the failure with the gate's HUD marker centered on screen. Turning off
+frustum culling, automatic mesh batching, or the gate's shadow maps did not bring
+it back. Restarting the same saved world with direct drawing restored the gate's
+frame and glowing aperture. The transparent pass changed from four vertex
+invocations to 12,605. Evidence is in the native screenshots
+`/tmp/toy-sequential-playtests/render-batching-baseline.png` and
+`/tmp/toy-sequential-playtests/render-direct-confirmed.png`.
+
+The final cause is range-table exhaustion introduced by the new ship glints.
+Their mesh/glint transitions generated continuously changing floating-point
+`VisibilityRange` values. Bevy retains each distinct range for the client
+lifetime. After 65,535 distinct ranges, the GPU buffer grew past the reserved
+"no range" index, leaving that slot filled with zeros. Ordinary planet and gate
+meshes then read a zero-distance limit and were culled. Disabling frustum culling
+could not help because the range test is a separate step.
+
+The first failing replay logged the range overflow at 14:41:16.390672 UTC,
+exactly when the transparent draw count collapsed. Its coincidence with the
+gate approach initially suggested a lighting issue; the range overflow explains
+the observed failure and the direct-drawing comparison. At the user's request,
+the mesh/glint crossfade is being removed. Meshes and distant glints will switch
+directly, using the existing projected-size hysteresis to avoid switching back
+and forth at the threshold. Normal GPU drawing is retained. All temporary probe
+systems, function-key switches and environment flags have been removed.
+
+The populated scene previously averaged roughly 124–145 FPS in uncapped samples
+at about 2672 by 1670 rendered pixels. The direct-drawing replay reaches roughly
+116–125 FPS after compilation finishes. These are rendering throughput samples,
+not a guarantee that every frame finishes within 8.33 ms. The desktop remains
+at its existing 60 Hz setting. Provider calls are disabled in all these replay
+worlds.
+
+The return journey exposed a separate geometry-query problem: the patrol could
+remain about a kilometre from the Helion gate with its autopilot active and
+almost no commanded thrust. The local query spent only a quarter of its
+remaining traversal budget, then reported incomplete geometry despite having
+unused work allowance. The flight computer correctly held position because it
+could not establish a safe route.
+
+The query now advances its spatial cursor within the actual remaining budget,
+reserving and charging orbital evaluation once per candidate. The existing
+2,048-work allowance and gas charge are unchanged. Invalidated cursors and
+incomplete iterations that make no progress stop immediately.
+
+All seven existing local-geometry checks pass. A new regression runs the actual
+stock WASM computer on the return side of the Sol gate, with the ship and gate
+sharing about 29.7 km/s orbital motion. It completes the physical crossing after
+226 simulated seconds, emerges 237.381 m from the paired mouth at 7.475 m/s
+relative speed, and retains hull integrity. A disposable replay of the original
+saved native world also completes the crossing after 222.7 simulated seconds;
+every sampled local query is complete. The temporary saved-world inspection
+helper was removed. No guidance or firmware changes were required.
