@@ -94,13 +94,25 @@ pub(super) struct SessionInfo {
     pub groups: Vec<GroupId>,
     pub diagnostics: Option<Diagnostics>,
     pub universe: Option<UniverseStatus>,
-    pub navigation: NavigationCatalogue,
+    pub navigation: std::sync::Arc<NavigationCatalogue>,
+    pub navigation_hash: Option<[u8; 32]>,
+    pub navigation_status: NavigationStatus,
+    pub navigation_ephemerides: Vec<CelestialSystemRef>,
     pub society: ownership::SocietySnapshot,
     pub results: Vec<CommandResult>,
     pub events: Vec<toy_sim_model::Event>,
     pub target_frames: usize,
     pub underruns: u64,
     pub status: String,
+}
+
+#[derive(Default, Debug, PartialEq, Eq)]
+pub(super) enum NavigationStatus {
+    #[default]
+    Unavailable,
+    Loading,
+    Ready,
+    Failed(String),
 }
 
 #[derive(Event)]

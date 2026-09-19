@@ -1,3 +1,4 @@
+# Orbital and rotation angles are radians; epochs are MJD.
 name = "Sol"
 position_um = ["37842920000000000000000", "0", "0"]
 
@@ -8,7 +9,7 @@ lumens = 3.6e28
 mass = "1 massSol"
 radius = 6.957e8
 rotation_period = "25.38 d"
-obliquity = 7.25
+obliquity = 0.1265363707695889
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -20,13 +21,13 @@ radius = 2.4397e6
 semi_major = "0.38709893 au"
 period = "87.9691 d"
 eccentricity = 0.20563069
-inclination = 7.00487
-ascending_node = 48.33167
-arg_of_pericenter = 29.12478
-mean_anomaly = 174.79588
+inclination = 0.1222580451741752
+ascending_node = 0.84354677448736781
+arg_of_pericenter = 0.50832330491899413
+mean_anomaly = 3.050763624920906
 epoch = 51544.5
 rotation_period = "58.646 d"
-obliquity = 0.034
+obliquity = 0.00059341194567807205
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -38,13 +39,13 @@ radius = 6.0518e6
 semi_major = "0.72333199 au"
 period = "224.70069 d"
 eccentricity = 0.00677323
-inclination = 3.39471
-ascending_node = 76.68069
-arg_of_pericenter = 54.85229
-mean_anomaly = 50.115
+inclination = 0.059248866650376701
+ascending_node = 1.3383305132010908
+arg_of_pericenter = 0.95735306275876042
+mean_anomaly = 0.87467175463695823
 epoch = 51544.5
 rotation_period = "-243.025 d"
-obliquity = 177.36
+obliquity = 3.095515961337143
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -56,13 +57,13 @@ radius = 6.378e6
 semi_major = "1 au"
 period = "365.256363004 d"
 eccentricity = 0.01671123
-inclination = 0.00005
-ascending_node = -11.26064
-arg_of_pericenter = 102.93768193
-mean_anomaly = 100.46457166
+inclination = 8.726646259971647e-07
+ascending_node = -0.19653524388177426
+arg_of_pericenter = 1.7966014740491709
+mean_anomaly = 1.7534375570727851
 epoch = 51544.5
 rotation_period = "23.75 h"
-obliquity = 23.439281
+obliquity = 0.40909262775014904
 rotation_epoch = 51544.5
 
 # [[bodies]]
@@ -83,13 +84,13 @@ radius = 3.3895e6
 semi_major = "1.52366231 au"
 period = "686.97959 d"
 eccentricity = 0.09341233
-inclination = 1.85061
-ascending_node = 49.57854
-arg_of_pericenter = 286.4623
-mean_anomaly = 19.41248
+inclination = 0.032299237670332263
+ascending_node = 0.86530876133170942
+arg_of_pericenter = 4.9997103178357527
+mean_anomaly = 0.33881169197754879
 epoch = 51544.5
 rotation_period = "24.6229 h"
-obliquity = 25.19
+obliquity = 0.43964843857737163
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -101,13 +102,13 @@ radius = 6.9911e7
 semi_major = "5.20336301 au"
 period = "4332.8201 d"
 eccentricity = 0.04839266
-inclination = 1.30530
-ascending_node = 100.55615
-arg_of_pericenter = 273.8777
-mean_anomaly = 20.0202
+inclination = 0.022781782726281983
+ascending_node = 1.7550359006292959
+arg_of_pericenter = 4.7800676127892734
+mean_anomaly = 0.34941840690776876
 epoch = 51544.5
 rotation_period = "9.925 h"
-obliquity = 3.12
+obliquity = 0.05445427266222308
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -119,13 +120,13 @@ radius = 5.8232e7
 semi_major = "9.53707032 au"
 period = "10759.221 d"
 eccentricity = 0.05415060
-inclination = 2.48446
-ascending_node = 113.71504
-arg_of_pericenter = 339.392
-mean_anomaly = 317.0207
+inclination = 0.043362007134098317
+ascending_node = 1.9847018570370525
+arg_of_pericenter = 5.9235078549285944
+mean_anomaly = 5.5330550119771864
 epoch = 51544.5
 rotation_period = "10.656 h"
-obliquity = 26.73
+obliquity = 0.46652650905808424
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -137,13 +138,13 @@ radius = 2.5362e7
 semi_major = "19.19126393 au"
 period = "30688.5 d"
 eccentricity = 0.04716771
-inclination = 0.76986
-ascending_node = 74.22988
-arg_of_pericenter = 96.73436
-mean_anomaly = 142.2386
+inclination = 0.013436591779403546
+ascending_node = 1.2955558093602884
+arg_of_pericenter = 1.6883330818095017
+mean_anomaly = 2.4825318934272063
 epoch = 51544.5
 rotation_period = "-17.24 h"
-obliquity = 97.77
+obliquity = 1.706408409674856
 rotation_epoch = 51544.5
 
 [[bodies]]
@@ -155,11 +156,11 @@ radius = 2.4622e7
 semi_major = "30.06896348 au"
 period = "60182.0 d"
 eccentricity = 0.00858587
-inclination = 1.76917
-ascending_node = 131.72169
-arg_of_pericenter = 272.8461
-mean_anomaly = 256.228
+inclination = 0.030877841527508075
+ascending_node = 2.2989771867912894
+arg_of_pericenter = 4.7620627962256998
+mean_anomaly = 4.472022235800031
 epoch = 51544.5
 rotation_period = "16.11 h"
-obliquity = 28.32
+obliquity = 0.49427724416479407
 rotation_epoch = 51544.5

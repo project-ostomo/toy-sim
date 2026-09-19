@@ -52,9 +52,48 @@ from their boot defaults while the computer comes online. A trapped program stil
 uses the normal fault/reset behavior. The durable guest API is
 described in [Ship controller ABI](ship-abi.md).
 
+Queued slip orders preserve their typed destination references. An active charge
+also retains its concrete candidate, start tick and accumulated energy. A ship
+already in transit restores the galactic endpoint frozen at departure.
+
+Saved programs must implement the current ABI 26. Restore validates each
+program's content hash, imports and API-version export before replacing world
+entities. An unsupported saved program stops startup with an error.
+
 Authentication configuration stays outside the database. Back it up together with
 the world; restoring a world without the matching account credentials does not
 grant access to its assets.
+
+## Universe definition changes
+
+The current named `world` section has version 2. SQLite’s table schema and the
+outer checkpoint container retain their existing format. Section 1 checkpoints
+are rejected before ECS state is replaced; there is no automatic migration or
+creation of a replacement database.
+
+A world record stores both the public universe-catalogue hash and a BLAKE3
+fingerprint over the ordered system IDs and their complete definition asset
+hashes. Restore compares both against the loaded universe before mutating the
+world. The definition fingerprint catches orbital and physical changes that
+might leave the catalogue summary unchanged. The ship-resource catalogue and
+persistent references are validated separately.
+
+The 3,000-system map therefore requires a new saved world when replacing the old
+ten-system universe. Startup reports an incompatible world section or a changed
+catalogue and asks for an explicit new database. Preserve the previous state and
+choose a new `--state-dir` for the debug launcher, or another `[persistence].path`
+for a dedicated server. A normal restart with unchanged definitions restores the
+same world. Moving or deleting the original ship blueprint file remains safe
+because the ship design itself is stored in the checkpoint.
+
+Gate records retain their generated-system index, checked against the referenced
+body and system during restore. The world record also stores the versioned static
+navigation-catalogue bytes. They are decoded and validated before world mutation,
+then installed in the shared asset store. Retaining their reference beacon poses
+preserves the catalogue's content hash across a normal restart despite orbital
+motion. Publication replaces that catalogue when topology or structural metadata
+changes. Active celestial ECS entities are reconstructed from restored vessels;
+immutable global definitions remain available even when their systems are inactive.
 
 ## Local debug worlds
 

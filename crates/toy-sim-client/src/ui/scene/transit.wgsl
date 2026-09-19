@@ -24,6 +24,9 @@ fn hash(p: vec2<f32>) -> f32 {
 @fragment
 fn fragment(input: Output, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let inside = length(input.camera) < 1.0;
+    // The orbit camera can trail the arriving ship inside the exit aperture.
+    // Its interior must not become an opaque foreground shell around the view.
+    if parameters.y <= 0.5 && inside { discard; }
     if front == inside { discard; }
     let n = normalize(input.local);
     let t = parameters.x;

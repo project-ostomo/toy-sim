@@ -79,6 +79,8 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
         (
             intelligence::collect_unused_groups,
             travel::geometry::refresh,
+            infrastructure::exclusion::certify
+                .run_if(infrastructure::exclusion::configuration_changed),
             infrastructure::enforce_exclusion,
             identity::identify_celestials,
             identity::clean_indexes,

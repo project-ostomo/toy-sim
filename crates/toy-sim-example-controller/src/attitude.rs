@@ -13,6 +13,12 @@ pub fn point(q: DQuat, engine_axis: DVec3, direction: DVec3) -> DQuat {
     DQuat::from_rotation_arc(q * engine_axis, direction) * q
 }
 
+pub fn thrust_alignment(rotation: DQuat, axis: DVec3, direction: DVec3) -> f64 {
+    (rotation * axis)
+        .dot(direction.normalize_or_zero())
+        .clamp(0., 1.)
+}
+
 pub fn error_angle(q: DQuat, axis: DVec3, direction: DVec3) -> f64 {
     (q * axis).dot(direction).clamp(-1., 1.).acos()
 }
@@ -61,5 +67,23 @@ pub fn turn_allowance(inertia: DMat3, b: &Bindings) -> f64 {
         2. * (angle / alpha).sqrt() + 1.
     } else {
         angle / MAX_RATE + MAX_RATE / alpha + 1.
+    }
+}
+
+#[cfg(test)]
+mod alignment_tests {
+    use super::*;
+
+    #[test]
+    fn fully_aligned_rotated_attitudes_never_request_over_full_throttle() {
+        for step in 0..1000 {
+            let angle = step as f64 * 0.017;
+            let rotation =
+                (DQuat::from_rotation_x(angle) * DQuat::from_rotation_y(angle * 0.73)).normalize();
+            let direction = rotation * DVec3::NEG_Z;
+            let alignment = thrust_alignment(rotation, DVec3::NEG_Z, direction);
+            assert!((0. ..=1.).contains(&alignment));
+            assert!(alignment > 1. - 1e-12);
+        }
     }
 }

@@ -19,6 +19,8 @@ struct WorldRecord {
     rate: f64,
     sensor_seed: [u8; 32],
     catalogue: [u8; 32],
+    definitions: [u8; 32],
+    navigation: Vec<u8>,
     resource_ids: Vec<String>,
     elapsed_ns: u64,
     tick: u64,
@@ -160,6 +162,19 @@ fn pose(world: &World, entity: Entity) -> Result<Pose> {
     Ok(pose)
 }
 
+fn definition_fingerprint(world: &World) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_derive_key("toy-sim immutable world definitions v1");
+    for (id, definition) in world
+        .resource::<registry::UniverseRegistry>()
+        .definitions
+        .iter()
+    {
+        hash.update(&id.0);
+        hash.update(definition);
+    }
+    *hash.finalize().as_bytes()
+}
+
 pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut record = WorldRecord {
         epoch: world.resource::<identity::WorldEpoch>().0,
@@ -167,6 +182,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         rate: world.resource::<crate::sim::session::Clock>().rate,
         sensor_seed: world.resource::<identity::SensorSeed>().0,
         catalogue: world.resource::<registry::UniverseRegistry>().catalogue,
+        definitions: definition_fingerprint(world),
+        navigation: infrastructure::capture_navigation(world),
         resource_ids: world
             .resource::<vessel::ShipCatalogue>()
             .0
@@ -627,7 +644,19 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             "gate pair unavailable or inconsistent"
         );
         ensure!(
+            gate.orbit.as_ref().is_none_or(
+                |orbit| orbit.valid(&world.resource::<registry::UniverseRegistry>().universe)
+            ),
+            "invalid saved gate orbit",
+        );
+        ensure!(
             valid_pose(&gate.pose)
+                && gate.radius_m.is_finite()
+                && gate.radius_m > 0.0
+                && gate.gate.radius_m.is_finite()
+                && gate.gate.radius_m > 0.0
+                && gate.gate.exclusion_m.is_finite()
+                && gate.gate.exclusion_m >= gate.gate.radius_m
                 && access_valid(&gate.owner, &gate.access)
                 && control_valid(&gate.control)
                 && iff_valid(&gate.iff),
@@ -676,7 +705,8 @@ fn valid_pose(pose: &Pose) -> bool {
 pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let record: WorldRecord = postcard::from_bytes(bytes)?;
     ensure!(
-        record.catalogue == world.resource::<registry::UniverseRegistry>().catalogue,
+        record.catalogue == world.resource::<registry::UniverseRegistry>().catalogue
+            && record.definitions == definition_fingerprint(world),
         "world catalogue differs from saved universe; explicitly start a new database for a different universe"
     );
     let resources = world
@@ -691,6 +721,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         "resource catalogue differs from snapshot"
     );
     validate(world, &record)?;
+    toy_sim_protocol::navigation::decode_catalogue(&record.navigation)?;
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
     let entities = world
         .query_filtered::<Entity, Without<bevy::ecs::resource::IsResource>>()
@@ -708,6 +739,8 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         .0
         .clear();
     *world.resource_mut::<orrery::activity::ActiveSystems>() = default();
+    world.remove_resource::<infrastructure::NavigationPublication>();
+    world.remove_resource::<infrastructure::exclusion::CertifiedExclusion>();
     world
         .resource_mut::<crate::sim::session::Events>()
         .0
@@ -1057,6 +1090,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     publish.add_systems(intelligence::publish);
     publish.run(world);
     travel::geometry::refresh(world);
+    infrastructure::restore_navigation(world, &record.navigation)?;
     Ok(())
 }
 
@@ -1127,7 +1161,21 @@ mod tests {
         let mut corrupt_program: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         corrupt_program.programs.values_mut().next().unwrap()[0] ^= 1;
 
-        for invalid in [missing_host, broken_pair, corrupt_program] {
+        let mut broken_orbit: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        broken_orbit.gates[0].orbit.as_mut().unwrap().system = usize::MAX;
+        let mut different_definitions: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        different_definitions.definitions[0] ^= 1;
+        let mut corrupt_navigation: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        corrupt_navigation.navigation.truncate(12);
+
+        for invalid in [
+            missing_host,
+            broken_pair,
+            corrupt_program,
+            broken_orbit,
+            different_definitions,
+            corrupt_navigation,
+        ] {
             let invalid = postcard::to_stdvec(&invalid).unwrap();
             assert!(restore(world, &invalid).is_err());
             assert_eq!(world.resource::<identity::WorldEpoch>().0, epoch);
@@ -1160,7 +1208,9 @@ mod tests {
         let destination = departure.offset_by(DVec3::X * 1e12);
         let tick = world.resource::<simulation::SimulationCounters>().ticks;
         let orders = vec![
-            QueuedOrder::from(Order::Slip { destination }),
+            QueuedOrder::from(Order::Slip {
+                destination: toy_sim_model::travel::Destination::Galactic(destination),
+            }),
             QueuedOrder::from(Order::WaitUntil(tick + 1000)),
         ];
         world.entity_mut(ship).insert(travel::Travel(TravelState {

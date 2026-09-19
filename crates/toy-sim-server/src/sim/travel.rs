@@ -4,7 +4,7 @@ pub mod geometry;
 mod router_tests;
 
 use super::{
-    identity::{self, BeaconEmitter, Control, Identity},
+    identity::{self, BeaconEmitter, Identity},
     intelligence::pose,
     orrery::activity::CelestialState,
     physics::{AngularVelocity, MassProps, Velocity},
@@ -19,6 +19,7 @@ use bevy::{
 };
 use std::collections::BTreeSet;
 use toy_sim_model::{AccountId, EntityId, GalacticPosition, Id, Pose, travel::*};
+use toy_sim_ships::StochasticRound;
 
 pub const LIGHT_YEAR_M: f64 = 9.4607304725808e15;
 
@@ -178,70 +179,11 @@ fn emit(world: &mut World, entity: Entity, kind: &'static str, position: Option<
         .push((entity, kind, position));
 }
 fn blocked(world: &mut World, entity: Entity, reason: String) {
+    cancel_pending(world, entity);
     if let Some(mut travel) = world.get_mut::<Travel>(entity) {
+        travel.0.planning = None;
         travel.0.status = Status::Blocked(reason);
         travel.0.estimated_arrival_tick = None;
-    }
-}
-
-pub fn resolve_destination(world: &World, destination: &Destination, at_tick: u64) -> Result<Pose> {
-    match destination {
-        Destination::Galactic(position) => Ok(Pose {
-            position: *position,
-            ..Default::default()
-        }),
-        Destination::Beacon(uuid) => {
-            let target = entity(world, *uuid)?;
-            ensure!(
-                active(world, target) && world.get::<BeaconEmitter>(target).is_some(),
-                "beacon unavailable"
-            );
-            let mut result = ship_pose(world, target)?;
-            result.position = result.position.offset_by(
-                DVec3::from_array(result.velocity)
-                    * at_tick.saturating_sub(tick(world)) as f64
-                    * 0.1,
-            );
-            Ok(result)
-        }
-        Destination::Relative {
-            reference,
-            offset,
-            axes,
-        } => {
-            let mut result = match reference {
-                Reference::Beacon(uuid) => {
-                    resolve_destination(world, &Destination::Beacon(*uuid), at_tick)?
-                }
-                Reference::Celestial(uuid) => {
-                    let registry = world
-                        .get_resource::<super::registry::UniverseRegistry>()
-                        .ok_or_else(|| anyhow::anyhow!("celestial registry unavailable"))?;
-                    let epoch = world
-                        .get_resource::<Time<Fixed>>()
-                        .map(super::physics::sim_time)
-                        .unwrap_or_else(|| hifitime::Epoch::from_mjd_utc(0.))
-                        + hifitime::Duration::from_seconds(
-                            at_tick.saturating_sub(tick(world)) as f64 * 0.1,
-                        );
-                    registry
-                        .pose(*uuid, epoch)
-                        .ok_or_else(|| anyhow::anyhow!("celestial unavailable"))?
-                }
-            };
-            let displacement = if *axes == Axes::BodyFixed {
-                DQuat::from_array(result.rotation) * offset.to_meters_64()
-            } else {
-                offset.to_meters_64()
-            };
-            result.position = result.position.offset_by(displacement);
-            if *axes == Axes::BodyFixed {
-                result.velocity = (DVec3::from_array(result.velocity)
-                    + DVec3::from_array(result.angular_velocity).cross(displacement))
-                .to_array();
-            }
-            Ok(result)
-        }
     }
 }
 
@@ -450,9 +392,12 @@ fn celestial_conditions(world: &mut World, position: GalacticPosition, radius: f
             .unwrap_or_else(|| hifitime::Epoch::from_mjd_utc(0.));
         let mut clear = true;
         let mut curvature = 0.;
-        for system in universe.tree.containing_segment(position, DVec3::ZERO) {
+        for system in universe.index.containing_segment(position, DVec3::ZERO) {
             let solver = &universe.systems[system].solver;
-            for body in solver.iter() {
+            for body in solver
+                .iter()
+                .filter(|body| !matches!(body.class_params, super::orrery::BodyClass::Barycenter))
+            {
                 if let Some(center) = solver.solve_position(&body.name, epoch) {
                     let distance = center.relative_to(position).length();
                     clear &= distance > body.radius + radius;
@@ -509,33 +454,92 @@ pub fn slip_admissible(
     })
 }
 
+pub(crate) fn slip_flight_seconds(origin: GalacticPosition, destination: GalacticPosition) -> f64 {
+    let light_years = origin.relative_to(destination).length() / LIGHT_YEAR_M;
+    ((30.0 + 8.64 * light_years) * 10.0).ceil() * 0.1
+}
+
+fn slip_energy_j(origin: GalacticPosition, destination: GalacticPosition, mass: f64) -> f64 {
+    let light_years = origin.relative_to(destination).length() / LIGHT_YEAR_M;
+    (1e5 * mass * (1.0 + light_years / 1000.0)).ceil()
+}
+
+pub(crate) fn slip_times(
+    origin: GalacticPosition,
+    destination: GalacticPosition,
+    mass: f64,
+    power_w: f64,
+    preparation: Option<&Preparation>,
+    now: u64,
+) -> (f64, f64) {
+    let mass = preparation.map_or(mass, |preparation| preparation.mass);
+    let work = preparation.map_or(0.0, |preparation| preparation.work_j);
+    let energy = (slip_energy_j(origin, destination, mass) - work).max(0.0);
+    let charge_ticks = (energy / (power_w.max(1.0) * 0.1)).ceil().max(1.0);
+    let minimum_ticks = preparation.map_or(100, |preparation| {
+        (preparation.started + 100).saturating_sub(now)
+    });
+    (
+        charge_ticks.max(minimum_ticks as f64) * 0.1,
+        slip_flight_seconds(origin, destination),
+    )
+}
+
 pub fn prepare_slip(world: &mut World, ship: Entity, destination: GalacticPosition) -> Result<()> {
+    toy_sim_protocol::validate_order(&Order::Slip {
+        destination: Destination::Galactic(destination),
+    })?;
     let pose = ship_pose(world, ship)?;
     let radius = radius(world, ship)?;
     ensure!(active(world, ship), "slip requires a ship in space");
-    ensure!(
-        slip_admissible(world, ship, pose.position, radius)
-            && slip_admissible(world, ship, destination, radius),
-        "inadmissible slip aperture"
-    );
     let mass = world.get::<MassProps>(ship).unwrap().mass;
     let now = tick(world);
-    let mut drive = world
-        .get_mut::<SlipDrive>(ship)
+    let drive = world
+        .get::<SlipDrive>(ship)
         .ok_or_else(|| anyhow::anyhow!("no slipdrive"))?;
-    ensure!(
-        drive.ready_tick <= now && drive.preparation.is_none(),
-        "drive not ready"
-    );
-    drive.preparation = Some(Preparation {
+    ensure!(drive.ready_tick <= now, "drive not ready");
+    let (preparation_s, flight_s) = slip_times(
+        pose.position,
         destination,
-        started: now,
         mass,
-        work_j: 0.,
-        required_j: 1e5
-            * mass
-            * (1. + pose.position.relative_to(destination).length() / LIGHT_YEAR_M / 1000.),
-    });
+        drive.power_w,
+        drive.preparation.as_ref(),
+        now,
+    );
+    ensure!(
+        slip_admissible(world, ship, pose.position, radius)
+            && super::services::predicted_aperture_clear(
+                world,
+                ship,
+                destination,
+                radius,
+                preparation_s + flight_s,
+            ),
+        "inadmissible slip aperture"
+    );
+    let mut drive = world.get_mut::<SlipDrive>(ship).unwrap();
+    if let Some(preparation) = &mut drive.preparation {
+        ensure!(
+            mass <= preparation.mass * 1.001,
+            "ship mass increased during charging"
+        );
+        preparation.destination = destination;
+        preparation.required_j =
+            slip_energy_j(pose.position, destination, preparation.mass).max(preparation.work_j);
+    } else {
+        drive.preparation = Some(Preparation {
+            destination,
+            started: now,
+            mass,
+            work_j: 0.0,
+            required_j: slip_energy_j(pose.position, destination, mass),
+        });
+    }
+    if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+        if travel.0.autopilot_enabled && matches!(travel.0.status, Status::Blocked(_)) {
+            travel.0.status = Status::Active;
+        }
+    }
     Ok(())
 }
 
@@ -546,6 +550,9 @@ pub fn submit_route(
     orders: Vec<QueuedOrder>,
 ) -> Result<()> {
     ensure!(orders.len() <= 256, "invalid route length");
+    for stage in &orders {
+        toy_sim_protocol::validate_order(&stage.action)?;
+    }
     ensure!(
         orders.iter().all(|stage| stage
             .estimated_propellant_kg
@@ -562,8 +569,10 @@ pub fn submit_route(
             && matches!(travel.0.status, Status::Planning | Status::Blocked(_)),
         "stale or inactive route"
     );
+    travel.0.search_limited = false;
     let index = travel.0.order;
     if index == travel.0.orders.len() && orders.is_empty() {
+        travel.0.planning = None;
         travel.0.status = Status::Completed;
         return Ok(());
     }
@@ -578,6 +587,7 @@ pub fn submit_route(
     travel.0.estimated_arrival_tick = travel.0.orders[index]
         .estimated_duration_ticks
         .map(|duration| now.saturating_add(duration));
+    travel.0.planning = None;
     travel.0.status = Status::Active;
     Ok(())
 }
@@ -696,14 +706,37 @@ pub fn dispatch(
 ) -> Result<()> {
     use toy_sim_model::ProgramAction;
     match action {
+        ProgramAction::PlanningProgress { revision, progress } => {
+            ensure!(
+                progress
+                    .total
+                    .is_none_or(|total| progress.completed <= total),
+                "invalid planning progress"
+            );
+            let mut travel = world
+                .get_mut::<Travel>(ship)
+                .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?;
+            ensure!(
+                travel.0.revision == revision
+                    && travel.0.autopilot_enabled
+                    && matches!(travel.0.status, Status::Planning | Status::Blocked(_)),
+                "stale or inactive planning progress"
+            );
+            travel.0.status = Status::Planning;
+            travel.0.planning = Some(progress);
+            Ok(())
+        }
         ProgramAction::Route {
             revision,
+            search_limited,
             orders,
             fuel_budget,
         } => {
             ensure!(fuel_budget.valid(), "invalid fuel budget");
             submit_route(world, ship, revision, orders)?;
-            world.get_mut::<Travel>(ship).unwrap().0.fuel_budget = Some(fuel_budget);
+            let mut travel = world.get_mut::<Travel>(ship).unwrap();
+            travel.0.fuel_budget = Some(fuel_budget);
+            travel.0.search_limited = search_limited;
             Ok(())
         }
         ProgramAction::Estimate {
@@ -784,6 +817,7 @@ fn complete_order(travel: &mut TravelState) {
     travel.order += 1;
     travel.estimated_arrival_tick = None;
     travel.fuel_budget = None;
+    travel.planning = None;
     travel.status = if travel.order >= travel.orders.len() {
         Status::Completed
     } else {
@@ -900,8 +934,7 @@ pub fn advance(world: &mut World) {
             .map_or(f64::INFINITY, |m| m.mass);
         let valid = active(world, ship)
             && mass <= preparation.mass * 1.001
-            && slip_admissible(world, ship, pose.position, ship_radius)
-            && slip_admissible(world, ship, preparation.destination, ship_radius);
+            && slip_admissible(world, ship, pose.position, ship_radius);
         if !valid {
             world.get_mut::<SlipDrive>(ship).unwrap().preparation = None;
             blocked(world, ship, "Slip preparation invalidated".into());
@@ -910,8 +943,11 @@ pub fn advance(world: &mut World) {
         let requested = (power * 0.1)
             .min(preparation.required_j - preparation.work_j)
             .max(0.);
-        let work = super::hardware::spend_travel_energy(world, ship, requested);
-        super::hardware::add_travel_heat(world, ship, work * 0.2, 0.1);
+        let requested_j = requested.stochastic_round();
+        let paid_j = world
+            .get::<super::hardware::ShipInventory>(ship)
+            .map_or(0, |inventory| inventory.0.energy_j.min(requested_j));
+        let work = paid_j as f64;
         let remaining_j = (preparation.required_j - preparation.work_j - work).max(0.);
         let charging_s = if remaining_j == 0. {
             0.
@@ -920,12 +956,24 @@ pub fn advance(world: &mut World) {
         } else {
             f64::INFINITY
         };
-        let distance_ly =
-            pose.position.relative_to(preparation.destination).length() / LIGHT_YEAR_M;
-        let remaining_s = charging_s
-            .max((preparation.started + 100).saturating_sub(now) as f64 * 0.1)
-            + 30.
-            + 8.64 * distance_ly;
+        let minimum_s = (preparation.started + 100).saturating_sub(now) as f64 * 0.1;
+        let flight_s = slip_flight_seconds(pose.position, preparation.destination);
+        let predicted_charge_s = (remaining_j / (power.max(1.0) * 0.1)).ceil() * 0.1;
+        if !super::services::predicted_aperture_clear(
+            world,
+            ship,
+            preparation.destination,
+            ship_radius,
+            predicted_charge_s.max(minimum_s) + flight_s,
+        ) {
+            blocked(world, ship, "Predicted slip exit is obstructed".into());
+            continue;
+        }
+        if let Some(mut inventory) = world.get_mut::<super::hardware::ShipInventory>(ship) {
+            inventory.0.energy_j -= paid_j;
+        }
+        super::hardware::add_travel_heat(world, ship, work * 0.2, 0.1);
+        let remaining_s = charging_s.max(minimum_s) + flight_s;
         if let Some(mut travel) = world.get_mut::<Travel>(ship) {
             travel.0.estimated_arrival_tick = remaining_s
                 .is_finite()
@@ -936,9 +984,7 @@ pub fn advance(world: &mut World) {
         if drive.preparation.as_ref().unwrap().work_j >= preparation.required_j
             && now >= preparation.started + 100
         {
-            let distance_ly =
-                pose.position.relative_to(preparation.destination).length() / LIGHT_YEAR_M;
-            let arrival = now + ((30. + 8.64 * distance_ly) * 10.).ceil() as u64;
+            let arrival = now + (flight_s * 10.0).round() as u64;
             drive.preparation = None;
             drive.ready_tick = arrival + 600;
             world.entity_mut(ship).insert(Transit {
@@ -960,6 +1006,7 @@ pub fn destroy(world: &mut World, ship: Entity) {
     cancel_pending(world, ship);
     world.entity_mut(ship).remove::<Transit>();
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+        travel.0.planning = None;
         travel.0.status = Status::Paused;
     }
     if let Ok(uuid) = id(world, ship) {
@@ -1014,6 +1061,7 @@ pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
     cancel_pending(world, ship);
     world.entity_mut(ship).remove::<Transit>();
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+        travel.0.planning = None;
         travel.0.status = Status::Paused;
     }
     if let Some(mut software) = world.get_mut::<super::vessel::ShipSoftware>(ship) {
@@ -1028,14 +1076,23 @@ pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::identity::Control;
     use std::sync::Arc;
 
     fn world() -> World {
         let mut world = World::new();
         world.init_resource::<SimulationCounters>();
         world.init_resource::<identity::IdentityIndex>();
+        world.init_resource::<super::super::services::PublishedWorld>();
         crate::sim::ownership::initialize(&mut world);
         world
+    }
+
+    fn publish(world: &mut World) {
+        use bevy::ecs::system::RunSystemOnce;
+        world
+            .run_system_once(super::super::services::publish_indexes)
+            .unwrap();
     }
 
     fn ship(world: &mut World, position: DVec3, account: Id) -> Entity {
@@ -1261,10 +1318,12 @@ mod tests {
             next_attempt: 0,
         });
         set_dormant(&mut world, child, Presence::SlipTransit(Id::new()));
+        publish(&mut world);
         advance(&mut world);
         assert_eq!(world.get::<Transit>(child).unwrap().next_attempt, 10);
         world.despawn(blocker);
         world.resource_mut::<SimulationCounters>().ticks = 10;
+        publish(&mut world);
         advance(&mut world);
         assert_eq!(
             world.get::<PreciseTransform>(child).unwrap().translation_um,
@@ -1290,18 +1349,15 @@ mod tests {
             }),
         ));
         let destination = GalacticPosition::ZERO.offset_by(DVec3::X * 1e9);
+        publish(&mut world);
         prepare_slip(&mut world, child, destination).unwrap();
-        {
-            let mut drive = world.get_mut::<SlipDrive>(child).unwrap();
-            let preparation = drive.preparation.as_mut().unwrap();
-            preparation.required_j = preparation.required_j.ceil();
-        }
         for tick in 0..=100 {
             world.resource_mut::<SimulationCounters>().ticks = tick;
             world
                 .get_mut::<PreciseTransform>(child)
                 .unwrap()
                 .translation_um = GalacticPosition::ZERO.offset_by(velocity * (tick as f64 * 0.1));
+            publish(&mut world);
             advance(&mut world);
             if tick < 100 {
                 assert!(world.get::<Transit>(child).is_none());
@@ -1316,6 +1372,7 @@ mod tests {
         let arrival = transit.next_attempt;
         assert!(world.get::<Velocity>(child).is_none());
         world.resource_mut::<SimulationCounters>().ticks = arrival;
+        publish(&mut world);
         advance(&mut world);
         assert!(world.get::<Transit>(child).is_none());
         assert!(world.get::<Dormant>(child).is_none());
@@ -1324,6 +1381,154 @@ mod tests {
             world.get::<PreciseTransform>(child).unwrap().translation_um,
             destination
         );
+    }
+
+    #[test]
+    fn updating_slip_target_preserves_charge_and_freezes_the_departed_endpoint() {
+        let mut world = world();
+        let child = ship(&mut world, DVec3::ZERO, Id::new());
+        world.entity_mut(child).insert((
+            SlipDrive::default(),
+            super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                tank_capacities_m3: Vec::new(),
+                quantities: Vec::new(),
+                cargo: Vec::new(),
+                energy_j: 1_000_000_000_000,
+            }),
+        ));
+        publish(&mut world);
+        let original = GalacticPosition::from_meters(DVec3::X * 1e9);
+        prepare_slip(&mut world, child, original).unwrap();
+        advance(&mut world);
+        let initial = world
+            .get::<SlipDrive>(child)
+            .unwrap()
+            .preparation
+            .clone()
+            .unwrap();
+        assert!(initial.work_j > 0.0);
+        let energy = world
+            .get::<super::super::hardware::ShipInventory>(child)
+            .unwrap()
+            .0
+            .energy_j;
+        let destination = original.offset_by(DVec3::Y * 1e6);
+        world.resource_mut::<SimulationCounters>().ticks = 25;
+        prepare_slip(&mut world, child, destination).unwrap();
+        let updated = world
+            .get::<SlipDrive>(child)
+            .unwrap()
+            .preparation
+            .clone()
+            .unwrap();
+        assert_eq!(updated.started, initial.started);
+        assert_eq!(updated.work_j, initial.work_j);
+        assert_eq!(updated.destination, destination);
+        assert_eq!(
+            world
+                .get::<super::super::hardware::ShipInventory>(child)
+                .unwrap()
+                .0
+                .energy_j,
+            energy
+        );
+        let (preparation_s, flight_s) = slip_times(
+            GalacticPosition::ZERO,
+            destination,
+            1000.0,
+            100e6,
+            Some(&updated),
+            25,
+        );
+        assert_eq!(preparation_s, 7.5);
+        assert_eq!(
+            flight_s,
+            slip_flight_seconds(GalacticPosition::ZERO, destination)
+        );
+        for tick in 25..=100 {
+            world.resource_mut::<SimulationCounters>().ticks = tick;
+            publish(&mut world);
+            advance(&mut world);
+        }
+        let frozen = world.get::<Transit>(child).unwrap().clone();
+        assert_eq!(frozen.destination, destination);
+        assert!(prepare_slip(&mut world, child, original).is_err());
+        assert_eq!(
+            world.get::<Transit>(child).unwrap().destination,
+            destination
+        );
+    }
+
+    #[test]
+    fn blocked_route_cancels_its_pending_slip_charge() {
+        let mut world = world();
+        let child = ship(&mut world, DVec3::ZERO, Id::new());
+        world.entity_mut(child).insert(SlipDrive::default());
+        publish(&mut world);
+        prepare_slip(
+            &mut world,
+            child,
+            GalacticPosition::from_meters(DVec3::X * 1e9),
+        )
+        .unwrap();
+        let revision = world.get::<Travel>(child).unwrap().0.revision;
+        dispatch(
+            &mut world,
+            child,
+            toy_sim_model::ProgramAction::Block {
+                revision,
+                reason: "Destination prediction unavailable".into(),
+            },
+        )
+        .unwrap();
+        assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_none());
+        assert!(world.get::<Transit>(child).is_none());
+    }
+
+    #[test]
+    fn obstructed_slip_exit_does_not_spend_more_energy_and_can_restart() {
+        let mut world = world();
+        let child = ship(&mut world, DVec3::ZERO, Id::new());
+        world.entity_mut(child).insert((
+            SlipDrive::default(),
+            super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                tank_capacities_m3: Vec::new(),
+                quantities: Vec::new(),
+                cargo: Vec::new(),
+                energy_j: 1_000_000_000,
+            }),
+        ));
+        world.get_mut::<Travel>(child).unwrap().0.autopilot_enabled = true;
+        publish(&mut world);
+        let destination = GalacticPosition::from_meters(DVec3::X * 1e9);
+        prepare_slip(&mut world, child, destination).unwrap();
+        advance(&mut world);
+        let energy = world
+            .get::<super::super::hardware::ShipInventory>(child)
+            .unwrap()
+            .0
+            .energy_j;
+        let obstacle = ship(&mut world, DVec3::X * 1e9, Id::new());
+        publish(&mut world);
+        advance(&mut world);
+        assert_eq!(
+            world
+                .get::<super::super::hardware::ShipInventory>(child)
+                .unwrap()
+                .0
+                .energy_j,
+            energy
+        );
+        assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_none());
+        assert!(matches!(
+            world.get::<Travel>(child).unwrap().0.status,
+            Status::Blocked(_)
+        ));
+        world.despawn(obstacle);
+        publish(&mut world);
+        prepare_slip(&mut world, child, destination).unwrap();
+        assert_eq!(world.get::<Travel>(child).unwrap().0.status, Status::Active);
+        assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_some());
     }
 
     #[test]
@@ -1341,7 +1546,9 @@ mod tests {
             }),
         ));
         let destination = GalacticPosition::default().offset_by(DVec3::X * 10000.);
+        publish(&mut world);
         prepare_slip(&mut world, child, destination).unwrap();
+        publish(&mut world);
         advance(&mut world);
         assert_eq!(
             world
@@ -1364,8 +1571,10 @@ mod tests {
         assert!(world.get::<Transit>(child).is_none());
         cancel_pending(&mut world, child);
         assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_none());
+        publish(&mut world);
         prepare_slip(&mut world, child, destination).unwrap();
         world.get_mut::<MassProps>(child).unwrap().mass *= 2.;
+        publish(&mut world);
         advance(&mut world);
         assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_none());
         assert!(matches!(
@@ -1456,6 +1665,7 @@ mod tests {
             });
             set_dormant(&mut world, ship, Presence::SlipTransit(Id::new()));
         }
+        publish(&mut world);
         advance(&mut world);
         let arrived = [first, second]
             .into_iter()

@@ -727,6 +727,9 @@ mod tests {
     ) -> Vec<(String, egui::Pos2)> {
         let navigation = NavigationCatalogue::default();
         let model = FrameModel {
+            navigation_status: &NavigationStatus::Ready,
+            navigation_hash: None,
+            celestial_systems: Default::default(),
             society: snapshot,
             navigation: &navigation,
             ships: vec![],

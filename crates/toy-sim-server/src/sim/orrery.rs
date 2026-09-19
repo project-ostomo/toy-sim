@@ -4,7 +4,40 @@ pub use toy_sim_universe::{orrery_cfg, universe};
 #[derive(bevy::prelude::Resource, Clone, bevy::prelude::Deref)]
 pub struct Universe(pub std::sync::Arc<universe::Universe>);
 
+static BUNDLED: std::sync::OnceLock<std::sync::Arc<universe::Universe>> =
+    std::sync::OnceLock::new();
+
 impl Universe {
+    pub fn bundled() -> Self {
+        Self(
+            BUNDLED
+                .get_or_init(|| {
+                    let mut universe = universe::Universe::from_configs(
+                        toy_sim_universe::bundled_configs().expect("bundled systems"),
+                        super::physics::GRAVITY_CUTOFF,
+                    )
+                    .expect("valid universe");
+                    let mut entries = universe.index.entries.clone();
+                    for (entry, system) in entries.iter_mut().zip(&universe.systems) {
+                        entry.influence = entry
+                            .influence
+                            .max(super::infrastructure::gate_activation_extent(system));
+                    }
+                    universe.index = std::sync::Arc::new(
+                        toy_sim_universe::catalogue::CatalogueIndex::new(entries),
+                    );
+                    std::sync::Arc::new(universe)
+                })
+                .clone(),
+        )
+    }
+
+    pub fn is_bundled(&self) -> bool {
+        BUNDLED
+            .get()
+            .is_some_and(|bundled| std::sync::Arc::ptr_eq(&self.0, bundled))
+    }
+
     pub fn from_configs(configs: Vec<orrery_cfg::OrreryCfg>, cutoff: f64) -> anyhow::Result<Self> {
         Ok(Self(std::sync::Arc::new(universe::Universe::from_configs(
             configs, cutoff,
@@ -27,27 +60,21 @@ pub struct LoadOrrery;
 
 impl Plugin for OrreryPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(
-            Universe::from_configs(
-                toy_sim_universe::bundled_configs().expect("bundled systems"),
-                super::physics::GRAVITY_CUTOFF,
+        app.insert_resource(Universe::bundled())
+            .init_resource::<activity::ActiveSystems>()
+            .init_resource::<activity::UniverseDebug>()
+            .add_systems(
+                FixedUpdate,
+                activity::activate
+                    .before(SimulationSystems::History)
+                    .run_if(in_state(GameState::Game)),
             )
-            .expect("valid universe"),
-        )
-        .init_resource::<activity::ActiveSystems>()
-        .init_resource::<activity::UniverseDebug>()
-        .add_systems(
-            FixedUpdate,
-            activity::activate
-                .before(SimulationSystems::History)
-                .run_if(in_state(GameState::Game)),
-        )
-        .add_systems(
-            FixedPostUpdate,
-            move_orrery
-                .in_set(SimulationSystems::Celestials)
-                .run_if(in_state(GameState::Game)),
-        );
+            .add_systems(
+                FixedPostUpdate,
+                move_orrery
+                    .in_set(SimulationSystems::Celestials)
+                    .run_if(in_state(GameState::Game)),
+            );
     }
 }
 

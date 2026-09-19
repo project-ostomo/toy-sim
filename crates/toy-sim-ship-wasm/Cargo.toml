@@ -12,5 +12,6 @@ wasmtime.workspace = true
 toy-sim-ship-api = { path = "../toy-sim-ship-api" }
 toy-sim-ships = { path = "../toy-sim-ships" }
 [dev-dependencies]
+toy-sim-universe = { path = "../toy-sim-universe" }
 glam = "0.32.1"
 wat = "1.254.0"

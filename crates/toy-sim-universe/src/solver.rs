@@ -4,7 +4,7 @@ use crate::precision::{GalacticPosition, ToMicrometersExt};
 use glam::{DQuat, DVec3};
 use hifitime::Epoch;
 use smol_str::SmolStr;
-use std::f64::consts::PI;
+use std::f64::consts::TAU;
 
 use crate::orrery_cfg::{Body, OrreryCfg};
 
@@ -104,14 +104,8 @@ impl Orrery {
         let n = 2.0 * std::f64::consts::PI / body_cfg.orbit.period;
         let m = body_cfg.orbit.mean_anomaly + n * dt_s;
 
-        // Solve Kepler's equation for eccentric anomaly E via Newton's method
         let e = body_cfg.orbit.eccentricity;
-        let mut E = m;
-        for _ in 0..50 {
-            let f = E - e * E.sin() - m;
-            let f_prime = 1.0 - e * E.cos();
-            E -= f / f_prime;
-        }
+        let E = solve_eccentric_anomaly(m, e);
 
         // True anomaly
         let cos_E = E.cos();
@@ -148,37 +142,20 @@ impl Orrery {
         if cfg.orbit.semi_major == 0.0 {
             return Some(parent_velocity);
         }
-        // Gravitational parameter µ from period: µ = 4π²a³ / T²
         let a = cfg.orbit.semi_major;
-        let T = cfg.orbit.period;
-        let mu = 4.0 * PI * PI * a.powi(3) / (T * T);
-        // Time since reference epoch
         let epoch0 = Epoch::from_mjd_utc(cfg.orbit.epoch);
         let dt = (epoch - epoch0).to_seconds();
-        // Mean motion and anomaly
-        let n = 2.0 * PI / T;
-        let m = cfg.orbit.mean_anomaly + n * dt;
-        // Solve Kepler's equation for E
-        let e = cfg.orbit.eccentricity;
-        let mut E = m;
-        for _ in 0..50 {
-            let f = E - e * E.sin() - m;
-            let f_prime = 1.0 - e * E.cos();
-            E -= f / f_prime;
-        }
-        let cosE = E.cos();
-        let sinE = E.sin();
-        // True anomaly
-        let v = ((1.0 - e * e).sqrt() * sinE).atan2(cosE - e);
-        // Radius
-        // Specific angular momentum
-        let h = (mu * a * (1.0 - e * e)).sqrt();
-        // Radial and transverse velocity in orbital plane
-        let vr = mu / h * e * sinE;
-        let vtheta = mu / h * (1.0 + e * cosE);
-        let vx = vr * v.cos() - vtheta * v.sin();
-        let vy = vr * v.sin() + vtheta * v.cos();
-        let vel_orb = DVec3::new(vx, vy, 0.0);
+        let mean_motion = TAU / cfg.orbit.period;
+        let mean_anomaly = cfg.orbit.mean_anomaly + mean_motion * dt;
+        let eccentricity = cfg.orbit.eccentricity;
+        let eccentric_anomaly = solve_eccentric_anomaly(mean_anomaly, eccentricity);
+        let (sin_e, cos_e) = eccentric_anomaly.sin_cos();
+        let rate = mean_motion / (1.0 - eccentricity * cos_e);
+        let vel_orb = DVec3::new(
+            -a * sin_e * rate,
+            a * (1.0 - eccentricity.powi(2)).sqrt() * cos_e * rate,
+            0.0,
+        );
         // Rotate into inertial frame
         let rot = DQuat::from_rotation_z(cfg.orbit.ascending_node)
             * DQuat::from_rotation_x(cfg.orbit.inclination)
@@ -213,7 +190,7 @@ impl Orrery {
         let mut v_atm = DVec3::ZERO;
         let spin_period = cfg.rotation.rotation_period;
         if spin_period != 0.0 {
-            let spin_rate = 2.0 * PI / spin_period; // rad/s
+            let spin_rate = TAU / spin_period; // rad/s
             // Spin axis is +Z in body frame; rotate into inertial frame
             let body_rot = self.solve_rotation(body, epoch).unwrap_or(DQuat::IDENTITY);
             let spin_axis = body_rot * DVec3::Z;
@@ -257,6 +234,25 @@ impl Orrery {
         Some(orbit_rot * eq_rot)
     }
 }
+
+fn solve_eccentric_anomaly(mean_anomaly: f64, eccentricity: f64) -> f64 {
+    let mean = mean_anomaly.rem_euclid(TAU);
+    let mut eccentric = if eccentricity < 0.8 {
+        mean
+    } else {
+        std::f64::consts::PI
+    };
+    for _ in 0..50 {
+        let correction = (eccentric - eccentricity * eccentric.sin() - mean)
+            / (1.0 - eccentricity * eccentric.cos());
+        eccentric -= correction;
+        if correction.abs() < 1e-13 {
+            break;
+        }
+    }
+    eccentric
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

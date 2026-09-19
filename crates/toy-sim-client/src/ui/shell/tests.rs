@@ -31,6 +31,9 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     };
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
+        navigation_status: &NavigationStatus::Ready,
+        navigation_hash: None,
+        celestial_systems: Default::default(),
         navigation: &navigation,
         society: &ownership::SocietySnapshot::default(),
         ships: vec![],
@@ -172,16 +175,21 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
     let exit = Id([4; 16]);
     let pose = super::super::tests::ship(Id([9; 16])).0.pose.unwrap();
     let navigation = NavigationCatalogue {
+        topology_revision: 1,
         systems: vec![
             NavigationSystem {
                 id: sol,
                 name: "Sol".into(),
                 position: origin,
+                sovereignty: None,
+                population: 0,
             },
             NavigationSystem {
                 id: terminus,
                 name: "Terminus".into(),
                 position: destination,
+                sovereignty: None,
+                population: 0,
             },
         ],
         beacons: vec![
@@ -212,7 +220,13 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
         orders: vec![
             travel::Order::Jump(entry),
             travel::Order::Sublight(travel::Destination::Galactic(origin)),
-            travel::Order::Slip { destination },
+            travel::Order::Slip {
+                destination: travel::Destination::Relative {
+                    reference: travel::Reference::Beacon(entry),
+                    offset: GalacticPosition::ZERO.offset_by(glam::DVec3::Y * 1e7),
+                    axes: travel::Axes::Galactic,
+                },
+            },
             travel::Order::Sublight(travel::Destination::Galactic(destination)),
         ]
         .into_iter()
@@ -244,7 +258,7 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
                 time: Some(frame as f64 / 60.),
                 ..Default::default()
             },
-            |ui| instruments::itinerary(ui, &state, &navigation, 0),
+            |ui| instruments::itinerary(ui, &state, &navigation, &Default::default(), 0),
         );
         output.textures_delta.clear();
         text.clear();
@@ -304,9 +318,12 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
     });
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
+        navigation_status: &NavigationStatus::Ready,
+        navigation_hash: None,
         navigation: &navigation,
         society: &ownership::SocietySnapshot::default(),
         ships: vec![&ship],
+        celestial_systems: Default::default(),
         rows: vec![],
         ship: Some(&ship),
         details: None,
@@ -346,4 +363,66 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
     );
     assert!(text.contains("Partial estimate"));
     assert!(!text.contains("FUEL EXHAUSTION · hydrogen"));
+}
+
+#[test]
+fn planning_progress_reports_phases_and_disappears_after_planning() {
+    let context = egui::Context::default();
+    toy_sim_ui::theme::install(&context);
+    let mut travel = travel::TravelState {
+        status: travel::Status::Planning,
+        ..Default::default()
+    };
+    fn labels(context: &egui::Context, travel: &travel::TravelState) -> Vec<String> {
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(500., 200.),
+                )),
+                ..Default::default()
+            },
+            |ui| instruments::planning_progress(ui, travel),
+        );
+        output.textures_delta.clear();
+        fn collect(shape: &egui::Shape, labels: &mut Vec<String>) {
+            match shape {
+                egui::Shape::Text(text) => labels.push(text.galley.job.text.clone()),
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, labels)),
+                _ => {}
+            }
+        }
+        let mut labels = Vec::new();
+        for shape in output.shapes {
+            collect(&shape.shape, &mut labels);
+        }
+        labels
+    }
+    assert!(
+        labels(&context, &travel)
+            .iter()
+            .any(|label| label == "Starting route planner…")
+    );
+    travel.planning = Some(travel::PlanningProgress {
+        stage: travel::PlanningStage::LoadingCatalogue,
+        completed: 5000,
+        total: None,
+    });
+    assert!(
+        labels(&context, &travel)
+            .iter()
+            .any(|label| label == "Loading gate catalogue · 5000")
+    );
+    travel.planning = Some(travel::PlanningProgress {
+        stage: travel::PlanningStage::SearchingRoutes,
+        completed: 300,
+        total: Some(1000),
+    });
+    assert!(
+        labels(&context, &travel)
+            .iter()
+            .any(|label| label == "Comparing routes · 300 / 1000")
+    );
+    travel.status = travel::Status::Active;
+    assert!(labels(&context, &travel).is_empty());
 }

@@ -30,14 +30,50 @@ pub fn system_identity(name: &str) -> Id {
     Id(bytes)
 }
 
+pub fn gate_identity(local_catalogue: &str, remote_catalogue: &str) -> Id {
+    let mut hash = blake3::Hasher::new_derive_key("toy-sim gate mouth identity v1");
+    hash.update(local_catalogue.as_bytes());
+    hash.update(&[0]);
+    hash.update(remote_catalogue.as_bytes());
+    Id(hash.finalize().as_bytes()[..16].try_into().unwrap())
+}
+
+struct PreparedRegistry {
+    registry: UniverseRegistry,
+    assets: HashMap<[u8; 32], Vec<u8>>,
+}
+
+static BUNDLED_REGISTRY: std::sync::OnceLock<PreparedRegistry> = std::sync::OnceLock::new();
+
 pub fn initialize(world: &mut World) -> anyhow::Result<()> {
-    let universe = world.resource::<Universe>().0.clone();
+    let universe = world.resource::<Universe>().clone();
+    let prepared = if universe.is_bundled() {
+        BUNDLED_REGISTRY
+            .get_or_init(|| prepare(universe.0.clone()).expect("valid bundled catalogue"))
+    } else {
+        return install(world, &prepare(universe.0.clone())?);
+    };
+    install(world, prepared)
+}
+
+fn install(world: &mut World, prepared: &PreparedRegistry) -> anyhow::Result<()> {
+    world
+        .resource::<AppearanceAssets>()
+        .extend(prepared.assets.clone());
+    world.insert_resource(prepared.registry.clone());
+    Ok(())
+}
+
+fn prepare(
+    universe: Arc<toy_sim_universe::universe::Universe>,
+) -> anyhow::Result<PreparedRegistry> {
+    let mut assets = HashMap::new();
     let mut names = HashMap::new();
     let mut definitions = Vec::new();
     let mut catalogue = UniverseCatalogue {
         systems: Vec::new(),
     };
-    for system in &universe.systems {
+    for (system_index, system) in universe.systems.iter().enumerate() {
         let mut bodies = Vec::new();
         for body in system.solver.iter() {
             let id = identity(&body.name);
@@ -48,6 +84,7 @@ pub fn initialize(world: &mut World) -> anyhow::Result<()> {
                 kind: match body.class_params {
                     super::orrery::BodyClass::Star { .. } => "star",
                     super::orrery::BodyClass::Planet => "planet",
+                    super::orrery::BodyClass::Barycenter => "barycenter",
                 }
                 .into(),
                 radius_m: body.radius,
@@ -75,35 +112,47 @@ pub fn initialize(world: &mut World) -> anyhow::Result<()> {
         };
         let bytes = asset.encode()?;
         let hash = *blake3::hash(&bytes).as_bytes();
-        world
-            .resource_mut::<AppearanceAssets>()
-            .0
-            .insert(hash, bytes);
+        assets.insert(hash, bytes);
         definitions.push((system_id, hash));
         catalogue.systems.push(UniverseSystem {
             id: system_identity(&system.solver.name),
             name: system.solver.name.to_string(),
             position: system.solver.anchor,
-            influence_radius_m: system.influence,
+            influence_radius_m: universe.index.entries[system_index].influence,
             bodies,
         });
     }
     let bytes = postcard::to_stdvec(&catalogue)?;
     let hash = *blake3::hash(&bytes).as_bytes();
-    world
-        .resource_mut::<AppearanceAssets>()
-        .0
-        .insert(hash, bytes);
-    world.insert_resource(UniverseRegistry {
-        universe,
-        names: Arc::new(names),
-        catalogue: hash,
-        definitions: Arc::new(definitions),
-    });
-    Ok(())
+    assets.insert(hash, bytes);
+    Ok(PreparedRegistry {
+        registry: UniverseRegistry {
+            universe,
+            names: Arc::new(names),
+            catalogue: hash,
+            definitions: Arc::new(definitions),
+        },
+        assets,
+    })
 }
 
 impl UniverseRegistry {
+    pub fn celestial_ref(&self, view: u64, body: Id) -> Option<CelestialSystemRef> {
+        let name = self.names.get(&body)?;
+        self.system_ref(view, self.universe.system_for(name)?)
+    }
+
+    fn system_ref(&self, view: u64, index: usize) -> Option<CelestialSystemRef> {
+        let &(system, definition) = self.definitions.get(index)?;
+        Some(CelestialSystemRef {
+            view,
+            system,
+            definition,
+            epoch_mjd_utc: toy_sim_universe::replication::SIMULATION_EPOCH_MJD_UTC,
+            sim_time_origin_ns: 0,
+        })
+    }
+
     pub fn system_refs(
         &self,
         views: &mut [ViewState],
@@ -113,7 +162,7 @@ impl UniverseRegistry {
         for view in views {
             let mut systems: std::collections::BTreeSet<_> = self
                 .universe
-                .tree
+                .index
                 .containing_segment(view.origin, bevy::math::DVec3::ZERO)
                 .into_iter()
                 .collect();
@@ -140,14 +189,7 @@ impl UniverseRegistry {
                 view.completion = toy_sim_model::Completion::ResultLimit;
             }
             for index in systems {
-                let (system, definition) = self.definitions[index];
-                result.push(CelestialSystemRef {
-                    view: view.id,
-                    system,
-                    definition,
-                    epoch_mjd_utc: toy_sim_universe::replication::SIMULATION_EPOCH_MJD_UTC,
-                    sim_time_origin_ns: 0,
-                });
+                result.push(self.system_ref(view.id, index).expect("registered system"));
             }
         }
         result
@@ -212,9 +254,12 @@ mod tests {
         assert_eq!(references.len(), 1);
         assert_eq!(references[0].system, system_identity("Remote"));
         assert_eq!(references[0].view, 7);
-        let bytes = &world.resource::<AppearanceAssets>().0[&references[0].definition];
-        assert_eq!(*blake3::hash(bytes).as_bytes(), references[0].definition);
-        let asset = toy_sim_universe::replication::SystemAsset::decode(bytes).unwrap();
+        let bytes = world
+            .resource::<AppearanceAssets>()
+            .get(&references[0].definition)
+            .unwrap();
+        assert_eq!(*blake3::hash(&bytes).as_bytes(), references[0].definition);
+        let asset = toy_sim_universe::replication::SystemAsset::decode(&bytes).unwrap();
         let solver = asset.solver().unwrap();
         assert_eq!(solver.anchor, remote_position);
         assert_eq!(asset.body_ids.len(), solver.iter().count());

@@ -806,13 +806,6 @@ pub(crate) fn publish_mass(
     }
 }
 
-pub fn spend_travel_energy(world: &mut World, ship: Entity, requested_j: f64) -> f64 {
-    let Some(mut inventory) = world.get_mut::<ShipInventory>(ship) else {
-        return 0.;
-    };
-    inventory.0.energy_j.withdraw(requested_j) as f64
-}
-
 pub fn add_travel_heat(world: &mut World, ship: Entity, energy_j: f64, dt: f64) {
     if let Some(mut thermal) = world.get_mut::<ShipThermal>(ship) {
         thermal.0.add_waste_heat(energy_j, dt);

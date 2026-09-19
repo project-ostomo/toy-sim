@@ -21,40 +21,53 @@ pub(super) struct Mouth {
 }
 
 pub(super) fn gather(world: &mut World) -> Vec<Mouth> {
-    let gates: Vec<_> = world
+    let active = world
+        .get_resource::<crate::sim::orrery::activity::ActiveSystems>()
+        .map(|active| {
+            active
+                .entities
+                .keys()
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>()
+        });
+    let entries: Vec<_> = world
         .query_filtered::<(
             Entity,
             &Identity,
             &Gate,
             &PreciseTransform,
             &Velocity,
+            Option<&crate::sim::infrastructure::GateOrbit>,
         ), Without<Dormant>>()
         .iter(world)
-        .map(|(entity, id, gate, pose, velocity)| {
-            (
-                entity,
-                id.0,
-                gate.clone(),
-                *pose,
-                velocity.0,
-            )
+        .filter(|(_, _, _, _, _, orbit)| {
+            orbit.is_none_or(|orbit| {
+                active
+                    .as_ref()
+                    .is_none_or(|active| active.contains(&orbit.system))
+            })
+        })
+        .map(|(entity, id, gate, pose, velocity, _)| {
+            (entity, id.0, gate.clone(), *pose, velocity.0)
         })
         .collect();
-    gates
-        .iter()
+    entries
+        .into_iter()
         .filter_map(|(entity, id, gate, pose, velocity)| {
-            let (_, _, exit, end, end_velocity) =
-                gates.iter().find(|(_, id, _, _, _)| *id == gate.paired)?;
+            let exit_entity = crate::sim::identity::lookup(world, gate.paired).ok()?;
+            let exit = world.get::<Gate>(exit_entity)?;
+            let end = world.get::<PreciseTransform>(exit_entity)?;
+            let end_velocity = world.get::<Velocity>(exit_entity)?;
             Some(Mouth {
-                entity: *entity,
+                entity,
                 position: pose.translation_um,
-                velocity: *velocity,
+                velocity,
                 radius: gate.radius_m,
                 exit_position: end.translation_um,
-                exit_velocity: *end_velocity,
+                exit_velocity: end_velocity.0,
                 exit_radius: exit.radius_m,
                 rotation: end.rotation * pose.rotation.inverse(),
-                enabled: gate.enabled && exit.enabled && exit.paired == *id,
+                enabled: gate.enabled && exit.enabled && exit.paired == id,
             })
         })
         .collect()

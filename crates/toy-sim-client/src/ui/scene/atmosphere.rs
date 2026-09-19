@@ -25,6 +25,56 @@ struct ViewAtmosphere {
     body: toy_sim_model::Id,
 }
 
+#[derive(Clone, Copy)]
+struct AtmosphereDistance {
+    envelope: f64,
+    surface: f64,
+}
+
+impl AtmosphereDistance {
+    fn new(center_distance: f64, radius: f64, height: f64) -> Self {
+        Self {
+            envelope: (center_distance - radius - height).max(0.),
+            surface: (center_distance - radius).abs(),
+        }
+    }
+}
+
+fn choose_atmosphere(
+    candidates: impl Iterator<Item = (toy_sim_model::Id, AtmosphereDistance)>,
+    previous: Option<toy_sim_model::Id>,
+) -> Option<toy_sim_model::Id> {
+    let mut best: Option<(toy_sim_model::Id, AtmosphereDistance)> = None;
+    let mut retained = None;
+    for (id, distance) in candidates {
+        if previous == Some(id) {
+            retained = Some((id, distance));
+        }
+        if best.is_none_or(|(best_id, best_distance)| {
+            distance
+                .envelope
+                .total_cmp(&best_distance.envelope)
+                .then_with(|| distance.surface.total_cmp(&best_distance.surface))
+                .then_with(|| id.cmp(&best_id))
+                .is_lt()
+        }) {
+            best = Some((id, distance));
+        }
+    }
+    let (id, distance) = best?;
+    // Suppress near-ties in empty space. Entering an atmosphere takes priority
+    // immediately, regardless of which body's center happens to be closer.
+    if let Some((previous, old)) = retained {
+        if old.envelope > 0.
+            && distance.envelope > 0.
+            && old.envelope <= distance.envelope + (distance.envelope * 0.01).max(100.)
+        {
+            return Some(previous);
+        }
+    }
+    Some(id)
+}
+
 pub(super) fn install(app: &mut App) {
     app.add_systems(PostUpdate, update);
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
@@ -46,18 +96,27 @@ fn update(
 ) {
     for (entity, view, transform, previous, systems) in &cameras {
         let position = view.origin.offset_by(transform.translation.as_dvec3());
-        let body = bodies
-            .iter()
-            .filter(|(body, _, system)| {
-                body.0.atmosphere.is_some()
-                    && systems.0.iter().any(|entry| entry.system == system.0)
-            })
-            .min_by(|(_, a, _), (_, b, _)| {
-                a.0.position
-                    .relative_to(position)
-                    .length_squared()
-                    .total_cmp(&b.0.position.relative_to(position).length_squared())
-            });
+        let selected = choose_atmosphere(
+            bodies.iter().filter_map(|(body, pose, system)| {
+                let atmosphere = body.0.atmosphere.as_ref()?;
+                systems
+                    .0
+                    .iter()
+                    .any(|entry| entry.system == system.0)
+                    .then(|| {
+                        (
+                            body.0.entity,
+                            AtmosphereDistance::new(
+                                pose.0.position.relative_to(position).length(),
+                                body.0.radius_m,
+                                atmosphere.height_m,
+                            ),
+                        )
+                    })
+            }),
+            previous.map(|atmosphere| atmosphere.body),
+        );
+        let body = selected.and_then(|id| bodies.iter().find(|(body, _, _)| body.0.entity == id));
         let Some((body, pose, _)) = body else {
             commands
                 .entity(entity)
@@ -172,6 +231,79 @@ mod tests {
             medium: Handle::default(),
             body: Id([body; 16]),
         }
+    }
+
+    #[test]
+    fn enclosing_planet_atmosphere_wins_over_a_closer_moon_center() {
+        let planet = Id([1; 16]);
+        let moon = Id([2; 16]);
+        let candidates = [
+            (
+                planet,
+                AtmosphereDistance::new(6_050_000., 6_000_000., 100_000.),
+            ),
+            (moon, AtmosphereDistance::new(2_000_000., 100_000., 10_000.)),
+        ];
+        assert_eq!(
+            choose_atmosphere(candidates.into_iter(), Some(moon)),
+            Some(planet)
+        );
+    }
+
+    #[test]
+    fn atmosphere_selection_uses_envelopes_and_stable_outside_hysteresis() {
+        let giant = Id([1; 16]);
+        let moon = Id([2; 16]);
+        let candidates = [
+            (
+                giant,
+                AtmosphereDistance::new(81_000_000., 80_000_000., 100_000.),
+            ),
+            (moon, AtmosphereDistance::new(2_000_000., 100_000., 10_000.)),
+        ];
+        assert_eq!(choose_atmosphere(candidates.into_iter(), None), Some(giant));
+
+        let near_tie = [
+            (
+                giant,
+                AtmosphereDistance {
+                    envelope: 1000.,
+                    surface: 2000.,
+                },
+            ),
+            (
+                moon,
+                AtmosphereDistance {
+                    envelope: 1050.,
+                    surface: 1500.,
+                },
+            ),
+        ];
+        assert_eq!(
+            choose_atmosphere(near_tie.into_iter(), Some(moon)),
+            Some(moon)
+        );
+        let entry = [
+            (
+                giant,
+                AtmosphereDistance {
+                    envelope: 0.,
+                    surface: 500.,
+                },
+            ),
+            (
+                moon,
+                AtmosphereDistance {
+                    envelope: 50.,
+                    surface: 1000.,
+                },
+            ),
+        ];
+        assert_eq!(
+            choose_atmosphere(entry.into_iter(), Some(moon)),
+            Some(giant)
+        );
+        assert!(choose_atmosphere(std::iter::empty(), Some(moon)).is_none());
     }
 
     #[test]

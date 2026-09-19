@@ -246,7 +246,17 @@ impl AccessPolicy {
         subject: Principal,
         permission: Permission,
     ) -> bool {
+        if self.public.contains(&permission) {
+            return true;
+        }
+        if self.grants.is_empty() {
+            return false;
+        }
         let lineage = directory.lineage(subject);
+        self.permits_lineage(&lineage, permission)
+    }
+
+    pub fn permits_lineage(&self, lineage: &[Principal], permission: Permission) -> bool {
         self.public.contains(&permission)
             || self.grants.iter().any(|grant| {
                 grant.permissions.contains(&permission) && lineage.contains(&grant.principal)

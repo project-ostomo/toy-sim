@@ -37,7 +37,7 @@ pub fn activate(
     for (p, v) in &ships {
         needed.extend(
             universe
-                .tree
+                .index
                 .containing_segment(p.translation_um, v.0 * time.timestep().as_secs_f64()),
         );
     }
@@ -66,6 +66,9 @@ pub fn activate(
         let system = &universe.systems[id];
         let mut entities = Vec::new();
         for b in system.solver.iter() {
+            if matches!(b.class_params, BodyClass::Barycenter) {
+                continue;
+            }
             let mut root = commands.spawn((
                 Celestial(b.name.clone()),
                 CelestialState {
@@ -87,7 +90,14 @@ pub fn activate(
             if let BodyClass::Star { lumens } = b.class_params {
                 root.insert(Star {
                     lumens,
-                    color_temp: 5000.0,
+                    color_temp: b.stellar.as_ref().map_or_else(
+                        || {
+                            ((lumens / 93.0)
+                                / (4.0 * std::f64::consts::PI * b.radius.powi(2) * 5.670374419e-8))
+                                .powf(0.25)
+                        },
+                        |stellar| stellar.effective_temperature_k,
+                    ),
                 });
             }
             entities.push(root.id());

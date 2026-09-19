@@ -5,6 +5,7 @@ mod sim;
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
 use ed25519_dalek::{SigningKey, VerifyingKey};
+pub use sim::identity::AppearanceAssets;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::BTreeMap,
@@ -145,7 +146,6 @@ fn run_loop(
             .query_filtered::<Entity, With<Connection>>()
             .iter(app.world())
             .collect::<Vec<_>>();
-        let session_count = sessions.len();
         for entity in sessions {
             let mut connection = app
                 .world_mut()
@@ -193,7 +193,10 @@ fn run_loop(
             let checkpoints = app
                 .world_mut()
                 .remove_resource::<persistence::Checkpoints>();
+            let assets = assets(app);
             *app = scenario(&config.accounts, config.debug_account, config.ship)?;
+            assets.extend(app.world().resource::<AppearanceAssets>().snapshot());
+            app.insert_resource(assets);
             if let Some(checkpoints) = checkpoints {
                 app.insert_resource(checkpoints);
                 persistence::request(app.world());
@@ -230,6 +233,7 @@ fn run_loop(
             sim::diagnostics::tick(app.world_mut(), duration_ms);
         }
         let publication_started = Instant::now();
+        sim::infrastructure::publish_navigation(app.world_mut());
         sim::displays::update(app.world_mut());
         let display_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
         let sessions = app
@@ -293,7 +297,7 @@ pub async fn listen(
     key: SigningKey,
     accounts: BTreeMap<AccountId, VerifyingKey>,
     connections: mpsc::Sender<Connection>,
-    assets: Arc<BTreeMap<[u8; 32], Vec<u8>>>,
+    assets: AppearanceAssets,
 ) -> Result<()> {
     let accounts = Arc::new(accounts);
     let key = Arc::new(key);
@@ -352,8 +356,9 @@ async fn main_stream(stream: toy_sim_net::picomux::Stream, mut endpoint: Endpoin
             };
             endpoint
                 .input
-                .try_send(frame)
-                .map_err(|_| anyhow::anyhow!("input rate exceeded"))?;
+                .send(frame)
+                .await
+                .map_err(|_| anyhow::anyhow!("session input closed"))?;
         }
         #[allow(unreachable_code)]
         Ok::<(), anyhow::Error>(())
@@ -375,7 +380,7 @@ async fn main_stream(stream: toy_sim_net::picomux::Stream, mut endpoint: Endpoin
 
 async fn asset_streams(
     mux: &toy_sim_net::picomux::PicoMux,
-    assets: Arc<BTreeMap<[u8; 32], Vec<u8>>>,
+    assets: AppearanceAssets,
 ) -> Result<()> {
     let mut transfers = JoinSet::new();
     loop {
@@ -388,7 +393,7 @@ async fn asset_streams(
                     let mut hash = [0; 32];
                     stream.read_exact(&mut hash).await?;
                     if let Some(bytes) = assets.get(&hash) {
-                        stream.write_all(bytes).await?;
+                        stream.write_all(&bytes).await?;
                     }
                     stream.shutdown().await?;
                     Ok::<(), anyhow::Error>(())
@@ -411,15 +416,8 @@ pub fn scenario(
     sim::provision(accounts, debug_account, ship)
 }
 
-pub fn assets(app: &App) -> Arc<BTreeMap<[u8; 32], Vec<u8>>> {
-    Arc::new(
-        app.world()
-            .resource::<sim::identity::AppearanceAssets>()
-            .0
-            .iter()
-            .map(|(hash, bytes)| (*hash, bytes.clone()))
-            .collect(),
-    )
+pub fn assets(app: &App) -> AppearanceAssets {
+    app.world().resource::<AppearanceAssets>().clone()
 }
 
 pub fn key_bytes(value: &str) -> Result<[u8; 32]> {
@@ -530,6 +528,66 @@ mod asset_tests {
     }
 
     #[tokio::test]
+    async fn saturated_input_queue_preserves_order_and_keeps_snapshots_flowing() {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let (a, b) = tokio::io::duplex(4096);
+            let (ar, aw) = tokio::io::split(a);
+            let (br, bw) = tokio::io::split(b);
+            let client = toy_sim_net::picomux::PicoMux::new(ar, aw);
+            let server = toy_sim_net::picomux::PicoMux::new(br, bw);
+            let client_stream = client.open(b"main").await.unwrap();
+            let server_stream = server.accept().await.unwrap();
+            let (mut connection, endpoint) = channels(Id::new());
+            let serving = tokio::spawn(main_stream(server_stream, endpoint));
+            let (mut read, mut write) = tokio::io::split(client_stream);
+            let snapshot = empty_snapshot();
+            let world = snapshot.world;
+            let writer = tokio::spawn(async move {
+                for sequence in 1..=64 {
+                    toy_sim_net::write_message(
+                        &mut write,
+                        &Message::Input(InputFrame {
+                            world,
+                            sequence,
+                            actions: Vec::new(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                }
+                write
+            });
+            while connection.input.len() < 16 {
+                assert!(
+                    !serving.is_finished(),
+                    "full queue disconnected the session"
+                );
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(connection.input.len(), 16);
+            connection.state.send(snapshot.clone()).unwrap();
+            assert_eq!(
+                toy_sim_net::read_message(&mut read).await.unwrap(),
+                Message::State(snapshot)
+            );
+            assert!(!serving.is_finished());
+
+            for sequence in 1..=64 {
+                let frame = connection.input.recv().await.unwrap();
+                assert_eq!(frame.world, world);
+                assert_eq!(frame.sequence, sequence);
+            }
+            let write = writer.await.unwrap();
+            assert!(connection.input.try_recv().is_err());
+            assert!(!serving.is_finished());
+            serving.abort();
+            drop(write);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn assets_stream_to_eof_concurrently_despite_a_stalled_request() {
         tokio::time::timeout(Duration::from_secs(30), async {
             let (a, b) = tokio::io::duplex(4096);
@@ -546,13 +604,14 @@ mod asset_tests {
                 };
                 payloads.insert(*blake3::hash(&bytes).as_bytes(), bytes);
             }
-            let assets = Arc::new(payloads);
+            let assets = AppearanceAssets::default();
             let server_assets = assets.clone();
             let serving = tokio::spawn(async move { asset_streams(&server, server_assets).await });
             let mut stalled = client.open(b"assets").await.unwrap();
             stalled.write_all(&[0]).await.unwrap();
+            assets.extend(payloads.clone());
             let mut transfers = JoinSet::new();
-            let hashes: Vec<_> = assets.keys().copied().chain([[255; 32]]).collect();
+            let hashes: Vec<_> = payloads.keys().copied().chain([[255; 32]]).collect();
             for hash in hashes {
                 let client = client.clone();
                 transfers.spawn(async move {
@@ -570,7 +629,7 @@ mod asset_tests {
                 if hash == [255; 32] {
                     assert!(bytes.is_empty());
                 } else {
-                    assert_eq!(&bytes, &assets[&hash]);
+                    assert_eq!(&bytes, &payloads[&hash]);
                 }
                 completed += 1;
             }

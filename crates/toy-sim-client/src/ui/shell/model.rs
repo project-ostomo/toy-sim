@@ -36,6 +36,9 @@ impl Row {
 pub(super) struct FrameModel<'a> {
     pub society: &'a ownership::SocietySnapshot,
     pub navigation: &'a NavigationCatalogue,
+    pub navigation_status: &'a NavigationStatus,
+    pub navigation_hash: Option<[u8; 32]>,
+    pub celestial_systems: std::collections::BTreeMap<Id, Id>,
     pub ships: Vec<&'a ShipTelemetry>,
     pub rows: Vec<Row>,
     pub ship: Option<&'a ShipTelemetry>,

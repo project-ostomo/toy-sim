@@ -1,5 +1,8 @@
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 use toy_sim_model::{AccountId, Id, IffIdentity, InfoGroupKey};
 
 #[derive(Component, Clone, Copy)]
@@ -63,8 +66,38 @@ pub struct FixedBeacon;
 #[derive(Component)]
 pub struct Appearance(pub [u8; 32]);
 
-#[derive(Resource, Default)]
-pub struct AppearanceAssets(pub HashMap<[u8; 32], Vec<u8>>);
+type AssetMap = HashMap<[u8; 32], Arc<[u8]>>;
+
+#[derive(Resource, Default, Clone)]
+pub struct AppearanceAssets(Arc<RwLock<AssetMap>>);
+
+impl AppearanceAssets {
+    pub fn insert(&self, hash: [u8; 32], bytes: impl Into<Arc<[u8]>>) {
+        self.0
+            .write()
+            .expect("asset store poisoned")
+            .insert(hash, bytes.into());
+    }
+
+    pub fn get(&self, hash: &[u8; 32]) -> Option<Arc<[u8]>> {
+        self.0
+            .read()
+            .expect("asset store poisoned")
+            .get(hash)
+            .cloned()
+    }
+
+    pub fn extend<T: Into<Arc<[u8]>>>(&self, assets: impl IntoIterator<Item = ([u8; 32], T)>) {
+        self.0
+            .write()
+            .expect("asset store poisoned")
+            .extend(assets.into_iter().map(|(hash, bytes)| (hash, bytes.into())));
+    }
+
+    pub fn snapshot(&self) -> AssetMap {
+        self.0.read().expect("asset store poisoned").clone()
+    }
+}
 
 pub fn register(world: &mut World, entity: Entity, id: Id) {
     world.entity_mut(entity).insert(Identity(id));
@@ -138,8 +171,7 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
     let bytes = toml::to_string(&visual)?.into_bytes();
     let appearance = *blake3::hash(&bytes).as_bytes();
     world
-        .resource_mut::<AppearanceAssets>()
-        .0
+        .resource::<AppearanceAssets>()
         .insert(appearance, bytes);
     let name = world
         .get::<super::vessel::Vessel>(ship)

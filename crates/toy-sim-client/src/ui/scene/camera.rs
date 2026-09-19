@@ -104,18 +104,6 @@ pub(super) fn setup_views(
             },
             Transform::from_translation(direction * 100.).looking_at(Vec3::ZERO, Vec3::Y),
         ));
-        commands.spawn((
-            ChildOf(entity),
-            bevy::light::SunDisk::OFF,
-            DirectionalLight {
-                illuminance: 0.,
-                shadow_maps_enabled: true,
-                contact_shadows_enabled: true,
-                ..default()
-            },
-            Transform::default(),
-            RenderLayers::layer(1),
-        ));
     }
 }
 

@@ -53,6 +53,16 @@ impl Computer {
             .update(tick.tick, &sample, &self.hardware)
             .ok()
             .flatten();
+        if self.planner.reference_changed
+            && self
+                .pilot
+                .navigation
+                .target
+                .as_ref()
+                .is_some_and(|target| target.id == u64::MAX)
+        {
+            self.pilot.reset_navigation_reference();
+        }
         if let Some(contact) = travel_contact {
             count = count.min(contacts.len() - 1);
             contacts[count] = contact;

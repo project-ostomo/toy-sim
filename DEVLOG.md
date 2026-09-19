@@ -376,3 +376,297 @@ CPU-heavy concurrent test runs were excluded from that observation.
 Next piece: generate the inhabited political map and deterministic stellar and
 planetary parameters, then verify navigation and saved-world integration before
 working on planetary surfaces.
+
+The spatial/optical piece was committed as `666a051`. Its interactive client
+closed normally with exit status zero.
+
+## 2026-09-19 — Piece 4: inhabited map and procedural systems
+
+Work has started on approximately 3,000 systems across a roughly 250-light-year
+region. The old core network is trunk-oriented, the sovereign LFS members have
+more crosslinks, and neutral states remain distinct. Gate control remains a
+physical defense problem. The ten authored systems retain their names and
+useful corridor connections, with positions corrected to fit their politics.
+
+The generation review already found two factual problems in the earlier draft:
+its catalogue coordinates were Galactic Cartesian while the existing sky uses
+ICRS, and generated orbital angles were in degrees while the solver consumes
+radians. These are being corrected before import. The existing eccentric-orbit
+velocity formula also needs a consistency fix. Catalogued multiple stars will
+use a virtual barycenter and hierarchical Kepler orbits, rather than assigning
+multiple stars to the same fixed origin.
+
+The client map is being changed to cache topology/layout and cull to the visible
+viewport. The firmware's small full-graph limits cannot handle thousands of
+gates; its planner needs bounded sparse queries while keeping route decisions
+in the ship computer. Protocol 20 adds a topology revision and public system
+sovereignty/population metadata. No NPC behavior or industrial systems are being
+implemented during this piece.
+
+### Map and generation checks
+
+The generated network contains 3,000 systems and 6,104 reciprocal gate pairs.
+An all-pairs breadth-first check found a maximum shortest route of 32 gate hops,
+so the existing 256-order queue remains sufficient. The allocation is 369 USE
+systems, 2,111 systems in six sovereign LFS members, and 520 independent systems,
+including 62 in permanently neutral Nova Partenia. Population figures are
+procedural setting parameters. The imported astronomical positions use ICRS and
+the importer reproduces its recorded data checksum.
+
+The universe suite initially passed 19 tests, building and validating 44,163
+bodies, including 48 virtual barycenters, in about 177 ms in the optimized
+development profile. Further review added planetary Roche clearance around
+compact stars and shared ages for generated binary components; the final suite
+will cover those changes too. Binary illumination and atmosphere selection also
+need adjustments to assumptions inherited from the single-star renderer.
+
+All 97 client tests pass at the map checkpoint. Headless interactions searched
+for the last of 3,000 systems and submitted its route with the chosen fuel
+priority. Cached map drawing took 0.165 ms median and 0.355 ms at the 95th
+percentile; zoom reduced the emitted geometry from 6,027 to 429 shapes. These
+measurements cover egui drawing rather than total GPU frame time.
+
+Integration exposed a quadratic gate-pair search in the collision collector.
+That collector now resolves paired identities directly and considers active
+systems for physical entry mouths. Remote destinations remain globally known.
+The full map continues to travel in state snapshots; actual serialization and
+2 MiB-window compression costs are being measured before making any further
+transport decision.
+
+### Measured snapshot and firmware problems
+
+The full-map snapshot benchmark changed the transport decision. With 12,208
+gate mouths, a frame is 2,843,528 bytes. Zstd level 3 with the specified 2 MiB
+window still emits about 1,034,761 bytes per steady frame, roughly 10.35 MB/s per
+client at 10 Hz. Compression alone takes 11.18 ms per frame. This exceeds the
+lookbehind window and defeats the intended removal of repeated map data.
+
+The stable public navigation catalogue is therefore becoming a content-hashed
+asset on the existing asset stream. Main snapshots carry its hash and current
+beacons relevant to focused systems and queued orders. Catalogue reference
+positions support map layout and gate-hop previews; the flight computer queries
+current server facts for physical routing. The normal state stream keeps sending
+complete relevant samples. Protocol 20's new navigation asset format validates
+version, size, unique identities, system references, and reciprocal gates. Its
+13 protocol tests pass.
+
+This also revealed that the server's asset collection had been frozen at startup.
+It now uses a shared store so newly published catalogues and appearances can be
+served. A transfer takes an immutable reference to its bytes and releases the
+store lock before doing network I/O.
+
+The actual stock WASM tests caught problems that native planner tests missed:
+growing a large vector and initializing an entire graph in one callback could
+exhaust the instruction allowance. Bounded allocation/initialization and cached
+idle-time catalogue loading are being checked against the real VM. Wide binary
+systems also require care when placing gate rings: a distant circumbinary orbit
+can sit outside the old activation bound. Stable circumstellar hosts are used
+where suitable, and infrastructure is included in activation coverage.
+
+### Final generation and routing results
+
+The final universe suite passes all 20 tests. Release measurements: map
+construction 26.96 ms, generation and validation 84.93 ms, and solver/index
+construction 32.77 ms. There are 44,346 bodies: 44,298 physical objects and
+48 virtual barycenters. The 13,641 atmospheres retain finite renderable radii;
+their modeled heights range from about 2 km to 4,167 km. Climate and stellar
+properties are explicit procedural estimates.
+
+After the static map asset change, the measured main frame is 4,135 bytes and
+steady compression is about 318 bytes per frame; compression takes 0.03 ms.
+The first compressed frame is 2,309 bytes. The catalogue itself downloads once
+as an asset. Shared mutable asset serving passes all five existing tests,
+including 128 concurrent transfers with a stalled request and a 17 MiB asset
+inserted after serving started.
+
+The actual 3,000-system Helion-to-Terminus route now finishes in 5.8 seconds when
+the idle computer has prefetched its catalogue, down from 29 seconds. Fully cold
+planning takes 32.7 seconds and reports loading, graph construction, and search
+progress. Repeated routes reuse topology without paging it again. The final
+firmware tests pass: 31 native controller tests, three actual WASM routing tests,
+and 16 sandbox/ABI tests. Peak combined instruction and syscall use is 960,262
+gas per tick; peak linear memory is 6.19 MiB within the 8 MiB hardware limit.
+
+The route search keeps transfers from a staging point to every local gate.
+Pruning uses an optimistic time/fuel bound, including an asymmetric regression
+where the best next gate is not the staging point's own gate. This avoids
+removing useful routes just to make the default journey fast.
+
+Server optimization now avoids checking every remote orbit as though its
+configuration changed each tick. Only rigid orbital groups with disjoint
+conservative envelopes are certified; uncertified or modified mouths retain
+ordinary ongoing exclusion checks. The remaining custom aperture tree has been
+replaced by the shared hash, with bounded visits and a conservative far-mass
+curvature allowance. Public orbital gate facts are cached, with exact current
+poses evaluated when queried. Full server checks and the quiet performance
+measurement are next.
+
+The first combined client suite passed 105 tests and found one outdated binary
+fixture that violated the new two-component barycenter validation. That fixture
+now uses the real generator. The services cache test similarly needed a fully
+provisioned scene; its fixture has been corrected. These are included in the
+final incremental build together with the latest firmware.
+
+### Server verification and live map checks
+
+The complete server library suite passes: 238 tests, with five explicitly ignored
+benchmarks. The client suite passes 106 tests; model and protocol pass 12 and 13.
+The quiet full-map profile measures 9.70 ms mean and 11.04 ms maximum per tick,
+0.14 ms for optical rebuilding, and 4.81 ms for publication and encoding. These
+figures cover the three starting ships and all 12,208 gate mouths. They do not
+resolve the earlier large moving-fleet scaling limitations.
+
+Live keyboard and mouse testing found Terminus in the full catalogue, selected
+it, and produced a four-order route: the Sol gate, an exclusion-zone transfer,
+a slip to Terminus, and a final transfer. The HUD displays all four orders and
+their estimated arrival times. The map displays the slip segment and an estimated
+33.7 t propulsion-fuel budget against 53.4 t aboard. Panning and scrolling work.
+Screenshots are in `/tmp/toy-sequential-playtests/map-*.png`.
+
+The live run also exposed a map-height feedback bug: allocating the canvas from
+remaining height before drawing a larger-than-reserved footer made the window
+grow every frame. A stable layout and repeated-frame regression are being added.
+A separate review found indefinitely cached orbital positions in the stock
+computer; selected route legs are being refreshed before publication. A changed
+slip eligibility regression exposed excessive search time, so the planner will
+return its best validated feasible route after a bounded search budget. Its
+time/fuel estimates remain approximations, rather than claims of global optimality.
+
+The user's enforcement rule applies throughout subsequent work: law and
+territorial policy are enforced by fallible in-world actors. Credentials,
+equipment, and physical proximity may constrain operations directly. Gate transit
+will have no administrative permission check.
+
+### Failures caught by continuing the actual journey
+
+The four network integration tests pass, including the authenticated map asset
+and process restart. All 107 client tests pass after the stable footer layout,
+including 120 frames of map search appearing and disappearing.
+
+The live route reached Sol, but further observation caught an automatic return
+through the aperture and a later firmware fault. A new server regression
+reproduced the return only 3.4 simulated seconds after the first crossing. The
+selected exclusion-zone staging point was on the other side of the mouth, so
+guidance aimed back through it. Work continues on physical departure guidance;
+gate immunity or transit permissions are not being introduced.
+
+The arrival whiteout has an independent rendering cause. The ship emerges just
+outside the mouth, but its trailing orbit camera can still lie inside the
+220 m visual sphere. The old shader drew its opaque glowing interior across
+the screen. The gate shader now omits that interior surface, and the unchanged
+slip tunnel still renders from inside. The fragment passes Naga validation;
+live verification will follow the flight fix.
+
+The updated real-VM route checks pass five cases, including a staging point
+that moves 20 km and a slip point that becomes unavailable. A limited search
+result is marked explicitly in the AP display. In the changed-eligibility case,
+one rejected candidate is refreshed and retried, then a valid alternative is
+returned. This does not establish global optimality of the mixed-route graph.
+
+### Navigation correction before committing the map
+
+The second fault was measured, rather than inferred: navigation telemetry
+contained throttle `1.0000000000000002`. The actual actuator path already clamps
+its controls, but the display publication did not. The firmware correction clamps
+the normalized alignment used for telemetry. Departure guidance now chooses the
+actual outward arrival side and resets reused target estimators across host order
+changes. The native controller tests pass; the full server continuation check is
+next.
+
+Longer journeys also reveal a stale-destination problem: a slip endpoint frozen
+at initial planning can lag a moving gate by tens of megametres after the
+preceding local transfer and charge. The route's slip destination is being
+changed to the same typed coordinate/beacon/body-relative destination used by
+other navigation orders. The computer can resolve public orbital ephemerides at
+a future time, refresh the lead while charging, and submit a concrete endpoint.
+Once physical transit starts, its endpoints stay fixed. Public moving beacons
+without orbital ephemerides retain an explicitly approximate linear forecast.
+
+A read-only review prepared the next surface-generation piece. Existing drafts
+have reusable terrain, crater, and mip-generation code, but their normal-map
+direction, polar sampling, aliasing, cancellation, and memory accounting need
+correction. Surface implementation has not started while these map/travel
+failures remain under verification.
+
+### Future arrival and remote route data
+
+The real VM now preserves typed slip destinations, predicts their public orbital
+position at arrival, and refreshes that lead while charging. The ABI26 firmware
+passes 37 native controller tests, six real WASM routing tests, and 16 sandbox
+tests. The physical gate regression now continues outward for 400 ticks after
+arrival without returning through the mouth or faulting.
+
+Remote celestial waypoints carry public ephemeris asset references scoped to the
+actual focused view. They reuse the normal solver and asset cache without adding
+remote systems to the camera subscription. The integrated server regression and
+two registry checks pass; client lifecycle checks are included in the next build.
+
+A charge-completion regression exposed an old integer-accounting mismatch:
+floating-point required energy could exceed its integer joule value by a tiny
+fraction, leaving a practically endless stochastic final payment. Slip charge
+requirements now round to whole joules when computed. The final moving-mouth
+arrival test and a new live journey remain before the map milestone is committed.
+
+### Live Sol arrival verified
+
+The final client/model/protocol suites pass 112, 12, and 15 tests respectively.
+The server run passed 244 cases and exposed one incorrect gate-name lookup in
+the new moving-arrival test. That fixture is corrected: all 17 services tests
+and 16 travel tests now pass, including arrival beside a real orbiting mouth
+after a 13-second charging power interruption. A rejected exit forecast no
+longer debits energy without recording work. Four network integration tests pass.
+
+A fresh live world successfully searches Terminus in the 3,000-system map,
+queues a gate/transfer/slip/final-transfer route, and crosses from Helion to Sol.
+The map stays at its intended height, the Sol arrival has no gate-interior
+whiteout, and outward guidance continues. The long local transfer is running
+under accelerated debug time to check the full slip journey. Screenshots are
+`/tmp/toy-sequential-playtests/map-final-*.png`.
+
+This run exposed clipped long off-screen waypoint labels. Their measured text
+bounds are being constrained to the view without moving the directional pointer.
+Startup window resizing still produces Vulkan presentation-layout warnings;
+this run has not produced a device loss. Display performance will need separate
+measurement once accelerated simulation and concurrent builds have stopped.
+
+### Accelerated-time input backpressure
+
+The accelerated journey uncovered a real connection failure: a debug batch of
+100 simulation ticks could keep the main loop busy long enough for the ordinary
+client's empty input frames to fill its 16-slot channel. The network task treated
+that temporary fullness as excessive input and closed the connection. The journey
+is paused and saved during the Sol transfer while the correction is rebuilt.
+
+Idle clients now send no empty input frames. The server awaits room in its
+existing bounded input channel, allowing transport backpressure while the
+independent outgoing task continues publishing. A real picomux regression fills
+the queue with 64 inputs, verifies outgoing progress, and drains every input in
+order. The client regression verifies 100 idle flushes and preservation of real
+commands under local backpressure. Both pass. No acknowledgment protocol or new
+unbounded input queue has been introduced.
+
+### Map milestone: full journey completed
+
+The same saved patrol completed the entire normal flight-computer route:
+Helion to Sol through a physical gate, outward transfer beyond the exclusion
+zone, 101 ly of slip travel to Terminus, and the final sublight rendezvous. The
+HUD reports `Route complete`. About 24.8 t of the initial 54 t propulsion fuel
+remains. No computer fault or connection drop occurred after the backpressure
+fix. The live restart preserved the route, location, and inventories. The ship
+was returned to normal simulation rate before shutdown.
+
+The final screenshots include `map-final-slip-transit.png`,
+`map-final-terminus-arrival.png`, and `map-final-route-completed.png`. The slip
+visual and ETA worked, remote scenery cleared during transit, and the destination
+system loaded on arrival. Normal-rate display measured roughly 60–70 FPS in this
+particular 1600×1000 logical window on a scaled display; this is not a general
+120 FPS claim. Existing resize-related Vulkan validation warnings remain a
+separate rendering issue.
+
+All targeted checks are passing. The map milestone includes the 3,000-system
+catalogue, 6,104 gate pairs, deterministic stellar and planetary parameters for
+catalogue systems, public map assets, bounded stock-computer route search,
+future arrival guidance, and route-only ephemerides. Eight retained named system
+files are still old star-only placeholders; the upcoming procedural surface
+piece will populate those explicitly and add physical appearance metadata for
+authored planets. Large-fleet spatial performance remains on the integration list.

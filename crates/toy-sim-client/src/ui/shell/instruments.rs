@@ -1,5 +1,40 @@
 use super::*;
 
+pub(super) fn planning_progress(ui: &mut egui::Ui, travel: &travel::TravelState) {
+    if travel.status != travel::Status::Planning {
+        return;
+    }
+    let Some(progress) = &travel.planning else {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(12.));
+            ui.weak("Starting route planner…");
+        });
+        return;
+    };
+    let label = match progress.stage {
+        travel::PlanningStage::LoadingCatalogue => "Loading gate catalogue",
+        travel::PlanningStage::BuildingGraph => "Building transfer graph",
+        travel::PlanningStage::SearchingRoutes => "Comparing routes",
+    };
+    if let Some(total) = progress.total.filter(|&total| total > 0) {
+        let fraction = progress.completed as f32 / total as f32;
+        ui.add(
+            egui::ProgressBar::new(fraction.clamp(0., 1.))
+                .desired_width(280.)
+                .text(format!("{label} · {} / {total}", progress.completed)),
+        );
+    } else {
+        ui.horizontal(|ui| {
+            ui.add(egui::Spinner::new().size(12.));
+            ui.label(
+                egui::RichText::new(format!("{label} · {}", progress.completed))
+                    .size(11.)
+                    .color(ACCENT),
+            );
+        });
+    }
+}
+
 pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Vec<Intent>) {
     let Some(ship) = model.ship else {
         ui.weak("No controlled ship");
@@ -68,7 +103,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                         egui::RichText::new(format!(
                             "{}  {}",
                             index + 1,
-                            order_label(&order.action, model.navigation)
+                            order_label(&order.action, model.navigation, &model.celestial_systems)
                         ))
                         .color(if index == ship.travel.order {
                             ACCENT
@@ -152,6 +187,13 @@ pub(super) fn order_name(order: &travel::Order) -> String {
             "Travel to relative coordinates".into()
         }
         travel::Order::Sublight(_) => "Sublight transfer".into(),
+        travel::Order::Slip {
+            destination:
+                travel::Destination::Relative {
+                    reference: travel::Reference::Celestial(id),
+                    ..
+                },
+        } => format!("Slip near celestial {}", short_id(*id)),
         travel::Order::Slip { .. } => "Slip transit".into(),
         travel::Order::Dock(id) => format!("Dock at {}", short_id(*id)),
         travel::Order::Undock => "Undock".into(),
@@ -159,7 +201,11 @@ pub(super) fn order_name(order: &travel::Order) -> String {
     }
 }
 
-pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalogue) -> Option<Id> {
+pub(super) fn order_system(
+    order: &travel::Order,
+    navigation: &NavigationCatalogue,
+    celestial_systems: &std::collections::BTreeMap<Id, Id>,
+) -> Option<Id> {
     use travel::{Destination, Order, Reference};
 
     let reference = match order {
@@ -171,9 +217,27 @@ pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalog
                 .find(|b| Some(b.id) == entry.gate_exit)
                 .map(|b| b.system);
         }
+        Order::TravelTo(Destination::Relative {
+            reference: Reference::Celestial(id),
+            ..
+        })
+        | Order::Sublight(Destination::Relative {
+            reference: Reference::Celestial(id),
+            ..
+        })
+        | Order::Slip {
+            destination:
+                Destination::Relative {
+                    reference: Reference::Celestial(id),
+                    ..
+                },
+        } => return celestial_systems.get(id).copied(),
         Order::Dock(id)
         | Order::TravelTo(Destination::Beacon(id))
         | Order::Sublight(Destination::Beacon(id))
+        | Order::Slip {
+            destination: Destination::Beacon(id),
+        }
         | Order::TravelTo(Destination::Relative {
             reference: Reference::Beacon(id),
             ..
@@ -181,7 +245,14 @@ pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalog
         | Order::Sublight(Destination::Relative {
             reference: Reference::Beacon(id),
             ..
-        }) => Some(*id),
+        })
+        | Order::Slip {
+            destination:
+                Destination::Relative {
+                    reference: Reference::Beacon(id),
+                    ..
+                },
+        } => Some(*id),
         _ => None,
     };
     if let Some(id) = reference {
@@ -192,7 +263,9 @@ pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalog
             .map(|b| b.system);
     }
     let position = match order {
-        Order::Slip { destination }
+        Order::Slip {
+            destination: Destination::Galactic(destination),
+        }
         | Order::TravelTo(Destination::Galactic(destination))
         | Order::Sublight(Destination::Galactic(destination)) => *destination,
         _ => return None,
@@ -209,10 +282,14 @@ pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalog
         .map(|system| system.id)
 }
 
-pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
+pub(super) fn order_label(
+    order: &travel::Order,
+    navigation: &NavigationCatalogue,
+    celestial_systems: &std::collections::BTreeMap<Id, Id>,
+) -> String {
     use travel::{Destination, Order};
 
-    let system = order_system(order, navigation)
+    let system = order_system(order, navigation, celestial_systems)
         .and_then(|id| navigation.systems.iter().find(|s| s.id == id));
     let action = match order {
         Order::Jump(_) => "Gate",
@@ -268,6 +345,7 @@ pub(super) fn itinerary(
     ui: &mut egui::Ui,
     state: &travel::TravelState,
     navigation: &NavigationCatalogue,
+    celestial_systems: &std::collections::BTreeMap<Id, Id>,
     now: u64,
 ) {
     let remaining = &state.orders[state.order.min(state.orders.len())..];
@@ -304,7 +382,7 @@ pub(super) fn itinerary(
             let fill = if current { color } else { egui::Color32::TRANSPARENT };
             ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
 
-            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation));
+            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation, celestial_systems));
             ui.label(egui::RichText::new(name).size(12.).color(color));
             ui.label(
                 egui::RichText::new(eta_label(order, arrivals[index], now))

@@ -76,23 +76,36 @@ fn input(time: f64) -> Input {
 #[test]
 fn old_versions_and_foreign_imports_are_rejected() {
     let mut runtime = ControllerRuntime::new().unwrap();
-    let old = wat::parse_str(
-        r#"(module
-        (memory (export "memory") 1)
-        (func (export "ship_api_version") (result i32) i32.const 12)
-        (func (export "ship_tick")))"#,
-    )
-    .unwrap();
-    assert!(runtime.validate_program(&old).is_err());
-    assert!(
-        runtime
-            .compile(&guest(
-                r#"(import "ship_v12" "tick_read" (func (param i32 i32) (result i32)))"#,
-                "",
-                "",
-            ))
-            .is_err()
-    );
+    runtime.validate_program(&guest("", "", "")).unwrap();
+
+    for version in [12, 25] {
+        let old = wat::parse_str(format!(
+            r#"(module
+            (memory (export "memory") 1)
+            (func (export "ship_api_version") (result i32) i32.const {version})
+            (func (export "ship_tick")))"#,
+        ))
+        .unwrap();
+        let error = runtime.validate_program(&old).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "unsupported ship controller API {version}; expected {}",
+                abi::VERSION
+            )),
+            "{error:#}"
+        );
+
+        let imports = format!(
+            r#"(import "ship_v{version}" "tick_read" (func (param i32 i32) (result i32)))"#
+        );
+        let error = runtime.compile(&guest(&imports, "", "")).unwrap_err();
+        assert!(
+            error.to_string().contains(&format!(
+                "unsupported controller import ship_v{version}.tick_read"
+            )),
+            "{error:#}"
+        );
+    }
 }
 
 #[test]
@@ -133,18 +146,18 @@ fn c_and_no_std_rust_share_the_abi_with_persistent_isolated_memory() {
 }
 
 #[test]
-fn memory_grows_on_demand_up_to_one_mebibyte_and_reboot_resets_it() {
+fn memory_grows_on_demand_up_to_eight_mebibytes_and_reboot_resets_it() {
     let bytes = guest(
         "",
         "",
         r#"
         memory.size i32.const 1 i32.eq if
-            i32.const 15 memory.grow i32.const 1 i32.ne if unreachable end
-            i32.const 1048575 i32.const 42 i32.store8
+            i32.const 127 memory.grow i32.const 1 i32.ne if unreachable end
+            i32.const 8388607 i32.const 42 i32.store8
         end
-        memory.size i32.const 16 i32.ne if unreachable end
+        memory.size i32.const 128 i32.ne if unreachable end
         i32.const 1 memory.grow i32.const -1 i32.ne if unreachable end
-        i32.const 1048575 i32.load8_u i32.const 42 i32.ne if unreachable end
+        i32.const 8388607 i32.load8_u i32.const 42 i32.ne if unreachable end
     "#,
     );
     let mut runtime = ControllerRuntime::new().unwrap();
@@ -180,7 +193,7 @@ fn runaway_callback_faults_and_requires_a_full_reboot() {
 
 #[test]
 fn exact_record_lengths_and_out_of_bounds_pointers_fail_without_writes() {
-    let imports = r#"(import "ship_v24" "flight_read" (func $read (param i32 i32) (result i32)))"#;
+    let imports = r#"(import "ship_v26" "flight_read" (func $read (param i32 i32) (result i32)))"#;
     let body = r#"
         i32.const 0 i32.const 123 i32.store
         i32.const 0 i32.const 169 call $read i32.const -2 i32.ne if unreachable end
@@ -197,10 +210,10 @@ fn exact_record_lengths_and_out_of_bounds_pointers_fail_without_writes() {
 }
 
 const PATH_IMPORTS: &str = r#"
-    (import "ship_v24" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
-    (import "ship_v24" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
-    (import "ship_v24" "snapshot_keep" (func $keep (param i64) (result i32)))
-    (import "ship_v24" "snapshot_drop" (func $drop (param i64) (result i32)))
+    (import "ship_v26" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
+    (import "ship_v26" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
+    (import "ship_v26" "snapshot_keep" (func $keep (param i64) (result i32)))
+    (import "ship_v26" "snapshot_drop" (func $drop (param i64) (result i32)))
 "#;
 
 fn path_data() -> String {
@@ -270,8 +283,8 @@ fn omissions_retain_leased_geometry_and_expiration_runs_when_callback_cannot() {
 fn trapped_callback_discards_spatial_instrument_and_hardware_publications() {
     let imports = format!(
         r#"{PATH_IMPORTS}
-        (import "ship_v24" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-        (import "ship_v24" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
+        (import "ship_v26" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v26" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
     "#
     );
     let attitude = abi::AttitudeState {
@@ -314,7 +327,7 @@ impl ScanSource for CountedSource {
 #[test]
 fn scan_reserves_full_cost_and_failure_never_calls_provider_or_overwrites_buffer() {
     let imports =
-        r#"(import "ship_v24" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
+        r#"(import "ship_v26" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
     let body = r#"(local $status i32)
         (loop $again
             i32.const 8192 i32.const 123 i32.store
@@ -346,8 +359,8 @@ fn scan_reserves_full_cost_and_failure_never_calls_provider_or_overwrites_buffer
 #[test]
 fn fresh_requests_submitted_during_boot_are_delivered_after_startup() {
     let imports = r#"
-        (import "ship_v24" "request_info" (func $info (param i32 i32 i32) (result i32)))
-        (import "ship_v24" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v26" "request_info" (func $info (param i32 i32 i32) (result i32)))
+        (import "ship_v26" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 0 i32.const 24 call $info i32.const 0 i32.ne if unreachable end
@@ -374,9 +387,9 @@ fn fresh_requests_submitted_during_boot_are_delivered_after_startup() {
 #[test]
 fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
     let imports = r#"
-        (import "ship_v24" "screen_define" (func $define (param i32 i32) (result i32)))
-        (import "ship_v24" "screen_begin" (func $begin (param i32 i32) (result i32)))
-        (import "ship_v24" "screen_end" (func $end (param i64) (result i32)))
+        (import "ship_v26" "screen_define" (func $define (param i32 i32) (result i32)))
+        (import "ship_v26" "screen_begin" (func $begin (param i32 i32) (result i32)))
+        (import "ship_v26" "screen_end" (func $end (param i64) (result i32)))
     "#;
     let definition = abi::ScreenDefinition {
         id: 0,
@@ -416,9 +429,9 @@ fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
 #[test]
 fn borrowed_snapshot_expires_and_retained_snapshot_quota_is_explicit() {
     let imports = r#"
-        (import "ship_v24" "tick_read" (func $tick (param i32 i32) (result i32)))
-        (import "ship_v24" "snapshot_keep" (func $keep (param i64) (result i32)))
-        (import "ship_v24" "snapshot_drop" (func $drop (param i64) (result i32)))
+        (import "ship_v26" "tick_read" (func $tick (param i32 i32) (result i32)))
+        (import "ship_v26" "snapshot_keep" (func $keep (param i64) (result i32)))
+        (import "ship_v26" "snapshot_drop" (func $drop (param i64) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 96 call $tick drop
@@ -491,7 +504,7 @@ fn weapon_syscalls_reject_invalid_records_and_discard_staged_fire_on_fault() {
         ),
     ] {
         let bytes = guest(
-            r#"(import "ship_v24" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
+            r#"(import "ship_v26" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
             &record_data(0, &setting),
             &format!(
                 "i64.const 1 i64.const {} i32.const 0 i32.const 72 call $write i32.const {status} i32.ne if unreachable end {}",
@@ -545,8 +558,8 @@ fn micropulse_engine_metadata_names_its_charge_resource_without_electrical_input
 fn durable_guest_data_survives_checkpoints_and_reboots() {
     let mut runtime = ControllerRuntime::new().unwrap();
     let bytes = guest(
-        r#"(import "ship_v24" "persistent_read" (func $read (param i32 i32) (result i32)))
-           (import "ship_v24" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
+        r#"(import "ship_v26" "persistent_read" (func $read (param i32 i32) (result i32)))
+           (import "ship_v26" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
         r#"(data (i32.const 64) "hello")"#,
         r#"i32.const 128 i32.const 5 call $read
            if
@@ -576,7 +589,7 @@ fn failed_or_out_of_bounds_callbacks_do_not_commit_durable_writes() {
     ] {
         let mut runtime = ControllerRuntime::new().unwrap();
         let bytes = guest(
-            r#"(import "ship_v24" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
+            r#"(import "ship_v26" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
             r#"(data (i32.const 64) "hello")"#,
             body,
         );

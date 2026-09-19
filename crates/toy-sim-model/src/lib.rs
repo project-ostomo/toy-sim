@@ -353,14 +353,24 @@ pub struct InputFrame {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramQuery {
+    Navigation {
+        after: Option<EntityId>,
+        limit: u16,
+        reference: GalacticPosition,
+    },
     SlipEligibility {
         origin: GalacticPosition,
         destination: GalacticPosition,
+        departure_after_seconds: f64,
+        arrival_after_seconds: f64,
     },
     Travel,
     Contact(ContactRef),
     Beacon(EntityId),
-    Resolve(travel::Destination),
+    Resolve {
+        destination: travel::Destination,
+        after_seconds: f64,
+    },
     Tracks(TrackQuery),
     Continue {
         cursor: Id,
@@ -370,6 +380,16 @@ pub enum ProgramQuery {
         after: Option<EntityId>,
         limit: u16,
     },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct NavigationGate {
+    pub entity: EntityId,
+    pub system: EntityId,
+    pub pose: Pose,
+    pub exit: EntityId,
+    pub staging: GalacticPosition,
+    pub slip_ready: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -385,6 +405,10 @@ pub struct Beacon {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramReply {
+    Navigation {
+        revision: u64,
+        gates: Vec<NavigationGate>,
+    },
     Contact {
         pose: Pose,
         handle: u64,
@@ -392,6 +416,7 @@ pub enum ProgramReply {
     },
     SlipEligibility {
         ready: bool,
+        preparation_s: f64,
         duration_s: f64,
     },
     Travel {
@@ -406,12 +431,17 @@ pub enum ProgramReply {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramAction {
+    PlanningProgress {
+        revision: u64,
+        progress: travel::PlanningProgress,
+    },
     Block {
         revision: u64,
         reason: String,
     },
     Route {
         revision: u64,
+        search_limited: bool,
         orders: Vec<travel::QueuedOrder>,
         fuel_budget: travel::FuelBudget,
     },

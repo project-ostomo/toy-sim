@@ -1,0 +1,14 @@
+{
+  "import_version": 1,
+  "source_version": "gaia-edr3-gcns-250ly-v2",
+  "source_composite_sha256": "e95815932b057af919d89ede7b682ba45ea4b0fbff87383a9eff748aa9e262e1",
+  "source_file_sha256": "7577b61e96f152692534ad40fee0b5626b396f481e13cb107a191a4647db8c89",
+  "output_sha256": "95c9be8bdc6abf5c00893f813ec504368f8074039ea8af313bc04896eb74d4e6",
+  "source_coordinate_frame": "Galactic Cartesian, Sol origin",
+  "coordinate_frame": "ICRS Cartesian, Sol origin, inherited J2016 astrometry",
+  "radius_ly": 125.0,
+  "group_radius_ly": 0.03,
+  "source_nearby_stars": 18031,
+  "selected_systems": 2990,
+  "selected_companions": 48
+}

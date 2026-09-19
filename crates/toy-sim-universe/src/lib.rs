@@ -1,5 +1,7 @@
 pub mod atmosphere;
 pub mod catalogue;
+pub mod civilization;
+pub mod generation;
 pub mod orrery_cfg;
 pub mod replication;
 pub mod solver;
@@ -23,10 +25,13 @@ fn remote_test_config() -> orrery_cfg::OrreryCfg {
     toml::from_str(include_str!("../../../tests/fixtures/remote.star.toml")).unwrap()
 }
 
-pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
+pub fn handcrafted_configs() -> Vec<orrery_cfg::OrreryCfg> {
     let manifest: universe::UniverseCfg =
-        toml::from_str(include_str!("../../../assets/universe.toml"))?;
-    manifest.validate()?;
+        toml::from_str(include_str!("../../../assets/universe.toml"))
+            .expect("bundled universe manifest");
+    manifest
+        .validate()
+        .expect("valid bundled universe manifest");
     let sources = [
         (
             "stars/helion.star.toml",
@@ -76,9 +81,39 @@ pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
             let text = sources
                 .iter()
                 .find(|(name, _)| name == path)
-                .ok_or_else(|| anyhow::anyhow!("unbundled system: {path}"))?
+                .unwrap_or_else(|| panic!("unbundled system: {path}"))
                 .1;
-            Ok(toml::from_str(text)?)
+            toml::from_str(text).expect("valid bundled authored system")
         })
         .collect()
+}
+
+pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
+    let mut configs = handcrafted_configs();
+    let map = civilization::map();
+    let authored = configs.len();
+    for (config, settlement) in configs.iter_mut().zip(&map.systems) {
+        anyhow::ensure!(
+            config.name == settlement.name,
+            "authored system ordering mismatch"
+        );
+        config.position_um = settlement.position;
+    }
+    for (star, settlement) in civilization::stars().iter().zip(&map.systems[authored..]) {
+        anyhow::ensure!(
+            star.id == settlement.catalogue_id,
+            "catalogue ordering mismatch"
+        );
+        let mut config = generation::system(star, &settlement.name);
+        config.position_um = settlement.position;
+        configs.push(config);
+    }
+    anyhow::ensure!(
+        configs.len() == map.systems.len(),
+        "incomplete inhabited map"
+    );
+    for config in &configs {
+        config.validate_system()?;
+    }
+    Ok(configs)
 }

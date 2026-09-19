@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub const GATE_ENTRY_SPEED_M_S: f64 = 100.0;
 pub const DOCKING_CLEARANCE_M: f64 = 100.0;
 pub const DOCKING_SPEED_M_S: f64 = 10.0;
+pub const MAX_PREDICTION_SECONDS: f64 = 365.25 * 86_400.0;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Presence {
@@ -43,7 +44,7 @@ pub enum Order {
     Guidance(Guidance),
     TravelTo(Destination),
     Sublight(Destination),
-    Slip { destination: GalacticPosition },
+    Slip { destination: Destination },
     Dock(EntityId),
     Undock,
     WaitUntil(u64),
@@ -153,11 +154,27 @@ pub enum Status {
     Completed,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanningStage {
+    LoadingCatalogue,
+    BuildingGraph,
+    SearchingRoutes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanningProgress {
+    pub stage: PlanningStage,
+    pub completed: u32,
+    pub total: Option<u32>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TravelState {
     pub autopilot_enabled: bool,
     pub preferences: PlanningPreferences,
     pub fuel_budget: Option<FuelBudget>,
+    pub planning: Option<PlanningProgress>,
+    pub search_limited: bool,
     pub revision: u64,
     pub orders: Vec<QueuedOrder>,
     pub order: usize,

@@ -2,6 +2,7 @@ use crate::assets::{Appearance, ShipDesign};
 mod atmosphere;
 mod camera;
 mod glints;
+mod lighting;
 mod navigation_hud;
 mod projection;
 mod transit;
@@ -64,7 +65,6 @@ pub(super) fn install(app: &mut App) {
                 camera::setup_views,
                 camera::update_views,
                 camera::camera_controls,
-                update_lighting,
             )
                 .chain()
                 .in_set(PresentationSet::Views),
@@ -86,6 +86,7 @@ pub(super) fn install(app: &mut App) {
         toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
         camera::align_on_double_click,
     );
+    lighting::install(app);
     glints::install(app);
     transit::install(app);
     navigation_hud::install(app);
@@ -509,48 +510,19 @@ fn apply_visuals(
     }
 }
 
-fn update_lighting(
-    cameras: Query<(&ViewCamera, &Transform, &SystemSubscription), Without<DirectionalLight>>,
-    bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
-    mut lights: Query<(&ChildOf, &mut DirectionalLight, &mut Transform), Without<ViewCamera>>,
-) {
-    for (parent, mut light, mut transform) in &mut lights {
-        let Ok((view, camera, systems)) = cameras.get(parent.parent()) else {
-            continue;
-        };
-        let position = view.origin.offset_by(camera.translation.as_dvec3());
-        let brightest = bodies
-            .iter()
-            .filter(|(body, _, system)| {
-                body.0.luminosity_lumens > 0.
-                    && systems.0.iter().any(|entry| entry.system == system.0)
-            })
-            .max_by(|(a, ap, _), (b, bp, _)| {
-                let flux = |body: &Celestial, pose: &DisplayPose| {
-                    body.0.luminosity_lumens
-                        / pose
-                            .0
-                            .position
-                            .relative_to(position)
-                            .length_squared()
-                            .max(body.0.radius_m.powi(2))
-                };
-                flux(a, ap).total_cmp(&flux(b, bp))
-            });
-        let Some((star, pose, _)) = brightest else {
-            light.illuminance = 0.;
-            continue;
-        };
-        let direction = position.relative_to(pose.0.position);
-        light.illuminance = (star.0.luminosity_lumens
-            / (4. * std::f64::consts::PI * direction.length_squared().max(star.0.radius_m.powi(2))))
-            as f32;
-        let color = star.0.color;
-        light.color = Color::linear_rgb(color[0], color[1], color[2]);
-        if let Some(direction) = direction.try_normalize() {
-            transform.look_to(camera.rotation.inverse() * direction.as_vec3(), Vec3::Y);
-        }
-    }
+#[cfg(test)]
+pub(super) fn install_celestial_render_test(app: &mut App) {
+    app.init_resource::<Assets<Mesh>>()
+        .init_resource::<Assets<StandardMaterial>>()
+        .init_resource::<Assets<bevy::light::atmosphere::ScatteringMedium>>()
+        .add_systems(
+            Update,
+            (camera::setup_views, sync_celestials)
+                .chain()
+                .after(crate::ui::celestials::CelestialSystems::Evaluate),
+        );
+    lighting::install(app);
+    atmosphere::install(app);
 }
 
 #[cfg(test)]

@@ -114,23 +114,72 @@ pub fn contact_handle(
 
 #[derive(Resource, Default)]
 pub struct PublishedWorld {
+    tick: u64,
+    navigation_revision: u64,
+    gates: Arc<BTreeMap<EntityId, PublishedNavigationGate>>,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
     celestial: Arc<BTreeMap<EntityId, Pose>>,
     public: Arc<toy_sim_intel::Snapshot>,
-    apertures: Arc<ApertureTree>,
+    apertures: Arc<ApertureIndex>,
+    public_apertures: Arc<ApertureIndex>,
+    orbital: Arc<OrbitalPublication>,
+    orbital_initialized: bool,
     universe: Option<Arc<UniverseApertures>>,
     directory: Arc<ownership::OwnershipDirectory>,
 }
 
 #[derive(Clone)]
+struct PublishedNavigationGate {
+    system: Id,
+    pose: Pose,
+    exit: Id,
+    exclusion_m: f64,
+    orbit: Option<Arc<super::infrastructure::GateOrbit>>,
+}
+
+#[derive(Clone)]
 struct PublishedBeacon {
+    system: Id,
     beacon: Beacon,
     owner: ownership::Principal,
     access: ownership::AccessPolicy,
     bays: Vec<super::travel::Bay>,
+    orbit: Option<Arc<super::infrastructure::GateOrbit>>,
+}
+
+#[derive(Default)]
+struct OrbitalPublication {
+    beacons: BTreeMap<EntityId, PublishedBeacon>,
+    gates: BTreeMap<EntityId, PublishedNavigationGate>,
+    apertures: ApertureIndex,
+}
+
+fn merged_page<'a, T>(
+    a: &'a BTreeMap<Id, T>,
+    b: &'a BTreeMap<Id, T>,
+    after: Option<Id>,
+    limit: usize,
+) -> Vec<(&'a Id, &'a T)> {
+    use std::ops::Bound::{Excluded, Unbounded};
+    let bounds = (after.map_or(Unbounded, Excluded), Unbounded);
+    let mut a = a.range(bounds).peekable();
+    let mut b = b.range(bounds).peekable();
+    let mut page = Vec::with_capacity(limit);
+    while page.len() < limit {
+        let next = match (a.peek(), b.peek()) {
+            (Some((a_id, _)), Some((b_id, _))) if a_id <= b_id => a.next(),
+            (Some(_), Some(_)) | (None, Some(_)) => b.next(),
+            (Some(_), None) => a.next(),
+            (None, None) => break,
+        };
+        page.extend(next);
+    }
+    page
 }
 
 struct FusedScan {
+    navigation_revision: u64,
+    gates: Arc<BTreeMap<EntityId, PublishedNavigationGate>>,
     universe: Option<Arc<UniverseApertures>>,
     epoch: hifitime::Epoch,
     owner: ownership::Principal,
@@ -138,7 +187,8 @@ struct FusedScan {
     radius: f64,
     mass: f64,
     physical: Entity,
-    apertures: Arc<ApertureTree>,
+    apertures: Arc<ApertureIndex>,
+    orbital: Arc<OrbitalPublication>,
     public: Arc<toy_sim_intel::Snapshot>,
     own: EntityId,
     group: GroupId,
@@ -147,6 +197,8 @@ struct FusedScan {
     travel: TravelState,
     slip_ready: bool,
     slip_power_w: f64,
+    slip_preparation: Option<super::travel::Preparation>,
+    tick: u64,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
     celestial: Arc<BTreeMap<EntityId, Pose>>,
     queries: Arc<Mutex<toy_sim_intel::query::Queries>>,
@@ -167,15 +219,28 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             ProgramQuery::SlipEligibility {
                 origin,
                 destination,
-            } => ProgramReply::SlipEligibility {
-                ready: self.slip_ready && self.admissible(origin) && self.admissible(destination),
-                duration_s: {
-                    let ly = destination.relative_to(origin).length() / 9.4607304725808e15;
-                    (1e5 * self.mass * (1. + ly / 1000.) / self.slip_power_w.max(1.)).max(10.)
-                        + 30.
-                        + 8.64 * ly
-                },
-            },
+                departure_after_seconds,
+                arrival_after_seconds,
+            } => {
+                let departure = self.prediction_epoch(departure_after_seconds)?;
+                let arrival = self.prediction_epoch(arrival_after_seconds)?;
+                ensure!(arrival >= departure, "arrival precedes departure");
+                let (preparation_s, duration_s) = super::travel::slip_times(
+                    origin,
+                    destination,
+                    self.mass,
+                    self.slip_power_w,
+                    self.slip_preparation.as_ref(),
+                    self.tick,
+                );
+                ProgramReply::SlipEligibility {
+                    ready: self.slip_ready
+                        && self.admissible_at(origin, departure)
+                        && self.admissible_at(destination, arrival),
+                    preparation_s,
+                    duration_s,
+                }
+            }
             ProgramQuery::Contact(reference) => {
                 let snapshot = if reference.group == self.group {
                     &self.snapshot
@@ -221,69 +286,59 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             ProgramQuery::Beacon(id) => ProgramReply::Beacons(
                 self.beacons
                     .get(&id)
+                    .or_else(|| self.orbital.beacons.get(&id))
                     .map(|beacon| self.beacon(beacon))
                     .into_iter()
                     .collect(),
             ),
             ProgramQuery::Beacons { after, limit } => {
                 ensure!((1..=256).contains(&limit), "invalid beacon page");
-                use std::ops::Bound::{Excluded, Unbounded};
                 ProgramReply::Beacons(
-                    self.beacons
-                        .range((after.map_or(Unbounded, Excluded), Unbounded))
-                        .take(limit as usize)
+                    merged_page(&self.beacons, &self.orbital.beacons, after, limit as usize)
+                        .into_iter()
                         .map(|(_, beacon)| self.beacon(beacon))
                         .collect(),
                 )
             }
-            ProgramQuery::Resolve(destination) => {
-                let pose = match destination {
-                    Destination::Galactic(position) => Pose {
-                        position,
-                        ..Default::default()
-                    },
-                    Destination::Beacon(id) => self
-                        .beacons
-                        .get(&id)
-                        .ok_or_else(|| anyhow::anyhow!("beacon unavailable"))?
-                        .beacon
-                        .pose
-                        .clone(),
-                    Destination::Relative {
-                        reference,
-                        offset,
-                        axes,
-                    } => {
-                        let mut pose = match reference {
-                            Reference::Beacon(id) => self
-                                .beacons
-                                .get(&id)
-                                .ok_or_else(|| anyhow::anyhow!("beacon unavailable"))?
-                                .beacon
-                                .pose
-                                .clone(),
-                            Reference::Celestial(id) => self
-                                .universe
-                                .as_ref()
-                                .and_then(|universe| universe.registry.pose(id, self.epoch))
-                                .or_else(|| self.celestial.get(&id).cloned())
-                                .ok_or_else(|| anyhow::anyhow!("celestial unavailable"))?,
-                        };
-                        let displacement = if axes == Axes::BodyFixed {
-                            DQuat::from_array(pose.rotation) * offset.to_meters_64()
-                        } else {
-                            offset.to_meters_64()
-                        };
-                        pose.position = pose.position.offset_by(displacement);
-                        if axes == Axes::BodyFixed {
-                            pose.velocity = (DVec3::from_array(pose.velocity)
-                                + DVec3::from_array(pose.angular_velocity).cross(displacement))
-                            .to_array();
+            ProgramQuery::Navigation {
+                after,
+                limit,
+                reference,
+            } => {
+                ensure!((1..=128).contains(&limit), "invalid navigation page");
+                let gates = merged_page(&self.gates, &self.orbital.gates, after, limit as usize)
+                    .into_iter()
+                    .map(|(&entity, gate)| {
+                        let pose = self.orbital_pose(&gate.pose, gate.orbit.as_deref());
+                        let direction = pose
+                            .position
+                            .relative_to(reference)
+                            .try_normalize()
+                            .unwrap_or(DVec3::X);
+                        let staging = pose
+                            .position
+                            .offset_by(direction * (gate.exclusion_m + self.radius + 1000.0));
+                        NavigationGate {
+                            entity,
+                            system: gate.system,
+                            pose,
+                            exit: gate.exit,
+                            staging,
+                            slip_ready: self.slip_power_w > 0.0 && self.admissible(staging),
                         }
-                        pose
-                    }
-                };
-                ProgramReply::Pose(pose)
+                    })
+                    .collect();
+                ProgramReply::Navigation {
+                    revision: self.navigation_revision,
+                    gates,
+                }
+            }
+            ProgramQuery::Resolve {
+                destination,
+                after_seconds,
+            } => {
+                let epoch = self.prediction_epoch(after_seconds)?;
+                ProgramReply::Pose(self.resolve_at(destination, epoch)?)
             }
         })
     }
@@ -348,15 +403,119 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
 struct Aperture {
     entity: Entity,
     position: GalacticPosition,
+    velocity: DVec3,
     radius: f64,
     mass: f64,
     exclusion: f64,
     system: Option<usize>,
+    orbit: Option<Arc<super::infrastructure::GateOrbit>>,
+    envelope_m: f64,
 }
 
 impl FusedScan {
+    fn prediction_epoch(&self, after_seconds: f64) -> Result<hifitime::Epoch> {
+        ensure!(
+            after_seconds.is_finite() && (0.0..=MAX_PREDICTION_SECONDS).contains(&after_seconds),
+            "prediction horizon is outside one year"
+        );
+        Ok(self.epoch + hifitime::Duration::from_seconds(after_seconds))
+    }
+
+    fn pose_at(
+        &self,
+        initial: &Pose,
+        orbit: Option<&super::infrastructure::GateOrbit>,
+        epoch: hifitime::Epoch,
+    ) -> Pose {
+        let mut pose = initial.clone();
+        if let Some(orbit) = orbit {
+            let universe = &self
+                .universe
+                .as_ref()
+                .expect("orbital beacon universe")
+                .registry
+                .universe;
+            let (position, velocity) = orbit.pose(universe, epoch).expect("valid orbital beacon");
+            pose.position = position;
+            pose.velocity = velocity.to_array();
+        } else {
+            let seconds = (epoch - self.epoch).to_seconds();
+            pose.position = pose
+                .position
+                .offset_by(DVec3::from_array(pose.velocity) * seconds);
+            pose.rotation =
+                (DQuat::from_scaled_axis(DVec3::from_array(pose.angular_velocity) * seconds)
+                    * DQuat::from_array(pose.rotation))
+                .normalize()
+                .to_array();
+        }
+        pose
+    }
+
+    fn orbital_pose(
+        &self,
+        initial: &Pose,
+        orbit: Option<&super::infrastructure::GateOrbit>,
+    ) -> Pose {
+        self.pose_at(initial, orbit, self.epoch)
+    }
+
+    fn beacon_pose_at(&self, id: Id, epoch: hifitime::Epoch) -> Result<Pose> {
+        let beacon = self
+            .beacons
+            .get(&id)
+            .or_else(|| self.orbital.beacons.get(&id))
+            .ok_or_else(|| anyhow::anyhow!("beacon unavailable"))?;
+        Ok(self.pose_at(&beacon.beacon.pose, beacon.orbit.as_deref(), epoch))
+    }
+
+    fn resolve_at(&self, destination: Destination, epoch: hifitime::Epoch) -> Result<Pose> {
+        Ok(match destination {
+            Destination::Galactic(position) => Pose {
+                position,
+                ..Default::default()
+            },
+            Destination::Beacon(id) => self.beacon_pose_at(id, epoch)?,
+            Destination::Relative {
+                reference,
+                offset,
+                axes,
+            } => {
+                let mut pose = match reference {
+                    Reference::Beacon(id) => self.beacon_pose_at(id, epoch)?,
+                    Reference::Celestial(id) => self
+                        .universe
+                        .as_ref()
+                        .and_then(|universe| universe.registry.pose(id, epoch))
+                        .or_else(|| {
+                            self.celestial
+                                .get(&id)
+                                .map(|pose| self.pose_at(pose, None, epoch))
+                        })
+                        .ok_or_else(|| anyhow::anyhow!("celestial unavailable"))?,
+                };
+                let displacement = if axes == Axes::BodyFixed {
+                    DQuat::from_array(pose.rotation) * offset.to_meters_64()
+                } else {
+                    offset.to_meters_64()
+                };
+                pose.position = pose.position.offset_by(displacement);
+                if axes == Axes::BodyFixed {
+                    pose.velocity = (DVec3::from_array(pose.velocity)
+                        + DVec3::from_array(pose.angular_velocity).cross(displacement))
+                    .to_array();
+                }
+                pose
+            }
+        })
+    }
+
     fn beacon(&self, publication: &PublishedBeacon) -> Beacon {
         let mut beacon = publication.beacon.clone();
+        beacon.pose = self.orbital_pose(&beacon.pose, publication.orbit.as_deref());
+        for (&id, pose) in &mut beacon.bays {
+            *pose = super::travel::bay_pose(&beacon.pose, &publication.bays[id as usize]);
+        }
         let permitted = |permission, public, allowed: &BTreeSet<AccountId>| {
             public
                 || matches!(self.owner, ownership::Principal::Player(account) if allowed.contains(&account))
@@ -381,38 +540,208 @@ impl FusedScan {
     }
 
     fn admissible(&self, position: GalacticPosition) -> bool {
-        let mut work = 0;
-        let Some(mut curvature) = self.apertures.evaluate(
+        self.admissible_at(position, self.epoch)
+    }
+
+    fn admissible_at(&self, position: GalacticPosition, epoch: hifitime::Epoch) -> bool {
+        aperture_clearance(
+            &self.apertures,
+            &self.orbital,
+            self.universe.as_deref(),
             position,
             self.physical,
             self.radius,
-            None,
-            self.epoch,
+            epoch,
+            (epoch - self.epoch).to_seconds(),
+        )
+    }
+}
+
+fn aperture_clearance(
+    apertures: &ApertureIndex,
+    orbital: &OrbitalPublication,
+    universe: Option<&UniverseApertures>,
+    position: GalacticPosition,
+    ship: Entity,
+    radius: f64,
+    epoch: hifitime::Epoch,
+    after_seconds: f64,
+) -> bool {
+    let mut work = 0;
+    let Some(mut curvature) = apertures.evaluate(
+        position,
+        ship,
+        radius,
+        None,
+        epoch,
+        after_seconds,
+        &mut work,
+    ) else {
+        return false;
+    };
+    if let Some(universe) = universe {
+        let Some(value) = orbital.apertures.evaluate(
+            position,
+            ship,
+            radius,
+            Some(&universe.registry),
+            epoch,
+            0.0,
             &mut work,
         ) else {
             return false;
         };
-        if let Some(universe) = &self.universe {
-            let Some(value) = universe.tree.evaluate(
-                position,
-                self.physical,
-                self.radius,
-                Some(&universe.registry),
-                self.epoch,
-                &mut work,
-            ) else {
-                return false;
-            };
-            curvature += value;
-        }
-        curvature <= 1e-8
+        curvature += value;
+        let Some(value) = universe.index.evaluate(
+            position,
+            ship,
+            radius,
+            Some(&universe.registry),
+            epoch,
+            0.0,
+            &mut work,
+        ) else {
+            return false;
+        };
+        curvature += value;
+    }
+    curvature <= SLIP_CURVATURE_LIMIT
+}
+
+pub(crate) fn predicted_aperture_clear(
+    world: &World,
+    ship: Entity,
+    position: GalacticPosition,
+    radius: f64,
+    after_seconds: f64,
+) -> bool {
+    if !after_seconds.is_finite() || !(0.0..=MAX_PREDICTION_SECONDS).contains(&after_seconds) {
+        return false;
+    }
+    let publication = world.resource::<PublishedWorld>();
+    let now = world.resource::<SimulationCounters>().ticks as f64 * 0.1;
+    let epoch =
+        hifitime::Epoch::from_mjd_utc(0.0) + hifitime::Duration::from_seconds(now + after_seconds);
+    aperture_clearance(
+        &publication.apertures,
+        &publication.orbital,
+        publication.universe.as_deref(),
+        position,
+        ship,
+        radius,
+        epoch,
+        after_seconds
+            + world
+                .resource::<SimulationCounters>()
+                .ticks
+                .saturating_sub(publication.tick) as f64
+                * 0.1,
+    )
+}
+
+#[derive(bevy::ecs::query::QueryData)]
+pub struct BeaconData {
+    entity: Entity,
+    id: &'static Identity,
+    transform: &'static PreciseTransform,
+    velocity: Option<&'static Velocity>,
+    angular: Option<&'static AngularVelocity>,
+    iff: &'static super::identity::Transponder,
+    owner: &'static super::ownership::AssetOwner,
+    access: Option<&'static super::ownership::AssetAccess>,
+    design: &'static super::spatial::SpatialBody,
+    bays: Option<&'static super::travel::DockingBays>,
+    gate: Option<&'static super::travel::Gate>,
+    landmark: Option<&'static super::infrastructure::Landmark>,
+    orbit: Option<&'static super::infrastructure::GateOrbit>,
+}
+
+type OrbitalMetadataChanged = (
+    With<super::infrastructure::GateOrbit>,
+    Or<(
+        Changed<Identity>,
+        Changed<super::infrastructure::GateOrbit>,
+        Changed<super::travel::Gate>,
+        Changed<super::identity::Transponder>,
+        Changed<super::ownership::AssetOwner>,
+        Changed<super::ownership::AssetAccess>,
+        Changed<super::spatial::SpatialBody>,
+        Changed<super::travel::DockingBays>,
+        Changed<super::infrastructure::Landmark>,
+    )>,
+);
+
+fn published_beacon(
+    data: &BeaconDataItem,
+    registry: Option<&super::registry::UniverseRegistry>,
+) -> PublishedBeacon {
+    let pose = super::intelligence::pose(data.transform, data.velocity, data.angular);
+    let bays = data.bays.map_or_else(Vec::new, |bays| bays.0.clone());
+    let system = data
+        .landmark
+        .map(|landmark| landmark.system)
+        .or_else(|| {
+            let registry = registry?;
+            let index = registry.universe.index.nearest(pose.position)?;
+            Some(super::registry::system_identity(
+                &registry.universe.systems[index].solver.name,
+            ))
+        })
+        .unwrap_or_default();
+    PublishedBeacon {
+        system,
+        beacon: Beacon {
+            entity: data.id.0,
+            radius_m: data.gate.map_or(data.design.radius_m, |gate| gate.radius_m),
+            iff: data.iff.0.clone(),
+            bays: bays
+                .iter()
+                .enumerate()
+                .map(|(index, bay)| (index as u32, super::travel::bay_pose(&pose, bay)))
+                .collect(),
+            pose,
+            gate_exit: data
+                .gate
+                .filter(|gate| gate.enabled)
+                .map(|gate| gate.paired),
+            exclusion_m: data.gate.map_or(0.0, |gate| gate.exclusion_m),
+        },
+        owner: data.owner.0,
+        access: data
+            .access
+            .map(|access| access.0.clone())
+            .unwrap_or_default(),
+        bays,
+        orbit: data.orbit.cloned().map(Arc::new),
     }
 }
 
+fn navigation_gates(
+    beacons: &BTreeMap<Id, PublishedBeacon>,
+) -> BTreeMap<Id, PublishedNavigationGate> {
+    beacons
+        .iter()
+        .filter_map(|(&id, published)| {
+            Some((
+                id,
+                PublishedNavigationGate {
+                    system: published.system,
+                    pose: published.beacon.pose.clone(),
+                    exit: published.beacon.gate_exit?,
+                    exclusion_m: published.beacon.exclusion_m,
+                    orbit: published.orbit.clone(),
+                },
+            ))
+        })
+        .collect()
+}
+
 pub fn publish_indexes(
+    clock: Res<SimulationCounters>,
     directory: Res<super::ownership::Directory>,
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
+    navigation: Option<Res<super::infrastructure::NavigationPublication>>,
     groups: Query<&Group>,
     bodies: Query<
         (
@@ -425,32 +754,78 @@ pub fn publish_indexes(
             Option<&super::travel::Gate>,
             Option<&super::spatial::SpatialBody>,
         ),
-        Without<super::travel::Dormant>,
+        (
+            Without<super::travel::Dormant>,
+            Without<super::infrastructure::GateOrbit>,
+        ),
     >,
     beacons: Query<
-        (
-            &Identity,
-            &PreciseTransform,
-            Option<&Velocity>,
-            Option<&AngularVelocity>,
-            &super::identity::Transponder,
-            &super::ownership::AssetOwner,
-            Option<&super::ownership::AssetAccess>,
-            &super::spatial::SpatialBody,
-            Option<&super::travel::DockingBays>,
-            Option<&super::travel::Gate>,
-        ),
+        BeaconData,
         (
             With<super::identity::BeaconEmitter>,
             Without<super::travel::Dormant>,
+            Without<super::infrastructure::GateOrbit>,
         ),
     >,
+    orbital: Query<
+        BeaconData,
+        (
+            With<super::identity::BeaconEmitter>,
+            Without<super::travel::Dormant>,
+            With<super::infrastructure::GateOrbit>,
+        ),
+    >,
+    changed: Query<(), OrbitalMetadataChanged>,
+    mut removed_gate: RemovedComponents<super::travel::Gate>,
+    mut removed_access: RemovedComponents<super::ownership::AssetAccess>,
+    mut removed_bays: RemovedComponents<super::travel::DockingBays>,
+    mut removed_landmark: RemovedComponents<super::infrastructure::Landmark>,
 ) {
+    publication.tick = clock.ticks;
     if publication.universe.is_none() {
         publication.universe = registry
             .as_ref()
             .map(|registry| Arc::new(UniverseApertures::new((**registry).clone())));
     }
+    let removed = removed_gate.read().count()
+        + removed_access.read().count()
+        + removed_bays.read().count()
+        + removed_landmark.read().count();
+    if !publication.orbital_initialized
+        || !changed.is_empty()
+        || removed > 0
+        || orbital.iter().count() != publication.orbital.beacons.len()
+    {
+        let mut beacons = BTreeMap::new();
+        let mut apertures = Vec::new();
+        for data in &orbital {
+            let orbit = data.orbit.expect("orbital beacon query");
+            let universe = &registry.as_ref().expect("orbital beacon universe").universe;
+            let (position, envelope_m) = orbit.envelope(universe).expect("valid gate envelope");
+            apertures.push(Aperture {
+                entity: data.entity,
+                position,
+                velocity: DVec3::ZERO,
+                radius: data.design.radius_m,
+                mass: 0.0,
+                exclusion: data
+                    .gate
+                    .filter(|gate| gate.enabled)
+                    .map_or(0.0, |gate| gate.exclusion_m),
+                system: None,
+                orbit: Some(Arc::new(orbit.clone())),
+                envelope_m,
+            });
+            beacons.insert(data.id.0, published_beacon(&data, registry.as_deref()));
+        }
+        publication.orbital = Arc::new(OrbitalPublication {
+            gates: navigation_gates(&beacons),
+            beacons,
+            apertures: ApertureIndex::build(apertures),
+        });
+        publication.orbital_initialized = true;
+    }
+
     publication.public = groups
         .iter()
         .find(|group| group.id == PUBLIC_GROUP)
@@ -458,6 +833,8 @@ pub fn publish_indexes(
         .unwrap_or_default();
     let mut celestial = BTreeMap::new();
     let mut apertures = Vec::new();
+    let mut public_apertures = Vec::new();
+    let public_beacons: BTreeSet<_> = beacons.iter().map(|data| data.entity).collect();
     for (entity, id, transform, velocity, angular, body, gate, spatial) in &bodies {
         let mut pose = super::intelligence::pose(transform, velocity, angular);
         if let Some(body) = body {
@@ -465,53 +842,40 @@ pub fn publish_indexes(
             celestial.insert(id.0, pose.clone());
         }
         if let Some(spatial) = spatial.filter(|_| body.is_none() || registry.is_none()) {
-            apertures.push(Aperture {
+            let aperture = Aperture {
                 entity,
                 position: pose.position,
+                velocity: DVec3::from_array(pose.velocity),
                 radius: spatial.radius_m,
                 mass: body.map_or(0.0, |body| body.body.mass),
-                system: None,
                 exclusion: gate
                     .filter(|gate| gate.enabled)
                     .map_or(0.0, |gate| gate.exclusion_m),
-            });
+                system: None,
+                orbit: None,
+                envelope_m: 0.0,
+            };
+            if body.is_some() || gate.is_some() || public_beacons.contains(&entity) {
+                public_apertures.push(aperture.clone());
+            }
+            apertures.push(aperture);
         }
     }
     publication.celestial = Arc::new(celestial);
-    publication.apertures = Arc::new(ApertureTree::build(apertures));
-    publication.directory = Arc::new(directory.0.clone());
-    publication.beacons = Arc::new(
-        beacons
-            .iter()
-            .map(
-                |(id, transform, velocity, angular, iff, owner, access, design, bays, gate)| {
-                    let pose = super::intelligence::pose(transform, velocity, angular);
-                    let bays = bays.map_or_else(Vec::new, |bays| bays.0.clone());
-                    let publication = PublishedBeacon {
-                        beacon: Beacon {
-                            entity: id.0,
-                            radius_m: gate.map_or(design.radius_m, |gate| gate.radius_m),
-                            iff: iff.0.clone(),
-                            bays: bays
-                                .iter()
-                                .enumerate()
-                                .map(|(index, bay)| {
-                                    (index as u32, super::travel::bay_pose(&pose, bay))
-                                })
-                                .collect(),
-                            pose,
-                            gate_exit: gate.filter(|gate| gate.enabled).map(|gate| gate.paired),
-                            exclusion_m: gate.map_or(0., |gate| gate.exclusion_m),
-                        },
-                        owner: owner.0,
-                        access: access.map(|access| access.0.clone()).unwrap_or_default(),
-                        bays,
-                    };
-                    (id.0, publication)
-                },
-            )
-            .collect(),
-    );
+    publication.apertures = Arc::new(ApertureIndex::build(apertures));
+    publication.public_apertures = Arc::new(ApertureIndex::build(public_apertures));
+    if directory.is_changed() {
+        publication.directory = Arc::new(directory.0.clone());
+    }
+    let beacons = beacons
+        .iter()
+        .map(|data| (data.id.0, published_beacon(&data, registry.as_deref())))
+        .collect();
+    publication.gates = Arc::new(navigation_gates(&beacons));
+    publication.beacons = Arc::new(beacons);
+    publication.navigation_revision = navigation
+        .as_ref()
+        .map_or(0, |navigation| navigation.catalogue.topology_revision);
 }
 
 pub fn prepare_sources(
@@ -570,6 +934,8 @@ pub fn prepare_sources(
         state.display_queries.lock().unwrap().expire(clock.ticks);
         let pose = super::intelligence::pose(transform, Some(velocity), Some(angular));
         software.world_source = Some(Arc::new(FusedScan {
+            navigation_revision: publication.navigation_revision,
+            gates: publication.gates.clone(),
             universe: publication.universe.clone(),
             epoch: hifitime::Epoch::from_mjd_utc(0.0)
                 + hifitime::Duration::from_seconds(clock.ticks as f64 * 0.1),
@@ -583,13 +949,14 @@ pub fn prepare_sources(
             handles: state.handles.clone(),
             pose: pose.clone(),
             travel: travel.map_or_else(TravelState::default, |travel| travel.0.clone()),
-            slip_ready: slip.is_some_and(|drive| {
-                drive.ready_tick <= clock.ticks && drive.preparation.is_none()
-            }),
+            slip_ready: slip.is_some_and(|drive| drive.ready_tick <= clock.ticks),
             slip_power_w: slip.map_or(0., |drive| drive.power_w),
+            slip_preparation: slip.and_then(|drive| drive.preparation.clone()),
+            tick: clock.ticks,
             beacons: publication.beacons.clone(),
             celestial: publication.celestial.clone(),
-            apertures: publication.apertures.clone(),
+            apertures: publication.public_apertures.clone(),
+            orbital: publication.orbital.clone(),
             public: publication.public.clone(),
             queries: state.queries.clone(),
             display_queries: state.display_queries.clone(),
@@ -618,6 +985,7 @@ pub fn dispatch_actions(world: &mut World) {
             if let Err(error) = super::travel::dispatch(world, entity, action) {
                 if let Some(mut travel) = world.get_mut::<super::travel::Travel>(entity) {
                     travel.0.status = Status::Blocked(error.to_string());
+                    travel.0.planning = None;
                 }
                 break;
             }
@@ -679,72 +1047,41 @@ pub fn handle_for_entity(world: &mut World, ship: Entity, target: Entity) -> Res
     contact_handle(world, ship, group_id, track)
 }
 
+const APERTURE_WORK_LIMIT: usize = 1024;
+const FAR_CURVATURE_BUDGET: f64 = 1e-12;
+const SLIP_CURVATURE_LIMIT: f64 = 1e-8;
+
 #[derive(Default)]
-struct ApertureTree {
-    nodes: Vec<ApertureNode>,
-}
-
-struct ApertureNode {
-    low: GalacticPosition,
-    high: GalacticPosition,
-    radius: f64,
+struct ApertureIndex {
+    spatial: toy_sim_spatial::SpatialHash,
+    bodies: Vec<Aperture>,
     mass: f64,
-    children: Option<(usize, usize)>,
-    body: Option<Aperture>,
+    max_speed: f64,
 }
 
-impl ApertureTree {
-    fn build(mut bodies: Vec<Aperture>) -> Self {
-        let mut tree = Self::default();
-        if !bodies.is_empty() {
-            tree.branch(&mut bodies);
-        }
-        tree
-    }
-
-    fn branch(&mut self, bodies: &mut [Aperture]) -> usize {
-        let mut low = bodies[0].position;
-        let mut high = low;
-        let mut mass: f64 = 0.0;
-        let mut radius: f64 = 0.0;
-        for body in bodies.iter() {
-            low.x = low.x.min(body.position.x);
-            low.y = low.y.min(body.position.y);
-            low.z = low.z.min(body.position.z);
-            high.x = high.x.max(body.position.x);
-            high.y = high.y.max(body.position.y);
-            high.z = high.z.max(body.position.z);
+impl ApertureIndex {
+    fn build(bodies: Vec<Aperture>) -> Self {
+        let mut spatial = toy_sim_spatial::SpatialHash::default();
+        let mut mass = 0.0;
+        let mut max_speed: f64 = 0.0;
+        for (slot, body) in bodies.iter().enumerate() {
+            spatial.insert(
+                u32::try_from(slot).expect("aperture index capacity"),
+                toy_sim_spatial::Entry {
+                    position: body.position,
+                    radius_m: body.radius.max(body.exclusion) + body.envelope_m,
+                    luminosity: 0.0,
+                },
+            );
             mass += body.mass;
-            radius = radius.max(body.radius.max(body.exclusion));
+            max_speed = max_speed.max(body.velocity.length());
         }
-        let index = self.nodes.len();
-        self.nodes.push(ApertureNode {
-            low,
-            high,
-            radius,
+        Self {
+            spatial,
+            bodies,
             mass,
-            children: None,
-            body: (bodies.len() == 1).then(|| bodies[0].clone()),
-        });
-        if bodies.len() > 1 {
-            let extent = high.relative_to(low);
-            let axis = if extent.x >= extent.y && extent.x >= extent.z {
-                0
-            } else if extent.y >= extent.z {
-                1
-            } else {
-                2
-            };
-            let coordinate =
-                |body: &Aperture| [body.position.x, body.position.y, body.position.z][axis];
-            let middle = bodies.len() / 2;
-            bodies.select_nth_unstable_by_key(middle, coordinate);
-            let (left, right) = bodies.split_at_mut(middle);
-            let left = self.branch(left);
-            let right = self.branch(right);
-            self.nodes[index].children = Some((left, right));
+            max_speed,
         }
-        index
     }
 
     #[cfg(test)]
@@ -755,9 +1092,10 @@ impl ApertureTree {
             radius,
             None,
             hifitime::Epoch::from_mjd_utc(0.0),
+            0.0,
             &mut 0,
         )
-        .is_some_and(|curvature| curvature <= 1e-8)
+        .is_some_and(|curvature| curvature <= SLIP_CURVATURE_LIMIT)
     }
 
     fn evaluate(
@@ -767,72 +1105,70 @@ impl ApertureTree {
         radius: f64,
         registry: Option<&super::registry::UniverseRegistry>,
         epoch: hifitime::Epoch,
+        after_seconds: f64,
         work: &mut usize,
     ) -> Option<f64> {
-        if self.nodes.is_empty() {
-            return Some(0.0);
+        let coefficient = 2.0 * super::physics::GRAVITATIONAL_CONSTANT;
+        let cutoff = (coefficient * self.mass / FAR_CURVATURE_BUDGET).cbrt();
+        let search_radius = radius + cutoff + self.max_speed * after_seconds;
+        let mut cursor = self.spatial.range_cursor(position, search_radius, true);
+        let batch = self.spatial.advance_range(
+            &mut cursor,
+            APERTURE_WORK_LIMIT.saturating_sub(*work),
+            APERTURE_WORK_LIMIT,
+        );
+        *work += batch.stats.work();
+        if !batch.complete || batch.invalidated {
+            return None;
         }
-        let mut pending = vec![0];
+
         let mut curvature = 0.0;
-        while let Some(index) = pending.pop() {
-            *work += 1;
-            if *work > 1024 {
-                return None;
-            }
-            let node = &self.nodes[index];
-            if let Some(body) = &node.body {
-                let distance = body.position.relative_to(position).length();
-                if let Some(system) = body.system {
-                    let upper = 2.0 * super::physics::GRAVITATIONAL_CONSTANT * body.mass
-                        / (distance - body.radius).max(1.0).powi(3);
-                    if distance > body.radius + radius && upper < 1e-12 {
-                        curvature += upper;
-                    } else {
-                        let solver = &registry?.universe.systems[system].solver;
-                        for celestial in solver.iter() {
-                            *work += 1;
-                            if *work > 1024 {
-                                return None;
-                            }
-                            let body_position = solver.solve_position(&celestial.name, epoch)?;
-                            let distance = body_position.relative_to(position).length();
-                            if distance <= radius + celestial.radius {
-                                return None;
-                            }
-                            curvature +=
-                                2.0 * super::physics::GRAVITATIONAL_CONSTANT * celestial.mass
-                                    / distance.max(celestial.radius).max(1.0).powi(3);
-                        }
-                    }
-                    if curvature > 1e-8 {
+        let mut near_mass = 0.0;
+        for slot in batch.ids {
+            let body = &self.bodies[slot as usize];
+            near_mass += body.mass;
+            if let Some(system) = body.system {
+                let solver = &registry?.universe.systems[system].solver;
+                for celestial in solver.iter().filter(|body| {
+                    !matches!(body.class_params, super::orrery::BodyClass::Barycenter)
+                }) {
+                    *work += 1;
+                    if *work > APERTURE_WORK_LIMIT {
                         return None;
                     }
-                    continue;
+                    let centre = solver.solve_position(&celestial.name, epoch)?;
+                    let distance = centre.relative_to(position).length();
+                    if distance <= radius + celestial.radius {
+                        return None;
+                    }
+                    curvature += coefficient * celestial.mass
+                        / distance.max(celestial.radius).max(1.0).powi(3);
                 }
+            } else {
+                let centre = match &body.orbit {
+                    Some(orbit) => orbit.pose(&registry?.universe, epoch)?.0,
+                    None => body.position.offset_by(body.velocity * after_seconds),
+                };
+                let distance = centre.relative_to(position).length();
                 if body.entity != own && distance <= radius + body.radius {
                     return None;
                 }
                 if body.exclusion > 0.0 && distance <= radius + body.exclusion {
                     return None;
                 }
-                curvature += 2.0 * super::physics::GRAVITATIONAL_CONSTANT * body.mass
-                    / distance.max(body.radius).max(1.0).powi(3);
-            } else {
-                let low = node.low.relative_to(position);
-                let high = node.high.relative_to(position);
-                let distance = DVec3::ZERO.clamp(low, high).length();
-                let upper = 2.0 * super::physics::GRAVITATIONAL_CONSTANT * node.mass
-                    / (distance - node.radius).max(1.0).powi(3);
-                if distance > radius + node.radius && upper < 1e-12 {
-                    curvature += upper;
-                } else {
-                    let (left, right) = node.children.unwrap();
-                    pending.extend([left, right]);
-                }
+                curvature += coefficient * body.mass / distance.max(body.radius).max(1.0).powi(3);
             }
-            if curvature > 1e-8 {
+            if curvature > SLIP_CURVATURE_LIMIT {
                 return None;
             }
+        }
+
+        // Every omitted mass is farther than cutoff from its entire envelope.
+        // Round the summed remainder upwards to preserve a conservative bound.
+        if self.mass > 0.0 {
+            let remainder = (self.mass - near_mass).max(0.0)
+                + self.mass * f64::EPSILON * self.bodies.len() as f64;
+            curvature += coefficient * remainder / cutoff.powi(3);
         }
         Some(curvature)
     }
@@ -873,6 +1209,8 @@ mod tests {
 
     fn source() -> FusedScan {
         FusedScan {
+            navigation_revision: 0,
+            gates: Arc::default(),
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),
             owner: ownership::Principal::Player(Id::new()),
@@ -881,6 +1219,7 @@ mod tests {
             mass: 1.0,
             physical: Entity::PLACEHOLDER,
             apertures: Arc::default(),
+            orbital: Arc::default(),
             public: Arc::default(),
             own: Id::new(),
             group: Id::new(),
@@ -889,6 +1228,8 @@ mod tests {
             travel: TravelState::default(),
             slip_ready: true,
             slip_power_w: 100e6,
+            slip_preparation: None,
+            tick: 0,
             beacons: Arc::default(),
             celestial: Arc::default(),
             queries: Arc::default(),
@@ -897,6 +1238,329 @@ mod tests {
             origin: GalacticPosition::ZERO,
             velocity: [0.0; 3],
         }
+    }
+
+    #[test]
+    fn predicted_mouth_clearance_tracks_fractional_linear_motion() {
+        use toy_sim_ship_wasm::ScanSource;
+        let mut source = source();
+        source.apertures = Arc::new(ApertureIndex::build(vec![Aperture {
+            entity: Entity::from_bits(99),
+            position: GalacticPosition::from_meters(DVec3::X * 1000.0),
+            velocity: DVec3::NEG_X * 100.0,
+            radius: 10.0,
+            mass: 0.0,
+            exclusion: 100.0,
+            system: None,
+            orbit: None,
+            envelope_m: 0.0,
+        }]));
+        let query = |arrival_after_seconds| ProgramQuery::SlipEligibility {
+            origin: GalacticPosition::from_meters(DVec3::Y * 1e6),
+            destination: GalacticPosition::ZERO,
+            departure_after_seconds: 0.0,
+            arrival_after_seconds,
+        };
+        assert!(matches!(
+            source.query(query(0.0), false).unwrap(),
+            ProgramReply::SlipEligibility { ready: true, .. }
+        ));
+        assert!(matches!(
+            source.query(query(10.037), false).unwrap(),
+            ProgramReply::SlipEligibility { ready: false, .. }
+        ));
+        assert!(matches!(
+            source.query(query(20.0), false).unwrap(),
+            ProgramReply::SlipEligibility { ready: true, .. }
+        ));
+        for invalid in [-1.0, f64::NAN, f64::INFINITY, MAX_PREDICTION_SECONDS + 1.0] {
+            assert!(source.query(query(invalid), false).is_err());
+        }
+    }
+
+    #[test]
+    fn private_ship_motion_is_excluded_from_public_prediction_queries() {
+        use bevy::ecs::system::RunSystemOnce;
+        let mut world = World::new();
+        world.init_resource::<SimulationCounters>();
+        world.init_resource::<PublishedWorld>();
+        super::super::ownership::initialize(&mut world);
+        let ship = world
+            .spawn((
+                Identity(Id::new()),
+                PreciseTransform::default(),
+                Velocity(DVec3::X * 100.0),
+                super::super::spatial::SpatialBody {
+                    radius_m: 20.0,
+                    occludes: true,
+                },
+            ))
+            .id();
+        world.run_system_once(publish_indexes).unwrap();
+        let publication = world.resource::<PublishedWorld>();
+        assert_eq!(publication.apertures.bodies.len(), 1);
+        assert!(publication.public_apertures.bodies.is_empty());
+        let mut source = source();
+        source.apertures = publication.public_apertures.clone();
+        let destination = GalacticPosition::from_meters(DVec3::X * 1000.0);
+        let epoch = source.prediction_epoch(10.0).unwrap();
+        assert!(source.admissible_at(destination, epoch));
+        assert!(!predicted_aperture_clear(
+            &world,
+            Entity::PLACEHOLDER,
+            destination,
+            1.0,
+            10.0
+        ));
+        assert!(world.get_entity(ship).is_ok());
+    }
+
+    #[test]
+    fn slip_refresh_survives_power_delay_and_arrives_beside_the_moving_mouth() {
+        use super::super::{hardware, infrastructure, precision, travel, vessel};
+        use bevy::ecs::system::RunSystemOnce;
+        use toy_sim_ship_wasm::ScanSource;
+
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        app.update();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let entry = world
+            .query::<(Entity, &infrastructure::Landmark)>()
+            .iter(world)
+            .find(|(_, landmark)| landmark.name == "Sol gate")
+            .unwrap()
+            .0;
+        let mouth =
+            super::super::identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired)
+                .unwrap();
+        let mouth_id = world.get::<Identity>(mouth).unwrap().0;
+        let radius = world.get::<vessel::ShipDesign>(ship).unwrap().0.radius;
+        let offset =
+            DVec3::Z * (world.get::<travel::Gate>(mouth).unwrap().exclusion_m + radius + 1000.0);
+        let destination = Destination::Relative {
+            reference: Reference::Beacon(mouth_id),
+            offset: GalacticPosition::from_meters(offset),
+            axes: Axes::Galactic,
+        };
+        let origin = world
+            .get::<precision::PreciseTransform>(ship)
+            .unwrap()
+            .translation_um
+            .offset_by(DVec3::X * 5e8);
+        world
+            .get_mut::<precision::PreciseTransform>(ship)
+            .unwrap()
+            .translation_um = origin;
+        world.get_mut::<Velocity>(ship).unwrap().0 = DVec3::ZERO;
+        world
+            .get_mut::<super::super::physics::MassProps>(ship)
+            .unwrap()
+            .mass = 1000.0;
+        world.entity_mut(ship).insert(travel::SlipDrive::default());
+        travel::geometry::refresh(world);
+        world.run_system_once(publish_indexes).unwrap();
+
+        let publication = world.resource::<PublishedWorld>();
+        let mut source = source();
+        source.universe = publication.universe.clone();
+        source.orbital = publication.orbital.clone();
+        source.apertures = publication.public_apertures.clone();
+        source.beacons = publication.beacons.clone();
+        source.physical = ship;
+        source.radius = radius;
+        source.mass = 1000.0;
+        let start = world.resource::<SimulationCounters>().ticks;
+        let mut first_endpoint = None;
+        let mut transit = None;
+        for now in start..start + 500 {
+            world.resource_mut::<SimulationCounters>().ticks = now;
+            world
+                .get_mut::<hardware::ShipInventory>(ship)
+                .unwrap()
+                .0
+                .energy_j = if now < start + 130 { 0 } else { 1_000_000_000 };
+            travel::advance(world);
+            if let Some(frozen) = world.get::<travel::Transit>(ship) {
+                transit = Some(frozen.clone());
+                break;
+            }
+            source.tick = now;
+            source.epoch = hifitime::Epoch::from_mjd_utc(0.0)
+                + hifitime::Duration::from_seconds(now as f64 * 0.1);
+            source.slip_preparation = world
+                .get::<travel::SlipDrive>(ship)
+                .unwrap()
+                .preparation
+                .clone();
+            let mut lead = 0.0;
+            let mut preparation_s = 0.0;
+            let mut endpoint = origin;
+            for _ in 0..4 {
+                let ProgramReply::Pose(target) = source
+                    .query(
+                        ProgramQuery::Resolve {
+                            destination: destination.clone(),
+                            after_seconds: lead,
+                        },
+                        false,
+                    )
+                    .unwrap()
+                else {
+                    panic!("pose reply");
+                };
+                endpoint = target.position;
+                let ProgramReply::SlipEligibility {
+                    ready,
+                    preparation_s: remaining,
+                    duration_s,
+                } = source
+                    .query(
+                        ProgramQuery::SlipEligibility {
+                            origin,
+                            destination: endpoint,
+                            departure_after_seconds: preparation_s,
+                            arrival_after_seconds: lead,
+                        },
+                        false,
+                    )
+                    .unwrap()
+                else {
+                    panic!("eligibility reply");
+                };
+                let next = remaining + duration_s;
+                preparation_s = remaining;
+                if (next - lead).abs() < 0.001 {
+                    assert!(ready);
+                    break;
+                }
+                lead = next;
+            }
+            first_endpoint.get_or_insert(endpoint);
+            travel::prepare_slip(world, ship, endpoint).unwrap();
+        }
+        let transit = transit.expect("drive must depart after power is restored");
+        assert!(transit.departed > start + 130);
+        assert!(
+            transit
+                .destination
+                .relative_to(first_endpoint.unwrap())
+                .length()
+                > 50_000.0
+        );
+        let arrival_epoch = hifitime::Epoch::from_mjd_utc(0.0)
+            + hifitime::Duration::from_seconds(transit.next_attempt as f64 * 0.1);
+        let wanted = source.resolve_at(destination, arrival_epoch).unwrap();
+        assert!(
+            transit.destination.relative_to(wanted.position).length() < 0.01,
+            "frozen endpoint missed moving target by {}m",
+            transit.destination.relative_to(wanted.position).length()
+        );
+
+        let arrival_seconds = transit.next_attempt as f64 * 0.1;
+        let elapsed = world.resource::<Time<Fixed>>().elapsed_secs_f64();
+        world
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(std::time::Duration::from_secs_f64(
+                arrival_seconds - elapsed,
+            ));
+        world.resource_mut::<SimulationCounters>().ticks = transit.next_attempt;
+        world.run_system_once(infrastructure::move_gates).unwrap();
+        travel::geometry::refresh(world);
+        travel::advance(world);
+        assert!(
+            world.get::<travel::Transit>(ship).is_none(),
+            "moving mouth obstructed arrival"
+        );
+        assert!(world.get::<travel::Dormant>(ship).is_none());
+        assert_eq!(
+            world
+                .get::<precision::PreciseTransform>(ship)
+                .unwrap()
+                .translation_um,
+            transit.destination
+        );
+        let mouth_position = world
+            .get::<precision::PreciseTransform>(mouth)
+            .unwrap()
+            .translation_um;
+        let actual_offset = transit.destination.relative_to(mouth_position);
+        assert!((actual_offset - offset).length() < 0.01);
+    }
+
+    #[test]
+    fn navigation_pages_are_bounded_stable_and_include_public_staging() {
+        let mut source = source();
+        source.navigation_revision = 123;
+        let system = Id::new();
+        source.gates = Arc::new(
+            (0..130)
+                .map(|index| {
+                    let id = Id((index as u128 + 1).to_be_bytes());
+                    (
+                        id,
+                        PublishedNavigationGate {
+                            system,
+                            pose: Pose {
+                                position: GalacticPosition::from_meters(
+                                    DVec3::X * (1e8 + index as f64 * 1e8),
+                                ),
+                                ..Default::default()
+                            },
+                            exit: Id::new(),
+                            exclusion_m: 1e7,
+                            orbit: None,
+                        },
+                    )
+                })
+                .collect(),
+        );
+        let mut after = None;
+        let mut found = Vec::new();
+        loop {
+            let ProgramReply::Navigation { revision, gates } = source
+                .query(
+                    ProgramQuery::Navigation {
+                        after,
+                        limit: 64,
+                        reference: GalacticPosition::ZERO,
+                    },
+                    false,
+                )
+                .unwrap()
+            else {
+                panic!("navigation reply expected");
+            };
+            assert_eq!(revision, 123);
+            assert!(gates.len() <= 64);
+            if gates.is_empty() {
+                break;
+            }
+            for gate in &gates {
+                assert_eq!(gate.system, system);
+                assert!(gate.slip_ready);
+                assert!(gate.staging.relative_to(gate.pose.position).x > 1e7);
+            }
+            after = Some(gates.last().unwrap().entity);
+            found.extend(gates.into_iter().map(|gate| gate.entity));
+        }
+        assert_eq!(found.len(), 130);
+        assert!(found.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            source
+                .query(
+                    ProgramQuery::Navigation {
+                        after: None,
+                        limit: 129,
+                        reference: GalacticPosition::ZERO
+                    },
+                    false
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -948,49 +1612,221 @@ mod tests {
     }
 
     #[test]
-    fn aperture_tree_prunes_large_distant_fleets() {
+    fn aperture_index_prunes_large_distant_fleets() {
         let bodies = (0..10_000)
             .map(|index| Aperture {
+                velocity: DVec3::ZERO,
                 entity: Entity::PLACEHOLDER,
                 position: GalacticPosition::from_meters(DVec3::new(1e12, index as f64, 0.0)),
                 radius: 10.0,
                 mass: 0.0,
                 exclusion: 0.0,
                 system: None,
+                orbit: None,
+                envelope_m: 0.0,
             })
             .collect();
-        let tree = ApertureTree::build(bodies);
-        assert!(tree.admissible(GalacticPosition::ZERO, Entity::PLACEHOLDER, 1.0));
+        let index = ApertureIndex::build(bodies);
+        assert!(index.admissible(GalacticPosition::ZERO, Entity::PLACEHOLDER, 1.0));
     }
 
     #[test]
-    fn aperture_tree_rejects_exclusion_and_curvature() {
+    fn aperture_index_rejects_exclusion_and_curvature() {
         let gate = Aperture {
+            velocity: DVec3::ZERO,
             entity: Entity::PLACEHOLDER,
             position: GalacticPosition::from_meters(DVec3::X * 100.0),
             radius: 1.0,
             mass: 0.0,
             exclusion: 1000.0,
             system: None,
+            orbit: None,
+            envelope_m: 0.0,
         };
-        assert!(!ApertureTree::build(vec![gate]).admissible(
+        assert!(!ApertureIndex::build(vec![gate]).admissible(
             GalacticPosition::ZERO,
             Entity::PLACEHOLDER,
             1.0,
         ));
         let body = Aperture {
+            velocity: DVec3::ZERO,
             entity: Entity::PLACEHOLDER,
             position: GalacticPosition::from_meters(DVec3::X * 1000.0),
             radius: 100.0,
             mass: 1e25,
             exclusion: 0.0,
             system: None,
+            orbit: None,
+            envelope_m: 0.0,
         };
-        assert!(!ApertureTree::build(vec![body]).admissible(
+        assert!(!ApertureIndex::build(vec![body]).admissible(
             GalacticPosition::ZERO,
             Entity::PLACEHOLDER,
             1.0,
         ));
+    }
+
+    #[test]
+    fn aperture_index_bounds_far_curvature_and_matches_direct_sums() {
+        let mut world = World::new();
+        let own = world.spawn_empty().id();
+        let anchor = GalacticPosition {
+            x: 1i128 << 110,
+            y: -(1i128 << 109),
+            z: 0,
+        };
+        let bodies: Vec<_> = (0..160)
+            .map(|i| Aperture {
+                velocity: DVec3::ZERO,
+                entity: world.spawn_empty().id(),
+                position: anchor.offset_by(DVec3::new(
+                    1e9 + (i % 17) as f64 * 1e10,
+                    (i % 13) as f64 * 1e10,
+                    (i % 7) as f64 * 1e10,
+                )),
+                radius: 100.0,
+                mass: 1e22 + i as f64 * 1e20,
+                exclusion: 0.0,
+                system: None,
+                orbit: None,
+                envelope_m: 0.0,
+            })
+            .collect();
+        let index = ApertureIndex::build(bodies);
+        for i in 0..100 {
+            let position = anchor.offset_by(DVec3::new(i as f64 * 1e9, -1e9, 5e8));
+            let exact: f64 = index
+                .bodies
+                .iter()
+                .map(|body| {
+                    2.0 * super::super::physics::GRAVITATIONAL_CONSTANT * body.mass
+                        / body.position.relative_to(position).length().powi(3)
+                })
+                .sum();
+            let mut work = 0;
+            let bound = index
+                .evaluate(
+                    position,
+                    own,
+                    1.0,
+                    None,
+                    hifitime::Epoch::from_mjd_utc(0.0),
+                    0.0,
+                    &mut work,
+                )
+                .unwrap();
+            assert!(bound >= exact * (1.0 - 1e-14), "{bound} < {exact}");
+            assert!(bound - exact <= FAR_CURVATURE_BUDGET * 1.000001);
+            assert!(work <= APERTURE_WORK_LIMIT);
+        }
+    }
+
+    #[test]
+    fn aperture_index_fails_closed_when_coincident_candidates_exhaust_work() {
+        let index = ApertureIndex::build(
+            (0..5000)
+                .map(|_| Aperture {
+                    velocity: DVec3::ZERO,
+                    entity: Entity::PLACEHOLDER,
+                    position: GalacticPosition::ZERO,
+                    radius: 1.0,
+                    mass: 0.0,
+                    exclusion: 0.0,
+                    system: None,
+                    orbit: None,
+                    envelope_m: 0.0,
+                })
+                .collect(),
+        );
+        let mut work = 0;
+        assert!(
+            index
+                .evaluate(
+                    GalacticPosition::ZERO,
+                    Entity::PLACEHOLDER,
+                    1.0,
+                    None,
+                    hifitime::Epoch::from_mjd_utc(0.0),
+                    0.0,
+                    &mut work
+                )
+                .is_none()
+        );
+        assert_eq!(work, APERTURE_WORK_LIMIT);
+    }
+
+    #[test]
+    fn mixed_beacon_pages_keep_global_order() {
+        let a = (1..10).step_by(2).map(|id| (Id([id; 16]), id)).collect();
+        let b = (2..11).step_by(2).map(|id| (Id([id; 16]), id)).collect();
+        let first = merged_page(&a, &b, None, 7);
+        assert_eq!(
+            first.iter().map(|(_, value)| **value).collect::<Vec<_>>(),
+            (1..=7).collect::<Vec<_>>()
+        );
+        let next = merged_page(&a, &b, Some(Id([7; 16])), 7);
+        assert_eq!(
+            next.iter().map(|(_, value)| **value).collect::<Vec<_>>(),
+            vec![8, 9, 10]
+        );
+    }
+
+    #[test]
+    fn orbital_publication_is_reused_while_remote_poses_keep_moving() {
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        app.update();
+        app.update();
+        let first = app.world().resource::<PublishedWorld>().orbital.clone();
+        assert_eq!(first.gates.len(), 12_208);
+        app.update();
+        let second = app.world().resource::<PublishedWorld>().orbital.clone();
+        assert!(Arc::ptr_eq(&first, &second));
+
+        let publication = app.world().resource::<PublishedWorld>();
+        let mut source = source();
+        source.universe = publication.universe.clone();
+        source.orbital = second;
+        let (&id, gate) = source.orbital.gates.first_key_value().unwrap();
+        let initial = source.beacon_pose_at(id, source.epoch).unwrap();
+        let orbit = gate.orbit.clone().unwrap();
+        source.epoch += hifitime::Duration::from_seconds(86_400.0);
+        let moved = source.beacon_pose_at(id, source.epoch).unwrap();
+        let exact = orbit
+            .pose(
+                &source.universe.as_ref().unwrap().registry.universe,
+                source.epoch,
+            )
+            .unwrap();
+        assert_eq!(moved.position, exact.0);
+        assert_eq!(moved.velocity, exact.1.to_array());
+        assert!(moved.position.relative_to(initial.position).length() > 1000.0);
+        assert!(!source.admissible(moved.position));
+        let future_epoch = source.prediction_epoch(120.037).unwrap();
+        let future = source
+            .resolve_at(Destination::Beacon(id), future_epoch)
+            .unwrap();
+        let expected = orbit
+            .pose(
+                &source.universe.as_ref().unwrap().registry.universe,
+                future_epoch,
+            )
+            .unwrap();
+        assert_eq!(future.position, expected.0);
+        assert_eq!(future.velocity, expected.1.to_array());
+        for invalid in [f64::NAN, -0.1, MAX_PREDICTION_SECONDS + 1.0] {
+            assert!(source.prediction_epoch(invalid).is_err());
+        }
+
+        let entity = super::super::identity::lookup(app.world(), id).unwrap();
+        app.world_mut()
+            .get_mut::<super::super::travel::Gate>(entity)
+            .unwrap()
+            .enabled = false;
+        app.update();
+        let changed = &app.world().resource::<PublishedWorld>().orbital;
+        assert!(!Arc::ptr_eq(&first, changed));
+        assert!(!changed.gates.contains_key(&id));
+        assert!(first.gates.contains_key(&id));
     }
 
     #[test]
@@ -1013,6 +1849,7 @@ mod tests {
         let mut reserved = bay.clone();
         reserved.reservation = Some((Id::new(), 600));
         let mut publication = PublishedBeacon {
+            system: Id::new(),
             beacon: Beacon {
                 entity: Id::new(),
                 radius_m: 10.0,
@@ -1031,6 +1868,7 @@ mod tests {
             owner: ownership::Principal::Player(Id::new()),
             access: Default::default(),
             bays: vec![bay, denied, small, reserved],
+            orbit: None,
         };
         let beacon = source.beacon(&publication);
         assert_eq!(beacon.bays.keys().copied().collect::<Vec<_>>(), vec![0]);
@@ -1110,11 +1948,14 @@ mod tests {
         let offset = DVec3::new(1000.0, -2000.0, 3000.0);
         let reply = source
             .query(
-                ProgramQuery::Resolve(Destination::Relative {
-                    reference: Reference::Celestial(id),
-                    offset: GalacticPosition::from_meters(offset),
-                    axes: Axes::Galactic,
-                }),
+                ProgramQuery::Resolve {
+                    destination: Destination::Relative {
+                        reference: Reference::Celestial(id),
+                        offset: GalacticPosition::from_meters(offset),
+                        axes: Axes::Galactic,
+                    },
+                    after_seconds: 0.0,
+                },
                 false,
             )
             .unwrap();
@@ -1128,7 +1969,7 @@ mod tests {
 
 struct UniverseApertures {
     registry: super::registry::UniverseRegistry,
-    tree: ApertureTree,
+    index: ApertureIndex,
 }
 
 impl UniverseApertures {
@@ -1139,16 +1980,26 @@ impl UniverseApertures {
             .iter()
             .enumerate()
             .map(|(index, system)| Aperture {
+                velocity: DVec3::ZERO,
                 entity: Entity::PLACEHOLDER,
                 position: system.solver.anchor,
                 radius: system.influence,
-                mass: system.solver.iter().map(|body| body.mass).sum(),
+                mass: system
+                    .solver
+                    .iter()
+                    .filter(|body| {
+                        !matches!(body.class_params, super::orrery::BodyClass::Barycenter)
+                    })
+                    .map(|body| body.mass)
+                    .sum(),
                 exclusion: 0.0,
                 system: Some(index),
+                orbit: None,
+                envelope_m: 0.0,
             })
             .collect();
         Self {
-            tree: ApertureTree::build(bodies),
+            index: ApertureIndex::build(bodies),
             registry,
         }
     }

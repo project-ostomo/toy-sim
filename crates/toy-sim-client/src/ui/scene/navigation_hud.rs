@@ -33,8 +33,9 @@ fn waypoint(
 
     let destination = match order {
         Order::Jump(id) | Order::Dock(id) => Destination::Beacon(*id),
-        Order::TravelTo(destination) | Order::Sublight(destination) => destination.clone(),
-        Order::Slip { destination } => Destination::Galactic(*destination),
+        Order::TravelTo(destination)
+        | Order::Sublight(destination)
+        | Order::Slip { destination } => destination.clone(),
         Order::Guidance(travel::Guidance {
             target: Target::Destination(destination),
             ..
@@ -159,6 +160,7 @@ fn draw(
                 egui::Id::new(("navigation_hud", view.view)),
             ))
             .with_clip_rect(rect);
+        let label_bounds = rect.intersect(toy_sim_ui::desktop::workspace_in(ctx));
 
         let mut previous = Some(origin);
         for (_, waypoint) in &queue {
@@ -198,6 +200,7 @@ fn draw(
             marker(&painter, point, BEACON_COLOR);
             label(
                 &painter,
+                label_bounds,
                 point,
                 &format!(
                     "{} · {}",
@@ -235,6 +238,7 @@ fn draw(
             }
             label(
                 &painter,
+                label_bounds,
                 text_point,
                 &format!(
                     "{}. {}{} · {}",
@@ -263,19 +267,27 @@ fn marker(painter: &egui::Painter, point: egui::Pos2, color: egui::Color32) {
     ));
 }
 
-fn label(painter: &egui::Painter, point: egui::Pos2, text: &str, color: egui::Color32) {
-    let right = point.x < painter.clip_rect().center().x;
-    painter.text(
-        point + egui::vec2(if right { 12. } else { -12. }, 0.),
-        if right {
-            egui::Align2::LEFT_CENTER
-        } else {
-            egui::Align2::RIGHT_CENTER
-        },
-        text,
+fn label(
+    painter: &egui::Painter,
+    bounds: egui::Rect,
+    point: egui::Pos2,
+    text: &str,
+    color: egui::Color32,
+) {
+    let galley = painter.layout(
+        text.to_owned(),
         egui::FontId::proportional(11.),
         color,
+        bounds.width(),
     );
+    let size = galley.size();
+    let desired_x = if point.x < bounds.center().x {
+        point.x + 12.
+    } else {
+        point.x - 12. - size.x
+    };
+    let x = desired_x.clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left()));
+    painter.galley(egui::pos2(x, point.y - size.y * 0.5), galley, color);
 }
 
 fn select(
@@ -305,6 +317,92 @@ mod tests {
     use bevy::math::DVec3;
 
     #[test]
+    fn long_waypoint_labels_fit_the_viewport_without_covering_the_toolbar() {
+        let context = egui::Context::default();
+        toy_sim_ui::theme::install(&context);
+        let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600., 900.));
+        let bounds = toy_sim_ui::desktop::workspace(viewport);
+        let text = "3. Offscreen · Slip arrival: Near Gaia EDR3 5983356259047553792 gate · transfer via Gaia EDR3 551862790386030400 gate · 179.23 ly";
+        let mut output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(viewport),
+                ..Default::default()
+            },
+            |ui| {
+                let painter = ui.painter().with_clip_rect(viewport);
+                for (index, x) in [22., 790., 810., 1578.].into_iter().enumerate() {
+                    let point = egui::pos2(x, 300. + index as f32 * 100.);
+                    marker(&painter, point, ROUTE_COLOR);
+                    label(&painter, bounds, point, text, ROUTE_COLOR);
+                }
+            },
+        );
+        output.textures_delta.clear();
+        let mut labels = 0;
+        for shape in output.shapes {
+            if let egui::Shape::Text(shape) = shape.shape {
+                if shape.galley.job.text != text {
+                    continue;
+                }
+                let rendered = shape.galley.rect.translate(shape.pos.to_vec2());
+                assert!(
+                    bounds.contains_rect(rendered),
+                    "{rendered:?} exceeds {bounds:?}"
+                );
+                labels += 1;
+            }
+        }
+        assert_eq!(labels, 4);
+    }
+
+    #[test]
+    fn slip_waypoints_follow_moving_and_rotating_references() {
+        let id = Id([7; 16]);
+        let initial = GalacticPosition::new(1_i128 << 100, 0, 0);
+        let offset = GalacticPosition::ZERO.offset_by(DVec3::X * 1000.);
+        for reference in [
+            travel::Reference::Beacon(id),
+            travel::Reference::Celestial(id),
+        ] {
+            let action = travel::Order::Slip {
+                destination: travel::Destination::Relative {
+                    reference,
+                    offset,
+                    axes: travel::Axes::BodyFixed,
+                },
+            };
+            let mut pose = Pose {
+                position: initial,
+                ..Default::default()
+            };
+            let point = waypoint(
+                &action,
+                |_| Some(("Moving beacon".into(), pose.clone())),
+                |_| Some(("Orbiting body".into(), pose.clone())),
+            )
+            .unwrap();
+            assert_eq!(point.position, initial.offset_by(DVec3::X * 1000.));
+
+            pose.position = initial.offset_by(DVec3::Z * 5e6);
+            pose.rotation = DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array();
+            let point = waypoint(
+                &action,
+                |_| Some(("Moving beacon".into(), pose.clone())),
+                |_| Some(("Orbiting body".into(), pose.clone())),
+            )
+            .unwrap();
+            assert!(
+                point
+                    .position
+                    .relative_to(pose.position)
+                    .distance(DVec3::Y * 1000.)
+                    < 1e-5
+            );
+            assert!(point.name.starts_with("Slip arrival: Near "));
+        }
+    }
+
+    #[test]
     fn resolves_each_spatial_order_including_rotated_relative_waypoints() {
         let id = Id([1; 16]);
         let anchor = GalacticPosition::new(1_i128 << 100, 0, 0);
@@ -325,7 +423,9 @@ mod tests {
         }
         let far = anchor.offset_by(DVec3::Z * 9_460_730_472_580_800.);
         for action in [
-            travel::Order::Slip { destination: far },
+            travel::Order::Slip {
+                destination: travel::Destination::Galactic(far),
+            },
             travel::Order::Sublight(travel::Destination::Galactic(far)),
         ] {
             let point = waypoint(&action, lookup, lookup).unwrap();

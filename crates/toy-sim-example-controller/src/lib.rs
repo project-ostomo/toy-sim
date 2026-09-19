@@ -14,6 +14,9 @@ pub mod weapons;
 use hardware::{Actuation, Capability, Hardware, Sample};
 #[cfg(target_arch = "wasm32")]
 pub mod firmware;
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "world/slip.rs"]
+mod slip_guidance;
 #[cfg(target_arch = "wasm32")]
 mod world;
 #[cfg(any(target_arch = "wasm32", test))]
@@ -189,6 +192,15 @@ impl Pilot {
         self.forecast_changed
     }
 
+    fn reset_navigation_reference(&mut self) {
+        self.navigation = Pursuit::default();
+        self.prediction.reset();
+        self.forecast_changed = true;
+        self.previous_imu = None;
+        self.measured_acceleration = None;
+        self.throttle = 0.;
+    }
+
     /// Convert a mounted accelerometer to an estimated COM measurement. Rotation
     /// compensation is computed by the guest from gyro differences, not supplied
     /// as a perfect delta-v by the host. Missed samples reset the disturbance fit.
@@ -301,7 +313,7 @@ impl Pilot {
         }
         self.throttle = if self.navigation.phase.active() {
             // Arrival guidance sets variable throttle and coasts through large turns.
-            let alignment = (q * b.engine_axis).dot(self.navigation.direction.normalize_or_zero());
+            let alignment = attitude::thrust_alignment(q, b.engine_axis, self.navigation.direction);
             self.navigation.throttle * if alignment > 0.995 { alignment } else { 0. }
         } else if navigation_owns {
             0.
@@ -484,5 +496,50 @@ impl Pilot {
         }
 
         result
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use super::*;
+
+    #[test]
+    fn reused_navigation_contact_does_not_carry_motion_across_orders() {
+        let mut pilot = Pilot::default();
+        let mut sample = Sample::default();
+        let old = Contact {
+            id: u64::MAX,
+            kind: abi::CONTACT_SHIP,
+            position_m: [1000., 0., 0.],
+            velocity_m_s: [50., 0., 0.],
+            ..Default::default()
+        };
+        pilot.navigation.select(u64::MAX, &[old], &sample).unwrap();
+        pilot.navigation.start(1., 0., 1.).unwrap();
+        pilot.navigation.disturbance = DVec3::splat(1e6);
+        pilot.prediction.result = Some(prediction::Forecast {
+            points: Vec::new(),
+            epoch: 0.,
+            published_at: 0.,
+            snapshot: 9,
+            target: u64::MAX,
+            target_position: DVec3::X * 1000.,
+            frame_velocity: DVec3::ZERO,
+            eta: Some(20.),
+            fuel_kg: 1.,
+        });
+        sample.tick.time_s = 0.1;
+        let new = Contact {
+            id: u64::MAX,
+            kind: abi::CONTACT_SHIP,
+            position_m: [0., 1e7, 0.],
+            velocity_m_s: [0., 30_000., 0.],
+            ..Default::default()
+        };
+        pilot.reset_navigation_reference();
+        pilot.navigation.select(u64::MAX, &[new], &sample).unwrap();
+        assert_eq!(pilot.navigation.disturbance, DVec3::ZERO);
+        assert_eq!(pilot.navigation.u, DVec3::NEG_Y * 30_000.);
+        assert!(pilot.prediction.result.is_none());
     }
 }

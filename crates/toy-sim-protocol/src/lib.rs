@@ -1,3 +1,4 @@
+pub mod navigation;
 mod presentation;
 use anyhow::{Context, Result, bail, ensure};
 pub use presentation::validate_catalogue;
@@ -5,7 +6,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 19;
+pub const VERSION: u16 = 20;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -176,6 +177,51 @@ fn position_valid(position: GalacticPosition) -> bool {
         .all(|x| x.unsigned_abs() <= 1_u128 << 110)
 }
 
+pub fn validate_order(order: &travel::Order) -> Result<()> {
+    let destination = match order {
+        travel::Order::TravelTo(destination)
+        | travel::Order::Sublight(destination)
+        | travel::Order::Slip { destination } => Some(destination),
+        travel::Order::Guidance(guidance) => {
+            ensure!(
+                guidance.range_m.is_finite() && (0. ..=1e12).contains(&guidance.range_m),
+                "invalid guidance range"
+            );
+            match &guidance.target {
+                travel::Target::Destination(destination) => Some(destination),
+                travel::Target::Contact(_) => None,
+                travel::Target::Direction(direction) => {
+                    let length_squared = direction.iter().map(|n| n * n).sum::<f64>();
+                    ensure!(
+                        guidance.mode == travel::GuidanceMode::Align
+                            && direction.iter().all(|n| n.is_finite())
+                            && length_squared.is_finite()
+                            && length_squared > 1e-12,
+                        "invalid alignment direction"
+                    );
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
+    if let Some(destination) = destination {
+        validate_destination(destination)?;
+    }
+    Ok(())
+}
+
+pub fn validate_destination(destination: &travel::Destination) -> Result<()> {
+    if let travel::Destination::Galactic(position)
+    | travel::Destination::Relative {
+        offset: position, ..
+    } = destination
+    {
+        ensure!(position_valid(*position), "invalid destination");
+    }
+    Ok(())
+}
+
 pub fn validate_query(query: &TrackQuery) -> Result<()> {
     ensure!(
         (1..=256).contains(&query.limit) && query.work <= 10_000_000,
@@ -217,7 +263,12 @@ fn pose_valid(pose: &Pose) -> bool {
 pub fn validate_frame(frame: &Frame) -> Result<()> {
     ensure!(frame.society.valid(), "invalid society snapshot");
     presentation::validate(&frame.presentation)?;
-    for system in &frame.presentation.celestial_systems {
+    for system in frame
+        .presentation
+        .celestial_systems
+        .iter()
+        .chain(&frame.presentation.navigation.ephemerides)
+    {
         ensure!(
             frame.views.iter().any(|view| view.id == system.view),
             "celestial system references unknown view"
@@ -341,6 +392,15 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
             "travel state exceeds limit"
         );
         ensure!(
+            ship.travel.planning.as_ref().is_none_or(|progress| {
+                ship.travel.status == travel::Status::Planning
+                    && progress
+                        .total
+                        .is_none_or(|total| progress.completed <= total)
+            }),
+            "invalid planning progress"
+        );
+        ensure!(
             ship.travel.preferences.valid()
                 && ship
                     .travel
@@ -352,6 +412,9 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
                     .is_none_or(|kg| kg.is_finite() && kg >= 0.)),
             "invalid travel estimates"
         );
+        for stage in &ship.travel.orders {
+            validate_order(&stage.action)?;
+        }
         if let travel::Status::Blocked(reason) = &ship.travel.status {
             ensure!(reason.len() <= 1024, "travel error exceeds limit");
         }
@@ -494,47 +557,7 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                     ensure!(preferences.valid(), "invalid planning preference");
                     ensure!(orders.len() <= 256, "too many waypoints");
                     for order in orders {
-                        let destination = match order {
-                            travel::Order::TravelTo(destination)
-                            | travel::Order::Sublight(destination) => Some(destination),
-                            travel::Order::Slip { destination } => {
-                                ensure!(position_valid(*destination), "invalid slip destination");
-                                None
-                            }
-                            travel::Order::Guidance(guidance) => {
-                                ensure!(
-                                    guidance.range_m.is_finite()
-                                        && (0. ..=1e12).contains(&guidance.range_m),
-                                    "invalid guidance range"
-                                );
-                                match &guidance.target {
-                                    travel::Target::Destination(destination) => Some(destination),
-                                    travel::Target::Contact(_) => None,
-                                    travel::Target::Direction(direction) => {
-                                        let length_squared =
-                                            direction.iter().map(|n| n * n).sum::<f64>();
-                                        ensure!(
-                                            guidance.mode == travel::GuidanceMode::Align
-                                                && direction.iter().all(|n| n.is_finite())
-                                                && length_squared.is_finite()
-                                                && length_squared > 1e-12,
-                                            "invalid alignment direction"
-                                        );
-                                        None
-                                    }
-                                }
-                            }
-                            _ => None,
-                        };
-                        if let Some(destination) = destination {
-                            match destination {
-                                travel::Destination::Galactic(p)
-                                | travel::Destination::Relative { offset: p, .. } => {
-                                    ensure!(position_valid(*p), "invalid destination")
-                                }
-                                _ => {}
-                            }
-                        }
+                        validate_order(order)?;
                     }
                 }
                 ShipCommand::ScreenInput {
@@ -824,6 +847,107 @@ mod tests {
     }
 
     #[test]
+    fn slip_destinations_roundtrip_and_validate_in_inputs_and_snapshots() {
+        use travel::{Axes, Destination, Order, Reference};
+
+        let beacon = Id([3; 16]);
+        let offset = GalacticPosition {
+            x: 12_000_000,
+            y: -9_000_000,
+            z: 3_000_000,
+        };
+        let invalid_offset = GalacticPosition {
+            x: i128::MIN,
+            ..GalacticPosition::ZERO
+        };
+        let destinations = [
+            (Destination::Beacon(beacon), true),
+            (Destination::Galactic(offset), true),
+            (
+                Destination::Relative {
+                    reference: Reference::Beacon(beacon),
+                    offset,
+                    axes: Axes::Galactic,
+                },
+                true,
+            ),
+            (
+                Destination::Relative {
+                    reference: Reference::Celestial(Id([4; 16])),
+                    offset,
+                    axes: Axes::BodyFixed,
+                },
+                true,
+            ),
+            (Destination::Galactic(invalid_offset), false),
+            (
+                Destination::Relative {
+                    reference: Reference::Beacon(beacon),
+                    offset: invalid_offset,
+                    axes: Axes::Galactic,
+                },
+                false,
+            ),
+        ];
+
+        for (destination, valid) in destinations {
+            let order = Order::Slip { destination };
+            let input = Message::Input(InputFrame {
+                world: Id([1; 16]),
+                sequence: 1,
+                actions: vec![(
+                    Id([2; 16]),
+                    Action::Ship {
+                        ship: Id([5; 16]),
+                        authority_revision: 1,
+                        command: ShipCommand::SetTravel {
+                            preferences: Default::default(),
+                            engage: true,
+                            expected_revision: 0,
+                            orders: vec![order.clone()],
+                        },
+                    },
+                )],
+            });
+            let mut frame = empty_frame();
+            frame.ships.push(ShipTelemetry {
+                appearance: None,
+                radius_m: 10.,
+                dock_services: Default::default(),
+                spatial_instance: Id([6; 16]),
+                info_group: InfoGroupKey([0; 32]),
+                iff: IffIdentity {
+                    owner: Id([7; 16]),
+                    faction: None,
+                    labels: Default::default(),
+                    enabled: true,
+                    range_m: 1e8,
+                },
+                ship: Id([5; 16]),
+                authority_revision: 1,
+                presence: travel::Presence::Space,
+                pose: Some(Pose::default()),
+                battery_j: 0,
+                hull_heat_j: 0.,
+                shield_temperature_k: 0.,
+                coolant_reserve_kg: 0.,
+                travel: travel::TravelState {
+                    orders: vec![order.into()],
+                    ..Default::default()
+                },
+            });
+
+            for message in [input, Message::State(frame)] {
+                let encoded = encode(&message);
+                assert_eq!(encoded.is_ok(), valid, "{message:?}");
+                if let Ok(bytes) = encoded {
+                    assert_eq!(decode(&bytes).unwrap(), message);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn celestial_definitions_are_scoped_to_existing_views() {
         let mut frame = empty_frame();
         frame
@@ -850,5 +974,70 @@ mod tests {
         assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
         frame.presentation.celestial_systems[0].epoch_mjd_utc = f64::NAN;
         assert!(encode(&Message::State(frame)).is_err());
+    }
+
+    #[test]
+    fn navigation_ephemerides_require_real_views_and_bounded_unique_references() {
+        let mut frame = empty_frame();
+        let reference = CelestialSystemRef {
+            view: 7,
+            system: Id([2; 16]),
+            definition: [3; 32],
+            epoch_mjd_utc: 60_000.,
+            sim_time_origin_ns: 0,
+        };
+        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
+            .ephemerides
+            .push(reference.clone());
+        assert!(validate_frame(&frame).is_err());
+
+        frame.views = [7, 8]
+            .into_iter()
+            .map(|id| ViewState {
+                focused_ship: None,
+                origin: GalacticPosition::ZERO,
+                id,
+                revision: 1,
+                group: Id([4; 16]),
+                tracks: Vec::new(),
+                completion: Completion::Complete,
+            })
+            .collect();
+        let message = Message::State(frame.clone());
+        assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
+
+        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
+            .ephemerides
+            .push(reference.clone());
+        assert!(validate_frame(&frame).is_err());
+
+        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
+        navigation.ephemerides[1].view = 8;
+        assert!(validate_frame(&frame).is_ok());
+
+        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
+        navigation.ephemerides[1].epoch_mjd_utc = f64::NAN;
+        assert!(validate_frame(&frame).is_err());
+
+        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
+        navigation.ephemerides = (0..256_u128)
+            .map(|index| CelestialSystemRef {
+                system: Id(index.to_le_bytes()),
+                ..reference.clone()
+            })
+            .collect();
+        navigation.ephemerides.push(CelestialSystemRef {
+            view: 8,
+            ..reference.clone()
+        });
+        assert!(validate_frame(&frame).is_ok());
+
+        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
+            .ephemerides
+            .push(CelestialSystemRef {
+                system: Id(256_u128.to_le_bytes()),
+                ..reference
+            });
+        assert!(validate_frame(&frame).is_err());
     }
 }

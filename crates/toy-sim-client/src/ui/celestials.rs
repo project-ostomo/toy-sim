@@ -1,7 +1,7 @@
 use crate::assets::{self, SystemDefinition as DefinitionAsset};
 use crate::state::{
-    Celestial, CelestialSystem, DisplayPose, RenderTime, SessionReset, SystemSubscription,
-    WorldMember,
+    Celestial, CelestialSystem, DisplayPose, RenderTime, SessionInfo, SessionReset,
+    SystemSubscription, WorldMember,
 };
 use bevy::prelude::*;
 use hifitime::{Duration, Epoch};
@@ -99,18 +99,21 @@ fn reset(_: On<SessionReset>, mut definitions: ResMut<Definitions>) {
 
 fn desired_systems(
     views: &Query<(Entity, &SystemSubscription)>,
+    navigation: &[CelestialSystemRef],
 ) -> (BTreeMap<Id, CelestialSystemRef>, BTreeSet<Id>) {
     let mut desired = BTreeMap::new();
     let mut conflicts = BTreeSet::new();
-    for (_, subscription) in views {
-        for reference in &subscription.0 {
-            if let Some(previous) = desired.get(&reference.system) {
-                if !same_reference(previous, reference) {
-                    conflicts.insert(reference.system);
-                }
-            } else {
-                desired.insert(reference.system, reference.clone());
+    for reference in views
+        .iter()
+        .flat_map(|(_, subscription)| &subscription.0)
+        .chain(navigation)
+    {
+        if let Some(previous) = desired.get(&reference.system) {
+            if !same_reference(previous, reference) {
+                conflicts.insert(reference.system);
             }
+        } else {
+            desired.insert(reference.system, reference.clone());
         }
     }
     (desired, conflicts)
@@ -122,8 +125,12 @@ fn synchronize(
     server: Res<AssetServer>,
     views: Query<(Entity, &SystemSubscription)>,
     systems: Query<&SystemDefinition>,
+    session: Option<Res<SessionInfo>>,
 ) {
-    let (desired, conflicts) = desired_systems(&views);
+    let navigation = session
+        .as_ref()
+        .map_or(&[][..], |session| session.navigation_ephemerides.as_slice());
+    let (desired, conflicts) = desired_systems(&views, navigation);
     definitions.systems.retain(|id, entity| {
         let keep = !conflicts.contains(id)
             && desired.get(id).is_some_and(|reference| {
@@ -163,6 +170,9 @@ fn populate(
         };
         let epoch = presentation_epoch(&system.reference, clock.display_ns);
         for (body_id, body) in &asset.bodies {
+            if matches!(body.class_params, BodyClass::Barycenter) {
+                continue;
+            }
             let Some(pose) = solve_pose(&asset.solver, &body.name, epoch) else {
                 continue;
             };
@@ -187,8 +197,12 @@ fn load_status(
     assets: Res<Assets<DefinitionAsset>>,
     views: Query<(Entity, &SystemSubscription)>,
     systems: Query<(&SystemDefinition, Has<BodiesReady>)>,
+    session: Option<Res<SessionInfo>>,
 ) {
-    let (_, conflicts) = desired_systems(&views);
+    let navigation = session
+        .as_ref()
+        .map_or(&[][..], |session| session.navigation_ephemerides.as_slice());
+    let (_, conflicts) = desired_systems(&views, navigation);
     for (entity, subscription) in &views {
         let mut status = SystemLoadStatus::default();
         for reference in &subscription.0 {
@@ -253,7 +267,7 @@ fn body_presentation(
 ) -> CelestialPresentation {
     let luminosity = match body.class_params {
         BodyClass::Star { lumens } => lumens,
-        BodyClass::Planet => 0.0,
+        BodyClass::Planet | BodyClass::Barycenter => 0.0,
     };
     CelestialPresentation {
         entity: id,
@@ -262,7 +276,12 @@ fn body_presentation(
         radius_m: body.radius,
         gravitational_parameter: 6.67430e-11 * body.mass,
         luminosity_lumens: luminosity,
-        temperature_k: if luminosity > 0.0 { 5000.0 } else { 0.0 },
+        temperature_k: body
+            .stellar
+            .as_ref()
+            .map(|star| star.effective_temperature_k)
+            .or_else(|| body.planet.as_ref().map(|planet| planet.temperature_k))
+            .unwrap_or_else(|| if luminosity > 0.0 { 5000.0 } else { 0.0 }),
         color: if luminosity > 0.0 {
             toy_sim_universe::universe::star_colour(body)
         } else {
@@ -442,6 +461,194 @@ mod tests {
         app.update();
         assert_eq!(body_count(&mut app), 0);
         assert!(app.world().resource::<Definitions>().systems.is_empty());
+    }
+
+    #[test]
+    fn route_ephemeris_loads_once_without_remote_rendering_and_releases_with_interest() {
+        use crate::state::ViewObservation;
+        use toy_sim_model::{Completion, GalacticPosition, ViewState};
+
+        let asset = asset();
+        let reference = reference(&asset, 41);
+        let mut app = application();
+        app.insert_resource(SessionInfo {
+            navigation_ephemerides: vec![reference.clone()],
+            ..Default::default()
+        });
+        crate::ui::scene::install_celestial_render_test(&mut app);
+        let view = app
+            .world_mut()
+            .spawn((
+                ViewObservation(ViewState {
+                    id: 41,
+                    revision: 1,
+                    group: Id([4; 16]),
+                    focused_ship: Some(Id([5; 16])),
+                    origin: GalacticPosition::ZERO,
+                    tracks: Vec::new(),
+                    completion: Completion::Complete,
+                }),
+                SystemSubscription(Vec::new()),
+            ))
+            .id();
+        deliver(&mut app, &asset);
+        wait_for_bodies(&mut app, asset.body_ids.len());
+
+        assert_eq!(app.world().resource::<Definitions>().systems.len(), 1);
+        assert!(
+            app.world()
+                .get::<SystemSubscription>(view)
+                .unwrap()
+                .0
+                .is_empty()
+        );
+        assert_eq!(
+            app.world_mut().query::<&Mesh3d>().iter(app.world()).count(),
+            0
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&DirectionalLight>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(
+            app.world()
+                .get::<bevy::pbr::AtmosphereSettings>(view)
+                .is_none()
+        );
+        let body_id = Id(asset.body_ids[1].id);
+        let mut bodies = app.world_mut().query::<(&Celestial, &DisplayPose)>();
+        let (body, pose) = bodies
+            .iter(app.world())
+            .find(|(body, _)| body.0.entity == body_id)
+            .unwrap();
+        let resolved = asset
+            .solver()
+            .unwrap()
+            .solve_position(&body.0.name, Epoch::from_mjd_utc(0.));
+        assert_eq!(Some(pose.0.position), resolved);
+
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .navigation_ephemerides
+            .clear();
+        app.update();
+        assert!(app.world().resource::<Definitions>().systems.is_empty());
+        assert_eq!(body_count(&mut app), 0);
+
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .navigation_ephemerides = vec![reference.clone()];
+        app.world_mut()
+            .entity_mut(view)
+            .insert(SystemSubscription(vec![reference]));
+        wait_for_bodies(&mut app, asset.body_ids.len());
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .navigation_ephemerides
+            .clear();
+        app.update();
+        assert_eq!(app.world().resource::<Definitions>().systems.len(), 1);
+        assert_eq!(body_count(&mut app), asset.body_ids.len());
+        assert!(app.world_mut().query::<&Mesh3d>().iter(app.world()).count() > 0);
+        assert!(
+            app.world_mut()
+                .query::<&DirectionalLight>()
+                .iter(app.world())
+                .count()
+                > 0
+        );
+        assert!(
+            app.world()
+                .get::<bevy::pbr::AtmosphereSettings>(view)
+                .is_some()
+        );
+
+        app.world_mut()
+            .entity_mut(view)
+            .insert(SystemSubscription(Vec::new()));
+        app.update();
+        assert!(app.world().resource::<Definitions>().systems.is_empty());
+        assert_eq!(body_count(&mut app), 0);
+        assert_eq!(
+            app.world_mut().query::<&Mesh3d>().iter(app.world()).count(),
+            0
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&DirectionalLight>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        assert!(
+            app.world()
+                .get::<bevy::pbr::AtmosphereSettings>(view)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn virtual_barycenters_remain_in_solver_without_creating_visible_bodies() {
+        use toy_sim_universe::generation::{self, CatalogueCompanion, CatalogueStar};
+
+        let config = generation::system(
+            &CatalogueStar {
+                id: "client-binary-primary".into(),
+                name: "Client binary".into(),
+                position_ly: [0.; 3],
+                luminosity_solar: 1.,
+                temperature_k: 5778.,
+                companions: vec![CatalogueCompanion {
+                    id: "client-binary-secondary".into(),
+                    luminosity_solar: 0.5,
+                    temperature_k: 4500.,
+                    separation_au: 20.,
+                }],
+            },
+            "Client binary",
+        );
+        let center_index = config
+            .bodies
+            .iter()
+            .position(|body| matches!(body.class_params, BodyClass::Barycenter))
+            .unwrap();
+        let center_name = config.bodies[center_index].name.clone();
+        let asset = SystemAsset {
+            version: 1,
+            system_id: [200; 16],
+            body_ids: config
+                .bodies
+                .iter()
+                .enumerate()
+                .map(|(index, body)| BodyIdentity {
+                    name: body.name.to_string(),
+                    id: ((index + 1) as u128).to_le_bytes(),
+                })
+                .collect(),
+            config,
+        };
+        let center_id = Id(asset.body_ids[center_index].id);
+        let mut app = application();
+        app.world_mut()
+            .spawn(SystemSubscription(vec![reference(&asset, 1)]));
+        deliver(&mut app, &asset);
+        wait_for_bodies(&mut app, asset.body_ids.len() - 1);
+        let definition = DefinitionAsset::decode(&asset.encode().unwrap()).unwrap();
+        assert!(
+            definition
+                .solver
+                .solve_position(&center_name, Epoch::from_mjd_utc(0.))
+                .is_some()
+        );
+        let mut visible = app.world_mut().query::<&Celestial>();
+        assert!(
+            visible
+                .iter(app.world())
+                .all(|body| body.0.entity != center_id)
+        );
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use super::{
-    catalogue::{CatalogueTree, Entry},
+    catalogue::{CatalogueIndex, Entry},
     orrery_cfg::{Body, BodyClass, OrreryCfg},
     solver::Orrery,
 };
@@ -45,11 +45,12 @@ pub struct SystemDefinition {
     pub solver: Orrery,
     pub influence: f64,
     pub star_name: SmolStr,
+    pub root_name: SmolStr,
 }
 pub struct Universe {
     pub systems: Vec<SystemDefinition>,
     names: BTreeMap<SmolStr, usize>,
-    pub tree: Arc<CatalogueTree>,
+    pub index: Arc<CatalogueIndex>,
 }
 impl Universe {
     pub fn init(cfg: OrreryCfg) -> anyhow::Result<Self> {
@@ -69,88 +70,54 @@ impl Universe {
                 cfg.name
             );
             let solver = Orrery::init(cfg)?;
-            let stars: Vec<_> = solver
+            let star = solver
                 .iter()
-                .filter(|b| matches!(b.class_params, BodyClass::Star { .. }))
-                .collect();
-            anyhow::ensure!(
-                stars.len() == 1,
-                "{} must have exactly one fixed root star",
-                solver.name
-            );
-            let star = stars[0];
-            anyhow::ensure!(
-                star.parent.is_none() && star.orbit.semi_major == 0.0,
-                "star must be fixed at the system anchor"
-            );
-            let BodyClass::Star { lumens } = star.class_params else {
-                unreachable!()
-            };
-            anyhow::ensure!(
-                lumens.is_finite() && lumens > 0.0,
-                "invalid stellar luminosity"
-            );
+                .filter(|body| matches!(body.class_params, BodyClass::Star { .. }))
+                .max_by(|a, b| {
+                    let lumens = |body: &Body| match body.class_params {
+                        BodyClass::Star { lumens } => lumens,
+                        _ => 0.0,
+                    };
+                    lumens(a)
+                        .total_cmp(&lumens(b))
+                        .then_with(|| b.name.cmp(&a.name))
+                })
+                .expect("validated luminous system");
+            let root_name = solver
+                .iter()
+                .find(|body| body.parent.is_none())
+                .expect("validated system root")
+                .name
+                .clone();
             let mut mass = 0.0;
             let mut extent: f64 = 0.0;
-            for b in solver.iter() {
+            let mut lumens = 0.0;
+            for body in solver.iter() {
                 anyhow::ensure!(
-                    names.insert(b.name.clone(), systems.len()).is_none(),
+                    names.insert(body.name.clone(), systems.len()).is_none(),
                     "duplicate celestial name {}",
-                    b.name
+                    body.name
                 );
                 anyhow::ensure!(
-                    b.mass.is_finite() && b.mass > 0.0 && b.radius.is_finite() && b.radius > 0.0,
-                    "invalid mass/radius for {}",
-                    b.name
-                );
-                let o = b.orbit;
-                anyhow::ensure!(
-                    [
-                        o.semi_major,
-                        o.period,
-                        o.eccentricity,
-                        o.inclination,
-                        o.ascending_node,
-                        o.arg_of_pericenter,
-                        o.mean_anomaly,
-                        o.epoch,
-                        b.rotation.rotation_period,
-                        b.rotation.obliquity,
-                        b.rotation.eq_ascend_node,
-                        b.rotation.rotation_epoch
-                    ]
-                    .iter()
-                    .all(|v| v.is_finite())
-                        && o.semi_major >= 0.0
-                        && (0.0..1.0).contains(&o.eccentricity),
-                    "invalid orbit/rotation for {}",
-                    b.name
-                );
-                anyhow::ensure!(
-                    o.semi_major == 0.0 || o.period > 0.0,
+                    body.orbit.semi_major == 0.0 || body.orbit.period > 0.0,
                     "orbit period must be positive for {}",
-                    b.name
+                    body.name
                 );
-                anyhow::ensure!(
-                    b.surface_color
-                        .iter()
-                        .all(|c| c.is_finite() && *c >= 0.0 && *c <= 1.0),
-                    "invalid surface colour for {}",
-                    b.name
-                );
-                if b.name != star.name {
-                    anyhow::ensure!(
-                        b.parent.is_some(),
-                        "nonstellar body {} needs a parent",
-                        b.name
-                    );
+                if matches!(body.class_params, BodyClass::Barycenter) {
+                    continue;
                 }
-                mass += b.mass;
-                let mut reach = b.radius;
-                let mut current = Some(b);
+                if let BodyClass::Star { lumens: luminosity } = body.class_params {
+                    lumens += luminosity;
+                }
+                mass += body.mass;
+                let mut reach = body.radius;
+                let mut current = Some(body);
                 while let Some(body) = current {
                     reach += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
-                    current = body.parent.as_ref().and_then(|p| solver.get_body(p));
+                    current = body
+                        .parent
+                        .as_ref()
+                        .and_then(|parent| solver.get_body(parent));
                 }
                 extent = extent.max(reach);
             }
@@ -168,13 +135,14 @@ impl Universe {
                 solver,
                 influence,
                 star_name,
+                root_name,
             });
         }
         anyhow::ensure!(!systems.is_empty(), "universe needs at least one system");
         Ok(Self {
             systems,
             names,
-            tree: Arc::new(CatalogueTree::new(entries)),
+            index: Arc::new(CatalogueIndex::new(entries)),
         })
     }
     pub fn system_for(&self, name: &str) -> Option<usize> {
@@ -184,7 +152,10 @@ impl Universe {
         self.systems[self.system_for(name)?].solver.get_body(name)
     }
     pub fn iter(&self) -> impl Iterator<Item = &Body> {
-        self.systems.iter().flat_map(|s| s.solver.iter())
+        self.systems
+            .iter()
+            .flat_map(|s| s.solver.iter())
+            .filter(|body| !matches!(body.class_params, BodyClass::Barycenter))
     }
     pub fn solve_position(&self, name: &str, t: Epoch) -> Option<GalacticPosition> {
         self.systems[self.system_for(name)?]

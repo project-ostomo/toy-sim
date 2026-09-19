@@ -1,5 +1,5 @@
 mod storage;
-mod world;
+pub(crate) mod world;
 
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
@@ -46,7 +46,7 @@ fn capture(world: &World) -> Result<Snapshot> {
     let records = BTreeMap::from([(
         "world".into(),
         SectionData {
-            version: 1,
+            version: 2,
             bytes: self::world::capture(world).context("capture world checkpoint")?,
         },
     )]);
@@ -67,8 +67,8 @@ fn restore(world: &mut World, snapshot: Snapshot) -> Result<()> {
         .get("world")
         .context("snapshot missing world section")?;
     ensure!(
-        saved.version == 1,
-        "unsupported world snapshot section version {}",
+        saved.version == 2,
+        "unsupported world snapshot section version {}; explicitly start a new database for this universe",
         saved.version
     );
     self::world::restore(world, &saved.bytes).context("restore world checkpoint")?;

@@ -93,7 +93,17 @@ pub(super) fn apply(
     info.groups = frame.tracks.keys().copied().collect();
     info.diagnostics = frame.presentation.diagnostics.clone();
     info.universe = frame.presentation.universe.clone();
-    info.navigation = frame.presentation.navigation.clone();
+    info.navigation_ephemerides = frame.presentation.navigation.ephemerides.clone();
+    let catalogue = frame.presentation.navigation.catalogue;
+    if info.navigation_hash != catalogue {
+        info.navigation_hash = catalogue;
+        info.navigation = Default::default();
+        info.navigation_status = if catalogue.is_some() {
+            NavigationStatus::Loading
+        } else {
+            NavigationStatus::Unavailable
+        };
+    }
     info.society = frame.society.clone();
     info.events.extend(publications.events);
     let excess = info.events.len().saturating_sub(128);
@@ -261,6 +271,126 @@ mod tests {
     use super::*;
     use bevy::time::TimeUpdateStrategy;
     use std::time::Duration;
+
+    #[test]
+    fn navigation_ephemerides_do_not_expand_camera_subscriptions() {
+        let mut app = app();
+        let group = Id([2; 16]);
+        let track = Id([3; 16]);
+        let mut first = snapshot(1, group, track, 0.);
+        first.views.push(ViewState {
+            id: 41,
+            revision: 1,
+            group,
+            focused_ship: None,
+            origin: GalacticPosition::ZERO,
+            tracks: vec![track],
+            completion: Completion::Complete,
+        });
+        let reference = CelestialSystemRef {
+            view: 41,
+            system: Id([8; 16]),
+            definition: [9; 32],
+            epoch_mjd_utc: 0.,
+            sim_time_origin_ns: 0,
+        };
+        std::sync::Arc::make_mut(&mut first.presentation.navigation).ephemerides =
+            vec![reference.clone()];
+        step(&mut app, 0.1, Some(first.clone()));
+        assert_eq!(
+            app.world().resource::<SessionInfo>().navigation_ephemerides,
+            [reference]
+        );
+        let mut subscriptions = app.world_mut().query::<&SystemSubscription>();
+        assert!(subscriptions.single(app.world()).unwrap().0.is_empty());
+
+        first.tick = 2;
+        first.sequence = 2;
+        first.sim_time_ns = 200_000_000;
+        std::sync::Arc::make_mut(&mut first.presentation.navigation)
+            .ephemerides
+            .clear();
+        step(&mut app, 0.2, Some(first));
+        assert!(
+            app.world()
+                .resource::<SessionInfo>()
+                .navigation_ephemerides
+                .is_empty()
+        );
+        assert!(subscriptions.single(app.world()).unwrap().0.is_empty());
+    }
+
+    #[test]
+    fn live_beacons_replicate_independently_and_catalogue_change_clears_old_asset() {
+        let mut app = app();
+        let group = Id([2; 16]);
+        let track = Id([3; 16]);
+        let beacon = NavigationBeacon {
+            id: Id([4; 16]),
+            system: Id([5; 16]),
+            name: "Live station".into(),
+            pose: Pose::default(),
+            radius_m: 100.,
+            gate_exit: None,
+            docking: true,
+        };
+        let mut first = snapshot(1, group, track, 0.);
+        first.presentation.navigation = std::sync::Arc::new(NavigationSnapshot {
+            catalogue: Some([6; 32]),
+            beacons: vec![beacon.clone()],
+            ephemerides: Vec::new(),
+        });
+        step(&mut app, 0.1, Some(first.clone()));
+        assert_eq!(
+            app.world().resource::<SessionInfo>().navigation_status,
+            NavigationStatus::Loading
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&NavigationObject>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+        let installed = std::sync::Arc::new(NavigationCatalogue {
+            beacons: vec![beacon],
+            ..Default::default()
+        });
+        app.world_mut().resource_mut::<SessionInfo>().navigation = installed.clone();
+        let mut next = snapshot(2, group, track, 0.);
+        next.presentation.navigation = first.presentation.navigation;
+        step(&mut app, 0.2, Some(next));
+        assert!(std::sync::Arc::ptr_eq(
+            &installed,
+            &app.world().resource::<SessionInfo>().navigation
+        ));
+
+        let mut replacement = snapshot(3, group, track, 0.);
+        replacement.presentation.navigation = std::sync::Arc::new(NavigationSnapshot {
+            catalogue: Some([7; 32]),
+            beacons: Vec::new(),
+            ephemerides: Vec::new(),
+        });
+        step(&mut app, 0.3, Some(replacement));
+        assert!(
+            app.world()
+                .resource::<SessionInfo>()
+                .navigation
+                .beacons
+                .is_empty()
+        );
+        assert_eq!(
+            app.world().resource::<SessionInfo>().navigation_status,
+            NavigationStatus::Loading
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&NavigationObject>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+    }
 
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {

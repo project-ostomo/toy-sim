@@ -22,7 +22,7 @@ use wasmtime::{
     StoreLimitsBuilder, TypedFunc,
 };
 
-pub const MEMORY_LIMIT: usize = 1024 * 1024;
+pub const MEMORY_LIMIT: usize = 8 * 1024 * 1024;
 pub const FUEL_PER_TICK: u64 = 1_000_000;
 pub const GAS_PER_SECOND: u64 = FUEL_PER_TICK * 10;
 pub const RESERVE_CAPACITY: u64 = FUEL_PER_TICK * 4;

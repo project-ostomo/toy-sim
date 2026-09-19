@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v24"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v26"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (24)
+#define SHIP_API_VERSION (26)
 #define SHIP_ERR_GAS (-1)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)

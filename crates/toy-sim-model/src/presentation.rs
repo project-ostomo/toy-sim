@@ -9,7 +9,7 @@ pub struct ContactRef {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresentationFrame {
-    pub navigation: NavigationCatalogue,
+    pub navigation: std::sync::Arc<NavigationSnapshot>,
     pub ships: Vec<ShipPresentation>,
     pub combat: Vec<CombatEvent>,
     pub celestial_systems: Vec<CelestialSystemRef>,
@@ -497,13 +497,23 @@ pub struct CelestialSystemRef {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct NavigationSnapshot {
+    pub catalogue: Option<[u8; 32]>,
+    pub beacons: Vec<NavigationBeacon>,
+    pub ephemerides: Vec<CelestialSystemRef>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NavigationCatalogue {
+    pub topology_revision: u64,
     pub systems: Vec<NavigationSystem>,
     pub beacons: Vec<NavigationBeacon>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NavigationSystem {
+    pub sovereignty: Option<EntityId>,
+    pub population: u64,
     pub id: EntityId,
     pub name: String,
     pub position: GalacticPosition,

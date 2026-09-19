@@ -149,6 +149,7 @@ impl Default for Shell {
 }
 
 enum Intent {
+    RetryNavigation,
     InspectAffiliation(ownership::Principal),
     Society(ownership::SocietyCommand, &'static str),
     Select(SelectedTarget),
@@ -178,6 +179,7 @@ pub(super) fn install(app: &mut App) {
 fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.feedback = None;
     shell.society = society::State::default();
+    shell.map = map::State::default();
 }
 
 fn draw(
@@ -189,6 +191,7 @@ fn draw(
     clock: Res<RenderTime>,
     calendar: Res<CalendarClock>,
     real_time: Res<Time<Real>>,
+    asset_server: Res<AssetServer>,
     diagnostics: Res<ClientDiagnostics>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
@@ -234,7 +237,7 @@ fn draw(
             if own
                 || track
                     .entity
-                    .is_some_and(|id| session.navigation.beacons.iter().any(|b| b.id == id))
+                    .is_some_and(|id| beacons.iter().any(|(b, _)| b.0.id == id))
             {
                 continue;
             }
@@ -368,6 +371,12 @@ fn draw(
     }
     let model = FrameModel {
         navigation: &session.navigation,
+        navigation_status: &session.navigation_status,
+        navigation_hash: session.navigation_hash,
+        celestial_systems: bodies
+            .iter()
+            .map(|(body, _, system)| (body.0.entity, system.0))
+            .collect(),
         society: &session.society,
         rows,
         ship: telemetry,
@@ -397,6 +406,11 @@ fn draw(
             _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
         };
         match intent {
+            Intent::RetryNavigation => {
+                if let Some(hash) = session.navigation_hash {
+                    asset_server.reload(crate::assets::path(hash));
+                }
+            }
             Intent::InspectAffiliation(principal) => {
                 shell.society.inspect(principal);
                 shell.desktop.open(SOCIETY);

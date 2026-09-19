@@ -55,7 +55,9 @@ fn route_expansion_preserves_the_queue_and_rejects_stale_progress() {
     let goal = Order::TravelTo(Destination::Galactic(destination));
     let expanded: Vec<QueuedOrder> = vec![
         Order::Sublight(Destination::Galactic(destination)),
-        Order::Slip { destination },
+        Order::Slip {
+            destination: toy_sim_model::travel::Destination::Galactic(destination),
+        },
     ]
     .into_iter()
     .map(Into::into)
@@ -72,7 +74,37 @@ fn route_expansion_preserves_the_queue_and_rejects_stale_progress() {
         ..Default::default()
     };
     world.entity_mut(ship).insert(Travel(state));
+    let progress = PlanningProgress {
+        stage: PlanningStage::SearchingRoutes,
+        completed: 2,
+        total: Some(10),
+    };
+    dispatch(
+        world,
+        ship,
+        toy_sim_model::ProgramAction::PlanningProgress {
+            revision: 7,
+            progress,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        world.get::<Travel>(ship).unwrap().0.planning,
+        Some(progress)
+    );
     submit_route(world, ship, 7, expanded.clone()).unwrap();
+    assert!(world.get::<Travel>(ship).unwrap().0.planning.is_none());
+    assert!(
+        dispatch(
+            world,
+            ship,
+            toy_sim_model::ProgramAction::PlanningProgress {
+                revision: 7,
+                progress,
+            }
+        )
+        .is_err()
+    );
     let queued = world.get::<Travel>(ship).unwrap().0.clone();
     assert_eq!(
         queued.orders,

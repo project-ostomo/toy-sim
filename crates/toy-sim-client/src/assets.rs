@@ -67,14 +67,93 @@ pub(crate) fn register_source(app: &mut App, client: AssetClient) {
 pub(crate) fn install(app: &mut App) {
     app.init_asset::<ShipDesign>()
         .init_asset::<SystemDefinition>()
+        .init_asset::<NavigationDefinition>()
+        .init_resource::<NavigationLoad>()
         .init_asset_loader::<ShipLoader>()
         .init_asset_loader::<SystemLoader>()
+        .init_asset_loader::<NavigationLoader>()
         .add_systems(
             Update,
             synchronize_appearances
                 .after(crate::state::PresentationSet::Interpolate)
                 .before(crate::state::PresentationSet::Views),
         );
+    app.add_systems(
+        Update,
+        synchronize_navigation
+            .after(crate::state::PresentationSet::Interpolate)
+            .before(crate::state::PresentationSet::Views),
+    );
+}
+
+#[derive(Asset, TypePath)]
+pub(crate) struct NavigationDefinition(pub std::sync::Arc<toy_sim_model::NavigationCatalogue>);
+
+#[derive(Default, TypePath)]
+struct NavigationLoader;
+
+impl AssetLoader for NavigationLoader {
+    type Asset = NavigationDefinition;
+    type Settings = ();
+    type Error = anyhow::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> anyhow::Result<NavigationDefinition> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(NavigationDefinition(std::sync::Arc::new(
+            toy_sim_protocol::navigation::decode_catalogue(&bytes)?,
+        )))
+    }
+}
+
+#[derive(Resource, Default)]
+struct NavigationLoad {
+    generation: u64,
+    hash: Option<[u8; 32]>,
+    asset: Option<Handle<NavigationDefinition>>,
+}
+
+fn synchronize_navigation(
+    session: Option<ResMut<crate::state::SessionInfo>>,
+    mut load: ResMut<NavigationLoad>,
+    server: Res<AssetServer>,
+    assets: Res<Assets<NavigationDefinition>>,
+) {
+    use crate::state::NavigationStatus;
+    let Some(mut session) = session else {
+        return;
+    };
+    if load.generation != session.generation || load.hash != session.navigation_hash {
+        load.generation = session.generation;
+        load.hash = session.navigation_hash;
+        load.asset = load.hash.map(|hash| server.load(path(hash)));
+        session.navigation = Default::default();
+    }
+    let Some(handle) = &load.asset else {
+        if session.navigation_status != NavigationStatus::Unavailable {
+            session.navigation_status = NavigationStatus::Unavailable;
+        }
+        return;
+    };
+    let status = if let Some(definition) = assets.get(handle) {
+        if !std::sync::Arc::ptr_eq(&session.navigation, &definition.0) {
+            session.navigation = definition.0.clone();
+        }
+        NavigationStatus::Ready
+    } else {
+        match server.load_state(handle.id()) {
+            bevy::asset::LoadState::Failed(error) => NavigationStatus::Failed(error.to_string()),
+            _ => NavigationStatus::Loading,
+        }
+    };
+    if session.navigation_status != status {
+        session.navigation_status = status;
+    }
 }
 
 #[derive(Asset, TypePath)]
@@ -203,3 +282,6 @@ pub(crate) fn synchronize_appearances(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

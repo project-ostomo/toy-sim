@@ -33,6 +33,21 @@ pub struct Endpoint {
     pub status: tokio::sync::watch::Receiver<Option<String>>,
 }
 
+#[cfg(test)]
+impl Endpoint {
+    pub(crate) fn with_test_input(input: tokio::sync::mpsc::Sender<InputFrame>) -> Self {
+        let (requests, _) = tokio::sync::mpsc::channel(1);
+        let (_, state) = tokio::sync::mpsc::unbounded_channel();
+        let (_, status) = tokio::sync::watch::channel(None);
+        Self {
+            assets: AssetClient { requests },
+            input,
+            state,
+            status,
+        }
+    }
+}
+
 pub async fn connect(
     address: &str,
     key: ed25519_dalek::VerifyingKey,

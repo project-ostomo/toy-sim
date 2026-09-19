@@ -4,6 +4,13 @@ use bevy::{math::DVec3, prelude::*};
 use std::sync::Arc;
 use toy_sim_model::*;
 
+pub(crate) mod exclusion;
+mod navigation;
+#[cfg(test)]
+use navigation::catalogue;
+pub use navigation::{NavigationPublication, navigation_snapshot, publish_navigation};
+pub(crate) use navigation::{capture_navigation, restore_navigation};
+
 #[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Landmark {
     pub system: Id,
@@ -12,11 +19,57 @@ pub struct Landmark {
 
 #[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GateOrbit {
+    pub system: usize,
     body: String,
     offset: DVec3,
     axis: DVec3,
     rate: f64,
     epoch_seconds: f64,
+}
+
+impl GateOrbit {
+    pub(crate) fn pose(
+        &self,
+        universe: &toy_sim_universe::universe::Universe,
+        epoch: hifitime::Epoch,
+    ) -> Option<(GalacticPosition, DVec3)> {
+        let seconds = (epoch - hifitime::Epoch::from_mjd_utc(0.0)).to_seconds();
+        let angle = self.rate * (seconds - self.epoch_seconds);
+        let offset = bevy::math::DQuat::from_axis_angle(self.axis, angle) * self.offset;
+        let position = universe.solve_position(&self.body, epoch)?;
+        let motion = universe.solve_velocity(&self.body, epoch)?;
+        Some((
+            position.offset_by(offset),
+            motion + self.axis.cross(offset) * self.rate,
+        ))
+    }
+
+    pub(crate) fn envelope(
+        &self,
+        universe: &toy_sim_universe::universe::Universe,
+    ) -> Option<(GalacticPosition, f64)> {
+        let system = universe.systems.get(self.system)?;
+        let mut radius = self.offset.length();
+        let mut body = system.solver.get_body(&self.body)?;
+        loop {
+            radius += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
+            let Some(parent) = &body.parent else {
+                break;
+            };
+            body = system.solver.get_body(parent)?;
+        }
+        Some((system.solver.anchor, radius))
+    }
+
+    pub(crate) fn valid(&self, universe: &toy_sim_universe::universe::Universe) -> bool {
+        universe.system_for(&self.body) == Some(self.system)
+            && self.offset.is_finite()
+            && self.offset.length_squared() > 0.0
+            && self.axis.is_normalized()
+            && self.rate.is_finite()
+            && self.rate >= 0.0
+            && self.epoch_seconds.is_finite()
+    }
 }
 
 pub fn move_gates(
@@ -29,13 +82,16 @@ pub fn move_gates(
     )>,
 ) {
     let epoch = physics::sim_time(&time);
+    let mut references = std::collections::HashMap::new();
     for (orbit, mut pose, mut velocity) in &mut gates {
         let angle = orbit.rate * (time.elapsed_secs_f64() - orbit.epoch_seconds);
         let offset = bevy::math::DQuat::from_axis_angle(orbit.axis, angle) * orbit.offset;
-        if let (Some(position), Some(motion)) = (
-            universe.solve_position(&orbit.body, epoch),
-            universe.solve_velocity(&orbit.body, epoch),
-        ) {
+        let reference = references.entry(orbit.body.as_str()).or_insert_with(|| {
+            universe
+                .solve_position(&orbit.body, epoch)
+                .zip(universe.solve_velocity(&orbit.body, epoch))
+        });
+        if let Some((position, motion)) = *reference {
             pose.translation_um = position.offset_by(offset);
             velocity.0 = motion + orbit.axis.cross(offset) * orbit.rate;
         }
@@ -43,20 +99,15 @@ pub fn move_gates(
 }
 
 pub fn enforce_exclusion(world: &mut World) {
-    let mouths: Vec<_> = world
-        .query::<(Entity, &precision::PreciseTransform, &travel::Gate)>()
-        .iter(world)
-        .filter(|(_, _, gate)| gate.enabled)
-        .map(|(entity, pose, gate)| (entity, pose.translation_um, gate.exclusion_m))
-        .collect();
+    let mouths = exclusion::candidates(world);
     let mut unstable = Vec::new();
     for (entity, position, exclusion) in mouths {
         let candidates = travel::geometry::mouth_candidates(world, position, exclusion);
-        if candidates.into_iter().any(|other| {
+        for other in candidates {
             if entity == other {
-                return false;
+                continue;
             }
-            match (
+            let overlap = match (
                 world.get::<travel::Gate>(other),
                 world.get::<precision::PreciseTransform>(other),
             ) {
@@ -66,11 +117,14 @@ pub fn enforce_exclusion(world: &mut World) {
                             < exclusion + gate.exclusion_m
                 }
                 _ => false,
+            };
+            if overlap {
+                unstable.extend([entity, other]);
             }
-        }) {
-            unstable.push(entity);
         }
     }
+    unstable.sort_unstable();
+    unstable.dedup();
     for entity in unstable {
         world.get_mut::<travel::Gate>(entity).unwrap().enabled = false;
         travel::geometry::update(world, entity);
@@ -173,60 +227,202 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
             .cargo[resource] = 100;
     }
 
-    let links = (0..universe.systems.len().saturating_sub(1)).map(|a| (a, a + 1));
-    for (link, (a, b)) in links.enumerate() {
-        if a >= universe.systems.len() || b >= universe.systems.len() {
-            continue;
-        }
-        let ids = [Id::new(), Id::new()];
-        for (side, index) in [a, b].into_iter().enumerate() {
-            let Some(system) = universe.systems.get(index) else {
-                continue;
-            };
-            let remote = &universe.systems[if side == 0 { b } else { a }];
-            let position = if index == 0 {
-                player_pose.translation_um.offset_by(DVec3::new(
-                    20000. + link as f64 * 5000.,
-                    0.,
-                    -10000.,
-                ))
+    spawn_gates(world, &universe, player_pose, velocity)?;
+    Ok(())
+}
+
+fn gate_operator(world: &mut World, sovereignty: &str) -> Result<(Id, Id)> {
+    use toy_sim_model::ownership::Organization;
+
+    let name = match sovereignty {
+        "USE" => "Unifleet Station Services".to_owned(),
+        "Helion Commonwealth" => "Helion Flight Cooperative".to_owned(),
+        "St Raphael Commonwealth" => "St Raphael Trade Confraternity".to_owned(),
+        name => format!("{name} Gate Services"),
+    };
+    let organization = super::ownership::organization_id(&name);
+    world
+        .resource_mut::<super::ownership::Directory>()
+        .0
+        .organizations
+        .entry(organization)
+        .or_insert_with(|| Organization {
+            id: organization,
+            name,
+            sovereignty: super::ownership::sovereignty_id(sovereignty),
+            officers: Default::default(),
+            open_membership: false,
+        });
+    let account = super::ownership::principal_id("gate operator", sovereignty);
+    super::ownership::affiliate(world, account, Some(organization))?;
+    identity::add_account(world, account, false);
+    Ok((account, organization))
+}
+
+pub fn gate_reference(system: &toy_sim_universe::universe::SystemDefinition) -> (&str, f64) {
+    let mut stars: Vec<_> = system
+        .solver
+        .iter()
+        .filter_map(|body| {
+            if let super::orrery::BodyClass::Star { lumens } = body.class_params {
+                Some((body, lumens))
             } else {
-                system.solver.anchor.offset_by(DVec3::new(
-                    1.5e11,
-                    if side == 0 { 3e7 } else { -3e7 },
-                    0.,
-                ))
-            };
-            let epoch = physics::sim_time(world.resource::<Time<Fixed>>());
-            let reference = if index == 0 {
+                None
+            }
+        })
+        .collect();
+    stars.sort_by(|a, b| b.1.total_cmp(&a.1));
+    for (star, _) in &stars {
+        let radius = 1.5e11_f64.max(star.radius * 4.0);
+        let mut stable_radius = f64::INFINITY;
+        let mut child = *star;
+        let mut inner_extent = 0.0;
+        while let Some(parent) = child
+            .parent
+            .as_ref()
+            .and_then(|name| system.solver.get_body(name))
+        {
+            let companion = system
+                .solver
+                .iter()
+                .find(|body| body.parent.as_ref() == Some(&parent.name) && body.name != child.name);
+            if let Some(companion) = companion {
+                let separation = child.orbit.semi_major + companion.orbit.semi_major;
+                let periapsis =
+                    separation * (1.0 - child.orbit.eccentricity.max(companion.orbit.eccentricity));
+                let bound = 0.1 * periapsis * (star.mass / parent.mass).cbrt() - inner_extent;
+                stable_radius = stable_radius.min(bound);
+            }
+            inner_extent += child.orbit.semi_major * (1.0 + child.orbit.eccentricity);
+            child = parent;
+        }
+        if radius + 1e7 < stable_radius {
+            return (star.name.as_str(), radius);
+        }
+    }
+    let stellar_extent = stars
+        .iter()
+        .map(|(body, _)| orbital_extent(system, body))
+        .fold(0.0, f64::max);
+    (
+        system.root_name.as_str(),
+        (stellar_extent * 4.0).max(1.5e11),
+    )
+}
+
+fn orbital_extent<'a>(
+    system: &'a toy_sim_universe::universe::SystemDefinition,
+    body: &'a super::orrery::orrery_cfg::Body,
+) -> f64 {
+    let mut extent = body.radius;
+    let mut ancestor = Some(body);
+    while let Some(body) = ancestor {
+        extent += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
+        ancestor = body
+            .parent
+            .as_ref()
+            .and_then(|parent| system.solver.get_body(parent));
+    }
+    extent
+}
+
+pub fn gate_activation_extent(system: &toy_sim_universe::universe::SystemDefinition) -> f64 {
+    let (reference, radius) = gate_reference(system);
+    orbital_extent(system, system.solver.get_body(reference).unwrap()) + radius + 1e10
+}
+
+fn spawn_gates(
+    world: &mut World,
+    universe: &toy_sim_universe::universe::Universe,
+    player_pose: precision::PreciseTransform,
+    player_velocity: DVec3,
+) -> Result<()> {
+    use anyhow::ensure;
+
+    let map = toy_sim_universe::civilization::map();
+    ensure!(
+        universe.systems.len() == map.systems.len(),
+        "inhabited map and universe differ"
+    );
+    let mut operators = std::collections::HashMap::new();
+    for system in &map.systems {
+        if !operators.contains_key(&system.sovereignty) {
+            let operator = gate_operator(world, &system.sovereignty)?;
+            operators.insert(system.sovereignty.clone(), operator);
+        }
+    }
+    let mut degrees = vec![0; map.systems.len()];
+    for link in &map.links {
+        degrees[link.a] += 1;
+        degrees[link.b] += 1;
+    }
+    let mut slots = vec![0; map.systems.len()];
+    let epoch = physics::sim_time(world.resource::<Time<Fixed>>());
+    let epoch_seconds = world.resource::<Time<Fixed>>().elapsed_secs_f64();
+    for link in &map.links {
+        let ids = [
+            registry::gate_identity(
+                &map.systems[link.a].catalogue_id,
+                &map.systems[link.b].catalogue_id,
+            ),
+            registry::gate_identity(
+                &map.systems[link.b].catalogue_id,
+                &map.systems[link.a].catalogue_id,
+            ),
+        ];
+        for (side, index) in [link.a, link.b].into_iter().enumerate() {
+            let system = &universe.systems[index];
+            let settlement = &map.systems[index];
+            ensure!(
+                system.solver.name.as_str() == settlement.name,
+                "map system order differs"
+            );
+            let remote = &universe.systems[if side == 0 { link.b } else { link.a }];
+            let (owner, organization) = operators[&settlement.sovereignty];
+            let slot = slots[index];
+            slots[index] += 1;
+            let starting_system = system.solver.name == "Helion system";
+            let (gate_reference, orbit_radius) = gate_reference(system);
+            let reference = if starting_system {
                 super::scenario::INITIAL_SCENARIO.body
             } else {
-                system.star_name.as_str()
+                gate_reference
             };
             let body = universe.get_body(reference).unwrap();
             let centre = universe.solve_position(reference, epoch).unwrap();
             let body_velocity = universe.solve_velocity(reference, epoch).unwrap();
-            let offset = position.relative_to(centre);
-            let axis = if index == 0 {
-                offset.cross(velocity - body_velocity).normalize()
+            let (offset, axis) = if starting_system {
+                let first = player_pose
+                    .translation_um
+                    .offset_by(DVec3::new(20000., 0., -10000.));
+                let base = first.relative_to(centre);
+                let axis = base
+                    .cross(player_velocity - body_velocity)
+                    .normalize_or(DVec3::Z);
+                let angle = slot as f64 * std::f64::consts::TAU / degrees[index] as f64;
+                (bevy::math::DQuat::from_axis_angle(axis, angle) * base, axis)
             } else {
-                DVec3::Z
+                let radius = orbit_radius;
+                let angle = slot as f64 * 6e7 / radius;
+                (DVec3::new(angle.cos(), angle.sin(), 0.0) * radius, DVec3::Z)
             };
-            let rate =
-                (physics::GRAVITATIONAL_CONSTANT * body.mass / offset.length().powi(3)).sqrt();
-            let orbit = GateOrbit {
-                body: reference.into(),
-                offset,
-                axis,
-                rate,
-                epoch_seconds: world.resource::<Time<Fixed>>().elapsed_secs_f64(),
+            let position = centre.offset_by(offset);
+            let radius = if starting_system {
+                player_pose
+                    .translation_um
+                    .offset_by(DVec3::new(20000., 0., -10000.))
+                    .relative_to(centre)
+                    .length()
+            } else {
+                orbit_radius
             };
+            let rate = (physics::GRAVITATIONAL_CONSTANT * body.mass / radius.powi(3)).sqrt();
             let name = format!("{} gate", remote.solver.name);
             let entity = world
                 .spawn((
                     precision::PreciseTransform {
                         translation_um: position,
-                        ..default()
+                        ..Default::default()
                     },
                     identity::Control {
                         account: owner,
@@ -244,7 +440,14 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
                     identity::BeaconEmitter,
                     identity::FixedBeacon,
                     physics::Velocity(body_velocity + axis.cross(offset) * rate),
-                    orbit,
+                    GateOrbit {
+                        system: index,
+                        body: reference.into(),
+                        offset,
+                        axis,
+                        rate,
+                        epoch_seconds,
+                    },
                     spatial::SpatialBody {
                         radius_m: 256.,
                         occludes: false,
@@ -265,75 +468,6 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         }
     }
     Ok(())
-}
-
-pub fn catalogue(world: &mut World) -> NavigationCatalogue {
-    let systems: Vec<_> = world
-        .resource::<registry::UniverseRegistry>()
-        .universe
-        .systems
-        .iter()
-        .map(|system| NavigationSystem {
-            id: registry::system_identity(&system.solver.name),
-            name: system.solver.name.to_string(),
-            position: system.solver.anchor,
-        })
-        .collect();
-    let mut beacons: Vec<_> = world
-        .query_filtered::<(
-            &identity::Identity,
-            Option<&Landmark>,
-            &identity::Transponder,
-            &precision::PreciseTransform,
-            Option<&physics::Velocity>,
-            Option<&physics::AngularVelocity>,
-            &spatial::SpatialBody,
-            Option<&travel::Gate>,
-            Option<&travel::DockingBays>,
-        ), (With<identity::BeaconEmitter>, Without<travel::Dormant>)>()
-        .iter(world)
-        .map(
-            |(id, landmark, iff, pose, velocity, angular, spatial, gate, bays)| NavigationBeacon {
-                id: id.0,
-                system: landmark.map_or_else(
-                    || {
-                        systems
-                            .iter()
-                            .min_by(|a, b| {
-                                a.position
-                                    .relative_to(pose.translation_um)
-                                    .length_squared()
-                                    .total_cmp(
-                                        &b.position
-                                            .relative_to(pose.translation_um)
-                                            .length_squared(),
-                                    )
-                            })
-                            .unwrap()
-                            .id
-                    },
-                    |landmark| landmark.system,
-                ),
-                name: landmark.map_or_else(
-                    || {
-                        iff.0
-                            .labels
-                            .iter()
-                            .next()
-                            .cloned()
-                            .unwrap_or_else(|| "Station beacon".into())
-                    },
-                    |landmark| landmark.name.clone(),
-                ),
-                pose: super::intelligence::pose(pose, velocity, angular),
-                radius_m: gate.map_or(spatial.radius_m, |g| g.radius_m),
-                gate_exit: gate.filter(|g| g.enabled).map(|g| g.paired),
-                docking: bays.is_some(),
-            },
-        )
-        .collect();
-    beacons.sort_by_key(|beacon| beacon.id);
-    NavigationCatalogue { systems, beacons }
 }
 
 #[cfg(test)]
@@ -380,7 +514,9 @@ mod tests {
                     ..Default::default()
                 }));
             let mut planned = None;
-            for _ in 0..150 {
+            let mut observed_progress = None;
+            let mut last_progress_tick = 0;
+            for elapsed in 0..600 {
                 app.update();
                 let state = &app.world().get::<travel::Travel>(player).unwrap().0;
                 assert!(
@@ -391,13 +527,31 @@ mod tests {
                         .fault
                         .is_none()
                 );
+                if state.status == Status::Planning {
+                    if state.planning != observed_progress {
+                        observed_progress = state.planning.clone();
+                        last_progress_tick = elapsed;
+                    }
+                    assert!(
+                        elapsed < 10 || state.planning.is_some(),
+                        "planning must report progress"
+                    );
+                    assert!(
+                        elapsed - last_progress_tick < 150,
+                        "route planning stopped making progress: {:?}",
+                        state.planning
+                    );
+                }
                 if state.status == Status::Active {
                     let budget = state.fuel_budget.clone().unwrap();
                     assert!(
                         budget.complete && !budget.resources.is_empty(),
                         "{budget:?}"
                     );
-                    eprintln!("fuel priority {fuel_priority}: {budget:?}");
+                    eprintln!(
+                        "fuel priority {fuel_priority}: planning completed in {} ticks; {budget:?}",
+                        elapsed + 1
+                    );
                     planned = Some(budget);
                     break;
                 }
@@ -448,7 +602,9 @@ mod tests {
                 status: toy_sim_model::travel::Status::Planning,
                 ..default()
             }));
-        for _ in 0..100 {
+        let mut observed_progress = None;
+        let mut last_progress_tick = 0;
+        for elapsed in 0..600 {
             app.update();
             let world = app.world();
             let software = world.get::<vessel::ShipSoftware>(player).unwrap();
@@ -460,6 +616,21 @@ mod tests {
                 software.last_gas_limit
             );
             let state = &world.get::<travel::Travel>(player).unwrap().0;
+            if state.status == toy_sim_model::travel::Status::Planning {
+                if state.planning != observed_progress {
+                    observed_progress = state.planning.clone();
+                    last_progress_tick = elapsed;
+                }
+                assert!(
+                    elapsed < 10 || state.planning.is_some(),
+                    "planning must report progress"
+                );
+                assert!(
+                    elapsed - last_progress_tick < 150,
+                    "route planning stopped making progress: {:?}",
+                    state.planning
+                );
+            }
             if state.status == toy_sim_model::travel::Status::Active {
                 assert!(!state.orders.is_empty());
                 assert!(state.orders.iter().any(|order| matches!(
@@ -505,6 +676,10 @@ mod tests {
                     .unwrap();
                 assert!(arrivals.windows(2).all(|pair| pair[0] <= pair[1]));
                 assert!(state.revision > 1);
+                eprintln!(
+                    "Terminus planning completed in {} ticks after 100 idle ticks",
+                    elapsed + 1
+                );
                 return;
             }
         }
@@ -544,40 +719,36 @@ mod tests {
         app.update();
         let world = app.world_mut();
         let catalogue = catalogue(world);
-        assert_eq!(catalogue.systems.len(), 10);
+        assert_eq!(catalogue.systems.len(), 3000);
         assert_eq!(
             catalogue
                 .beacons
                 .iter()
                 .filter(|b| b.gate_exit.is_some())
                 .count(),
-            18
+            toy_sim_universe::civilization::map().links.len() * 2
         );
-        for (index, system) in catalogue.systems.iter().enumerate() {
+        let network = toy_sim_model::navigation::GateNetwork::from_catalogue(&catalogue);
+        for system in &catalogue.systems {
             let mouths: Vec<_> = catalogue
                 .beacons
                 .iter()
                 .filter(|b| b.system == system.id && b.gate_exit.is_some())
                 .collect();
-            assert_eq!(mouths.len(), if index == 0 || index == 9 { 1 } else { 2 });
-            if mouths.len() == 2 {
+            assert!((1..=6).contains(&mouths.len()));
+            assert!(system.sovereignty.is_some());
+            assert!(system.population > 0);
+            for pair in mouths.windows(2) {
                 assert!(
-                    mouths[0]
+                    pair[0]
                         .pose
                         .position
-                        .relative_to(mouths[1].pose.position)
+                        .relative_to(pair[1].pose.position)
                         .length()
                         > 2e7
                 );
             }
-            assert!(
-                toy_sim_model::navigation::gate_route(
-                    &catalogue,
-                    catalogue.systems[0].id,
-                    system.id
-                )
-                .is_some()
-            );
+            assert!(network.route(catalogue.systems[0].id, system.id).is_some());
         }
         let gates: Vec<_> = world
             .query_filtered::<Entity, With<travel::Gate>>()
@@ -591,6 +762,227 @@ mod tests {
         let station = catalogue.beacons.iter().find(|b| b.docking).unwrap();
         let station = identity::lookup(world, station.id).unwrap();
         assert!(world.get::<travel::DockingBays>(station).unwrap().0[0].public);
+    }
+
+    #[test]
+    fn generated_system_activation_gate_hops_and_checkpoint_preserve_topology() {
+        let account = Id::new();
+        let mut app = super::super::provision(&[account], None, None).unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let player_id = world.get::<identity::Identity>(player).unwrap().0;
+        let universe = world
+            .resource::<registry::UniverseRegistry>()
+            .universe
+            .clone();
+        let generated = universe
+            .systems
+            .iter()
+            .enumerate()
+            .skip(10)
+            .find(|(_, system)| {
+                system.solver.iter().any(|body| {
+                    matches!(
+                        body.class_params,
+                        super::super::orrery::BodyClass::Barycenter
+                    )
+                })
+            })
+            .map(|(index, _)| index)
+            .unwrap();
+        let mut system = generated;
+        for _ in 0..3 {
+            let world = app.world_mut();
+            let entry = world
+                .query::<(Entity, &GateOrbit)>()
+                .iter(world)
+                .find(|(_, orbit)| orbit.system == system)
+                .unwrap()
+                .0;
+            let entry_pose = *world.get::<precision::PreciseTransform>(entry).unwrap();
+            let entry_velocity = world.get::<physics::Velocity>(entry).unwrap().0;
+            let exit =
+                identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
+            let next_system = world.get::<GateOrbit>(exit).unwrap().system;
+            let aperture = world.get::<travel::Gate>(entry).unwrap().radius_m;
+            world
+                .get_mut::<precision::PreciseTransform>(player)
+                .unwrap()
+                .translation_um = entry_pose
+                .translation_um
+                .offset_by(DVec3::X * (aperture + 1.0));
+            world.get_mut::<physics::Velocity>(player).unwrap().0 =
+                entry_velocity - DVec3::X * 50.0;
+            world.get_mut::<travel::Travel>(player).unwrap().0 = Default::default();
+            app.update();
+            let world = app.world();
+            let exit_pose = world
+                .get::<precision::PreciseTransform>(exit)
+                .unwrap()
+                .translation_um;
+            let pose = world
+                .get::<precision::PreciseTransform>(player)
+                .unwrap()
+                .translation_um;
+            assert!(
+                pose.relative_to(exit_pose).length() < 1000.0,
+                "physical gate passage did not reach exit: entry_system={system} destination_system={next_system} entry_distance={} exit_distance={} entry_enabled={} exit_enabled={} active={:?} velocity={:?} hull={:?} influence={} orbit_radius={}",
+                pose.relative_to(entry_pose.translation_um).length(),
+                pose.relative_to(exit_pose).length(),
+                world.get::<travel::Gate>(entry).unwrap().enabled,
+                world.get::<travel::Gate>(exit).unwrap().enabled,
+                world
+                    .resource::<super::super::orrery::activity::ActiveSystems>()
+                    .entities
+                    .keys(),
+                world.get::<physics::Velocity>(player).unwrap().0 - entry_velocity,
+                world.get::<hardware::Hull>(player).unwrap().0,
+                universe.systems[system].influence,
+                entry_pose
+                    .translation_um
+                    .relative_to(universe.systems[system].solver.anchor)
+                    .length()
+            );
+            app.update();
+            let active = app
+                .world()
+                .resource::<super::super::orrery::activity::ActiveSystems>();
+            assert!(active.entities.contains_key(&next_system));
+            assert!(active.entities.len() <= 3);
+            system = next_system;
+        }
+        let world = app.world_mut();
+        for celestial in world
+            .query::<&super::super::orrery::activity::CelestialState>()
+            .iter(world)
+        {
+            assert!(!matches!(
+                celestial.body.class_params,
+                super::super::orrery::BodyClass::Barycenter
+            ));
+        }
+        let active = world.resource::<super::super::orrery::activity::ActiveSystems>();
+        let optical = world.resource::<spatial::SpatialIndex>();
+        for (entity, orbit) in world
+            .iter_entities()
+            .filter_map(|entity| Some((entity.id(), entity.get::<GateOrbit>()?)))
+        {
+            assert_eq!(
+                optical.object_index(entity).is_some(),
+                active.entities.contains_key(&orbit.system)
+            );
+        }
+        publish_navigation(world);
+        let before = catalogue(world);
+        let saved = crate::persistence::world::capture(world).unwrap();
+        crate::persistence::world::restore(world, &saved).unwrap();
+        let after = catalogue(world);
+        assert_eq!(before, after);
+        assert!(identity::lookup(world, player_id).is_ok());
+        app.update();
+        assert_eq!(
+            catalogue(app.world_mut()).topology_revision,
+            before.topology_revision
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn inhabited_map_snapshot_and_tick_profile() {
+        use bevy::ecs::system::RunSystemOnce;
+        use std::{io::Write, time::Instant};
+        let account = Id::new();
+        let started = Instant::now();
+        let mut app = super::super::provision(&[account], None, None).unwrap();
+        let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
+        for _ in 0..5 {
+            app.update();
+        }
+        let session = super::super::session::connect(app.world_mut(), account).unwrap();
+        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
+        encoder.window_log(21).unwrap();
+        let mut tick_ms = Vec::new();
+        let mut publication_ms = Vec::new();
+        let mut compression_ms = Vec::new();
+        let mut wire_bytes = Vec::new();
+        let mut raw_bytes = 0;
+        for _ in 0..30 {
+            let started = Instant::now();
+            app.update();
+            tick_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            let started = Instant::now();
+            publish_navigation(app.world_mut());
+            let frame = super::super::session::frame(app.world_mut(), session).unwrap();
+            let bytes = toy_sim_protocol::encode(&toy_sim_protocol::Message::State(frame)).unwrap();
+            publication_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            raw_bytes = bytes.len();
+            let started = Instant::now();
+            let before = encoder.get_ref().len();
+            encoder.write_all(&bytes).unwrap();
+            encoder.flush().unwrap();
+            compression_ms.push(started.elapsed().as_secs_f64() * 1000.0);
+            wire_bytes.push(encoder.get_ref().len() - before);
+        }
+        let started = Instant::now();
+        for _ in 0..30 {
+            app.world_mut().run_system_once(spatial::rebuild).unwrap();
+        }
+        let optical_ms = started.elapsed().as_secs_f64() * 1000.0 / 30.0;
+        let mut stage_ms = Vec::new();
+        let started = Instant::now();
+        for _ in 0..30 {
+            app.world_mut().run_system_once(move_gates).unwrap();
+        }
+        stage_ms.push((
+            "move gates",
+            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
+        ));
+        let started = Instant::now();
+        for _ in 0..30 {
+            travel::geometry::refresh(app.world_mut());
+        }
+        stage_ms.push((
+            "travel hash",
+            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
+        ));
+        let started = Instant::now();
+        for _ in 0..30 {
+            enforce_exclusion(app.world_mut());
+        }
+        stage_ms.push(("exclusion", started.elapsed().as_secs_f64() * 1000.0 / 30.0));
+        let mut publication_schedule = Schedule::default();
+        publication_schedule.add_systems(super::super::services::publish_indexes);
+        publication_schedule.run(app.world_mut());
+        let started = Instant::now();
+        for _ in 0..30 {
+            publication_schedule.run(app.world_mut());
+        }
+        stage_ms.push((
+            "public indexes",
+            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
+        ));
+        eprintln!("map stage times: {stage_ms:?}");
+        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+        eprintln!(
+            "inhabited map: startup={startup_ms:.2}ms tick_mean={:.2}ms tick_max={:.2}ms optical={optical_ms:.2}ms publication={:.2}ms compression={:.2}ms raw={raw_bytes} first_wire={} steady_wire={} mouths={} optical_objects={}",
+            mean(&tick_ms),
+            tick_ms.iter().copied().fold(0.0, f64::max),
+            mean(&publication_ms),
+            mean(&compression_ms),
+            wire_bytes[0],
+            wire_bytes[1..].iter().sum::<usize>() / 29,
+            toy_sim_universe::civilization::map().links.len() * 2,
+            app.world()
+                .resource::<spatial::SpatialIndex>()
+                .objects
+                .len()
+        );
     }
 
     #[test]
@@ -742,6 +1134,114 @@ mod tests {
                 .get::<hardware::ShipInventory>(player)
                 .unwrap()
                 .0
+        );
+    }
+
+    #[test]
+    fn terminus_route_keeps_flying_outward_after_the_first_gate_transit() {
+        use toy_sim_model::travel::{Destination, Order, Status, TravelState};
+        use toy_sim_ship_api::abi;
+
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        for _ in 0..100 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let entry = world
+            .query::<(Entity, &Landmark)>()
+            .iter(world)
+            .find(|(_, landmark)| landmark.name == "Sol gate")
+            .unwrap()
+            .0;
+        let exit =
+            identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
+        let terminus = registry::system_identity("Terminus system");
+        let destination = world
+            .query::<(&identity::Identity, &Landmark)>()
+            .iter(world)
+            .find(|(_, landmark)| landmark.system == terminus)
+            .unwrap()
+            .0
+            .0;
+        world
+            .get_mut::<vessel::ShipSoftware>(player)
+            .unwrap()
+            .controller
+            .instrument_interest = abi::INTEREST_PATHS | abi::INTEREST_MARKERS;
+        world.get_mut::<travel::Travel>(player).unwrap().0 = TravelState {
+            autopilot_enabled: true,
+            revision: 1,
+            orders: vec![Order::TravelTo(Destination::Beacon(destination)).into()],
+            status: Status::Planning,
+            ..default()
+        };
+
+        let mut crossed_at = None;
+        let mut arrival_distance = 0.0;
+        let mut returned_at = None;
+        for elapsed in 0..6500 {
+            app.update();
+            let world = app.world();
+            let software = world.get::<vessel::ShipSoftware>(player).unwrap();
+            let state = &world.get::<travel::Travel>(player).unwrap().0;
+            assert!(
+                software.controller.fault.is_none(),
+                "computer fault at tick {elapsed}, crossed {crossed_at:?}, travel {state:?}: {:?}",
+                software.controller.fault
+            );
+            let position = world
+                .get::<precision::PreciseTransform>(player)
+                .unwrap()
+                .translation_um;
+            let exit_pose = world
+                .get::<precision::PreciseTransform>(exit)
+                .unwrap()
+                .translation_um;
+            let distance = position.relative_to(exit_pose).length();
+            if crossed_at.is_none() && distance < 1000.0 {
+                crossed_at = Some(elapsed);
+                arrival_distance = distance;
+                eprintln!("First transit at tick {elapsed}: {state:?}");
+            }
+            if let Some(crossed) = crossed_at {
+                if distance >= 1e9 && returned_at.is_none() {
+                    returned_at = Some(elapsed);
+                    eprintln!("Unexpected return at tick {elapsed}: {state:?}");
+                }
+                assert!(
+                    state.autopilot_enabled,
+                    "autopilot stopped after transit: {state:?}"
+                );
+                if elapsed % 100 == 0 {
+                    let velocity = world.get::<physics::Velocity>(player).unwrap().0
+                        - world.get::<physics::Velocity>(exit).unwrap().0;
+                    eprintln!(
+                        "Post-transit tick {elapsed}: range {distance}, velocity {velocity}, {state:?}"
+                    );
+                }
+                if elapsed >= crossed + 400 {
+                    assert!(
+                        returned_at.is_none(),
+                        "ship returned through exit at {returned_at:?}"
+                    );
+                    let coast_distance = toy_sim_model::travel::GATE_ENTRY_SPEED_M_S * 40.0;
+                    assert!(
+                        distance > arrival_distance + coast_distance + 1000.0,
+                        "exit transfer did not accelerate away: range {distance}, {state:?}"
+                    );
+                    assert_eq!(state.status, Status::Active);
+                    assert!(state.order > 0);
+                    return;
+                }
+            }
+        }
+        panic!(
+            "first gate transit did not occur: {:?}",
+            app.world().get::<travel::Travel>(player).unwrap().0
         );
     }
 

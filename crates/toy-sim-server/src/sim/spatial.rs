@@ -38,6 +38,7 @@ impl Plugin for SpatialPlugin {
 
 pub(crate) fn rebuild(
     mut index: ResMut<SpatialIndex>,
+    active: Option<Res<super::orrery::activity::ActiveSystems>>,
     bodies: Query<
         (
             Entity,
@@ -49,6 +50,7 @@ pub(crate) fn rebuild(
             Option<&super::hardware::ShipThermal>,
             Option<&super::hardware::PartDevices>,
             Option<&super::travel::Gate>,
+            Option<&super::infrastructure::GateOrbit>,
         ),
         (
             Without<crate::sim::physics::collision::Projectile>,
@@ -63,7 +65,14 @@ pub(crate) fn rebuild(
     index.clear();
     let mut sources = toy_sim_spatial::SpatialHash::default();
     let mut intrinsic = Vec::new();
-    for (entity, pose, body, celestial, star, design, thermal, parts, gate) in &bodies {
+    for (entity, pose, body, celestial, star, design, thermal, parts, gate, orbit) in &bodies {
+        if orbit.is_some_and(|orbit| {
+            active
+                .as_ref()
+                .is_some_and(|active| !active.entities.contains_key(&orbit.system))
+        }) {
+            continue;
+        }
         let id = index.objects.len();
         let mut emitted = star.map_or_else(
             || lighting::emitted_luminosity(design, thermal, parts, &devices),

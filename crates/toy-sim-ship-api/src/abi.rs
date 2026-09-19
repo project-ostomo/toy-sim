@@ -1,9 +1,9 @@
-//! Ship ABI 24: fixed little-endian records and Postcard world services.
+//! Ship ABI 26: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v24";
-pub const VERSION: u32 = 24;
+pub const IMPORT_MODULE: &str = "ship_v26";
+pub const VERSION: u32 = 26;
 pub const ERR_GAS: i32 = -1;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
@@ -1249,7 +1249,7 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v24")]
+    #[link(wasm_import_module = "ship_v26")]
     unsafe extern "C" {
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
         pub fn persistent_write(input: *const u8, length: u32) -> i32;

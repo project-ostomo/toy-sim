@@ -196,6 +196,9 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
                     postcard::from_bytes(payload(&caller, pointer, length)?)
                         .map_err(|_| w::ERR_ARGUMENT)?;
                 let work = match &query {
+                    toy_sim_model::ProgramQuery::Navigation { limit, .. } => {
+                        100 + 4096 * u64::from((*limit).min(128))
+                    }
                     toy_sim_model::ProgramQuery::SlipEligibility { .. } => 131_072,
                     toy_sim_model::ProgramQuery::Tracks(query) => query.work.min(1_000_000),
                     toy_sim_model::ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),
@@ -214,6 +217,9 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
                     .query(query, caller.data().display_only)
                     .map_err(|_| w::ERR_ARGUMENT)?;
                 let used = match &reply {
+                    toy_sim_model::ProgramReply::Navigation { gates, .. } => {
+                        100 + 4096 * gates.len() as u64
+                    }
                     toy_sim_model::ProgramReply::Tracks(page) => page.gas_used,
                     toy_sim_model::ProgramReply::Beacons(beacons) => {
                         100 + 1008 * beacons.len() as u64

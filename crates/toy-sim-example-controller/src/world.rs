@@ -29,21 +29,26 @@ fn command(action: ProgramAction) -> Result<(), i32> {
     sdk::check(unsafe { abi::raw::world_command(bytes.as_ptr(), bytes.len() as u32) })
 }
 
-const BEACONS_PER_TICK: u16 = 16;
-const MAX_BEACONS: usize = 4096;
-const MAX_GATES: usize = 256;
+const GATES_PER_TICK: u16 = 96;
+const MAX_GATES: usize = 16_384;
 const RETRY_TICKS: u64 = 50;
 
 struct Search {
     destination: Destination,
     target: Pose,
     origin: Pose,
-    after: Option<EntityId>,
-    seen: usize,
-    gates: Vec<Gate>,
     graph: Option<Graph>,
     slip_endpoints: [bool; 2],
     slip_base_s: f64,
+    review: Option<RouteReview>,
+}
+
+struct RouteReview {
+    path: Vec<usize>,
+    slip_durations: Vec<Option<f64>>,
+    refreshed: usize,
+    validated: usize,
+    elapsed_s: f64,
 }
 
 #[derive(Default)]
@@ -52,6 +57,7 @@ pub struct Planner {
     pub active: bool,
     state_revision: u64,
     pub aim_direction: Option<[f64; 3]>,
+    pub reference_changed: bool,
     search: Option<Search>,
     retry_at: u64,
     bay: Option<(EntityId, u32)>,
@@ -63,6 +69,13 @@ pub struct Planner {
     turn_s: f64,
     pub preferences: PlanningPreferences,
     fuel_rates: Vec<(u64, f64)>,
+    catalogue: Vec<Gate>,
+    cached_graph: Option<Graph>,
+    planned_search_limited: bool,
+    catalogue_after: Option<EntityId>,
+    catalogue_revision: Option<u64>,
+    catalogue_complete: bool,
+    catalogue_checked_at: u64,
 }
 
 impl Planner {
@@ -72,6 +85,7 @@ impl Planner {
         sample: &crate::hardware::Sample,
         hardware: &crate::hardware::Hardware,
     ) -> Result<Option<abi::Contact>, i32> {
+        self.reference_changed = false;
         let bindings = crate::Bindings::new(hardware);
         self.acceleration = (bindings.thrust / sample.mass_kg.max(1.)).max(1e-6);
         self.flow = bindings.propellant_rate;
@@ -106,7 +120,7 @@ impl Planner {
         let result = self.step(tick);
         if let Err(error) = result {
             if self.active {
-                self.search = None;
+                self.reset_search();
                 self.retry_at = tick.saturating_add(RETRY_TICKS);
                 self.active = false;
                 command(ProgramAction::Block {
@@ -118,10 +132,149 @@ impl Planner {
         result
     }
 
-    fn plan(&mut self, state: &TravelState, pose: Pose) -> Result<Option<Vec<QueuedOrder>>, i32> {
+    fn reset_search(&mut self) {
+        if let Some(mut search) = self.search.take()
+            && let Some(graph) = search.graph.take()
+        {
+            self.cached_graph = Some(graph);
+            self.catalogue_complete = true;
+        }
+    }
+
+    fn load_catalogue(&mut self, pose: &Pose, tick: u64) -> Result<bool, i32> {
+        if self.catalogue_complete && tick < self.catalogue_checked_at.saturating_add(50) {
+            return Ok(true);
+        }
+        let checking = self.catalogue_complete;
+        if !checking {
+            if let Some(graph) = self.cached_graph.as_mut() {
+                if !graph.release_groups() {
+                    return Ok(false);
+                }
+                self.catalogue = std::mem::take(&mut graph.gates);
+                self.catalogue.clear();
+                self.cached_graph = None;
+            }
+            if self.catalogue.capacity() < MAX_GATES {
+                self.catalogue
+                    .reserve_exact(MAX_GATES - self.catalogue.len());
+            }
+        }
+        let ProgramReply::Navigation { revision, gates } = query(&ProgramQuery::Navigation {
+            after: if checking { None } else { self.catalogue_after },
+            limit: if checking { 1 } else { GATES_PER_TICK },
+            reference: pose.position,
+        })?
+        else {
+            return Err(abi::ERR_ARGUMENT);
+        };
+        self.catalogue_checked_at = tick;
+        if self.catalogue_revision.is_some_and(|old| old != revision) {
+            self.catalogue.clear();
+            self.catalogue_after = None;
+            self.catalogue_complete = false;
+            self.catalogue_revision = Some(revision);
+            return Ok(false);
+        }
+        self.catalogue_revision = Some(revision);
+        if checking {
+            return Ok(true);
+        }
+        self.catalogue_complete = gates.len() < GATES_PER_TICK as usize;
+        for gate in gates {
+            if self
+                .catalogue_after
+                .is_some_and(|after| gate.entity <= after)
+            {
+                return Err(abi::ERR_ARGUMENT);
+            }
+            self.catalogue_after = Some(gate.entity);
+            if self.catalogue.len() == MAX_GATES {
+                return Err(abi::ERR_UNAVAILABLE);
+            }
+            self.catalogue.push(Gate {
+                entity: gate.entity,
+                system: gate.system,
+                position: gate.pose.position,
+                velocity: DVec3::from_array(gate.pose.velocity),
+                exit: gate.exit,
+                staging: gate.staging,
+                slip_allowed: gate.slip_ready,
+            });
+        }
+        Ok(self.catalogue_complete)
+    }
+
+    fn escape_after_jump(
+        &self,
+        state: &TravelState,
+        pose: &Pose,
+        order: &Order,
+    ) -> Result<Option<QueuedOrder>, i32> {
+        let Some(Order::Jump(entry)) = state
+            .order
+            .checked_sub(1)
+            .and_then(|index| state.orders.get(index))
+            .map(|stage| &stage.action)
+        else {
+            return Ok(None);
+        };
+        let Order::Sublight(Destination::Relative {
+            reference: Reference::Beacon(exit),
+            axes: Axes::Galactic,
+            ..
+        }) = order
+        else {
+            return Ok(None);
+        };
+        if !state
+            .orders
+            .get(state.order + 1)
+            .is_some_and(|stage| matches!(stage.action, Order::Slip { .. }))
+        {
+            return Ok(None);
+        }
+        let mouth = navigation_gate(*exit, pose.position)?;
+        if mouth.exit != *entry {
+            return Ok(None);
+        }
+        let gate = navigation_gate(*exit, outward_reference(pose, &mouth.pose))?;
+        if !gate.slip_ready {
+            return Err(abi::ERR_UNAVAILABLE);
+        }
+        let mut target = gate.pose.clone();
+        target.position = gate.staging;
+        let (seconds, fuel) = self.transfer_estimate(&contact(pose, &target));
+        Ok(Some(
+            QueuedOrder::estimated(
+                Order::Sublight(Destination::Relative {
+                    reference: Reference::Beacon(*exit),
+                    offset: GalacticPosition::from_meters(
+                        gate.staging.relative_to(gate.pose.position),
+                    ),
+                    axes: Axes::Galactic,
+                }),
+                seconds,
+            )
+            .with_propellant(fuel),
+        ))
+    }
+
+    fn plan(
+        &mut self,
+        tick: u64,
+        state: &TravelState,
+        pose: Pose,
+    ) -> Result<Option<Vec<QueuedOrder>>, i32> {
+        if self.search.is_none() {
+            self.planned_search_limited = state.search_limited;
+        }
         let Some(order) = state.orders.get(state.order).map(|stage| &stage.action) else {
             return Ok(Some(Vec::new()));
         };
+        if let Some(escape) = self.escape_after_jump(state, &pose, order)? {
+            return Ok(Some(vec![escape]));
+        }
         let destination = match order {
             Order::TravelTo(destination) => destination.clone(),
             Order::Dock(station) => Destination::Beacon(*station),
@@ -180,7 +333,10 @@ impl Planner {
             } else {
                 destination
             };
-            let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve(destination.clone()))?
+            let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
+                destination: destination.clone(),
+                after_seconds: 0.,
+            })?
             else {
                 return Err(abi::ERR_ARGUMENT);
             };
@@ -198,15 +354,20 @@ impl Planner {
                 ]));
             }
             let endpoint = |position| -> Result<(bool, f64), i32> {
-                let ProgramReply::SlipEligibility { ready, duration_s } =
-                    query(&ProgramQuery::SlipEligibility {
-                        origin: position,
-                        destination: position,
-                    })?
+                let ProgramReply::SlipEligibility {
+                    ready,
+                    preparation_s,
+                    duration_s,
+                } = query(&ProgramQuery::SlipEligibility {
+                    origin: position,
+                    destination: position,
+                    departure_after_seconds: 0.,
+                    arrival_after_seconds: 0.,
+                })?
                 else {
                     return Err(abi::ERR_ARGUMENT);
                 };
-                Ok((ready, duration_s))
+                Ok((ready, preparation_s + duration_s))
             };
             let (origin_slip, slip_base_s) = endpoint(pose.position)?;
             let (target_slip, _) = endpoint(target.position)?;
@@ -214,95 +375,202 @@ impl Planner {
                 destination,
                 target,
                 origin: pose.clone(),
-                after: None,
-                seen: 0,
-                gates: Vec::new(),
                 graph: None,
                 slip_endpoints: [origin_slip, target_slip],
                 slip_base_s,
+                review: None,
             });
+            return Ok(None);
+        }
+        if self
+            .search
+            .as_ref()
+            .is_some_and(|search| search.graph.is_none())
+            && !self.load_catalogue(&pose, tick)?
+        {
+            command(ProgramAction::PlanningProgress {
+                revision: state.revision,
+                progress: PlanningProgress {
+                    stage: PlanningStage::LoadingCatalogue,
+                    completed: self.catalogue.len() as u32,
+                    total: None,
+                },
+            })?;
+            return Ok(None);
         }
         let search = self.search.as_mut().unwrap();
         if search.graph.is_none() {
-            let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacons {
-                after: search.after,
-                limit: BEACONS_PER_TICK,
+            let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
+                destination: search.destination.clone(),
+                after_seconds: 0.,
             })?
             else {
                 return Err(abi::ERR_ARGUMENT);
             };
-            let complete = beacons.len() < BEACONS_PER_TICK as usize;
-            for beacon in beacons {
-                if search.after.is_some_and(|after| beacon.entity <= after) {
-                    return Err(abi::ERR_ARGUMENT);
-                }
-                search.after = Some(beacon.entity);
-                search.seen += 1;
-                if search.seen > MAX_BEACONS {
-                    return Err(abi::ERR_UNAVAILABLE);
-                }
-                if let Some(exit) = beacon.gate_exit {
-                    if search.gates.len() == MAX_GATES {
-                        return Err(abi::ERR_UNAVAILABLE);
-                    }
-                    let direction = beacon
-                        .pose
-                        .position
-                        .relative_to(search.origin.position)
-                        .try_normalize()
-                        .unwrap_or(DVec3::X);
-                    let staging = beacon.pose.position.offset_by(
-                        direction * (beacon.exclusion_m + sdk::flight()?.radius_m + 1000.),
-                    );
-                    let ProgramReply::SlipEligibility {
-                        ready: slip_allowed,
-                        ..
-                    } = query(&ProgramQuery::SlipEligibility {
-                        origin: staging,
-                        destination: staging,
-                    })?
-                    else {
-                        return Err(abi::ERR_ARGUMENT);
-                    };
-                    search.gates.push(Gate {
-                        entity: beacon.entity,
-                        position: beacon.pose.position,
-                        velocity: DVec3::from_array(beacon.pose.velocity),
-                        exit,
-                        staging,
-                        slip_allowed,
-                    });
-                }
-            }
-            if !complete {
-                return Ok(None);
-            }
-            search.graph = Some(Graph::new(
-                search.origin.position,
-                search.target.position,
-                &search.gates,
-                self.acceleration,
-                self.flow,
-                search.slip_base_s,
-                search.slip_endpoints,
-                [
-                    DVec3::from_array(search.origin.velocity),
-                    DVec3::from_array(search.target.velocity),
-                ],
-            ));
+            search.origin = pose.clone();
+            search.target = target;
+            let endpoint_velocities = [
+                DVec3::from_array(search.origin.velocity),
+                DVec3::from_array(search.target.velocity),
+            ];
+            search.graph = Some(if let Some(mut graph) = self.cached_graph.take() {
+                graph.restart(
+                    search.origin.position,
+                    search.target.position,
+                    self.acceleration,
+                    self.flow,
+                    search.slip_base_s,
+                    search.slip_endpoints,
+                    endpoint_velocities,
+                );
+                graph
+            } else {
+                Graph::new(
+                    search.origin.position,
+                    search.target.position,
+                    std::mem::take(&mut self.catalogue),
+                    self.acceleration,
+                    self.flow,
+                    search.slip_base_s,
+                    search.slip_endpoints,
+                    endpoint_velocities,
+                )
+            });
             search.graph.as_mut().unwrap().weights = self.preferences.cost(self.mass);
+            return Ok(None);
         }
         let graph = search.graph.as_mut().unwrap();
-        let Some(path) = graph.advance() else {
+        if search.review.is_none() {
+            let Some(path) = graph.advance() else {
+                if graph.exhausted {
+                    return Err(abi::ERR_UNAVAILABLE);
+                }
+                command(ProgramAction::PlanningProgress {
+                    revision: state.revision,
+                    progress: graph.progress(),
+                })?;
+                return Ok(None);
+            };
+            search.review = Some(RouteReview {
+                slip_durations: vec![None; path.len() - 1],
+                path,
+                refreshed: 0,
+                validated: 0,
+                elapsed_s: 0.,
+            });
             return Ok(None);
+        }
+        let review = search.review.as_mut().unwrap();
+        let refresh_end = (review.refreshed + 4).min(review.path.len());
+        for &node in &review.path[review.refreshed..refresh_end] {
+            if node < 2 {
+                continue;
+            }
+            let index = (node - 2) % graph.gates.len();
+            let after = index
+                .checked_sub(1)
+                .map(|previous| graph.gates[previous].entity);
+            let ProgramReply::Navigation { revision, gates } = query(&ProgramQuery::Navigation {
+                after,
+                limit: 1,
+                reference: pose.position,
+            })?
+            else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            if Some(revision) != self.catalogue_revision {
+                self.reset_search();
+                self.catalogue_complete = false;
+                self.catalogue_after = None;
+                self.catalogue_revision = Some(revision);
+                return Ok(None);
+            }
+            let gate = gates.into_iter().next().ok_or(abi::ERR_UNAVAILABLE)?;
+            let cached = &graph.gates[index];
+            if gate.entity != cached.entity
+                || gate.system != cached.system
+                || gate.exit != cached.exit
+            {
+                return Err(abi::ERR_UNAVAILABLE);
+            }
+            graph.refresh_gate(
+                index,
+                Gate {
+                    entity: gate.entity,
+                    system: gate.system,
+                    position: gate.pose.position,
+                    velocity: DVec3::from_array(gate.pose.velocity),
+                    exit: gate.exit,
+                    staging: gate.staging,
+                    slip_allowed: gate.slip_ready,
+                },
+            );
+        }
+        review.refreshed = refresh_end;
+        if review.refreshed < review.path.len() {
+            return Ok(None);
+        }
+        let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
+            destination: search.destination.clone(),
+            after_seconds: 0.,
+        })?
+        else {
+            return Err(abi::ERR_ARGUMENT);
         };
+        graph.refresh_motion(
+            &pose,
+            &target,
+            self.acceleration,
+            self.flow,
+            self.preferences.cost(self.mass),
+        );
+        let validation_end = (review.validated + 1).min(review.path.len() - 1);
+        for (offset, pair) in review.path[review.validated..=validation_end]
+            .windows(2)
+            .enumerate()
+        {
+            if graph.is_slip(pair[0], pair[1]) {
+                let origin = if pair[0] == 0 {
+                    None
+                } else {
+                    Some(graph.destination(pair[0]))
+                };
+                let destination = if pair[1] == 1 {
+                    search.destination.clone()
+                } else {
+                    graph.destination(pair[1])
+                };
+                let departure = review.elapsed_s;
+                let solution = solve_slip(
+                    |after| match &origin {
+                        Some(destination) => Ok(resolve_at(destination, after)?.position),
+                        None => Ok(pose
+                            .position
+                            .offset_by(DVec3::from_array(pose.velocity) * after)),
+                    },
+                    &destination,
+                    departure,
+                )?;
+                review.slip_durations[review.validated + offset] = Some(solution.seconds);
+                review.elapsed_s += solution.seconds + graph.arrival_adjustment(pair[0], pair[1]).0;
+            } else if graph.exits[pair[0]] == Some(pair[1]) {
+                review.elapsed_s += 0.1;
+            } else {
+                review.elapsed_s += graph.transfer(pair[0], pair[1]).0;
+            }
+        }
+        review.validated = validation_end;
+        if review.validated < review.path.len() - 1 {
+            return Ok(None);
+        }
+        let path = &review.path;
         let mut orders: Vec<QueuedOrder> = Vec::new();
         let mut transfer_s = 0.;
         let mut transfer_kg = 0.;
-        for pair in path.windows(2) {
+        for (edge, pair) in path.windows(2).enumerate() {
             let (from, to) = (pair[0], pair[1]);
             if graph.exits[from] == Some(to) {
-                let entry = &search.gates[from - 2];
+                let entry = &graph.gates[from - 2];
                 orders.push(
                     QueuedOrder::estimated(Order::Jump(entry.entity), transfer_s + 0.1)
                         .with_propellant(transfer_kg),
@@ -313,20 +581,21 @@ impl Planner {
                 orders.push(
                     QueuedOrder::estimated(
                         Order::Slip {
-                            destination: graph.positions[to],
+                            destination: if to == 1 {
+                                search.destination.clone()
+                            } else {
+                                graph.destination(to)
+                            },
                         },
-                        graph.costs(from, to).1,
+                        review.slip_durations[edge].unwrap(),
                     )
                     .with_propellant(0.),
                 );
                 (transfer_s, transfer_kg) = graph.arrival_adjustment(from, to);
                 if to != 1 {
                     orders.push(
-                        QueuedOrder::estimated(
-                            Order::Sublight(graph.destination(to, &search.gates)),
-                            transfer_s,
-                        )
-                        .with_propellant(transfer_kg),
+                        QueuedOrder::estimated(Order::Sublight(graph.destination(to)), transfer_s)
+                            .with_propellant(transfer_kg),
                     );
                     transfer_s = 0.;
                     transfer_kg = 0.;
@@ -337,11 +606,8 @@ impl Planner {
                 transfer_kg += fuel;
                 if to != 1 && graph.exits[to].is_none() {
                     orders.push(
-                        QueuedOrder::estimated(
-                            Order::Sublight(graph.destination(to, &search.gates)),
-                            transfer_s,
-                        )
-                        .with_propellant(transfer_kg),
+                        QueuedOrder::estimated(Order::Sublight(graph.destination(to)), transfer_s)
+                            .with_propellant(transfer_kg),
                     );
                     transfer_s = 0.;
                     transfer_kg = 0.;
@@ -357,7 +623,8 @@ impl Planner {
         if orders.len() > 256 {
             return Err(abi::ERR_UNAVAILABLE);
         }
-        self.search = None;
+        self.planned_search_limited |= graph.search_limited;
+        self.reset_search();
         Ok(Some(orders))
     }
 
@@ -448,7 +715,8 @@ impl Planner {
         self.preferences = state.preferences;
         if self.revision != Some((state.revision, state.order)) {
             self.revision = Some((state.revision, state.order));
-            self.search = None;
+            self.reference_changed = true;
+            self.reset_search();
             self.bay = None;
             self.retry_at = tick;
             self.next_estimate = tick;
@@ -459,14 +727,30 @@ impl Planner {
                 Status::Planning | Status::Active | Status::Blocked(_)
             );
         if !self.active {
-            self.search = None;
+            self.reset_search();
+            if self.load_catalogue(&pose, tick)? {
+                if let Some(graph) = self.cached_graph.as_mut() {
+                    graph.prepare();
+                } else {
+                    self.cached_graph = Some(Graph::new(
+                        pose.position,
+                        pose.position,
+                        std::mem::take(&mut self.catalogue),
+                        self.acceleration,
+                        self.flow,
+                        f64::INFINITY,
+                        [false; 2],
+                        [DVec3::from_array(pose.velocity); 2],
+                    ));
+                }
+            }
             return Ok(None);
         }
         if state.status == Status::Planning || matches!(state.status, Status::Blocked(_)) {
             if tick < self.retry_at {
                 return Ok(None);
             }
-            if let Some(orders) = self.plan(&state, pose)? {
+            if let Some(orders) = self.plan(tick, &state, pose)? {
                 let fuel_budget = self.fuel_budget(
                     orders
                         .iter()
@@ -475,6 +759,7 @@ impl Planner {
                 )?;
                 command(ProgramAction::Route {
                     revision: state.revision,
+                    search_limited: self.planned_search_limited,
                     orders,
                     fuel_budget,
                 })?;
@@ -522,8 +807,10 @@ impl Planner {
                 let (target, radius) = match &guidance.target {
                     Target::Direction(_) => unreachable!(),
                     Target::Destination(destination) => {
-                        let ProgramReply::Pose(pose) =
-                            query(&ProgramQuery::Resolve(destination.clone()))?
+                        let ProgramReply::Pose(pose) = query(&ProgramQuery::Resolve {
+                            destination: destination.clone(),
+                            after_seconds: 0.,
+                        })?
                         else {
                             return Err(abi::ERR_ARGUMENT);
                         };
@@ -584,8 +871,10 @@ impl Planner {
                 Ok(Some(relative))
             }
             Order::Sublight(destination) => {
-                let ProgramReply::Pose(target) =
-                    query(&ProgramQuery::Resolve(destination.clone()))?
+                let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
+                    destination: destination.clone(),
+                    after_seconds: 0.,
+                })?
                 else {
                     return Err(abi::ERR_ARGUMENT);
                 };
@@ -600,14 +889,25 @@ impl Planner {
                 Ok(Some(contact))
             }
             Order::Slip { destination } => {
-                let seconds = state
-                    .estimated_arrival_tick
-                    .map_or(f64::INFINITY, |arrival| {
-                        arrival.saturating_sub(tick) as f64 * 0.1
-                    });
-                self.estimate(tick, &state, Some((seconds, 0.)))?;
                 if slip_ready {
-                    command(ProgramAction::Slip(*destination))?;
+                    let solution = solve_slip(
+                        |after| {
+                            Ok(pose
+                                .position
+                                .offset_by(DVec3::from_array(pose.velocity) * after))
+                        },
+                        destination,
+                        0.,
+                    )?;
+                    self.estimate(tick, &state, Some((solution.seconds, 0.)))?;
+                    command(ProgramAction::Slip(solution.destination))?;
+                } else {
+                    let seconds = state
+                        .estimated_arrival_tick
+                        .map_or(f64::INFINITY, |arrival| {
+                            arrival.saturating_sub(tick) as f64 * 0.1
+                        });
+                    self.estimate(tick, &state, Some((seconds, 0.)))?;
                 }
                 Ok(None)
             }
@@ -693,6 +993,36 @@ impl Planner {
     }
 }
 
+fn navigation_gate(entity: EntityId, reference: GalacticPosition) -> Result<NavigationGate, i32> {
+    let after = u128::from_be_bytes(entity.0)
+        .checked_sub(1)
+        .map(|value| Id(value.to_be_bytes()));
+    let ProgramReply::Navigation { gates, .. } = query(&ProgramQuery::Navigation {
+        after,
+        limit: 1,
+        reference,
+    })?
+    else {
+        return Err(abi::ERR_ARGUMENT);
+    };
+    gates
+        .into_iter()
+        .find(|gate| gate.entity == entity)
+        .ok_or(abi::ERR_UNAVAILABLE)
+}
+
+fn outward_reference(ship: &Pose, gate: &Pose) -> GalacticPosition {
+    let direction = ship
+        .position
+        .relative_to(gate.position)
+        .try_normalize()
+        .or_else(|| {
+            (DVec3::from_array(ship.velocity) - DVec3::from_array(gate.velocity)).try_normalize()
+        })
+        .unwrap_or(DVec3::Z);
+    gate.position.offset_by(-direction * 1e6)
+}
+
 fn contact(pose: &Pose, target: &Pose) -> abi::Contact {
     abi::Contact {
         id: u64::MAX,
@@ -702,4 +1032,43 @@ fn contact(pose: &Pose, target: &Pose) -> abi::Contact {
             .to_array(),
         radius_m: 0.,
     }
+}
+
+fn resolve_at(destination: &Destination, after_seconds: f64) -> Result<Pose, i32> {
+    let ProgramReply::Pose(pose) = query(&ProgramQuery::Resolve {
+        destination: destination.clone(),
+        after_seconds,
+    })?
+    else {
+        return Err(abi::ERR_ARGUMENT);
+    };
+    Ok(pose)
+}
+
+fn solve_slip(
+    origin_at: impl FnMut(f64) -> Result<GalacticPosition, i32>,
+    destination: &Destination,
+    start_after_seconds: f64,
+) -> Result<crate::slip_guidance::Solution, i32> {
+    crate::slip_guidance::intercept(
+        origin_at,
+        |after| Ok(resolve_at(destination, after)?.position),
+        |origin, destination, departure_after_seconds, arrival_after_seconds| {
+            let ProgramReply::SlipEligibility {
+                ready,
+                preparation_s,
+                duration_s,
+            } = query(&ProgramQuery::SlipEligibility {
+                origin,
+                destination,
+                departure_after_seconds,
+                arrival_after_seconds,
+            })?
+            else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            Ok((ready, preparation_s, duration_s))
+        },
+        start_after_seconds,
+    )
 }

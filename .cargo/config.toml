@@ -2,5 +2,5 @@
 # Guest data stack lives inside linear memory; keep room for static data and heap.
 rustflags = [
     "-C", "link-arg=-zstack-size=65536",
-    "-C", "link-arg=--max-memory=1048576",
+    "-C", "link-arg=--max-memory=8388608",
 ]

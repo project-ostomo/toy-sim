@@ -43,6 +43,33 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .unwrap()
         .unwrap();
     assert_eq!(first.ships.len(), 1);
+    let catalogue_hash = first.presentation.navigation.catalogue.unwrap();
+    let catalogue_bytes =
+        tokio::time::timeout(Duration::from_secs(10), client.assets.fetch(catalogue_hash))
+            .await
+            .unwrap()
+            .unwrap();
+    assert_eq!(*blake3::hash(&catalogue_bytes).as_bytes(), catalogue_hash);
+    let navigation = toy_sim_protocol::navigation::decode_catalogue(&catalogue_bytes).unwrap();
+    let map = toy_sim_universe::civilization::map();
+    assert_eq!(navigation.systems.len(), map.systems.len());
+    let mouths: std::collections::BTreeMap<_, _> = navigation
+        .beacons
+        .iter()
+        .filter_map(|beacon| beacon.gate_exit.map(|exit| (beacon.id, exit)))
+        .collect();
+    assert_eq!(mouths.len(), map.links.len() * 2);
+    assert!(first.presentation.navigation.beacons.len() < mouths.len());
+    assert!(
+        mouths
+            .iter()
+            .all(|(entry, exit)| mouths.get(exit) == Some(entry))
+    );
+    assert!(navigation.systems.iter().all(|system| {
+        system
+            .sovereignty
+            .is_some_and(|id| first.society.directory.sovereignties.contains_key(&id))
+    }));
     let group = *first.tracks.keys().next().unwrap();
     let action = Id::new();
     client

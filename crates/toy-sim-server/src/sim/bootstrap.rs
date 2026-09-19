@@ -99,6 +99,7 @@ pub fn provision(
         });
         software.command(toy_sim_ship_wasm::Command::StartFiring);
     }
+    super::infrastructure::publish_navigation(world);
     Ok(app)
 }
 

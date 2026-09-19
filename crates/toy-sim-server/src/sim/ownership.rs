@@ -60,6 +60,22 @@ pub fn initialize(world: &mut World) {
             },
         );
     }
+    for system in &toy_sim_universe::civilization::map().systems {
+        let id = sovereignty_id(&system.sovereignty);
+        directory
+            .sovereignties
+            .entry(id)
+            .or_insert_with(|| Sovereignty {
+                id,
+                name: system.sovereignty.clone(),
+                bloc: match system.alignment {
+                    toy_sim_universe::civilization::Alignment::Use => Bloc::Union,
+                    toy_sim_universe::civilization::Alignment::Lfs => Bloc::League,
+                    toy_sim_universe::civilization::Alignment::Independent => Bloc::NonAligned,
+                },
+                officers: BTreeSet::new(),
+            });
+    }
     for (name, state) in [
         ("Unifleet Station Services", "USE"),
         ("Unifleet Defense", "USE"),
@@ -421,15 +437,23 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
     directory
         .standings
         .retain(|(observer, _), _| lineage.contains(observer));
+    let mut administrators = std::collections::BTreeMap::new();
     let mut assets: Vec<_> = world
         .resource::<identity::IdentityIndex>()
         .0
         .iter()
         .filter_map(|(id, entity)| {
             let owner = world.get::<AssetOwner>(*entity)?.0;
-            if !can_access(world, account, *entity, Permission::View)
-                && !can_access(world, account, *entity, Permission::ManageAccess)
-            {
+            let administers = *administrators
+                .entry(owner)
+                .or_insert_with(|| source.administers(account, owner));
+            let access = world.get::<AssetAccess>(*entity);
+            let permits = |permission| {
+                administers
+                    || access.is_some_and(|access| access.0.permits_lineage(&lineage, permission))
+            };
+            let can_manage = permits(Permission::ManageAccess);
+            if !can_manage && !permits(Permission::View) {
                 return None;
             }
             Some(AssetAffiliation {
@@ -438,11 +462,8 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
                     .get::<super::vessel::Vessel>(*entity)
                     .map_or_else(|| id.to_string(), |vessel| vessel.vessel_name.to_string()),
                 owner,
-                access: world
-                    .get::<AssetAccess>(*entity)
-                    .map(|access| access.0.clone())
-                    .unwrap_or_default(),
-                can_manage: can_access(world, account, *entity, Permission::ManageAccess),
+                access: access.map(|access| access.0.clone()).unwrap_or_default(),
+                can_manage,
             })
         })
         .collect();

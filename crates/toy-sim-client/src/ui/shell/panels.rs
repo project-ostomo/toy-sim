@@ -165,6 +165,17 @@ pub(super) fn draw(
                                 );
                             }
                         });
+                        instruments::planning_progress(ui, &ship.travel);
+                        if ship.travel.search_limited {
+                            ui.label(
+                                egui::RichText::new("Estimated route · search budget reached")
+                                    .size(11.)
+                                    .color(MUTED),
+                            )
+                            .on_hover_text(
+                                "The planner published its best validated route after reaching the search budget. A faster or more economical route may exist.",
+                            );
+                        }
                         if ship
                             .travel
                             .fuel_budget
@@ -180,6 +191,7 @@ pub(super) fn draw(
                             ui,
                             &ship.travel,
                             model.navigation,
+                            &model.celestial_systems,
                             model.time_ns / 100_000_000,
                         );
                         if let Some(arrival) = ship

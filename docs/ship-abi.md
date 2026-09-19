@@ -1,6 +1,18 @@
-# Ship controller ABI (version 24)
+# Ship controller ABI (version 26)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v24`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v26`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 26 retains a typed `Destination` in each queued slip order and adds future
+epochs to destination resolution and aperture queries. `Resolve` takes
+`destination` and `after_seconds`. `SlipEligibility` takes separate departure and
+arrival offsets and returns remaining preparation time separately from flight
+duration. Programs using older ABI exports or import namespaces are rejected;
+rebuild them and their language bindings together.
+
+The public `Navigation` query pages gate facts for firmware route planning.
+Planning progress and the `search_limited` flag are published through the host
+travel state. The standard runtime permits 8 MiB of guest linear memory while
+retaining its metered instruction and native-work budgets.
 
 ABI 24 adds a persistent byte store for each computer. `persistent_read(out, capacity)`
 returns its length and copies the current data, or returns `ERR_BUFFER` if the
@@ -41,16 +53,16 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v24` and is one of the names in `abi::IMPORTS`.
-- It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
+- Every import comes from module `ship_v26` and is one of the names in `abi::IMPORTS`.
+- It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 
-Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `19`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
+Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `26`. Store limits: one instance, one memory up to 8 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
-For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=1048576` to the linker.
+For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=8388608` to the linker.
 
 ## Lifecycle
 
@@ -199,8 +211,8 @@ ABI 12 adds two imports that connect firmware to the authoritative world's trave
 **Gas.**
 
 1. The call cost (100) plus one gas per 8 input bytes.
-2. A pre-check that the computer holds at least the estimated work: `min(work, 1,000,000)` for `Tracks` and `Continue`, `100 + 1008 × min(limit, 256)` for `Beacons`, and 1000 for anything else. If it does not, the call returns `ERR_GAS`.
-3. After the query, the actual work: the page's `gas_used` for track queries, `100 + 1008` per returned beacon, or 1000.
+2. A pre-check that the computer holds at least the estimated work: `min(work, 1,000,000)` for `Tracks` and `Continue`, `100 + 1008 × min(limit, 256)` for `Beacons`, `100 + 4096 × min(limit, 128)` for `Navigation`, 131,072 for `SlipEligibility`, and 1000 for anything else. If it does not, the call returns `ERR_GAS`.
+3. After the query, the actual work: the page's `gas_used` for track queries, `100 + 1008 × returned_count` for beacons, `100 + 4096 × returned_count` for navigation endpoints, 131,072 for slip eligibility, or 1000.
 4. One gas per 8 reply bytes.
 
 **Errors.** Undecodable input, a failed query or an invalid query returns `ERR_ARGUMENT`. A host with no world provider returns `ERR_UNAVAILABLE`.
@@ -212,8 +224,17 @@ ABI 12 adds two imports that connect firmware to the authoritative world's trave
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
-| `SlipEligibility { origin, destination }` | `SlipEligibility { ready, duration_s }`: drive readiness and aperture eligibility, plus charging and transit time at the fitted drive rating |
-| `Resolve(Destination)` | `Pose` of a galactic position, beacon, or offset from a beacon or celestial body |
+| `Navigation { after, limit, reference }` | Public enabled gate endpoints in entity ID order, with `limit` from 1 to 128 and an exclusive `after` cursor. Returns a topology revision, current poses, paired exits, systems, staging positions and spatial slip eligibility. |
+| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds }` | `SlipEligibility { ready, preparation_s, duration_s }`: current drive readiness and predicted aperture eligibility at the two future epochs, remaining preparation time, and flight duration alone. |
+| `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials and orbital gates use ephemerides; other beacons extrapolate current linear and angular motion. |
+
+Prediction offsets are relative to the current query epoch and must be finite,
+nonnegative and at most one Julian year (`365.25 × 86400` seconds). A slip arrival
+offset must be at least its departure offset. `Navigation` staging eligibility
+excludes transient drive cooldown; `SlipEligibility` checks actual readiness.
+Preparation estimates include the remaining energy and minimum preparation delay,
+rounded to future simulation ticks because charging runs before the firmware
+callback. Flight duration uses the same tick rounding as the transit schedule.
 
 Track queries are metered as described in [server-client.md](server-client.md#metered-queries). A cursor expires 10 ticks after its query started. Each ship keeps separate cursor stores for its flight instance and its display instance.
 
@@ -225,14 +246,23 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 
 | `ProgramAction` | Effect |
 | --- | --- |
-| `Block { revision, reason }` | Sets travel status `Blocked(reason)` for the current travel revision. `reason` is at most 512 bytes. |
-| `Route { revision, orders, fuel_budget }` | Replaces the current order with the planned queue, preserves later orders, and increments the travel revision. The resulting queue must contain at most 256 orders. |
+| `Block { revision, reason }` | Cancels unfinished slip preparation, clears its ETA, and sets `Blocked` for the current travel revision, retaining the first 256 characters of `reason`. |
+| `PlanningProgress { revision, progress }` | Reports catalogue loading, graph construction or route search, with a completed count and optional total. |
+| `Route { revision, orders, fuel_budget, search_limited }` | Replaces the current order with the planned queue, preserves later orders, and increments the travel revision. The resulting queue must contain at most 256 orders. `search_limited` marks a candidate published after reaching the planner's search budget. |
 | `Estimate { revision, order, remaining_ticks, fuel_budget }` | Updates the active stage completion estimate; requires the current revision and order index. `None` clears the estimate. |
 | `CompleteOrder { revision, order }` | Advances travel progress |
-| `Slip(position)` | Starts slipdrive preparation |
+| `Slip(position)` | Starts preparation or updates a charging candidate while preserving the original start time and accumulated work. The concrete exit freezes when transit starts. |
 | `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Bay operations |
 
 The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
+
+A queued `Order::Slip` holds a typed `Destination`, including beacon-relative and
+celestial-relative references. Firmware predicts its future pose and supplies
+concrete galactic candidates through `ProgramAction::Slip`. Updating a charging
+candidate recomputes required energy; it does not restart preparation. The host
+validates route geometry before changing the queue and checks aperture admission
+again during preparation and arrival. Blocking cancels an unfinished charge.
+Candidate changes and cancellation do not refund energy already spent.
 
 ### Availability
 

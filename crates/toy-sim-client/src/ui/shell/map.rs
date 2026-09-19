@@ -1,5 +1,10 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use toy_sim_model::ownership::Bloc;
+
+mod canvas;
+mod layout;
+use layout::{ActiveRoute, Cache};
 
 #[derive(Default)]
 pub(super) struct State {
@@ -7,6 +12,34 @@ pub(super) struct State {
     pan: egui::Vec2,
     zoom: f32,
     preference: Option<travel::PlanningPreferences>,
+    search: String,
+    sovereignty: Option<Id>,
+    cache: Cache,
+    catalogue_hash: Option<[u8; 32]>,
+    active: ActiveRoute,
+    preview_key: Option<(Id, Id)>,
+    preview: Option<Vec<Id>>,
+    preview_gates: BTreeSet<Id>,
+}
+
+impl State {
+    fn preview(&mut self, origin: Option<Id>) {
+        let key = origin.zip(self.selected.or(origin));
+        if self.preview_key != key {
+            self.preview_key = key;
+            self.preview = key.and_then(|(start, end)| self.cache.network.route(start, end));
+            self.preview_gates = self.preview.iter().flatten().copied().collect();
+        }
+    }
+}
+
+fn polity_color(bloc: Option<Bloc>) -> egui::Color32 {
+    match bloc {
+        Some(Bloc::Union) => egui::Color32::from_rgb(119, 172, 239),
+        Some(Bloc::League) => egui::Color32::from_rgb(107, 210, 165),
+        Some(Bloc::NonAligned) => egui::Color32::from_rgb(223, 178, 105),
+        None => MUTED,
+    }
 }
 
 pub(super) fn draw(
@@ -15,7 +48,116 @@ pub(super) fn draw(
     model: &FrameModel,
     intents: &mut Vec<Intent>,
 ) {
+    if state.catalogue_hash != model.navigation_hash {
+        state.catalogue_hash = model.navigation_hash;
+        state.cache = Cache::default();
+        state.active = ActiveRoute::default();
+        state.preview_key = None;
+        state.preview = None;
+        state.preview_gates.clear();
+        state.selected = None;
+        state.pan = egui::Vec2::ZERO;
+        state.zoom = 0.;
+    }
+    match model.navigation_status {
+        NavigationStatus::Unavailable => {
+            ui.weak("Waiting for the galactic catalogue.");
+            return;
+        }
+        NavigationStatus::Loading => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Downloading galactic catalogue…");
+            });
+            return;
+        }
+        NavigationStatus::Failed(error) => {
+            ui.colored_label(
+                egui::Color32::LIGHT_RED,
+                "Galactic catalogue could not be loaded.",
+            );
+            ui.weak(error);
+            if ui.button("Retry download").clicked() {
+                intents.push(Intent::RetryNavigation);
+            }
+            return;
+        }
+        NavigationStatus::Ready => {}
+    }
     let catalogue = model.navigation;
+    if state.cache.update(catalogue) {
+        state.preview_key = None;
+        state.active = ActiveRoute::default();
+        state.selected = state
+            .selected
+            .filter(|id| state.cache.systems.contains_key(id));
+    }
+    let preference = preferences(ui, state, model);
+    instruments::fuel_budget(ui, model);
+    ui.separator();
+
+    let origin = model
+        .ship
+        .and_then(|ship| ship.pose.as_ref())
+        .and_then(|pose| state.cache.network.nearest(pose.position))
+        .or_else(|| {
+            let travel::Presence::Docked { host, .. } = &model.ship?.presence else {
+                return None;
+            };
+            state
+                .cache
+                .beacons
+                .get(host)
+                .map(|&index| catalogue.beacons[index].system)
+        });
+    let orders = model.ship.map_or(&[][..], |ship| {
+        &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
+    });
+    state.active.update(
+        &state.cache,
+        catalogue,
+        &model.celestial_systems,
+        origin,
+        orders,
+    );
+
+    let mut focus = None;
+    let mut fit = false;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("WORMHOLE NETWORK")
+                .strong()
+                .color(ACCENT),
+        );
+        ui.weak(format!("{} systems", catalogue.systems.len()));
+        if ui.small_button("Fit").clicked() {
+            fit = true;
+        }
+        if ui
+            .add_enabled(origin.is_some(), egui::Button::new("My ship").small())
+            .clicked()
+        {
+            focus = origin;
+        }
+    });
+    search(ui, state, model, &mut focus);
+    state.preview(origin);
+    egui::Panel::bottom(ui.id().with("map_footer"))
+        .frame(egui::Frame::NONE)
+        .show_separator_line(false)
+        .show(ui, |ui| {
+            canvas::legend(ui);
+            selected_system(ui, state, model, origin, preference, intents);
+        });
+    canvas::draw(ui, state, model, origin, focus, fit);
+    state.preview(origin);
+}
+
+fn preferences(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+) -> travel::PlanningPreferences {
     let mut preference = state.preference.unwrap_or_else(|| {
         model
             .ship
@@ -23,8 +165,11 @@ pub(super) fn draw(
     });
     ui.horizontal(|ui| {
         ui.label("Fuel priority");
-        let response = ui.add(egui::Slider::new(&mut preference.fuel_priority, 0.1..=1000.)
-            .logarithmic(true).suffix("×"));
+        let response = ui.add(
+            egui::Slider::new(&mut preference.fuel_priority, 0.1..=1000.)
+                .logarithmic(true)
+                .suffix("×"),
+        );
         if response.changed() {
             state.preference = Some(preference);
         }
@@ -33,358 +178,176 @@ pub(super) fn draw(
     if let (Some(ship), Some(details)) = (model.ship, model.details) {
         let seconds = preference.cost(details.mass_kg).seconds_per_kg * 1000.;
         ui.small(format!(
-            "Saving 1 t of propellant is worth {:.1} minutes of travel time",
+            "Saving 1 t of propellant is worth {:.1} minutes",
             seconds / 60.
         ));
         if preference != ship.travel.preferences && !ship.travel.orders.is_empty() {
             ui.weak("Set destination again to replan with this preference.");
         }
     }
-    instruments::fuel_budget(ui, model);
-    ui.separator();
-    let orders = model.ship.map_or(&[][..], |ship| {
-        &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
-    });
-    let connected: Vec<_> = catalogue
-        .systems
-        .iter()
-        .filter(|system| {
-            catalogue
-                .beacons
-                .iter()
-                .any(|beacon| beacon.system == system.id && beacon.gate_exit.is_some())
-        })
-        .collect();
-    let origin = model
-        .ship
-        .and_then(|ship| ship.pose.as_ref())
-        .and_then(|pose| {
-            connected.iter().min_by(|a, b| {
-                a.position
-                    .relative_to(pose.position)
-                    .length_squared()
-                    .total_cmp(&b.position.relative_to(pose.position).length_squared())
-            })
-        })
-        .map(|s| s.id);
-    let selected = state.selected.or(origin);
-    let route = origin
-        .zip(selected)
-        .and_then(|(a, b)| toy_sim_model::navigation::gate_route(catalogue, a, b));
+    preference
+}
+
+fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut Option<Id>) {
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("WORMHOLE NETWORK")
-                .strong()
-                .color(ACCENT),
+        ui.add(
+            egui::TextEdit::singleline(&mut state.search)
+                .hint_text("Find a star system…")
+                .desired_width(220.),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Recenter").clicked() {
-                state.pan = egui::Vec2::ZERO;
-                state.zoom = 1.;
-            }
-            ui.weak("Drag to pan · scroll to zoom");
-        });
-    });
-    let height = (ui.available_height() - 125.).max(150.);
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), height),
-        egui::Sense::click_and_drag(),
-    );
-    if state.zoom == 0. {
-        state.zoom = 1.;
-    }
-    if response.dragged() {
-        state.pan += ui.input(|i| i.pointer.delta());
-    }
-    if response.hovered() {
-        state.zoom =
-            (state.zoom * (ui.input(|i| i.smooth_scroll_delta.y) * 0.002).exp()).clamp(0.5, 3.);
-    }
-    let painter = ui.painter().with_clip_rect(rect);
-    painter.rect_filled(rect, 4., egui::Color32::from_rgb(9, 17, 26));
-    for x in (0..rect.width() as usize).step_by(24) {
-        for y in (0..rect.height() as usize).step_by(24) {
-            painter.circle_filled(
-                rect.min + egui::vec2(x as f32, y as f32),
-                0.7,
-                egui::Color32::from_rgb(30, 45, 58),
-            );
-        }
-    }
-    let anchor = connected.first().map(|s| s.position).unwrap_or_default();
-    let extents = connected
-        .iter()
-        .map(|s| s.position.relative_to(anchor).truncate())
-        .fold((glam::DVec2::ZERO, glam::DVec2::ZERO), |(lo, hi), p| {
-            (lo.min(p), hi.max(p))
-        });
-    let span = (extents.1 - extents.0).max(glam::DVec2::ONE);
-    let mut occupied = std::collections::BTreeSet::new();
-    let positions: BTreeMap<_, _> = connected
-        .iter()
-        .map(|system| {
-            let p = (system.position.relative_to(anchor).truncate() - extents.0) / span;
-            let mut slot = ((p.x * 6.).round() as i32, (p.y * 3.).round() as i32);
-            while !occupied.insert(slot) {
-                slot.1 += 1;
-            }
-            let grid = egui::vec2(slot.0 as f32 / 6. - 0.5, slot.1 as f32 / 3. - 0.5);
-            (
-                system.id,
-                rect.center()
-                    + state.pan
-                    + grid
-                        * egui::vec2(
-                            (rect.width() - 170.).max(100.),
-                            (rect.height() - 95.).max(60.),
-                        )
-                        * state.zoom,
+        egui::ComboBox::from_id_salt("map-sovereignty")
+            .selected_text(
+                state
+                    .sovereignty
+                    .and_then(|id| model.society.directory.sovereignties.get(&id))
+                    .map_or("All sovereignties", |s| s.name.as_str()),
             )
-        })
-        .collect();
-    for gate in &catalogue.beacons {
-        let Some(exit) = gate
-            .gate_exit
-            .and_then(|id| catalogue.beacons.iter().find(|b| b.id == id))
-        else {
-            continue;
-        };
-        if gate.id > exit.id {
-            continue;
-        }
-        let (Some(&a), Some(&b)) = (positions.get(&gate.system), positions.get(&exit.system))
-        else {
-            continue;
-        };
-        let active = orders.iter().any(|order| {
-            matches!(&order.action, travel::Order::Jump(entry) if *entry == gate.id || *entry == exit.id)
-        });
-        let preview = route
-            .as_ref()
-            .is_some_and(|route| route.contains(&gate.id) || route.contains(&exit.id));
-        let delta = b - a;
-        let diagonal = delta.x.abs().min(delta.y.abs());
-        let bend = a + egui::vec2(delta.x.signum(), delta.y.signum()) * diagonal;
-        let color = if active {
-            egui::Color32::from_rgb(255, 199, 98)
-        } else if preview {
-            egui::Color32::from_rgb(91, 142, 166)
-        } else {
-            egui::Color32::from_rgb(51, 101, 131)
-        };
-        let close_to_segment = |p: egui::Pos2, a: egui::Pos2, b: egui::Pos2| {
-            let d = b - a;
-            let t = ((p - a).dot(d) / d.length_sq().max(0.001)).clamp(0., 1.);
-            p.distance(a + d * t) < 18.
-        };
-        let crosses_stop = positions.iter().any(|(id, &p)| {
-            *id != gate.system
-                && *id != exit.system
-                && (close_to_segment(p, a, bend) || close_to_segment(p, bend, b))
-        });
-        let points = if crosses_stop {
-            vec![
-                a,
-                egui::pos2(a.x, (a.y + b.y) * 0.5),
-                egui::pos2(b.x, (a.y + b.y) * 0.5),
-                b,
-            ]
-        } else {
-            vec![a, bend, b]
-        };
-        painter.add(egui::Shape::line(
-            points,
-            egui::Stroke::new(if active { 3. } else { 2. }, color),
-        ));
-    }
-    let nearest_system = |position: GalacticPosition| {
-        catalogue
-            .systems
-            .iter()
-            .min_by(|a, b| {
-                a.position
-                    .relative_to(position)
-                    .length_squared()
-                    .total_cmp(&b.position.relative_to(position).length_squared())
-            })
-            .map(|system| system.id)
-    };
-    let mut cursor = origin;
-    for order in orders {
-        match &order.action {
-            travel::Order::Jump(entry) => {
-                cursor = catalogue
-                    .beacons
-                    .iter()
-                    .find(|b| b.id == *entry)
-                    .and_then(|b| b.gate_exit)
-                    .and_then(|exit| catalogue.beacons.iter().find(|b| b.id == exit))
-                    .map(|b| b.system);
-            }
-            travel::Order::Slip { destination } => {
-                let next = nearest_system(*destination);
-                if let Some((a, b)) = cursor
-                    .zip(next)
-                    .and_then(|(a, b)| Some((*positions.get(&a)?, *positions.get(&b)?)))
-                {
-                    if a.distance(b) > 1. {
-                        painter.add(egui::Shape::dashed_line(
-                            &[a, b],
-                            egui::Stroke::new(2., ACCENT),
-                            7.,
-                            5.,
-                        ));
-                        painter.text(
-                            a.lerp(b, 0.5),
-                            egui::Align2::CENTER_BOTTOM,
-                            "SLIP",
-                            egui::FontId::monospace(10.),
-                            ACCENT,
-                        );
-                    }
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut state.sovereignty, None, "All sovereignties");
+                for sovereignty in model.society.directory.sovereignties.values() {
+                    ui.selectable_value(
+                        &mut state.sovereignty,
+                        Some(sovereignty.id),
+                        &sovereignty.name,
+                    );
                 }
-                cursor = next;
-            }
-            _ => {}
-        }
-    }
-    for system in connected {
-        let p = positions[&system.id];
-        let hit = ui.interact(
-            egui::Rect::from_center_size(p, egui::vec2(28., 28.)),
-            ui.id().with(system.id),
-            egui::Sense::click(),
-        );
-        if hit.clicked() {
-            state.selected = Some(system.id);
-        }
-        hit.on_hover_text(format!("{}\nClick to plan a route", system.name));
-        let is_origin = origin == Some(system.id);
-        let color = if selected == Some(system.id) {
-            egui::Color32::WHITE
-        } else if is_origin {
-            ACCENT
-        } else {
-            MUTED
-        };
-        painter.circle_filled(p, 8., SURFACE);
-        painter.circle_stroke(p, 8., egui::Stroke::new(2., color));
-        if is_origin {
-            painter.circle_filled(p, 3., ACCENT);
-        }
-        if selected == Some(system.id) {
-            painter.circle_stroke(p, 13., egui::Stroke::new(1., ACCENT));
-        }
-        painter.text(
-            p + egui::vec2(0., 19.),
-            egui::Align2::CENTER_TOP,
-            &system.name,
-            egui::FontId::proportional(12.),
-            color,
-        );
-        if is_origin {
-            painter.text(
-                p + egui::vec2(0., -17.),
-                egui::Align2::CENTER_BOTTOM,
-                "YOU ARE HERE",
-                egui::FontId::proportional(9.),
-                ACCENT,
-            );
-        }
-    }
-    ui.add_space(6.);
-    if let Some(system) = catalogue.systems.iter().find(|s| Some(s.id) == selected) {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&system.name).strong().size(16.));
-            ui.weak(route.as_ref().map_or_else(
-                || "No connected route".into(),
-                |r| {
-                    format!(
-                        "{} gate hops · flight computer compares slip routes",
-                        r.len()
-                    )
-                },
-            ));
-        });
-        ui.horizontal(|ui| {
-            let destination = catalogue
-                .beacons
-                .iter()
-                .find(|b| b.system == system.id)
-                .map(|b| travel::Order::TravelTo(travel::Destination::Beacon(b.id)));
-            let orders: Vec<_> = destination.into_iter().collect();
-            if ui
-                .add_enabled(
-                    model.connected && route.as_ref().is_some_and(|r| !r.is_empty()),
-                    egui::Button::new("Set destination"),
-                )
-                .clicked()
-            {
-                intents.push(Intent::PlanRoute(orders.clone(), false, preference));
-            }
-            let endpoint = model
-                .ship
-                .and_then(|ship| {
-                    ship.travel
-                        .orders
-                        .iter()
-                        .skip(ship.travel.order)
-                        .rev()
-                        .find_map(|order| instruments::order_system(&order.action, catalogue))
-                })
-                .or(origin);
-            let appended_route = endpoint.and_then(|start| {
-                toy_sim_model::navigation::gate_route(catalogue, start, system.id)
             });
-            if ui
-                .add_enabled(
-                    model.connected && appended_route.as_ref().is_some_and(|r| !r.is_empty()),
-                    egui::Button::new("Add waypoint"),
-                )
-                .clicked()
-            {
-                intents.push(Intent::PlanRoute(orders.clone(), true, preference));
-            }
-            for station in catalogue
-                .beacons
-                .iter()
-                .filter(|b| b.system == system.id && b.docking)
-            {
+        if !state.search.is_empty() && ui.small_button("Clear").clicked() {
+            state.search.clear();
+        }
+    });
+    if state.search.trim().is_empty() {
+        return;
+    }
+
+    let matches = state
+        .cache
+        .search(model.navigation, &state.search, state.sovereignty);
+    ui.weak(format!("{} matches", matches.len()));
+    egui::ScrollArea::vertical()
+        .id_salt("system-search-results")
+        .max_height(108.)
+        .show_rows(ui, 24., matches.len(), |ui, rows| {
+            for row in rows {
+                let system = &model.navigation.systems[matches[row]];
+                let sovereignty = system
+                    .sovereignty
+                    .and_then(|id| model.society.directory.sovereignties.get(&id));
+                let label = format!(
+                    "{}  ·  {}",
+                    system.name,
+                    sovereignty.map_or("Unclaimed", |s| s.name.as_str())
+                );
                 if ui
-                    .add_enabled(
-                        model.connected && route.is_some(),
-                        egui::Button::new(format!("Dock · {}", station.name)),
-                    )
+                    .selectable_label(state.selected == Some(system.id), label)
                     .clicked()
                 {
-                    let append = ui.input(|i| i.modifiers.shift);
-                    let planned = if append { &appended_route } else { &route };
-                    if planned.is_some() {
-                        intents.push(Intent::PlanRoute(
-                            vec![travel::Order::Dock(station.id)],
-                            append,
-                            preference,
-                        ));
-                    }
+                    state.selected = Some(system.id);
+                    *focus = Some(system.id);
                 }
             }
         });
-        if let Some(route) = route {
-            let names: Vec<_> = route
-                .iter()
-                .filter_map(|entry| {
-                    catalogue
-                        .beacons
-                        .iter()
-                        .find(|b| b.id == *entry)
-                        .map(|b| b.name.as_str())
-                })
-                .collect();
-            ui.label(
-                egui::RichText::new(format!("Gate alternative: {}", names.join("  →  ")))
-                    .size(11.)
-                    .color(ACCENT),
-            );
+}
+
+fn selected_system(
+    ui: &mut egui::Ui,
+    state: &State,
+    model: &FrameModel,
+    origin: Option<Id>,
+    preference: travel::PlanningPreferences,
+    intents: &mut Vec<Intent>,
+) {
+    let catalogue = model.navigation;
+    let Some(system) = state
+        .selected
+        .or(origin)
+        .and_then(|id| state.cache.systems.get(&id))
+        .map(|&index| &catalogue.systems[index])
+    else {
+        ui.weak("Select a system or search by name to plan a route.");
+        return;
+    };
+    let sovereignty = system
+        .sovereignty
+        .and_then(|id| model.society.directory.sovereignties.get(&id));
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(&system.name).strong().size(16.));
+        ui.colored_label(
+            polity_color(sovereignty.map(|s| s.bloc)),
+            sovereignty.map_or("Unclaimed", |s| s.name.as_str()),
+        );
+        ui.weak(format!("Population {}", population(system.population)));
+    });
+    ui.weak(state.preview.as_ref().map_or_else(
+        || "No gate connection".into(),
+        |route| {
+            format!(
+                "{} gate hops · computer compares fuel, time and slip",
+                route.len()
+            )
+        },
+    ));
+
+    let destination = catalogue
+        .beacons
+        .iter()
+        .find(|beacon| beacon.system == system.id && beacon.gate_exit.is_some())
+        .map(|beacon| travel::Order::TravelTo(travel::Destination::Beacon(beacon.id)));
+    ui.horizontal(|ui| {
+        let available = model.connected && model.ship.is_some() && destination.is_some();
+        if ui
+            .add_enabled(available, egui::Button::new("Set destination"))
+            .clicked()
+        {
+            intents.push(Intent::PlanRoute(
+                destination.clone().into_iter().collect(),
+                false,
+                preference,
+            ));
         }
+        if ui
+            .add_enabled(available, egui::Button::new("Add waypoint"))
+            .clicked()
+        {
+            intents.push(Intent::PlanRoute(
+                destination.clone().into_iter().collect(),
+                true,
+                preference,
+            ));
+        }
+        let stations: Vec<_> = catalogue
+            .beacons
+            .iter()
+            .filter(|beacon| beacon.system == system.id && beacon.docking)
+            .collect();
+        if !stations.is_empty() {
+            ui.add_enabled_ui(available, |ui| {
+                ui.menu_button("Dock at…", |ui| {
+                    for station in stations {
+                        if ui.button(&station.name).clicked() {
+                            intents.push(Intent::PlanRoute(
+                                vec![travel::Order::Dock(station.id)],
+                                ui.input(|i| i.modifiers.shift),
+                                preference,
+                            ));
+                            ui.close();
+                        }
+                    }
+                });
+            });
+        }
+    });
+}
+
+fn population(value: u64) -> String {
+    if value >= 1_000_000_000 {
+        format!("{:.1} billion", value as f64 / 1e9)
+    } else if value >= 1_000_000 {
+        format!("{:.1} million", value as f64 / 1e6)
+    } else {
+        value.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests;

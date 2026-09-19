@@ -441,6 +441,7 @@ impl Session {
                         let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
                         state.0.revision += 1;
                         state.0.autopilot_enabled = enabled;
+                        state.0.planning = None;
                         state.0.status = if enabled {
                             travel::Status::Planning
                         } else {
@@ -634,13 +635,12 @@ impl Session {
             .map_or(self.sent_event, |event| event.sequence);
         self.sequence += 1;
         let mut owned: Vec<_> = world
-            .resource::<identity::IdentityIndex>()
-            .0
-            .iter()
-            .filter_map(|(id, &entity)| {
-                observe(world, self.account, *id)
+            .query_filtered::<(Entity, &Identity), With<super::vessel::Vessel>>()
+            .iter(world)
+            .filter_map(|(entity, id)| {
+                observe(world, self.account, id.0)
                     .is_ok()
-                    .then_some((*id, entity))
+                    .then_some((id.0, entity))
             })
             .collect();
         let focused: BTreeSet<_> = self
@@ -657,7 +657,11 @@ impl Session {
             .filter_map(|(_, entity)| telemetry(world, *entity))
             .collect();
         let mut presentation = PresentationFrame::default();
-        presentation.navigation = super::infrastructure::catalogue(world);
+        presentation.navigation = super::infrastructure::navigation_snapshot(
+            world,
+            &views,
+            &owned.iter().map(|(_, entity)| *entity).collect::<Vec<_>>(),
+        );
         presentation.ships = owned
             .iter()
             .filter(|(id, _)| focused.contains(id))

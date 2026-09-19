@@ -7077,6 +7077,7 @@ dependencies = [
  "toy-sim-model",
  "toy-sim-ship-api",
  "toy-sim-ships",
+ "toy-sim-universe",
  "wasmtime",
  "wat",
 ]
@@ -7142,13 +7143,18 @@ name = "toy-sim-universe"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "blake3",
  "glam 0.32.1",
  "hifitime",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
  "serde",
+ "serde_json",
  "serde_yml",
  "smol_str 0.3.6",
  "toml",
  "toy-sim-space",
+ "toy-sim-spatial",
  "toy-sim-stars",
 ]
 

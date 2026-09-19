@@ -4,7 +4,7 @@ use crate::sim::{
     spatial::SpatialBody,
 };
 use bevy::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use toy_sim_spatial::{Entry, SpatialHash};
 
 #[derive(Resource, Default)]
@@ -12,6 +12,7 @@ pub struct TravelGeometry {
     index: SpatialHash,
     entities: Vec<Entity>,
     slots: HashMap<Entity, u32>,
+    free: Vec<u32>,
 }
 
 pub fn refresh(world: &mut World) {
@@ -28,19 +29,21 @@ pub fn refresh(world: &mut World) {
             Some((entity, transform.translation_um, radius))
         })
         .collect();
-    let mut geometry = TravelGeometry::default();
+    let mut geometry = world
+        .remove_resource::<TravelGeometry>()
+        .unwrap_or_default();
+    let live: HashSet<_> = entries.iter().map(|(entity, _, _)| *entity).collect();
+    let removed: Vec<_> = geometry
+        .slots
+        .keys()
+        .filter(|entity| !live.contains(entity))
+        .copied()
+        .collect();
+    for entity in removed {
+        geometry.remove(entity);
+    }
     for (entity, position, radius) in entries {
-        let slot = u32::try_from(geometry.entities.len()).expect("too many travel obstacles");
-        geometry.entities.push(entity);
-        geometry.slots.insert(entity, slot);
-        geometry.index.insert(
-            slot,
-            Entry {
-                position,
-                radius_m: radius,
-                luminosity: 0.0,
-            },
-        );
+        geometry.put(entity, position, radius);
     }
     world.insert_resource(geometry);
 }
@@ -71,24 +74,42 @@ pub fn update(world: &mut World, entity: Entity) {
     };
     let mut geometry = world.resource_mut::<TravelGeometry>();
     if let Some((position, radius)) = proxy {
-        let slot = if let Some(&slot) = geometry.slots.get(&entity) {
+        geometry.put(entity, position, radius);
+    } else {
+        geometry.remove(entity);
+    }
+}
+
+impl TravelGeometry {
+    fn put(&mut self, entity: Entity, position: GalacticPosition, radius_m: f64) {
+        let slot = if let Some(&slot) = self.slots.get(&entity) {
             slot
         } else {
-            let slot = u32::try_from(geometry.entities.len()).expect("too many travel obstacles");
-            geometry.entities.push(entity);
-            geometry.slots.insert(entity, slot);
+            let slot = self.free.pop().unwrap_or_else(|| {
+                let slot = u32::try_from(self.entities.len()).expect("too many travel obstacles");
+                self.entities.push(Entity::PLACEHOLDER);
+                slot
+            });
+            self.entities[slot as usize] = entity;
+            self.slots.insert(entity, slot);
             slot
         };
-        geometry.index.insert(
+        self.index.insert(
             slot,
             Entry {
                 position,
-                radius_m: radius,
+                radius_m,
                 luminosity: 0.0,
             },
         );
-    } else if let Some(&slot) = geometry.slots.get(&entity) {
-        geometry.index.remove(slot);
+    }
+
+    fn remove(&mut self, entity: Entity) {
+        if let Some(slot) = self.slots.remove(&entity) {
+            self.index.remove(slot);
+            self.entities[slot as usize] = Entity::PLACEHOLDER;
+            self.free.push(slot);
+        }
     }
 }
 
