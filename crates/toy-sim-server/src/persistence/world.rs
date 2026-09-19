@@ -1920,8 +1920,25 @@ mod tests {
             departed: tick,
             next_attempt: tick,
         });
+        let saved_travel = world.get::<travel::Travel>(ship).unwrap().0.clone();
         let bytes = capture(world).unwrap();
         restore(world, &bytes).unwrap();
+        let restored_ship = identity::lookup(world, ship_id).unwrap();
+        assert_eq!(
+            world.get::<travel::Travel>(restored_ship).unwrap().0,
+            saved_travel
+        );
+        assert!(matches!(
+            world.get::<travel::PresenceState>(restored_ship).unwrap().0,
+            Presence::SlipTransit(_)
+        ));
+        assert_eq!(
+            world
+                .get::<travel::Transit>(restored_ship)
+                .unwrap()
+                .destination,
+            destination
+        );
 
         for _ in 0..3 {
             app.update();
@@ -1945,7 +1962,8 @@ mod tests {
         let travel = &world.get::<travel::Travel>(ship).unwrap().0;
         assert_eq!(travel.orders, orders);
         assert_eq!(travel.order, 1);
-        assert_eq!(travel.revision, 31);
+        assert_eq!(travel.revision, saved_travel.revision.wrapping_add(1));
+        assert_eq!(travel.status, Status::Active);
         assert!(travel.autopilot_enabled);
         assert!(world.resource::<simulation::SimulationCounters>().ticks > tick);
     }

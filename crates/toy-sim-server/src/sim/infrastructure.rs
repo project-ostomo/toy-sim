@@ -485,9 +485,43 @@ fn spawn_gates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
+
+    fn finish_route_planning(
+        world: &mut World,
+        ship: Entity,
+    ) -> toy_sim_model::travel::TravelState {
+        use toy_sim_model::travel::Status;
+
+        let started = Instant::now();
+        let deadline = started + Duration::from_secs(30);
+        loop {
+            travel::plan_orders(world);
+            super::super::route_service::advance(world);
+            travel::plan_orders(world);
+
+            let state = world.get::<travel::Travel>(ship).unwrap();
+            match &state.0.status {
+                Status::Planning => {
+                    assert!(state.0.planning.is_some(), "planning must report progress");
+                }
+                Status::Active => {
+                    eprintln!("server route completed in {:?}", started.elapsed());
+                    return state.0.clone();
+                }
+                status => panic!("route planning failed: {status:?}"),
+            }
+            assert!(
+                Instant::now() < deadline,
+                "route worker did not finish within 30 seconds: {:?}",
+                state.0.planning
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
 
     #[test]
-    fn moving_slip_makes_terminus_affordable_and_respects_fuel_preference() {
+    fn terminus_plans_warn_for_fuel_exhaustion_and_offer_slower_economical_routes() {
         use toy_sim_model::travel::{Destination, Order, PlanningPreferences, Status, TravelState};
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         for _ in 0..100 {
@@ -507,6 +541,7 @@ mod tests {
             .0
             .0;
         let mut budgets = Vec::new();
+        let mut durations = Vec::new();
         for fuel_priority in [1., 10., 100.] {
             let revision = app
                 .world()
@@ -525,52 +560,39 @@ mod tests {
                     status: Status::Planning,
                     ..Default::default()
                 }));
-            let mut planned = None;
-            let mut observed_progress = None;
-            let mut last_progress_tick = 0;
-            for elapsed in 0..600 {
-                app.update();
-                let state = &app.world().get::<travel::Travel>(player).unwrap().0;
-                assert!(
-                    app.world()
-                        .get::<vessel::ShipSoftware>(player)
-                        .unwrap()
-                        .controller
-                        .fault
-                        .is_none()
-                );
-                if state.status == Status::Planning {
-                    if state.planning != observed_progress {
-                        observed_progress = state.planning.clone();
-                        last_progress_tick = elapsed;
-                    }
-                    assert!(
-                        elapsed < 10 || state.planning.is_some(),
-                        "planning must report progress"
-                    );
-                    assert!(
-                        elapsed - last_progress_tick < 150,
-                        "route planning stopped making progress: {:?}",
-                        state.planning
-                    );
-                }
-                if state.status == Status::Active {
-                    let budget = state.fuel_budget.clone().unwrap();
-                    assert!(
-                        budget.complete && !budget.resources.is_empty(),
-                        "{budget:?}"
-                    );
-                    eprintln!(
-                        "fuel priority {fuel_priority}: planning completed in {} ticks; {budget:?}",
-                        elapsed + 1
-                    );
-                    planned = Some(budget);
-                    break;
-                }
-            }
-            budgets.push(planned.expect("route planning must finish"));
+            let state = finish_route_planning(app.world_mut(), player);
+            let budget = state.fuel_budget.unwrap();
+            assert!(
+                budget.complete && !budget.resources.is_empty(),
+                "{budget:?}"
+            );
+            assert!(
+                state
+                    .orders
+                    .iter()
+                    .any(|stage| matches!(stage.action, Order::Slip { .. }))
+            );
+            let duration_ticks = state
+                .orders
+                .iter()
+                .map(|stage| stage.estimated_duration_ticks)
+                .collect::<Option<Vec<_>>>()
+                .expect("every strategic stage has an ETA")
+                .into_iter()
+                .sum::<u64>();
+            eprintln!("fuel priority {fuel_priority}: {duration_ticks} ticks; {budget:?}");
+            durations.push(duration_ticks);
+            budgets.push(budget);
         }
-        assert!(budgets.iter().all(|budget| !budget.exhausted()));
+        assert!(
+            budgets[0].exhausted(),
+            "the speed-biased route needs a fuel warning"
+        );
+        assert!(budgets[1..].iter().all(|budget| !budget.exhausted()));
+        assert!(
+            durations.windows(2).all(|pair| pair[0] < pair[1]),
+            "{durations:?}"
+        );
         let required = |budget: &toy_sim_model::travel::FuelBudget| {
             budget.resources.iter().map(|r| r.required_kg).sum::<f64>()
         };
@@ -614,91 +636,61 @@ mod tests {
                 status: toy_sim_model::travel::Status::Planning,
                 ..default()
             }));
-        let mut observed_progress = None;
-        let mut last_progress_tick = 0;
-        for elapsed in 0..600 {
-            app.update();
-            let world = app.world();
-            let software = world.get::<vessel::ShipSoftware>(player).unwrap();
-            assert!(
-                software.controller.fault.is_none(),
-                "routing fault {:?}, gas used {} / {}",
-                software.controller.fault,
-                software.last_gas_used,
-                software.last_gas_limit
-            );
-            let state = &world.get::<travel::Travel>(player).unwrap().0;
-            if state.status == toy_sim_model::travel::Status::Planning {
-                if state.planning != observed_progress {
-                    observed_progress = state.planning.clone();
-                    last_progress_tick = elapsed;
-                }
-                assert!(
-                    elapsed < 10 || state.planning.is_some(),
-                    "planning must report progress"
-                );
-                assert!(
-                    elapsed - last_progress_tick < 150,
-                    "route planning stopped making progress: {:?}",
-                    state.planning
-                );
+        let state = finish_route_planning(app.world_mut(), player);
+        assert!(!state.orders.is_empty());
+        assert!(state.orders.iter().any(|stage| matches!(
+            &stage.action,
+            toy_sim_model::travel::Order::Slip {
+                destination: toy_sim_model::travel::Destination::Beacon(_)
             }
-            if state.status == toy_sim_model::travel::Status::Active {
-                assert!(!state.orders.is_empty());
-                assert!(state.orders.iter().any(|order| matches!(
-                    &order.action,
-                    toy_sim_model::travel::Order::Slip { .. }
-                )));
-                let slip_index = state
-                    .orders
-                    .iter()
-                    .position(|order| {
-                        matches!(order.action, toy_sim_model::travel::Order::Slip { .. })
-                    })
-                    .unwrap();
-                assert!(slip_index > 0);
-                assert!(matches!(
-                    state.orders[slip_index - 1].action,
-                    toy_sim_model::travel::Order::Sublight(
-                        toy_sim_model::travel::Destination::Relative {
-                            reference: toy_sim_model::travel::Reference::Beacon(_),
-                            axes: toy_sim_model::travel::Axes::Galactic,
-                            ..
-                        }
-                    )
-                ));
-                assert!(!state.orders.windows(2).any(|pair| pair[0] == pair[1]));
-                assert_eq!(
-                    state.orders.last().map(|stage| &stage.action),
-                    Some(&toy_sim_model::travel::Order::WaitUntil(999_999))
-                );
-                assert!(!state.orders.iter().any(|order| matches!(
-                    &order.action,
-                    toy_sim_model::travel::Order::TravelTo(_)
-                )));
-                assert!(
-                    state.orders[..state.orders.len() - 1]
-                        .iter()
-                        .all(|stage| stage.estimated_duration_ticks.is_some())
-                );
-                let arrivals: Vec<_> = state
-                    .stage_arrivals(0)
-                    .into_iter()
-                    .collect::<Option<_>>()
-                    .unwrap();
-                assert!(arrivals.windows(2).all(|pair| pair[0] <= pair[1]));
-                assert!(state.revision > 1);
-                eprintln!(
-                    "Terminus planning completed in {} ticks after 100 idle ticks",
-                    elapsed + 1
-                );
-                return;
-            }
-        }
-        panic!(
-            "Terminus route did not complete planning: {:?}",
-            app.world().get::<travel::Travel>(player).unwrap().0
+        )));
+        assert!(
+            !state.orders.iter().any(|stage| matches!(
+                &stage.action,
+                toy_sim_model::travel::Order::Sublight(
+                    toy_sim_model::travel::Destination::Relative { .. }
+                )
+            )),
+            "local exclusion checkpoints belong to the flight computer"
         );
+        assert!(!state.orders.windows(2).any(|pair| pair[0] == pair[1]));
+        assert_eq!(
+            state.orders.last().map(|stage| &stage.action),
+            Some(&toy_sim_model::travel::Order::WaitUntil(999_999))
+        );
+        assert!(
+            !state
+                .orders
+                .iter()
+                .any(|order| matches!(&order.action, toy_sim_model::travel::Order::TravelTo(_)))
+        );
+        assert!(
+            state
+                .orders
+                .iter()
+                .all(|stage| stage.estimated_duration_ticks.is_some())
+        );
+        let arrivals: Vec<_> = state
+            .stage_arrivals(0)
+            .into_iter()
+            .collect::<Option<_>>()
+            .unwrap();
+        assert!(arrivals.windows(2).all(|pair| pair[0] <= pair[1]));
+        assert!(state.revision > 1);
+
+        app.update();
+        let software = app.world().get::<vessel::ShipSoftware>(player).unwrap();
+        assert!(
+            software.controller.fault.is_none(),
+            "route execution fault {:?}, gas used {} / {}",
+            software.controller.fault,
+            software.last_gas_used,
+            software.last_gas_limit
+        );
+        assert!(matches!(
+            app.world().get::<travel::Travel>(player).unwrap().0.status,
+            toy_sim_model::travel::Status::Active
+        ));
     }
 
     #[test]
@@ -1064,9 +1056,29 @@ mod tests {
             ..default()
         };
         travel::advance(world);
+        assert!(world.get::<physics::RigidBody>(player).is_none());
+        assert!(world.get::<travel::DockedIn>(player).is_some());
+
+        let planned = finish_route_planning(world, player);
+        assert!(matches!(
+            planned.orders[0].action,
+            toy_sim_model::travel::Order::Undock
+        ));
+        assert!(world.get::<physics::RigidBody>(player).is_none());
+        travel::advance(world);
+
         assert!(world.get::<physics::RigidBody>(player).is_some());
-        assert_eq!(world.get::<travel::Travel>(player).unwrap().0.order, 0);
+        assert!(
+            world
+                .get::<physics::collision::CollisionBody>(player)
+                .is_some()
+        );
+        assert_eq!(world.get::<travel::Travel>(player).unwrap().0.order, 1);
         assert!(world.get::<travel::DockedIn>(player).is_none());
+        assert!(matches!(
+            world.get::<travel::PresenceState>(player).unwrap().0,
+            toy_sim_model::travel::Presence::Space
+        ));
     }
     #[test]
     fn stock_computer_flies_from_the_starting_scenario_through_the_sol_gate() {

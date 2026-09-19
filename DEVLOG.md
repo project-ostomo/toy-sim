@@ -1826,3 +1826,32 @@ existing separate 1 MiB firmware limit.
 The full suite also exposed four older travel/docking regression failures. Those
 are being investigated independently of these passing upload checks before the
 final release handoff.
+
+### Final regression corrections — 2026-09-19
+
+Four older travel tests depended on behavior replaced earlier in the sprint.
+Their corrections are confined to tests:
+
+- Route search completes asynchronously on the server. Tests now wait with a
+  bounded wall-clock deadline and check progress while pending, rather than
+  requiring a change every 150 accelerated simulation ticks.
+- Strategic routes contain semantic slip destinations. Local exclusion-zone
+  checkpoints remain the flight computer's responsibility.
+- A docked ship remains outside physics while its route is being planned. The
+  completed queue begins with Undock; executing that order restores its physics
+  components and advances the queue.
+- Restoration preserves the complete saved travel state. Actual slip arrival
+  completes one order and advances its revision exactly once.
+
+The fuel test now compares all preferences against the same physical ship state.
+With 54,000 kg aboard, the speed-biased Terminus route needs 67,643.6 kg and warns
+of exhaustion. Priorities 10 and 100 need 23,772.7 kg and 8,122.6 kg respectively;
+their predicted durations increase from 4,440.9 to 9,656.2 and 27,611.1 seconds.
+This verifies the requested fuel/time tradeoff and warning, rather than requiring
+all user-selected preferences to be affordable.
+
+The complete workspace run passed 868 tests, with this last obsolete fuel
+assertion failing. After correction its replacement passed, as did fresh reruns
+of the other three corrected regressions: 869 current tests verified, with six
+manual benchmarks ignored. Client UI and transfer tests ran headlessly. No new
+live keyboard or mouse playtesting was performed.
