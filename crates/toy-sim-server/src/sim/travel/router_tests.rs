@@ -548,3 +548,212 @@ fn fitted_slipdrive_is_selected_and_flies_a_faster_route() {
             .fault
     );
 }
+
+fn nearby_gate_fixture() -> (App, Entity, Entity, Id, usize) {
+    let (mut app, previous, account) = fixture();
+    let world = app.world_mut();
+    let origin = *world.get::<PreciseTransform>(previous).unwrap();
+    world.despawn(previous);
+
+    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
+    let water = catalogue
+        .resources
+        .iter()
+        .position(|r| r.id == "water")
+        .unwrap();
+    let design = toy_sim_ships::ntr_patrol().compile(catalogue).unwrap();
+    let ship = vessel::spawn_ship(
+        world,
+        Arc::new(design),
+        origin,
+        DVec3::ZERO,
+        "Local NTR transfer".into(),
+    )
+    .unwrap();
+    identity::attach_ship(world, ship, account).unwrap();
+
+    let gate_id = Id::new();
+    let exit_id = Id::new();
+    let mut entrance = None;
+    for (id, paired, offset) in [
+        (gate_id, exit_id, DVec3::NEG_Z * 20_000.),
+        (exit_id, gate_id, DVec3::X * 1e9),
+    ] {
+        let entity = world
+            .spawn((
+                PreciseTransform {
+                    translation_um: origin.translation_um.offset_by(offset),
+                    ..default()
+                },
+                Velocity(DVec3::ZERO),
+                BeaconEmitter,
+                identity::Transponder(toy_sim_model::IffIdentity {
+                    owner: account,
+                    faction: None,
+                    labels: BTreeSet::from(["Nearby gate".into()]),
+                    enabled: true,
+                    range_m: 1e8,
+                }),
+                crate::sim::ownership::AssetOwner(toy_sim_model::ownership::Principal::Player(
+                    account,
+                )),
+                crate::sim::spatial::SpatialBody {
+                    radius_m: 300.,
+                    occludes: false,
+                },
+                Gate {
+                    paired,
+                    radius_m: 300.,
+                    exclusion_m: 10_000_000.,
+                    enabled: true,
+                },
+            ))
+            .id();
+        identity::register(world, entity, id);
+        if id == gate_id {
+            entrance = Some(entity);
+        }
+    }
+    let gate = entrance.unwrap();
+    (app, ship, gate, account, water)
+}
+
+fn submit_local_order(app: &mut App, ship: Entity, account: Id, order: Order) {
+    let world = app.world_mut();
+    let ship_id = world.get::<Identity>(ship).unwrap().0;
+    let connection = session::connect(world, account).unwrap();
+    let epoch = world.resource::<identity::WorldEpoch>().0;
+    session::input(
+        world,
+        connection,
+        InputFrame {
+            world: epoch,
+            sequence: 1,
+            actions: vec![(
+                Id::new(),
+                Action::Ship {
+                    ship: ship_id,
+                    authority_revision: 1,
+                    command: ShipCommand::SetTravel {
+                        preferences: Default::default(),
+                        engage: true,
+                        expected_revision: 0,
+                        orders: vec![order],
+                    },
+                },
+            )],
+        },
+    )
+    .unwrap();
+    let frame = session::frame(world, connection).unwrap();
+    assert!(frame.results.iter().all(|result| result.error.is_none()));
+}
+
+#[test]
+fn local_gate_approach_uses_ntr_fuel_to_close_range_inside_the_slip_exclusion_zone() {
+    let (mut app, ship, gate, account, water) = nearby_gate_fixture();
+    let gate_id = app.world().get::<Identity>(gate).unwrap().0;
+    let initial_fuel = app
+        .world()
+        .get::<hardware::ShipInventory>(ship)
+        .unwrap()
+        .0
+        .quantities[water];
+    submit_local_order(
+        &mut app,
+        ship,
+        account,
+        Order::Guidance(Guidance {
+            mode: GuidanceMode::Approach,
+            target: Target::Destination(Destination::Beacon(gate_id)),
+            range_m: 400.,
+        }),
+    );
+
+    let mut first_active = None;
+    for step in 0..6_000 {
+        app.update();
+        let world = app.world();
+        let travel = &world.get::<Travel>(ship).unwrap().0;
+        assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
+        assert!(
+            travel.planning.is_none(),
+            "local approach started a route graph search"
+        );
+        if travel.status == Status::Active {
+            first_active.get_or_insert(step);
+        }
+        let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+        let target = world.get::<PreciseTransform>(gate).unwrap().translation_um;
+        assert!(
+            position.relative_to(target).length() < 20_050.,
+            "flew away from local target"
+        );
+        assert!(
+            position.relative_to(target).z > 300.,
+            "approach crossed the gate instead of stopping on the arrival side"
+        );
+        assert_eq!(world.get::<PresenceState>(ship).unwrap().0, Presence::Space);
+        if travel.status == Status::Completed {
+            break;
+        }
+    }
+
+    let world = app.world();
+    let travel = &world.get::<Travel>(ship).unwrap().0;
+    let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+    let target = world.get::<PreciseTransform>(gate).unwrap().translation_um;
+    let remaining = world
+        .get::<hardware::ShipInventory>(ship)
+        .unwrap()
+        .0
+        .quantities[water];
+    assert!(
+        first_active.is_some_and(|step| step < 100),
+        "{first_active:?}"
+    );
+    assert_eq!(travel.status, Status::Completed, "{travel:?}");
+    assert!((position.relative_to(target).length() - 400.).abs() < 5.);
+    assert!(world.get::<Velocity>(ship).unwrap().0.length() < 0.5);
+    assert!(remaining < initial_fuel, "NTR did not burn propellant");
+    assert!(
+        remaining > initial_fuel / 2,
+        "local approach consumed {}/{initial_fuel}kg",
+        initial_fuel - remaining
+    );
+}
+
+#[test]
+fn travel_to_gate_finishes_at_the_physical_beacon_instead_of_the_slip_boundary() {
+    let (mut app, ship, gate, account, _) = nearby_gate_fixture();
+    let gate_id = app.world().get::<Identity>(gate).unwrap().0;
+    submit_local_order(
+        &mut app,
+        ship,
+        account,
+        Order::TravelTo(Destination::Beacon(gate_id)),
+    );
+
+    for _ in 0..4_000 {
+        app.update();
+        let travel = &app.world().get::<Travel>(ship).unwrap().0;
+        assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
+        if travel.status != Status::Planning {
+            let Some(stage) = travel.orders.last() else {
+                panic!("route has no arrival stage");
+            };
+            let Order::Guidance(Guidance {
+                mode: GuidanceMode::Approach,
+                target: Target::Destination(Destination::Beacon(id)),
+                range_m: stand_off,
+            }) = &stage.action
+            else {
+                panic!("unexpected arrival stage: {:?}", stage.action);
+            };
+            assert_eq!(*id, gate_id);
+            assert!((400.0..500.0).contains(stand_off), "{stand_off}");
+            return;
+        }
+    }
+    panic!("local gate route never finished planning");
+}

@@ -8,6 +8,7 @@ pub(super) fn draw(
     model: &FrameModel,
     selection: &Selection,
     results: &[CommandResult],
+    chat_log: &ChatState,
     intents: &mut Vec<Intent>,
 ) {
     let screen = ctx.content_rect();
@@ -20,6 +21,7 @@ pub(super) fn draw(
             (SELECTED, Icon::Target, "Selected item"),
             (INVENTORY, Icon::Cargo, "Inventory"),
             (INDUSTRY, Icon::Industry, "Industry"),
+            (CHAT, Icon::Broadcast, "Local chat"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
             (MAP, Icon::Planet, "Gate network map"),
             (SOCIETY, Icon::Shield, "Society and ownership"),
@@ -374,6 +376,9 @@ pub(super) fn draw(
         .show(ctx, MAP, |ui| map::draw(ui, &mut shell.map, model, intents));
     shell.desktop.show(ctx, SOCIETY, |ui| {
         society::draw(ui, &mut shell.society, model, intents);
+    });
+    shell.desktop.show(ctx, CHAT, |ui| {
+        chat::draw(ui, &mut shell.chat, model, chat_log, intents);
     });
     let mut locked = shell.desktop.locked;
     let mut reset = false;

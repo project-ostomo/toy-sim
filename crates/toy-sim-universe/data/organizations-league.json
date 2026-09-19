@@ -1,0 +1,1662 @@
+[
+  {
+    "name": "Helion Flight Cooperative",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2259,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "relief",
+      "patrol"
+    ],
+    "history": "The cooperative began when stranded cargo crews pooled the vessels they still controlled after the Great Partition of 2257. Their first schedules joined workshops that had fuel with habitats that had food, often accepting maintenance labor in place of money. Early captains disputed whether an emergency fleet should become public property; the settlement vested ships in the cooperative while preserving individual savings and the freedom to depart.\n\nIn 2426 its haulers carry ordinary industrial cargo and its experienced crews train new members. Stories of the first improvised relief runs remain a source of pride and an argument over how much unprofitable service the fleet owes strangers.",
+    "culture": "Members vote on investment and elect route delegates, but captains retain responsibility for immediate ship safety. Shared meals and apprentice berths welcome people whose previous employers collapsed. Senior crews sometimes confuse long service with a superior claim to desirable routes, provoking younger members who believe open membership should bring a practical chance to advance.",
+    "doctrine": "Keep several workable suppliers, reserve fuel for rescue, and make promises that crews can actually fulfill. Cooperative solidarity includes honest accounts of losses. Armed escorts answer to agreed defense contracts; neither a cargo manifest nor a League affiliation can physically protect a ship from missiles or compel another port to receive it.",
+    "goals": [
+      "Replace two aging cargo reactor assemblies",
+      "Fund apprentice places for displaced dock workers",
+      "Maintain a funded reserve of emergency fuel"
+    ],
+    "resources": [
+      "Member-owned cargo vessels",
+      "A training berth and maintenance workshop",
+      "Working capital contributed by flight crews"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Fuel Mutual",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The mutual supplies reactor fuel against seasonal cargo commitments."
+      },
+      {
+        "organization": "Lantern Rescue Guild",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both organizations maintain crews and cargo space for rescue operations."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer attacks on cooperative cargo vessels have killed crew members and forced armed convoy protection."
+      }
+    ]
+  },
+  {
+    "name": "Hearthshare Works",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2284,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade"
+    ],
+    "history": "Hearthshare emerged from a group of repair households that had survived the first reclamation crisis through shared workshops and ration stores. Incorporation in 2284 replaced personal patronage with a collective endowment: machine tools, housing, and a small investment account belonged to the membership together. The founders deliberately kept recruitment selective because they were promising lifetime support to people already inside.\n\nIts present output includes replacement hull panels and machinery housings. Prosperity has exposed a problem scarcity once concealed: departing members can take their own wealth, but disagree sharply about what years of work entitle them to withdraw from the common estate.",
+    "culture": "Workshops compete in patient craftsmanship while meals, schooling, and most domestic services come through the commonwealth bundle. Retired machinists are valued teachers rather than ceremonial dependents. The intimacy can become suffocating when an unhappy member wants privacy, and independent counseling visits have become a contentious but established part of life in the works.",
+    "doctrine": "Collective ownership should earn loyalty through competent provision and clear membership terms. Personal property remains portable, and dissent does not cancel a person's right to leave. Directors favor local solidarity within the League association while opposing any common authority that could requisition every workshop or impose one model of domestic life.",
+    "goals": [
+      "Publish understandable rules for vested member accounts",
+      "Expand the hull panel casting line",
+      "Provide an independent adviser for departing members"
+    ],
+    "resources": [
+      "Automated casting and finishing equipment",
+      "Collectively owned housing and service reserves",
+      "A patient fund of retained industrial earnings"
+    ],
+    "relations": [
+      {
+        "organization": "Sunward Yard Fellowship",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The yards buy structural panels and return practical repair feedback."
+      },
+      {
+        "organization": "Helion Title Chamber",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The chamber is hearing contested interpretations of old member capital agreements."
+      }
+    ]
+  },
+  {
+    "name": "Helion Fuel Mutual",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2261,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade"
+    ],
+    "history": "The Fuel Mutual dates from a winter of reactor outages after the Partition, when small operators discovered that everyone had purchased emergency stock from the same depleted intermediary. They financed a common inventory and hired technicians to inspect each batch before it entered storage. Several early subscribers resented paying for reserves that competitors could sometimes buy during a shortage, but the arrangement endured.\n\nBy 2426 the mutual finances fuel fabrication and stores fission fuel for carriers and workshops. Its reputation rests on boring deliveries made reliably, while its growing balance sheet tempts directors to pursue more speculative trades.",
+    "culture": "A shift's most respected worker is often the one who catches a mundane discrepancy before it becomes expensive. The mutual celebrates uneventful years with modest dividends and staff meals. Younger traders find its caution stifling, and technicians worry that financial managers receive praise for profits built on maintenance work that customers rarely notice.",
+    "doctrine": "Reserve commitments must correspond to physical inventory and credible delivery arrangements. Customers should know which supplies are assured and which remain exposed to market failure. The mutual supports independent inspection and negotiated rationing during shortages; it has no authority to seize a rival's stock merely because its own clients face serious need.",
+    "goals": [
+      "Increase the physical reserve for Helion cargo reactors",
+      "Replace worn shielding in the inspection bay",
+      "Separate speculative trades from subscriber reserves"
+    ],
+    "resources": [
+      "Shielded fission fuel stores",
+      "Fuel inspection and fabrication contracts",
+      "Subscriber capital and emergency purchase agreements"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Long cargo schedules give the mutual predictable fuel demand."
+      },
+      {
+        "organization": "Vesper Fission Brokerage",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both compete for independent reactor operators without treating commercial rivalry as enmity."
+      }
+    ]
+  },
+  {
+    "name": "Lantern Rescue Guild",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2273,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "salvage"
+    ],
+    "history": "Lantern's founders were mechanics and medical attendants who recovered survivors from damaged transports during the upheaval surrounding the 2272 reclamation attempt. They learned that an available berth, a working pump, and a rested pilot could matter more than impressive declarations of solidarity. The guild formalized its accounts the following year so donors could distinguish rescue spending from salvage revenue.\n\nToday its crews combine paid recovery work with funded emergency sorties. A celebrated rescue that exhausted nearly all available fuel still divides members: some remember a necessary act of mercy, while others remember the unanswered distress call that followed.",
+    "culture": "Volunteers are welcomed, trained, and paired with veterans who are expected to explain mistakes without humiliation. Memorial meals name those the guild could not reach as well as those it saved. Its culture prizes practical tenderness, although exhausted crews sometimes turn understandable pride into suspicion of anyone who questions a costly rescue decision.",
+    "doctrine": "Save reachable lives, disclose operational limits, and never disguise a salvage bargain as unconditional aid. Triage belongs to accountable people supported by evidence and machines. The guild purchases passage and negotiates receiving berths; the right to leave a community cannot by itself supply a willing destination, medical capacity, or a safe voyage.",
+    "goals": [
+      "Refit a recovery vessel for longer rescue sorties",
+      "Build a reserve for care after disembarkation",
+      "Train an additional cohort of rescue mechanics"
+    ],
+    "resources": [
+      "Recovery craft with basic medical compartments",
+      "Salvage income dedicated to emergency operations",
+      "Volunteer crews and participating receiving clinics"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Cooperative crews provide transport and relief rotations."
+      },
+      {
+        "organization": "Vesper Farewell Trust",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The trust finds receiving communities for people rescued without a viable home."
+      },
+      {
+        "organization": "Vesper Salvage Exchange",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Guild crews seek a larger recovery share when rescuing survivors also preserves valuable hulls financed through exchange contracts."
+      }
+    ]
+  },
+  {
+    "name": "Helion Title Chamber",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2298,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "research"
+    ],
+    "history": "The chamber began with a dispute over a repaired freighter whose owner, creditor, and salvors each held plausible documents. Three existing commercial panels reached incompatible conclusions, leaving the vessel idle while its crew lost wages. Merchants funded a permanent institution to retain testimony, examine contracts, and publish reasoned awards that other jurisdictions could evaluate.\n\nIts authority in 2426 still depends on the parties' agreements and the willingness of local institutions to enforce valid findings. A prestigious seal cannot recover a seized hull. This limitation has made the chamber careful, but also vulnerable to accusations that it favors claimants who can afford patience.",
+    "culture": "Clerks are trained to distinguish an elegant account from a proven one. Hearings allow plain speech and interpretation, yet professional advocates still dominate difficult cases. Senior arbitrators regard public acknowledgment of a mistaken award as a professional duty; junior staff often experience that admirable rule through months of stressful examination and criticism.",
+    "doctrine": "Separate title, possession, and practical control. Ledger entries preserve claims but do not establish every physical fact, and evidence can be incomplete or fraudulent. The chamber seeks independent testimony and contractual jurisdiction, then relies on fallible local enforcement. League remedies ultimately concern association and recognition rather than a universal marshal commanding member polities.",
+    "goals": [
+      "Reduce the backlog of small cargo disputes",
+      "Fund independent representation in departure cases",
+      "Publish clearer standards for contested salvage evidence"
+    ],
+    "resources": [
+      "Experienced arbitrators and multilingual clerks",
+      "A retained archive of contracts and testimony",
+      "Fee income supporting subsidized minor claims"
+    ],
+    "relations": [
+      {
+        "organization": "Hearthshare Works",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Several departing members challenge the interpretation of historical capital accounts."
+      },
+      {
+        "organization": "Meridian Title Collegium",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The institutions exchange independent reviewers for difficult awards."
+      }
+    ]
+  },
+  {
+    "name": "Sunward Yard Fellowship",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2320,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "salvage"
+    ],
+    "history": "Sunward grew from a repair team that bought an abandoned construction berth after its military customer defaulted. Its workers accepted years of modest allowances to rebuild the cranes and machine shops, acquiring a strong dislike of impressive contracts backed by uncertain budgets. The fellowship later expanded into refitting civilian cargo ships, taking damaged hulls as partial payment when customers lacked cash.\n\nThe Treaty of Concord in 2401 brought a welcome supply of vessels needing civilian work. In 2426 Sunward is prosperous enough to hire outsiders, raising difficult questions about whether permanent employees should receive the same voice as the original member families.",
+    "culture": "Workers mark completed refits by inviting the departing crew to inspect the least visible repairs. Quiet workmanship has higher status than fashionable design. That ethic fosters trust but can conceal a conservative hierarchy: descendants of the founding crews know whom to ask for help, while skilled recent arrivals must work harder to be heard.",
+    "doctrine": "A ship should leave with faults documented and repairs that its next crew can understand. The yard favors reusable hulls and maintainable reactor installations over prestige projects. Commercial disagreements belong in arbitration, while physical security rests on guards, local patrols, and the modest defensive turrets protecting the yard's own berths.",
+    "goals": [
+      "Finish a civilian cargo refit ahead of the next supply cycle",
+      "Create a membership route for permanent outside workers",
+      "Renew lifting machinery in the oldest repair berth"
+    ],
+    "resources": [
+      "Ship repair berths and heavy handling machinery",
+      "Stocks of reclaimed hull material",
+      "Teams skilled in reactor and cargo machinery refits"
+    ],
+    "relations": [
+      {
+        "organization": "Hearthshare Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Hearthshare supplies standard structural castings."
+      },
+      {
+        "organization": "Meridian Hull Exchange",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "They compete for repairable hulls while occasionally exchanging surplus components."
+      }
+    ]
+  },
+  {
+    "name": "Open Table Carriers",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2376,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "relief"
+    ],
+    "history": "Open Table was founded by cooks, stewards, and small cargo owners who watched apparently prosperous ports discard useful supplies while nearby temporary lodgings ran short. Their first business combined ordinary freight bookings with discounted space for charities. A transparent division between purchased cargo and donated capacity prevented several early arguments over whose generosity was subsidizing whom.\n\nIn 2426 the association transports workshop supplies, household effects, and relief consignments. It attracts people who want a useful trade without joining a lifetime commonwealth, but its modest margins leave little room when a large customer pays late or a reactor needs replacement.",
+    "culture": "Shipboard hospitality is practical and deliberately unceremonious: a newcomer receives a meal before being asked to tell a story. Members include religious volunteers, secular mutualists, and people simply earning a living. Disputes usually concern unpaid labor, because generous members sometimes promise service that less comfortable colleagues cannot afford to provide without compensation.",
+    "doctrine": "Charity should have an identifiable budget and paid work should have honest terms. Carry useful goods reliably, preserve passenger dignity, and arrange receiving berths before promising relocation. The association welcomes cooperation with competent USE relief personnel after Concord while retaining independent contracts and the right to criticize either side's administrative failures.",
+    "goals": [
+      "Secure recurring cargo work to support relief space",
+      "Improve handling of passengers' personal possessions",
+      "Pay all relief crews from a dedicated operating fund"
+    ],
+    "resources": [
+      "Small cargo vessels and shared booking staff",
+      "Donated cargo allocations from sympathetic merchants",
+      "Experience arranging household and relief consignments"
+    ],
+    "relations": [
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The confraternity purchases transport for charitable and commercial consignments."
+      },
+      {
+        "organization": "Aurora Passage Trust",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The trust funds practical journeys for people leaving institutions."
+      },
+      {
+        "organization": "Anchorline Carriers",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek recurring workshop cargo contracts that make their vessel schedules financially sustainable."
+      }
+    ]
+  },
+  {
+    "name": "Helion Civic Originalists",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2216,
+    "open_membership": true,
+    "roles": [
+      "research",
+      "broadcast",
+      "relief"
+    ],
+    "history": "The Civic Originalists trace their charter to the constitutional debates following the Council of Nations election crisis of 2210. Early members believed civilian representation could still recover the USE's universal humanitarian purpose from Unifleet's growing operational power. The destruction of boundary gates in 2257 ended their loyalty to the existing regime without ending their conviction that education and care should reach every person.\n\nThey remain a respected minority in 2426. Their research bureau studies portable support and public accountability, while opponents suspect that every proposal for stronger common institutions could eventually recreate the concentration of power the founders resisted.",
+    "culture": "Meetings combine demanding policy argument with patient practical work helping residents understand services and contracts. Members admire the USE's scientific competence and sincere concern for strangers while grieving its constitutional failures. Their weakness is a tendency to assume that a sufficiently careful design will reassure people whose objection concerns authority itself rather than administrative quality.",
+    "doctrine": "Universal concern needs civilian responsibility, transparent evidence, and institutions that can admit failure. The group advocates stronger guarantees through persuasion and negotiated reform. It recognizes that the present LFS is an association of sovereign polities, and that its preferred arrangements cannot become law merely because a panel finds them morally or technically superior.",
+    "goals": [
+      "Publish an independently reviewed proposal for portable support",
+      "Document how civilian oversight works in local defense contracts",
+      "Recruit working carriers into public policy discussions"
+    ],
+    "resources": [
+      "A constitutional research library",
+      "Volunteer advisers and public discussion venues",
+      "Small subscriptions supporting policy research and relief"
+    ],
+    "relations": [
+      {
+        "organization": "Meridian Concord Institute",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both study civilian accountability and practical cooperation after Concord."
+      },
+      {
+        "organization": "Meridian Free Enterprise Society",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree over common social guarantees while sharing opposition to captive populations."
+      }
+    ]
+  },
+  {
+    "name": "Kisaragi Memory House",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2306,
+    "open_membership": true,
+    "roles": [
+      "broadcast",
+      "research"
+    ],
+    "history": "Kisaragi began when a retiring cargo steward donated family recordings to a school struggling to teach the restored LFS Japanese standard. Other households added songs, letters, workplace expressions, and recipes, revealing how much supposedly uniform ancestral culture had varied. The resulting collection became a public institution rather than the property of any single restoration society.\n\nContact after the Treaty of Concord brought visitors who spoke native USE Japanese with warmth and fluency but unfamiliar grammar and etiquette. In 2426 the house presents both the injuries of imposed language reform and the lives people have built within its results.",
+    "culture": "Archivists encourage visitors to record the words they actually use, including expressions that purists dislike. Shared cooking sessions and readings attract people who would avoid a political lecture. Some donors still demand an authoritative definition of authentic Japanese, while younger curators worry that rejecting every inherited rule could itself sever relationships worth preserving.",
+    "doctrine": "Preserve evidence of cultural transmission without turning fluency into a test of moral worth. Restored standards are historical achievements maintained by institutions, with their own exclusions and compromises. The house treats USE speakers as people with a complete native language and invites argument about policy without making individual visitors answer for a civilization.",
+    "goals": [
+      "Digitize fragile family recordings from early outer settlements",
+      "Pay interpreters for reciprocal public readings",
+      "Document regional speech omitted from prestigious restoration curricula"
+    ],
+    "resources": [
+      "Family recordings and annotated historical collections",
+      "A modest broadcast studio and public reading rooms",
+      "Teachers and volunteer speakers of several Japanese varieties"
+    ],
+    "relations": [
+      {
+        "organization": "Thousand Voices Archive",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The archives exchange recordings while retaining local context."
+      },
+      {
+        "organization": "Vesper Heritage Studio",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The studio commissions archival material and pays for careful annotation."
+      },
+      {
+        "organization": "Vesper Evidence Bureau",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The house restricts access to private family testimony that bureau investigators want to examine for a disputed cargo inheritance claim."
+      }
+    ]
+  },
+  {
+    "name": "Helion Watch Compact",
+    "sovereignty": "Helion Commonwealth",
+    "home_system": "Helion system",
+    "founded_year": 2272,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "The Watch Compact was formed during the reclamation crisis of 2272, when local operators found that the patrol ship supposedly covering several approaches had been promised elsewhere as well. Participants agreed to publish actual readiness commitments and retain ownership of their own contributions. Early coordination remained awkward, but knowing which vessel could respond proved better than nominal unity.\n\nIts present work centers on patrols, escort planning, and training around Helion's working ports. Peace since Concord has reduced public tolerance for expensive reserves, leaving the compact to explain why crews and ammunition cannot be improvised on the day they are needed.",
+    "culture": "The compact honors mechanics and watchkeepers alongside pilots. Exercises end with open accounts of missed contacts and misunderstood orders, although senior commanders sometimes resent the embarrassment. Crews are drawn from different political and domestic traditions; routine cooperation has made many personally tolerant without persuading them that Helion or the wider League should become culturally uniform.",
+    "doctrine": "Defense rests on maintained ships, laser turrets, missiles, and crews willing to act under clear authority. The compact coordinates contractual contributions under Helion responsibility. It cannot command every League member, and an uncooperative polity faces negotiated remedies or loss of association rather than automatic occupation by a central League fleet.",
+    "goals": [
+      "Restore a patrol vessel to full operational readiness",
+      "Replenish missile stocks assigned to convoy defense",
+      "Exercise rescue coordination with civilian recovery crews"
+    ],
+    "resources": [
+      "Locally contributed patrol vessels",
+      "Maintained laser turrets and missile reserves",
+      "Shared training funds and watchkeeping staff"
+    ],
+    "relations": [
+      {
+        "organization": "Lantern Rescue Guild",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Rescue exercises prepare crews to recover survivors after an attack."
+      },
+      {
+        "organization": "Aurora Volunteer Flotilla",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Each provides agreed forces for mutual exercises and contingency escorts."
+      },
+      {
+        "organization": "Meridian Free Enterprise Society",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The compact wants more detailed contribution audits while society members question the cost and reach of proposed inspection contracts."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Assembly Cooperative",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2243,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade"
+    ],
+    "history": "Aurora Assembly started as a purchasing union among workshops during the Time of Troubles. Its founders had different views of the USE, but all disliked receiving contradictory production instructions from distant offices while local equipment waited for parts. Joint purchasing gradually became shared ownership of assembly lines, and the Partition forced the union to develop a broader range of replacement components.\n\nBy 2426 the cooperative produces cargo handling equipment and reactor auxiliaries. An old promise that members would always have useful work now collides with automation: fewer operators can make more machinery, while teaching, maintenance, and care remain unevenly valued.",
+    "culture": "Members rotate through public service duties as well as their specialist work. Workshop councils take pride in explaining production decisions to residents who lack technical training. The system encourages participation but rewards people who enjoy meetings, and quiet members sometimes struggle to distinguish a freely accepted obligation from the pressure of having every neighbor know their business.",
+    "doctrine": "Plan common production openly, compete honestly in external markets, and preserve each member's ability to leave with personal property. Shared capital supports lasting obligations without becoming a claim over people. New contracts must pay for maintenance and reserves; enthusiasm for universal abundance does not make delivery dates, skilled judgment, or transport capacity unlimited.",
+    "goals": [
+      "Modernize a cargo machinery assembly line",
+      "Recognize care work in internal service allocations",
+      "Publish an accessible account of collective reserves"
+    ],
+    "resources": [
+      "Cooperative assembly plants",
+      "Shared maintenance and housing reserves",
+      "Longstanding purchasing relationships with small workshops"
+    ],
+    "relations": [
+      {
+        "organization": "Aurora Isotope Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The exchange arranges inspected fuel for industrial reactor systems."
+      },
+      {
+        "organization": "Meridian Precision Foundry",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both bid for auxiliary machinery orders and compare published specifications."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Isotope Exchange",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2338,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "industry"
+    ],
+    "history": "The exchange grew out of a scandal in which several honest fuel buyers discovered that seemingly independent brokers had pledged the same stock repeatedly. A group of reactor operators financed an institution that would inspect inventory, retain samples, and publish the difference between stored fuel and promised future production. Its founders recovered little of their original loss but established a business others were willing to trust.\n\nIn 2426 it handles fuel contracts across diverse owners. Success creates its own concentration risk: smaller customers now fear that dependence on one reputable exchange could repeat the vulnerability its founders set out to escape.",
+    "culture": "Inspectors are encouraged to disappoint a customer promptly rather than conceal a delay. Staff take pride in precise language and sometimes carry that habit into social life, to the amusement of visiting crews. Commercial teams prefer discretion, while technical teams want wider publication of failed samples; arguments about privacy regularly become arguments about whose reputation matters.",
+    "doctrine": "Trust requires independent samples, comprehensible contracts, and physical delivery arrangements. The exchange sells information and brokerage rather than jurisdiction over every reactor. It favors several viable suppliers, even when that limits its own margins, and accepts external review when a customer challenges an assay or the custody of a stored batch.",
+    "goals": [
+      "Add an independent laboratory to routine fuel sampling",
+      "Offer smaller contract lots to minor operators",
+      "Reduce exposure to any single fabrication supplier"
+    ],
+    "resources": [
+      "Fuel samples and retained inspection records",
+      "Shielded storage leased from several operators",
+      "Brokers experienced in fission fuel delivery"
+    ],
+    "relations": [
+      {
+        "organization": "Aurora Assembly Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Industrial members purchase inspected reactor fuel through the exchange."
+      },
+      {
+        "organization": "Helion Fuel Mutual",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The mutual and exchange arrange reciprocal emergency purchases."
+      },
+      {
+        "organization": "Vesper Fission Brokerage",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both assemble smaller fuel contracts and compete for independent reactor operators."
+      }
+    ]
+  },
+  {
+    "name": "Dawnlight Optics",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2351,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "Dawnlight was founded by three optical engineers whose employer abandoned a promising manufacturing process after a costly trial. They leased older equipment, accepted repair work, and gradually learned which expensive tolerances customers truly needed. Their first durable market was replacement optics for civilian ranging and industrial cutting; defense orders later paid for better polishing and thermal testing equipment.\n\nThe company now supplies laser assemblies as well as precision components. Since Concord, its directors have tried to balance civilian demand with defense commitments, while employees debate whether a technically reliable weapon customer also deserves confidence in how the equipment will be used.",
+    "culture": "The laboratory values candid demonstrations: an engineer is expected to show the flaw in a favorite design before asking others to admire it. Apprentices receive substantial responsibility, but the celebrated founders still influence decisions long after handing over formal titles. Staff charities support workers injured at unrelated firms, reflecting a practical solidarity broader than company loyalty.",
+    "doctrine": "Measure performance under realistic heat and maintenance conditions, then explain limitations plainly. A laser's usefulness depends on power, cooling, pointing, and the people operating it. Commercial success does not relieve directors of responsibility for customers, yet uncertainty should prompt investigation and contractual safeguards rather than pretending every distant conflict has an obvious righteous party.",
+    "goals": [
+      "Improve cooling tolerances for a standard laser assembly",
+      "Expand apprenticeship places in optical finishing",
+      "Audit fulfillment of existing defense maintenance commitments"
+    ],
+    "resources": [
+      "Precision polishing and coating equipment",
+      "Thermal testing rigs for laser components",
+      "Experienced optical engineers and apprentices"
+    ],
+    "relations": [
+      {
+        "organization": "Nightglass Optics",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The companies compete for laser component contracts and specialist workers."
+      },
+      {
+        "organization": "Aurora Volunteer Flotilla",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The flotilla buys maintainable laser assemblies and provides operating feedback."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Passage Trust",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2387,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "The trust began with a woman who could legally leave her commonwealth but had nowhere willing to receive her dependent brother. Donors initially paid for temporary lodging and repeated journeys between prospective hosts. The case showed that freedom of departure could remain painfully incomplete without introductions, transport, and someone willing to remain involved after the traveler arrived.\n\nBy 2426 the trust funds such practical bridges for many applicants. It cannot promise admission anywhere, and its selection committee faces criticism from both donors seeking measurable successes and advocates who want the hardest cases to receive more of the available money.",
+    "culture": "Caseworkers avoid treating departure as a moral victory or remaining at home as cowardice. Applicants may reconcile with their institutions, change their minds, or need years of support. Staff protect this patience fiercely, although burnout and scarce berths sometimes produce an informal preference for articulate applicants who can explain their needs in familiar terms.",
+    "doctrine": "The League protects exit, while receiving communities retain their own admission decisions. Support must therefore include honest negotiation, funded journeys, and care during uncertainty. The trust challenges punitive departure conditions through appropriate local proceedings and arbitration; it cannot erase debts, assign citizenship, or make a reluctant community accept someone by declaration.",
+    "goals": [
+      "Finance temporary berths for dependent travelers",
+      "Build a larger pool of willing receiving households",
+      "Provide interpreters during difficult departure negotiations"
+    ],
+    "resources": [
+      "A donor funded passage fund",
+      "Caseworkers familiar with membership agreements",
+      "Contracts for temporary lodging and cargo space"
+    ],
+    "relations": [
+      {
+        "organization": "Open Table Carriers",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The carriers reserve practical transport capacity for funded departures."
+      },
+      {
+        "organization": "Blue Orchard Habitat Union",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The trust contests how the union calculates certain departure obligations."
+      }
+    ]
+  },
+  {
+    "name": "Thousand Voices Archive",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2268,
+    "open_membership": true,
+    "roles": [
+      "broadcast",
+      "research"
+    ],
+    "history": "Thousand Voices formed when separated families began donating messages whose intended recipients could no longer be reached through the destroyed boundary routes. Archivists preserved everyday speech alongside political appeals, including complaints, jokes, and apologies that later commemorations tended to omit. The collection survived the reclamation crisis because several workshops maintained independent copies and refused to let one sponsor own the whole record.\n\nAfter Concord, some messages finally reached descendants on the other side. In 2426 the archive still helps families reconnect, while disputing demands that painful or embarrassing testimony be removed to protect the dignity of revered founders.",
+    "culture": "Listening is treated as skilled work. Volunteers learn to preserve hesitation and uncertainty instead of smoothing every speaker into eloquence. Public programs welcome several languages and rival historical interpretations. That generosity has limits when testimony accuses living families of betrayal, and archivists disagree about how long privacy should outweigh the interests of historical understanding.",
+    "doctrine": "Preserve provenance, distinguish testimony from verified fact, and allow correction without silently rewriting the record. The Partition's suffering deserves remembrance without implying that every USE citizen endorsed it. The archive treats the Cataclysm's initiating cause as unresolved and records competing accounts of both private violence and the destructive reach of centralized emergency power.",
+    "goals": [
+      "Match undelivered Partition messages with willing descendants",
+      "Preserve additional independent copies of vulnerable collections",
+      "Commission translations that retain uncertainty in witness accounts"
+    ],
+    "resources": [
+      "Recorded messages and documentary collections",
+      "Distributed archival storage maintained by supporters",
+      "Volunteer translators and experienced oral historians"
+    ],
+    "relations": [
+      {
+        "organization": "Kisaragi Memory House",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both retain cultural context when exchanging family recordings."
+      },
+      {
+        "organization": "Old Trunk Witnesses",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Witnesses contribute testimony with clear restrictions and provenance."
+      },
+      {
+        "organization": "Meridian Concord Institute",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Archivists favor publishing newly verified Partition testimony promptly while institute organizers request time to consult families involved in a reconciliation program."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Contract Forum",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2312,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "research"
+    ],
+    "history": "The forum originated in arguments between independent miners and carriers over damaged cargo. Each trade had developed plausible customs that the other considered self-serving, and expensive cases often ended with one side simply abandoning the route. A rotating panel of practitioners began publishing model agreements that exposed those differences before goods changed hands.\n\nIts arbitration practice developed later and remains voluntary within the relevant contracts. In 2426 the forum is respected for practical settlements but criticized for relying heavily on established merchants, whose definition of ordinary business can overlook new workers and customers with little bargaining power.",
+    "culture": "Hearings favor concrete accounts of what was loaded, promised, observed, and paid. Formal legal skill is welcome when it clarifies those facts. Panelists usually retain outside occupations, keeping commercial knowledge current but creating recurring concerns about personal loyalties. Public declarations of interest help, while the social closeness of the trading community remains impossible to eliminate.",
+    "doctrine": "An enforceable bargain begins with understandable terms and evidence that survives a disappointed party's scrutiny. The forum can interpret agreements and recommend remedies; local courts, custodians, and contractors determine what is physically enforced. A valid award is neither a weapon nor an automatic transfer of control over a ship whose crew refuses cooperation.",
+    "goals": [
+      "Revise a cargo damage agreement in plain language",
+      "Recruit panelists from small independent operators",
+      "Improve preservation of loading and inspection testimony"
+    ],
+    "resources": [
+      "A library of annotated commercial agreements",
+      "Practitioner arbitrators from several trades",
+      "Hearing rooms and retained evidentiary records"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Title Chamber",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The chamber supplies outside reviewers when local commercial ties are too close."
+      },
+      {
+        "organization": "Aurora Reclamation Survey",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Survey teams use forum agreements to allocate uncertain recovery proceeds."
+      },
+      {
+        "organization": "Meridian Title Collegium",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "They compete for commercial arbitration work where cargo custody and vessel title questions overlap."
+      }
+    ]
+  },
+  {
+    "name": "Blue Orchard Habitat Union",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2291,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade",
+      "relief"
+    ],
+    "history": "Blue Orchard began when residents purchased a failing habitat operator's machinery and service contracts instead of accepting evacuation. Keeping the place inhabited required shared shifts, deferred pay, and outside borrowing. Those sacrifices became the foundation of an unusually generous membership settlement, funded partly by component manufacture and partly by a carefully managed reserve.\n\nThe founding emergency has become family history by 2426. Many members cherish the security their grandparents built, while others question why obligations drafted during near collapse still govern departure. The union's leadership fears that a poorly designed reform could dissolve the capital supporting elderly and disabled residents.",
+    "culture": "Neighbors take shared meals, gardens, and attentive care seriously. Visitors often find the union warmer than its cautious admissions process suggests. Disagreement is usually civil but emotionally difficult because policy arguments involve people who raised one another's children. Younger members want more outside friendships and private space without being accused of rejecting the community's entire way of life.",
+    "doctrine": "A bounded commonwealth may promise deep support to members while choosing whom it admits. It must also preserve meaningful departure and clearly distinguish personal wealth from common assets. The union seeks negotiated reform of disputed obligations, accepting that its compassionate intentions do not settle whether a particular repayment demand has become a barrier to exit.",
+    "goals": [
+      "Negotiate clearer departure terms with independent advisers",
+      "Replace aging habitat service machinery",
+      "Expand outside respite care for resident caregivers"
+    ],
+    "resources": [
+      "Collectively owned habitat and workshops",
+      "A reserve supporting lifetime member services",
+      "Experienced maintenance teams and resident care networks"
+    ],
+    "relations": [
+      {
+        "organization": "Aurora Passage Trust",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Both seek a workable settlement for contested departure obligations."
+      },
+      {
+        "organization": "Riverstone Commonwealth",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The commonwealths exchange practical experience in care and collective finance."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Reclamation Survey",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2403,
+    "open_membership": true,
+    "roles": [
+      "salvage",
+      "research",
+      "mining"
+    ],
+    "history": "The survey was established after the Treaty of Concord when engineers realized that many abandoned industrial sites were still described only in wartime reports. Its first expeditions found a mixture of recoverable machinery, worthless wreckage, and dangerous damage concealed by optimistic inventories. Investors learned to pay for inspection before bidding for recovery rights.\n\nIn 2426 the survey earns its living assessing wrecks, mineral deposits, and obsolete workshops. Some members want the organization to own more of what it discovers, while others fear that speculative ownership would compromise the frank assessments on which customers and crews rely.",
+    "culture": "Field teams respect careful notes, patient instrument work, and the willingness to return with disappointing news. New members can build standing through good observations without prestigious schooling. Long expeditions foster close friendships, but separation from households strains people who are praised publicly for adventurous work while partners perform the quieter labor that makes it possible.",
+    "doctrine": "Survey first, establish physical conditions and credible title, then negotiate a recovery plan. Old charts and patriotic recollections are evidence to examine rather than guarantees. The organization rejects the claim that discovering a wreck makes its occupants or contents ownerless, and uses appropriate contracts when several parties plausibly claim the same material.",
+    "goals": [
+      "Inspect a backlog of damaged industrial sites",
+      "Improve estimates of recoverable reactor shielding",
+      "Separate paid assessments from speculative investments"
+    ],
+    "resources": [
+      "Survey craft and inspection equipment",
+      "Geological and industrial assessment specialists",
+      "A growing collection of verified site observations"
+    ],
+    "relations": [
+      {
+        "organization": "Aurora Contract Forum",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The forum helps allocate risk in uncertain recovery agreements."
+      },
+      {
+        "organization": "Vesper Salvage Exchange",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "They compete for survey customers while sharing some published safety observations."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Volunteer Flotilla",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2280,
+    "open_membership": true,
+    "roles": [
+      "defense",
+      "patrol",
+      "relief"
+    ],
+    "history": "The flotilla began as a rotating escort obligation among cargo owners who could not each afford permanent protection. Volunteers brought vessels, technical skills, or funded crew time, and the initial charter insisted that every contribution be described honestly. During the long transport conflicts after the reclamation attempt, this practical coalition developed a professional training cadre while preserving local ownership of its forces.\n\nConcord shifted its work toward patrols and exercises. In 2426 recruitment remains open to qualified volunteers, but readiness increasingly depends on paid specialists whose families cannot organize their lives around uncertain calls for patriotic service.",
+    "culture": "Civilian occupations remain visible in the mess: mechanics argue with teachers, merchants with caregivers, and experienced crews with enthusiastic recruits. The flotilla values service without treating military skill as a measure of human worth. Its informal friendliness can nevertheless make it hard to discipline popular volunteers or admit that a cherished vessel is no longer safe.",
+    "doctrine": "Promise only forces that can actually deploy, maintain ammunition and fuel, and put trained people in charge of immediate operations. Patrol ships, laser turrets, and missiles provide physical protection. Mutual defense agreements coordinate sovereign contributors; participation does not create a general League military authority able to conscript every ship or override every local decision.",
+    "goals": [
+      "Fund stable employment for essential maintenance specialists",
+      "Complete a joint convoy defense exercise",
+      "Replace expired components in reserve missiles"
+    ],
+    "resources": [
+      "Locally owned escort and patrol vessels",
+      "Volunteer crews with a professional training cadre",
+      "Contracted laser maintenance and ammunition reserves"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Watch Compact",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both contribute specified forces to joint exercises."
+      },
+      {
+        "organization": "Dawnlight Optics",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Dawnlight maintains optical components for the flotilla's laser systems."
+      },
+      {
+        "organization": "Meridian Mutual Arsenal",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The flotilla disputes revised missile delivery allocations during a workshop capacity shortage."
+      }
+    ]
+  },
+  {
+    "name": "Aurora Common Science Circle",
+    "sovereignty": "Aurora Compact",
+    "home_system": "Aurora system",
+    "founded_year": 2391,
+    "open_membership": true,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "The circle was founded after competing workshop studies produced contradictory claims about reactor component wear. A teacher and several frustrated engineers organized inexpensive repeat experiments and discovered that differences in operating conditions explained much of the disagreement. Their success attracted originalists who wanted public science as well as decentralists who wanted alternatives to a single prestigious authority.\n\nIn 2426 the circle supports shared measurements, public instruction, and modest replication grants. Its coalition strains whenever a finding has regulatory implications: members agree that evidence should travel widely but disagree about who should have the power to require action on it.",
+    "culture": "Meetings pair patient explanation with pointed questions, and a careful amateur can challenge a famous specialist. This openness depends on moderators doing substantial invisible work to keep discussion useful. Members admire scientific institutions in both the USE and League, while resisting the habit of treating a rival civilization's political failures as proof that its engineers cannot be trusted.",
+    "doctrine": "Make methods reproducible, disclose uncertainty, and keep advice distinguishable from authority. AI can help design and execute work, but people remain responsible for choosing questions and judging consequences. Public knowledge should improve decisions across sovereign communities without pretending that a shared experiment automatically gives its organizers jurisdiction over every workshop that reads the results.",
+    "goals": [
+      "Replicate a disputed reactor wear study",
+      "Fund public lessons in measurement and uncertainty",
+      "Recruit reviewers from outside the circle's usual institutions"
+    ],
+    "resources": [
+      "Shared laboratory time donated by workshops",
+      "Replication grants from numerous small subscribers",
+      "Teachers, engineers, and publicly accessible research records"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Civic Originalists",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Originalist volunteers support public instruction without controlling the circles findings."
+      },
+      {
+        "organization": "Meridian Precision Foundry",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The foundry supplies sample components and pays for published measurements."
+      },
+      {
+        "organization": "Dawnlight Optics",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Researchers seek publication of failed optical trials that the company regards as commercially sensitive development records."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Hull Exchange",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2304,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "industry",
+      "salvage"
+    ],
+    "history": "The Hull Exchange began when two merchants independently sold interests in the same damaged transport to buyers in different ports. Neither buyer had inspected the hull, and both discovered that the promised repair estimate omitted major reactor work. A shipwright and an auction clerk built a business around verified inspections, disclosed claims, and sale contracts that described what a buyer could actually take possession of.\n\nIn 2426 the exchange handles working freighters as well as salvage. Its reputation attracts sellers who need credibility, but also creates pressure to keep expensive vessels moving when an honest inspection would delay a lucrative sale.",
+    "culture": "Inspectors cultivate an unfashionable pride in finding reasons to lower a valuation. Brokers are expected to visit repair berths and understand the work behind their quotations. The partnership rewards both skills, although prosperous years sharpen the difference between staff paid for completed sales and staff whose best judgment may prevent a sale entirely.",
+    "doctrine": "A hull is useful capital only when its condition, claims, crew needs, and likely repair costs are understood. The exchange separates an ownership finding from possession and mechanical readiness. It seeks enforceable agreements and independent inspections while accepting that a contract cannot tow a vessel out of danger or make a failing reactor reliable.",
+    "goals": [
+      "Inspect a group of idle cargo hulls before auction",
+      "Improve disclosure of reactor replacement estimates",
+      "Give inspectors compensation independent of sale completion"
+    ],
+    "resources": [
+      "Commercial berths for vessel inspection",
+      "A network of shipwrights and title specialists",
+      "Working funds for limited hull purchases"
+    ],
+    "relations": [
+      {
+        "organization": "Sunward Yard Fellowship",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek repairable vessels and specialist refit contracts."
+      },
+      {
+        "organization": "Meridian Title Collegium",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The collegium examines disputed ownership and secured claims before sales."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Title Collegium",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2279,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "research"
+    ],
+    "history": "The collegium formed after the first reclamation crisis left property claims scattered across destroyed offices, private archives, and the memories of displaced crews. Its founders included advocates who had supported different sides of the constitutional struggle. They agreed that political loyalty could not substitute for evidence of an individual claim, and built procedures for testimony, missing documents, and competing custody accounts.\n\nModern cases usually concern cargo, ship finance, and membership capital rather than war losses. Nevertheless, the old records still matter in 2426, especially when a profitable asset reveals a neglected claimant whose family lacked the resources to pursue recognition earlier.",
+    "culture": "Students learn through difficult historical files rather than imaginary cases with perfect facts. The collegium respects precise argument but also pays interpreters and investigators who can reach witnesses outside professional circles. Its scholarly traditions produce patient adjudicators, yet poor claimants sometimes see patience as an expensive habit maintained by people whose own livelihoods are secure.",
+    "doctrine": "Common recognition of title requires accountable evidence and procedures independent enough to examine coercion. A ledger records a determination; it does not witness events or enforce possession. Awards rely on contractual jurisdiction and local institutions, and persistent refusal by a polity belongs to the League's treaty processes rather than an imagined federal repossession service.",
+    "goals": [
+      "Fund investigation of neglected claims from displaced families",
+      "Train additional independent salvage assessors",
+      "Shorten hearings for small secured cargo claims"
+    ],
+    "resources": [
+      "Historical case records and expert advocates",
+      "Independent investigators and visiting arbitrators",
+      "A bursary supporting otherwise unaffordable claims"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Title Chamber",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Each supplies independent reviewers for cases involving local institutional conflicts."
+      },
+      {
+        "organization": "Meridian Hull Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The exchange commissions examination of contested vessel claims."
+      },
+      {
+        "organization": "Aurora Contract Forum",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek cases combining cargo custody evidence with contested vessel claims."
+      }
+    ]
+  },
+  {
+    "name": "Anchorline Carriers",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2347,
+    "open_membership": false,
+    "roles": [
+      "trade"
+    ],
+    "history": "Anchorline was built by a dispatcher who noticed that small factories paid heavily for irregular collections while large shippers enjoyed predictable cargo schedules. She persuaded several workshops to guarantee modest recurring volumes, giving a few cargo owners enough certainty to commit to regular service. The business grew through dependable schedules rather than spectacular voyages.\n\nSince Concord it has added customers willing to trade across older political divisions. In 2426 its managers face a choice between expanding quickly into uncertain routes and protecting the reliability that smaller customers depend on, especially when delays interrupt workshops with little room for spare inventory.",
+    "culture": "Dispatchers are expected to know the practical consequences of a late shipment, including the workers waiting for it. Crews appreciate predictable rotations and resent managers who sell schedules without consulting maintenance teams. The company offers generous assistance to injured staff, but advancement still favors people willing to move between ports, disadvantaging those with substantial care obligations at home.",
+    "doctrine": "Promise conservative arrival windows, maintain fuel and repair reserves, and tell customers when conditions change. Freight service should make many small enterprises more viable without quietly making them captive to a single carrier. Armed escort is purchased when needed, while safety judgments remain grounded in ships, crews, observed threats, and available rescue support.",
+    "goals": [
+      "Add a regular collection for smaller component workshops",
+      "Refit a cargo vessel without canceling established service",
+      "Offer advancement paths for staff with local care duties"
+    ],
+    "resources": [
+      "A fleet of practical cargo vessels",
+      "Experienced dispatchers and maintenance schedulers",
+      "Recurring cargo commitments from independent workshops"
+    ],
+    "relations": [
+      {
+        "organization": "Meridian Precision Foundry",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The foundry supplies steady component cargo and receives predictable collection times."
+      },
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both bid for cargo routes while maintaining professional relations among crews."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Free Enterprise Society",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2231,
+    "open_membership": true,
+    "roles": [
+      "research",
+      "broadcast",
+      "trade"
+    ],
+    "history": "The society began during the Time of Troubles as a meeting place for owners who believed constitutional reform needed stronger protection against infrastructure officials imposing political conditions on commerce. Its membership broadened after the Partition to include workers, dissident communal residents, and people with little property beyond their tools. They argued that the freedom to make a new association mattered as much as defending an existing fortune.\n\nBy 2426 it is a prominent hard libertarian voice. Its most persuasive campaigns expose coercive contracts; its most difficult encounters involve people whose formal freedom leaves them with no attractive place to go.",
+    "culture": "Members admire initiative, plain dealing, and the willingness to fund one's own convictions. Meetings can be refreshingly direct, but successful entrepreneurs sometimes mistake luck or inherited support for universally available opportunity. A growing mutual aid circle has pushed the society to discuss dependency without automatically treating every request for help as a disguised demand for state power.",
+    "doctrine": "Protect exit, property, voluntary association, and genuine competition among institutions. The society supports a commonwealth's right to pool capital and choose members while opposing captivity inside it. It rejects a federalized LFS, yet acknowledges that defense and arbitration require real contributions and cannot survive on the assertion that someone else will voluntarily pay.",
+    "goals": [
+      "Challenge contractual terms designed to obstruct peaceful departure",
+      "Publish costs of competing local arbitration options",
+      "Expand voluntary assistance for people between associations"
+    ],
+    "resources": [
+      "Subscriber funding and public meeting rooms",
+      "Commercial volunteers and contract researchers",
+      "A modest privately financed transition assistance fund"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Civic Originalists",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree about common social guarantees and the concentration of authority."
+      },
+      {
+        "organization": "Free Quay Association",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both advocate transparent voluntary contracts and practical institutional competition."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Mutual Arsenal",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2288,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "defense"
+    ],
+    "history": "The arsenal was founded when local defense associations discovered that their individually economical missile purchases left them with incompatible maintenance requirements and unreliable spare stocks. They pooled a workshop and agreed on a small range of equipment their own crews could service. Founding arguments concerned who would receive the last ready missiles during a simultaneous emergency, producing unusually explicit supply commitments.\n\nIn 2426 the arsenal maintains missiles, turret assemblies, and reserve parts. Peace has allowed better production planning, but members disagree over how much unused capacity to preserve and how far commercial exports should subsidize their local defense obligations.",
+    "culture": "Staff regard a documented maintenance error as a warning to examine the process rather than an invitation to find a scapegoat. Former patrol crew members work alongside civilian technicians. The institution is loyal to the communities its equipment protects, yet increasingly aware that producing dependable weapons carries responsibilities extending beyond a satisfied procurement officer.",
+    "doctrine": "Readiness is a maintained physical condition, supported by trained people, inspected ammunition, and realistic reserves. The arsenal serves specified local contracts and negotiated mutual defense contributions. Its directors favor interoperable equipment without granting a purchasing office political command over the sovereign owners of the forces using it, and scrutinize customers associated with armed predation.",
+    "goals": [
+      "Renew aging components in reserve missile stocks",
+      "Simplify maintenance across standard turret assemblies",
+      "Disclose how commercial orders affect defense reserve capacity"
+    ],
+    "resources": [
+      "Missile maintenance and assembly workshops",
+      "Stocks of laser turret components",
+      "Capital subscribed by local defense associations"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Watch Compact",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The compact purchases maintained missile stocks against declared readiness needs."
+      },
+      {
+        "organization": "Breakwater Escort Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Escort crews buy serviceable ammunition and provide maintenance reports."
+      },
+      {
+        "organization": "Aurora Volunteer Flotilla",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The arsenal argues that existing commitments constrain the missile delivery priority the flotilla requests."
+      }
+    ]
+  },
+  {
+    "name": "Riverstone Commonwealth",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2362,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "relief",
+      "trade"
+    ],
+    "history": "Riverstone was founded by workers caring for relatives whose employers had failed. They combined an industrial workshop with a common service fund so illness would no longer force every household to bargain alone. Admission remained deliberate because the founders were accepting obligations lasting far beyond a favorable manufacturing cycle. The project survived its early debts through patient purchases from sympathetic carriers and religious charities.\n\nBy 2426 its machinery output funds a comfortable communal life. Prosperity has brought applicants with different expectations, and the original members disagree over whether preserving their intimate culture requires a smaller community or better institutions for welcoming strangers.",
+    "culture": "Meals and care visits are central civic occasions, and skilled caregivers command real respect. Some members understand their obligations through religious conviction, others through secular solidarity. Young adults appreciate this security while asking for room to form attachments outside the community. Older members sometimes hear those requests as ingratitude before remembering why their own founders sought freedom to build something different.",
+    "doctrine": "Deep provision requires durable common assets and realistic admission commitments. Riverstone accepts the right of peaceful departure and keeps personal accounts distinct from the collective estate. It seeks relationships beyond its membership, including charitable work, while resisting the claim that either universal compassion or local generosity authorizes one institution to govern every person's life.",
+    "goals": [
+      "Increase respite support for long serving caregivers",
+      "Expand a machinery line without exhausting common reserves",
+      "Review how new members enter decision making"
+    ],
+    "resources": [
+      "A cooperative machinery workshop",
+      "Housing and reserves dedicated to member care",
+      "Experienced caregivers and patient commercial supporters"
+    ],
+    "relations": [
+      {
+        "organization": "Blue Orchard Habitat Union",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both exchange experience on care obligations and collective finance."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The confraternity buys machinery and supports charitable work with outside households."
+      },
+      {
+        "organization": "Vesper Farewell Trust",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree over how much transitional care Riverstone owes departing members after outside lodging is secured."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Concord Institute",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2402,
+    "open_membership": true,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "The institute was established a year after the Treaty of Concord by negotiators' assistants, interpreters, engineers, and veterans who feared that peace would become a ceremonial achievement without practical habits behind it. Its first projects translated maintenance terminology and collected accounts of ordinary cooperation between former adversaries. Some founders were originalists; others distrusted every large political program but wanted their children spared another generation of transport war.\n\nIn 2426 it studies civilian oversight, shared technical problems, and the persistence of distrust. Funding remains precarious because patient investigation rarely produces the dramatic assurances or denunciations that partisan patrons prefer.",
+    "culture": "Visitors encounter careful hospitality and arguments that can continue long after a public session ends. The institute invites competent USE practitioners without expecting them to renounce their society at the door. Veterans sometimes find the tone too gentle, while younger researchers worry about making trauma the permanent measure of every future relationship or policy choice.",
+    "doctrine": "Peace depends on verifiable practice, competent institutions, and people willing to understand sincere opposing purposes. The USE's humanitarian achievements and constitutional coercion both belong in the record. Cooperation should proceed through explicit agreements among responsible organizations, with civilian review and limits on emergency authority, rather than assuming common expertise erases sovereignty or historical injury.",
+    "goals": [
+      "Compare civilian oversight of local defense contracts",
+      "Publish a practical record of successful subsequent to Concord cooperation",
+      "Fund reciprocal interpretation for technical discussions"
+    ],
+    "resources": [
+      "A collection of treaty-era interviews and working papers",
+      "Researchers with legal and engineering experience",
+      "Small grants from diverse peace supporters"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Civic Originalists",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both investigate accountable institutions while retaining distinct political commitments."
+      },
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Technical staff participate in agreed discussions of civilian maintenance and safety practice."
+      },
+      {
+        "organization": "Thousand Voices Archive",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The institute requests additional family consultation before testimony is published alongside a planned reconciliation program."
+      }
+    ]
+  },
+  {
+    "name": "Old Trunk Witnesses",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2258,
+    "open_membership": true,
+    "roles": [
+      "broadcast",
+      "relief"
+    ],
+    "history": "The Witnesses began as a list of missing people compiled by families stranded when the boundary gates were destroyed in 2257. Finding survivors required preserving names that different officials, employers, and households recorded differently. Volunteers discovered that remembrance could be practical work: a correct name might connect a child with relatives, settle a neglected wage claim, or identify someone buried far from home.\n\nIn 2426 the association includes descendants and recent contributors rather than original witnesses to the Partition. Its central dispute concerns inheritance of grief: younger members want memory to support present care without demanding permanent hostility toward people born long after the violence.",
+    "culture": "Commemorations include ordinary meals, letters, and work songs, making lost people recognizable beyond the manner of their deaths. Families may decline publicity, and members are discouraged from ranking suffering. The association still contains strong disagreements over reconciliation; some find contact with USE visitors healing, while others feel pressured when forgiveness becomes an expectation imposed by well intentioned outsiders.",
+    "doctrine": "Remember particular people accurately and distinguish documented acts from inherited rumor. The association preserves responsibility for the Partition while rejecting collective guilt across generations. Practical relief, independent historical inquiry, and voluntary meetings support memory; no family should have to surrender grief or adopt a political program to receive help tracing a relative.",
+    "goals": [
+      "Resolve outstanding identification problems in family collections",
+      "Support descendants traveling for voluntary reunions",
+      "Record accounts that complicate established commemorative stories"
+    ],
+    "resources": [
+      "Family testimony and annotated missing person records",
+      "Volunteer researchers and bereavement companions",
+      "Donations supporting travel and historical investigation"
+    ],
+    "relations": [
+      {
+        "organization": "Thousand Voices Archive",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The archive preserves testimony with consent and provenance."
+      },
+      {
+        "organization": "Meridian Rescue Bond",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The bond supports present emergencies connected through the Witnesses' volunteer network."
+      },
+      {
+        "organization": "Vesper Heritage Studio",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Families contest a proposed dramatic adaptation of distress recordings and seek stronger consent requirements."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Rescue Bond",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2394,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "The Rescue Bond arose after a successful recovery operation left its rescuers insolvent. Merchants had praised the crews publicly, but voluntary collections arrived too late to cover repairs and wages. Supporters created a standing fund that purchased defined rescue availability while retaining a separate budget for people who had never subscribed. The distinction helped sustain both commercial confidence and charitable purpose.\n\nIn 2426 the bond pays for readiness and emergency transport rather than owning a grand fleet. Its managers face constant pressure to show visible rescues, even though the most responsible expenditure may be maintaining equipment that fortunately goes unused.",
+    "culture": "Staff respect the unglamorous work of keeping promises funded. Beneficiaries are invited to contribute stories or service if they wish, without turning gratitude into an obligation. Claims meetings can feel austere beside the warmth of field volunteers, and both groups need reminders that compassion without reserves and accounting without attention to people can fail those they mean to serve.",
+    "doctrine": "Pay for real availability, verify the condition of contracted vessels, and state the limits of coverage plainly. Charity should remain possible beyond subscribers without concealing its cost. The bond cannot guarantee every rescue; distance, damage, hostile fire, fuel, and willing crews determine what can be reached, however deserving a claimant may be.",
+    "goals": [
+      "Increase reserves for simultaneous rescue calls",
+      "Inspect contracted recovery craft before renewing coverage",
+      "Fund transport for several cases outside subscriber coverage"
+    ],
+    "resources": [
+      "Subscriber reserves and charitable donations",
+      "Contracts with recovery and cargo operators",
+      "Claims staff experienced in evaluating operational evidence"
+    ],
+    "relations": [
+      {
+        "organization": "Lantern Rescue Guild",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The bond purchases defined rescue availability and supports charitable sorties."
+      },
+      {
+        "organization": "Old Trunk Witnesses",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Witnesses connect vulnerable households with appropriate practical assistance."
+      },
+      {
+        "organization": "Vesper Independent Docks",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The bond contests emergency berth deposits that dock managers consider necessary to cover uncertain cleanup and repair costs."
+      }
+    ]
+  },
+  {
+    "name": "Meridian Precision Foundry",
+    "sovereignty": "Meridian League",
+    "home_system": "Meridian system",
+    "founded_year": 2317,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "The foundry began when mining equipment repairers discovered they could make replacement parts more consistently than their distant supplier. Its early advantage came from talking directly with the crews who installed components under awkward conditions, then changing designs that looked efficient only on a drawing. A reputation for serviceable machinery brought orders from cargo operators and reactor workshops.\n\nBy 2426 the foundry produces precision housings, mounts, and auxiliary parts. It faces a familiar success problem: expansion has placed sales offices between engineers and users, leaving senior workers worried that the company is losing the habits that made its products useful.",
+    "culture": "Apprentices spend time with maintenance crews before specializing. Workers value understandable repairs and take quiet satisfaction when an old component remains in service. The culture can be dismissive of elegant new approaches, and younger engineers argue that respecting experience should include testing its assumptions rather than treating every unfamiliar design as an insult to earlier craftsmanship.",
+    "doctrine": "Design around actual operating conditions, document tolerances, and investigate failures with the people who encountered them. Automated production amplifies sound judgment and poor assumptions alike. The foundry supports independent measurements and accepts fair competition, preferring disclosed performance to attempts to make customers dependent on obscure maintenance practices or exclusive knowledge of ordinary repairs.",
+    "goals": [
+      "Restore direct visits between designers and cargo maintenance crews",
+      "Reduce rejected castings in reactor auxiliary production",
+      "Test a new mount design through independent measurements"
+    ],
+    "resources": [
+      "Precision casting and machining equipment",
+      "Experienced designers and practical apprenticeships",
+      "Stocks of industrial metals and standard repair components"
+    ],
+    "relations": [
+      {
+        "organization": "Anchorline Carriers",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Regular cargo collections support predictable component deliveries."
+      },
+      {
+        "organization": "Aurora Common Science Circle",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The circle conducts published measurements on supplied sample components."
+      },
+      {
+        "organization": "Aurora Assembly Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both compete for industrial auxiliary orders through published performance and price."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Independent Docks",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2296,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "industry"
+    ],
+    "history": "The Independent Docks began as a private berth opened by cargo crews tired of losing days to a dominant operator's changing terms. Founders financed handling machinery through long contracts with small merchants, accepting modest early profits in exchange for predictable work. Other berths followed, and the company grew into an established interest of the kind its earliest customers had once challenged.\n\nIn 2426 it operates profitable cargo and repair facilities. A new generation of competitors now demands access to shared services on fair terms, making the directors decide whether the company's founding principles still apply when openness threatens their own comfortable position.",
+    "culture": "Staff take pride in making an unfamiliar crew feel capable of doing business immediately. Clear quotations and competent handling matter more than elaborate hospitality. Longstanding customers sometimes receive informal favors, however, and junior employees worry that a culture of personal trust can become an invisible barrier for newcomers without friends among the dispatchers.",
+    "doctrine": "A private port may choose its commercial terms, but those terms should be visible and honored once accepted. Security requires maintained turrets, patrol agreements, and trained staff. Ownership of berths provides no magical control over surrounding space, and commercial disputes should be resolved through evidence and contracts rather than threats against a competitor's ships.",
+    "goals": [
+      "Renew worn cargo handling machinery",
+      "Publish terms for shared services used by competing berths",
+      "Reduce delays for small independent cargo operators"
+    ],
+    "resources": [
+      "Privately owned cargo and repair berths",
+      "Handling equipment and station maintenance crews",
+      "Contracts for local patrols and defensive turret servicing"
+    ],
+    "relations": [
+      {
+        "organization": "Free Quay Association",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Independent merchants challenge terms for services used by several port operators."
+      },
+      {
+        "organization": "Breakwater Escort Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The docks purchase patrol and convoy services for contracted cargo activity."
+      }
+    ]
+  },
+  {
+    "name": "Breakwater Escort Union",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2333,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "Breakwater formed after several experienced escort crews discovered that brokers were collecting premiums while assigning undermanned vessels to dangerous cargo work. The crews bought out one failing contractor and established their own union, combining professional employment with member ownership. Their first hard decision was to decline a lucrative route they could not protect responsibly.\n\nBy 2426 Breakwater escorts commercial cargo and patrols around contracted facilities. Its reputation attracts customers wanting certainty the union cannot honestly supply. Members still argue about when refusing an underfunded job protects crews and when it abandons people who have no safer option.",
+    "culture": "Crews value composure, maintenance discipline, and a readiness to admit fear without letting it govern every decision. Families participate in support networks after casualties. The union distrusts theatrical militancy, though experienced members can become impatient with civilians who underestimate danger or ask reasonable questions using vocabulary that professionals consider naive.",
+    "doctrine": "Protection means vessels in position, working sensors, laser turrets, missiles, and clear decisions about escalation. Contracts define obligations and limits; they do not make space safe by declaration. Breakwater uses force against actual armed threats and seeks evidence before assigning blame, recognizing that a frightened merchant, a rival escort, and a raider may initially look similar.",
+    "goals": [
+      "Refit an escort vessel for dependable patrol service",
+      "Improve identification exercises with civilian cargo crews",
+      "Keep casualty support reserves fully funded"
+    ],
+    "resources": [
+      "Professionally crewed escort vessels",
+      "Maintained laser weapons and missile stocks",
+      "Member capital and long commercial protection contracts"
+    ],
+    "relations": [
+      {
+        "organization": "Vesper Independent Docks",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The docks fund local patrols and specified convoy protection."
+      },
+      {
+        "organization": "Meridian Mutual Arsenal",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The arsenal supplies maintainable ammunition and replacement weapon components."
+      },
+      {
+        "organization": "Free Quay Association",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Small merchants challenge escort premiums that the union says are necessary to maintain trained crews and ammunition reserves."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Salvage Exchange",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2371,
+    "open_membership": true,
+    "roles": [
+      "salvage",
+      "trade"
+    ],
+    "history": "The exchange began as a noticeboard where independent salvors could share the location of oversized recoveries they lacked the equipment to move alone. Success brought disputes over incomplete descriptions, hidden hazards, and the value of information that several people claimed to have supplied first. Members gradually built common inspection practices and a fund for independent examination of contentious finds.\n\nIn 2426 the exchange helps crews combine machinery, capital, and practical knowledge. It remains open to new members, but established operators control much of the heavy equipment, prompting persistent arguments about whether access to the market also offers a fair chance to prosper.",
+    "culture": "Members admire ingenuity and the ability to recover useful material from an apparently hopeless wreck. Stories are colorful, but contracts require a more restrained account of what was actually found. Generosity in emergencies coexists with sharp bargaining over profitable recoveries, and the exchange continually renegotiates where mutual help ends and compensated work begins.",
+    "doctrine": "Inspect before committing a crew, preserve evidence of ownership, and agree on shares before moving valuable material. A wreck may contain surviving people, hazardous machinery, or claims that remain valid despite abandonment of physical possession. The exchange relies on negotiated custody and arbitration, with practical enforcement as uncertain as the condition of the recovered hull.",
+    "goals": [
+      "Purchase shared inspection equipment for smaller salvors",
+      "Clarify agreements governing contributed discovery information",
+      "Improve assessment of damaged reactor compartments"
+    ],
+    "resources": [
+      "Member recovery craft and leased heavy machinery",
+      "A marketplace of inspected salvage opportunities",
+      "Funds for independent assessment of contested recoveries"
+    ],
+    "relations": [
+      {
+        "organization": "Aurora Reclamation Survey",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The organizations compete for assessment work and access to viable recoveries."
+      },
+      {
+        "organization": "Vesper Evidence Bureau",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The bureau investigates contested custody and ownership accounts."
+      }
+    ]
+  },
+  {
+    "name": "Nightglass Optics",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2382,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "Nightglass was founded by technicians specializing in repair of expensive optical assemblies that manufacturers preferred to replace. They learned to distinguish damage that genuinely required new components from wear that careful refurbishment could address. Customers' savings financed better equipment, and the company eventually designed its own robust assemblies for ranging, industrial lasers, and defensive systems.\n\nIn 2426 its strongest customers are operators with limited maintenance budgets. Competing against prestigious new equipment remains difficult, and the founders disagree about whether marketing a fashionable premium line would fund useful work or erode the repair culture that made the firm distinctive.",
+    "culture": "Workbenches retain failed components as teaching objects, with the names of those who diagnosed them rather than those blamed for breaking them. The company values practical intelligence and recruits capable workers from interrupted apprenticeships. Its confidence in repair occasionally becomes stubbornness, requiring outside testing to show when an old assembly should finally be retired.",
+    "doctrine": "Offer maintainable performance, honest service limits, and an explanation a working crew can use. Refurbishment must meet actual thermal and optical requirements rather than sentimental attachment to old hardware. The company accepts commercial competition and evaluates defense customers carefully, recognizing that good equipment supports both necessary protection and potentially irresponsible decisions by its users.",
+    "goals": [
+      "Improve service life of a refurbished laser assembly",
+      "Expand practical training for interrupted apprentices",
+      "Compare repair economics against replacement under realistic use"
+    ],
+    "resources": [
+      "Optical refurbishment and coating workshops",
+      "Collections of diagnosed component failures",
+      "Experienced technicians and affordable maintenance contracts"
+    ],
+    "relations": [
+      {
+        "organization": "Dawnlight Optics",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both supply laser assemblies while emphasizing different maintenance and cost choices."
+      },
+      {
+        "organization": "Breakwater Escort Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Escort crews purchase repairs and provide evidence from demanding operating conditions."
+      }
+    ]
+  },
+  {
+    "name": "Free Quay Association",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2404,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "broadcast"
+    ],
+    "history": "Free Quay formed after Concord encouraged small merchants to try routes previously associated with military risk. New arrivals found that formally open ports could still be difficult to use because crucial service terms were scattered among private agreements and personal understandings. The association began publishing practical comparisons and negotiating common purchases of handling, storage, and repair services.\n\nIts members in 2426 include independent captains, stallholders, and workshop owners. They disagree over whether successful collective bargaining should become a permanent commercial enterprise, fearing both dependence on large operators and the possibility of building another institution that speaks over its smaller subscribers.",
+    "culture": "Meetings favor people who bring an actual quotation or a concrete problem, and abstract ideological speeches receive polite impatience. Hard libertarians work beside cooperative members because both need understandable terms. The association tries to give tiny businesses a voice, but owners with time and administrative help still attend more often than those busiest keeping a single vessel working.",
+    "doctrine": "Competition requires usable information and realistic alternatives as well as formal freedom to contract. Free Quay advocates voluntary association, transparent prices, and independent dispute procedures. It accepts that ports choose customers and conditions, while insisting that existing commitments be honored and that essential shared services not be used to disguise coercion as ordinary commerce.",
+    "goals": [
+      "Publish comparable cargo handling and storage quotations",
+      "Negotiate affordable inspection services for small vessels",
+      "Give smaller subscribers easier access to association decisions"
+    ],
+    "resources": [
+      "Member subscriptions and pooled purchasing commitments",
+      "Commercial researchers and public information channels",
+      "A network of independent merchants and cargo crews"
+    ],
+    "relations": [
+      {
+        "organization": "Vesper Independent Docks",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Members contest the clarity and fairness of shared service terms."
+      },
+      {
+        "organization": "Meridian Free Enterprise Society",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both support voluntary institutional alternatives and understandable contracts."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Farewell Trust",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2356,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "The Farewell Trust began with port attendants collecting money for stranded travelers whose former employers had closed without arranging return passage. Many had a legal right to leave their last residence and personal possessions they could take, yet lacked a destination, savings, or someone willing to help negotiate admission elsewhere. The attendants' small fund became a lasting institution as similar cases accumulated.\n\nIn 2426 it supports temporary lodging, passage, and careful introductions. Staff resist romantic accounts of departure: a new beginning may be necessary and still involve grief, loneliness, lost status, and obligations that cannot simply be packed into cargo.",
+    "culture": "Departures receive quiet practical attention rather than public celebration. Staff help label possessions, preserve contact details, and make time for difficult goodbyes. Volunteers include people once helped by the trust, whose experiences are valuable but not universal. Some prefer decisive advice, while others remember how painful it was when helpers assumed they understood the best future for someone else.",
+    "doctrine": "A peaceful person should be able to leave with legitimate movable property, but receiving communities decide whom they admit. Assistance therefore requires actual transport, willing hosts, and funded support during uncertainty. The trust pursues contested claims through evidence and appropriate institutions while refusing to turn gratitude for help into a new binding membership obligation.",
+    "goals": [
+      "Increase emergency lodging capacity near working berths",
+      "Fund transport of departing families' personal effects",
+      "Recruit receiving households for travelers needing continued care"
+    ],
+    "resources": [
+      "A donor fund for passage and temporary lodging",
+      "Experienced caseworkers and volunteer companions",
+      "Commercial agreements with cargo and passenger operators"
+    ],
+    "relations": [
+      {
+        "organization": "Lantern Rescue Guild",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The guild refers survivors who need receiving communities after rescue."
+      },
+      {
+        "organization": "Aurora Passage Trust",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The trusts share practical introductions and independently review difficult cases."
+      },
+      {
+        "organization": "Riverstone Commonwealth",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The trust seeks longer transitional care for departing members while Riverstone disputes the extent of its continuing obligation."
+      }
+    ]
+  },
+  {
+    "name": "Pelagic House Cooperative",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2329,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade",
+      "relief"
+    ],
+    "history": "Pelagic House began when a group of dock workers acquired a neglected residence and a small fabrication shop together. Shared housing made irregular employment bearable, and workshop earnings gradually funded care, education, and retirement reserves. The founders described membership as a durable promise among particular people, while insisting that anyone could leave without surrendering individually owned savings or tools.\n\nIn 2426 the house makes machinery fittings and provides a stable home for members of several backgrounds. Its success has brought more applicants than it can responsibly support, making admission decisions the most emotionally difficult task in an otherwise comfortable communal life.",
+    "culture": "Members keep private rooms, shared meals, and a strong expectation that neighbors notice illness or distress. Household traditions differ, and the cooperative has learned to accommodate both religious observance and people who dislike organized ceremony. Informal care is a strength, but it can burden members assumed to be naturally patient, especially when their work remains less visible than industrial production.",
+    "doctrine": "Common assets should sustain dependable care without becoming a claim over members themselves. Admission involves a real mutual commitment and may be selective; departure remains possible. The cooperative supports local freedom within the League association, contributes through explicit agreements, and treats outside charitable obligations as a question for honest budgeting rather than effortless moral declarations.",
+    "goals": [
+      "Recognize informal caregiving in work allocations",
+      "Expand the machinery fittings workshop",
+      "Improve independent advice for applicants and departing members"
+    ],
+    "resources": [
+      "Collective housing and a fabrication shop",
+      "Reserves dedicated to care and retirement",
+      "Skilled dock workers and machinery fitters"
+    ],
+    "relations": [
+      {
+        "organization": "Riverstone Commonwealth",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both exchange practical advice about bounded care and common assets."
+      },
+      {
+        "organization": "Vesper Independent Docks",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Dock operators purchase fittings and employ members under published agreements."
+      },
+      {
+        "organization": "Vesper Farewell Trust",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The trust argues that departing members need faster independent review of disputed personal and collective purchases."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Heritage Studio",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2397,
+    "open_membership": true,
+    "roles": [
+      "broadcast",
+      "research"
+    ],
+    "history": "The studio began with a cargo mechanic's amateur recordings of songs heard in different crew messes. Sponsors expected a comforting collection of ancestral traditions, but the recordings revealed constant borrowing, incomplete recollection, and affectionate invention. The mechanic and several performers founded an independent studio so contributors could describe their own practices rather than conform to a curator's ideal of authenticity.\n\nContact after Concord added USE visitors and new arguments about restored language. By 2426 the studio broadcasts readings, music, and interviews that preserve cultural attachment while asking who gets excluded when an institution defines the only proper way to remember.",
+    "culture": "Performers are encouraged to explain where they learned a song and what they changed, without apologizing for living traditions. The studio welcomes both carefully restored Japanese forms and the native language of USE guests. Its informality can frustrate archivists seeking strict reconstruction, while public criticism sometimes tempts producers to mistake deliberate provocation for artistic courage.",
+    "doctrine": "Cultural restoration can repair damaged transmission without requiring every person to perform the same identity. Record sources, pay contributors, and distinguish reconstruction from invention. USE language policy imposed real changes and also preserved a living language with sincere speakers; the studio gives space to both facts while refusing to make grammar a test of human depth.",
+    "goals": [
+      "Produce reciprocal readings with speakers from both Japanese traditions",
+      "Pay neglected regional performers for archival recordings",
+      "Improve annotation of reconstructed songs and borrowed forms"
+    ],
+    "resources": [
+      "A modest recording and broadcast studio",
+      "Contracts with independent performers and translators",
+      "A growing collection of crew songs and cultural interviews"
+    ],
+    "relations": [
+      {
+        "organization": "Kisaragi Memory House",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The house supplies annotated archival material for paid productions."
+      },
+      {
+        "organization": "Thousand Voices Archive",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both preserve contributors accounts of context and uncertainty."
+      },
+      {
+        "organization": "Old Trunk Witnesses",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The studio and affected families disagree over consent and editorial freedom in adapting historical distress recordings."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Evidence Bureau",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2367,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "trade"
+    ],
+    "history": "The bureau was founded by an investigator who discovered that three apparently independent witnesses to a cargo theft had all repeated the same broker's mistaken account. The case ended without recovering the goods, but convinced several insurers to finance careful examination of physical records, custody histories, and conflicting recollections. The bureau developed a reputation for findings that disappointed its own clients as often as their opponents.\n\nIn 2426 it investigates salvage, cargo, and commercial losses. Its central danger is dependence on repeat customers, who may prefer a useful advocate when they have formally paid for an independent account of events.",
+    "culture": "Investigators keep explicit notes about what they do not know. Colleagues review each other's interpretations and are expected to challenge an attractive story before presenting it publicly. The habit can become wearying skepticism, especially for distressed clients seeking reassurance. Supervisors try to pair evidentiary caution with enough practical kindness that uncertainty does not sound like indifference.",
+    "doctrine": "Evidence supports judgments but rarely removes every doubt. Establish provenance, distinguish direct observation from repetition, and disclose conflicts of interest. The bureau has no general police jurisdiction or power to make an award enforce itself; arbitrators, local authorities, custodians, and contracting parties must decide what follows from its findings, and can themselves make mistakes.",
+    "goals": [
+      "Improve preservation of cargo custody records",
+      "Diversify clients to protect investigative independence",
+      "Train investigators to communicate uncertainty to distressed claimants"
+    ],
+    "resources": [
+      "Investigators with cargo and salvage experience",
+      "Secure retained records and inspection equipment",
+      "Fee income from insurers and commercial clients"
+    ],
+    "relations": [
+      {
+        "organization": "Vesper Salvage Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The exchange commissions investigations into disputed recoveries."
+      },
+      {
+        "organization": "Meridian Title Collegium",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The collegium purchases independent factual examination for difficult claims."
+      },
+      {
+        "organization": "Kisaragi Memory House",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Investigators seek restricted testimony for an inheritance claim while the house insists on honoring donors' privacy conditions."
+      }
+    ]
+  },
+  {
+    "name": "Vesper Fission Brokerage",
+    "sovereignty": "Vesper Freeports",
+    "home_system": "Vesper system",
+    "founded_year": 2410,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "industry"
+    ],
+    "history": "The brokerage began when a former fuel inspector noticed that smaller port operators were paying a steep premium for quantities too modest to interest major suppliers. She combined their orders, retained independent testing, and arranged delivery schedules that suited working reactors rather than traders' preferred accounting dates. Early profits were modest, but customers valued someone who answered technical questions before discussing a sale.\n\nBy 2426 the firm has expanded quickly enough to attract competitors and uneasy creditors. Its founders are deciding how much inventory to own directly, balancing reliable supply against the financial exposure of keeping expensive stock idle through quiet periods.",
+    "culture": "Staff learn reactor operators' vocabulary and accompany deliveries before handling accounts alone. The company rewards practical responsiveness, which customers appreciate and exhausted employees sometimes resent. Its founder remains approachable but has difficulty delegating, creating a tension between personal trust and the procedures needed for a growing firm to keep promises when she is absent.",
+    "doctrine": "Aggregate demand, inspect fuel independently, and make delivery obligations match available stock and transport. Competitive prices are useful only if reactor operators can depend on the result. The brokerage distinguishes stored reserves from future purchases and accepts outside review of quality disputes, recognizing that commercial confidence cannot substitute for physical fuel or sound maintenance.",
+    "goals": [
+      "Build a modest inspected reserve for small port customers",
+      "Delegate routine delivery decisions to trained staff",
+      "Reduce dependence on a single fuel transport contractor"
+    ],
+    "resources": [
+      "Combined purchase commitments from small reactor operators",
+      "Contracts for independent fuel inspection",
+      "Working credit and leased shielded storage"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Fuel Mutual",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek fuel customers while offering different reserve and ownership arrangements."
+      },
+      {
+        "organization": "Vesper Independent Docks",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The docks buy fuel deliveries matched to the operating needs of their facilities."
+      }
+    ]
+  }
+]

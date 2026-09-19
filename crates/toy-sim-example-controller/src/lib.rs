@@ -9,6 +9,8 @@ use glam::{DMat3, DQuat, DVec3};
 
 use navigation::{Phase, Pursuit};
 use toy_sim_ship_api::abi::{self, Contact};
+#[cfg(target_arch = "wasm32")]
+pub mod chatter;
 pub mod hardware;
 pub mod missile;
 pub mod weapons;

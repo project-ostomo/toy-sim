@@ -2,10 +2,12 @@ mod checkpoint;
 mod execution;
 mod imports;
 mod metering;
+mod program_services;
 mod session;
 pub mod spatial;
 
 pub use checkpoint::ControllerCheckpoint;
+pub use program_services::ProgramServices;
 pub use session::Session;
 
 use anyhow::{Context, Result, ensure};
@@ -69,6 +71,7 @@ struct Host {
     input: Option<Input>,
     output: Output,
     source: Option<Arc<dyn ScanSource>>,
+    services: Option<Arc<dyn ProgramServices>>,
     contacts: Vec<SensorContact>,
     scan_time: Option<f64>,
     catalogue: Arc<[DeviceDescriptor]>,
@@ -97,6 +100,7 @@ pub struct Controller {
     pub restart_revision: u64,
     pub last_gas_used: u64,
     display_only: bool,
+    services: Option<Arc<dyn ProgramServices>>,
     pub state: Session,
     pub observer_origin: spatial::Position,
     pub catalogue: Arc<[DeviceDescriptor]>,
@@ -133,6 +137,14 @@ pub struct SliceOutput {
 }
 
 impl Controller {
+    pub fn set_services(&mut self, services: Option<Arc<dyn ProgramServices>>) {
+        self.services = services;
+    }
+
+    pub fn program(&self) -> &[u8] {
+        &self.program
+    }
+
     pub fn is_booting(&self) -> bool {
         !self.initialized
     }
@@ -314,6 +326,7 @@ impl Controller {
         let slice = execution::SliceInput {
             input,
             source,
+            services: self.services.clone(),
             observer_origin: self.observer_origin,
             catalogue: self.catalogue.clone(),
             specs: self.device_specs.clone(),
@@ -514,6 +527,7 @@ impl ControllerRuntime {
             restart_revision: 0,
             last_gas_used: 0,
             display_only: false,
+            services: None,
             state: Session::default(),
             observer_origin: [0; 3],
             catalogue: Arc::default(),

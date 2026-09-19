@@ -391,8 +391,7 @@ extern "C" fn ship_display() {
     let _ = draw_display();
 }
 
-#[cfg(feature = "firmware")]
-fn draw_display() -> Result<(), i32> {
+pub fn draw_display() -> Result<(), i32> {
     let tick = sdk::tick()?;
     let flight = sdk::flight()?;
     let resources = sdk::resources()?;

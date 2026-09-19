@@ -1028,6 +1028,147 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_chat_delivers_to_focused_controlled_ships_without_identity_or_history_leaks() {
+    let alice = Id([61; 16]);
+    let bob = Id([62; 16]);
+    let alice_key = SigningKey::from_bytes(&[63; 32]);
+    let bob_key = SigningKey::from_bytes(&[64; 32]);
+    let server_key = SigningKey::from_bytes(&[65; 32]);
+    let mut server =
+        ServerProcess::start(&server_key, &[(alice, &alice_key), (bob, &bob_key)], None);
+    let address = server.ready().await;
+    let mut a = toy_sim_client::connect(&address, server_key.verifying_key(), alice, &alice_key)
+        .await
+        .unwrap();
+    let mut b = toy_sim_client::connect(&address, server_key.verifying_key(), bob, &bob_key)
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), a.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let other = tokio::time::timeout(Duration::from_secs(10), b.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let world = first.world;
+    let own = &first.ships[0];
+    let remote = &other.ships[0];
+    let focus = |ship, revision| {
+        Action::Subscribe(ViewSubscription {
+            id: 1,
+            revision,
+            group: PUBLIC_GROUP,
+            focused_ship: Some(ship),
+            query: TrackQuery {
+                limit: 64,
+                work: 100_000,
+                ..Default::default()
+            },
+        })
+    };
+    for (client, ship) in [(&mut a, own.ship), (&mut b, remote.ship)] {
+        let frame = submit_action(client, world, 1, focus(ship, 1)).await;
+        assert!(frame.results.iter().all(|result| result.error.is_none()));
+        let frame = submit_action(
+            client,
+            world,
+            2,
+            Action::ChatSubscribe(chat::ChatSubscription {
+                revision: 1,
+                view: 1,
+            }),
+        )
+        .await;
+        assert!(frame.results.iter().all(|result| result.error.is_none()));
+        assert!(frame.chat.as_ref().unwrap().page.messages.is_empty());
+    }
+    let disabled = submit_action(
+        &mut a,
+        world,
+        3,
+        Action::Ship {
+            ship: own.ship,
+            authority_revision: own.authority_revision,
+            command: ShipCommand::SetTransponderEnabled(false),
+        },
+    )
+    .await;
+    assert!(disabled.results.iter().all(|result| result.error.is_none()));
+    let sent = submit_action(
+        &mut a,
+        world,
+        4,
+        Action::ChatSend {
+            subscription_revision: 1,
+            text: "Hello from a dark transmitter".into(),
+        },
+    )
+    .await;
+    assert!(sent.results.iter().all(|result| result.error.is_none()));
+    let echoed = &sent.chat.as_ref().unwrap().page.messages[0];
+    let received = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = b.state.recv().await.unwrap();
+            if let Some(message) = frame
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.page.messages.first())
+            {
+                break message.clone();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(received.id, echoed.id);
+    assert_eq!(received.text, "Hello from a dark transmitter");
+    assert_eq!(received.sender_name, "Unidentified transmission");
+    assert_eq!(received.advertised_owner, None);
+    assert_eq!(received.advertised_organization, None);
+
+    let denied = submit_action(&mut b, world, 3, focus(own.ship, 2)).await;
+    assert!(denied.results.iter().any(|result| result.error.is_some()));
+    submit_action(&mut b, world, 4, Action::ChatUnsubscribe).await;
+    submit_action(
+        &mut a,
+        world,
+        5,
+        Action::ChatSend {
+            subscription_revision: 1,
+            text: "While the window is closed".into(),
+        },
+    )
+    .await;
+    let reopened = submit_action(
+        &mut b,
+        world,
+        5,
+        Action::ChatSubscribe(chat::ChatSubscription {
+            revision: 2,
+            view: 1,
+        }),
+    )
+    .await;
+    assert!(reopened.results.iter().all(|result| result.error.is_none()));
+    assert!(reopened.chat.as_ref().unwrap().page.messages.is_empty());
+    let stale = submit_action(
+        &mut b,
+        world,
+        6,
+        Action::ChatSend {
+            subscription_revision: 1,
+            text: "Stale channel".into(),
+        },
+    )
+    .await;
+    assert!(stale.results.iter().any(|result| result.error.is_some()));
+    drop(a);
+    drop(b);
+    server.shutdown().await;
+}
+
 struct ServerProcess {
     child: Child,
     directory: PathBuf,
@@ -1062,6 +1203,7 @@ impl ServerProcess {
 
     fn spawn(directory: &std::path::Path) -> Child {
         Command::new(env!("CARGO_BIN_EXE_toy-sim-server"))
+            .env_remove("OPENROUTER_API_KEY")
             .arg(directory.join("server.toml"))
             .arg("--ready-file")
             .arg(directory.join("ready"))

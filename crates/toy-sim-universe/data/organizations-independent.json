@@ -1,0 +1,1601 @@
+[
+  {
+    "name": "St Raphael Trade Confraternity",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2259,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "industry",
+      "relief"
+    ],
+    "history": "The Confraternity began when Cinder merchants pooled inventories after the Great Partition of 2257 stranded orders, relatives, and creditors beyond destroyed gates. Parish accountants and secular warehouse owners agreed to honor documented debts without waiting for a central reconstruction authority. Their first common purchase was a fuel fabrication line, paid for with shares in future freight rather than compulsory contributions. Later slip traffic turned the emergency pool into a durable merchant association. The reclamation attempt of 2272 taught its directors to maintain dispersed stocks; the Treaty of Concord in 2401 reopened commercial relationships that several member families had preserved only on paper.",
+    "culture": "Members meet over communal meals, but most daily work concerns reactor batches, factory schedules, and freight insurance. Catholic devotional life is visible without being a condition for every employee or trading partner. Apprentices rotate through accounting and maintenance so that neither an elegant contract nor a generous promise can conceal the physical work required to fulfill it. Older captains retain considerable influence and sometimes resist younger members seeking more transparent loss reports.",
+    "doctrine": "The Confraternity treats moral obligations as universal while accepting the Commonwealth's limited civil jurisdiction. Its contracts bind consenting parties, and its charitable commitments remain payable when markets deteriorate. It supports the LFS as an association for defense and arbitration. Armed escorts protect cargo through actual presence; a merchant seal provides no immunity from interception or local law.",
+    "goals": [
+      "Build a second Cinder fuel reserve sufficient for prolonged convoy disruption.",
+      "Finance replacement radiator production for independent freight yards.",
+      "Recover compensation for cargo and crews seized by Terminus Privateers."
+    ],
+    "resources": [
+      "Member warehouses holding fabricated fission fuel and machine spares.",
+      "Shares in Cinder freight hulls and a repair berth.",
+      "A mutual insurance treasury funded by completed cargo contracts."
+    ],
+    "relations": [
+      {
+        "organization": "Saint Joseph Shipwrights",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The yards rebuild Confraternity freighters against audited long term orders."
+      },
+      {
+        "organization": "House of the Open Table",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Members underwrite food and outbound travel for guests awaiting admission elsewhere."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer attacks on its freight have killed crews and prompted armed convoy resistance."
+      },
+      {
+        "organization": "Cinder Family Mutual",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Confraternity members argue that discounted priority deliveries to Mutual factories shift costs onto other customers."
+      }
+    ]
+  },
+  {
+    "name": "Saint Joseph Shipwrights",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2284,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "salvage"
+    ],
+    "history": "Saint Joseph Shipwrights grew around a damaged construction cradle bought from a failed military supplier during the early Slip Wars. Its founders included married technicians, a religious brother who designed reactor mounts, and former fleet workers whose credentials were disputed after secession. They earned their first solvent year by rebuilding civilian freighters from incompatible hull sections. The resulting habit of documenting every interface became the yard's strongest export. By 2426 its workshops serve Commonwealth merchants and neutral clients, although memorial plaques still list the apprentices lost when an improvised pressure test failed during its first expansion.",
+    "culture": "The yard keeps feast days and shift rosters on the same public calendar. Skilled workers argue loudly about design and quietly about who should train an apprentice with a difficult medical condition. Assistive machinery makes many such apprentices productive, yet training remains expensive and uneven. Membership follows demonstrated work and acceptance of the cooperative charter; clients and employees include people who do not share the founders' faith.",
+    "doctrine": "Repair carries an obligation to the next crew who will trust the hull. The cooperative rejects concealed defects even when disclosure loses a contract. Automated tools perform most fabrication, while named engineers accept responsibility for release. Its civil duties arise from Cinder law and voluntary contracts; ecclesiastical affiliation supplies neither foreign jurisdiction nor an exemption from inspection.",
+    "goals": [
+      "Expand the heavy cradle to rebuild damaged cargo pressure sections.",
+      "Qualify additional apprentices to inspect reactor shielding.",
+      "Reduce dependence on a single supplier of missile resistant radiator joints."
+    ],
+    "resources": [
+      "An orbital construction cradle with robotic welding frames.",
+      "A stock of recovered hull plates and certified pressure fittings.",
+      "A cooperative design archive maintained by accountable engineers."
+    ],
+    "relations": [
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Confraternity orders provide steady civilian repair work."
+      },
+      {
+        "organization": "Raphael Reclamation Company",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Reclamation crews supply inspected structural metal and salvage records."
+      },
+      {
+        "organization": "Elysium Shipyard Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both yards compete for neutral freight refit contracts."
+      },
+      {
+        "organization": "Terminus Hullwright Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The shipwrights compete with the Terminus yard on prices and warranties for major civilian hull repairs."
+      }
+    ]
+  },
+  {
+    "name": "Cinder Fission Guild",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2261,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research",
+      "trade"
+    ],
+    "history": "A failed shipment of replacement reactor cartridges during Partition isolation forced several Cinder workshops to coordinate fuel assays. Their temporary laboratory became the Fission Guild after investigators found that apparently equivalent batches had different contamination histories. The Guild survived the return of regular transport because insurers valued its records more than the original emergency monopoly. It later surrendered exclusive purchasing privileges after public hearings exposed favoritism toward founding firms. In 2426 its laboratories remain prosperous, but they must win customers who can commission competing assays and challenge a rejected batch before Commonwealth courts.",
+    "culture": "Guild membership requires technical qualification and a record of accepting personal responsibility for industrial decisions. Religious practice varies across the laboratories, whose shared customs revolve around careful handovers and public correction of errors. Senior examiners are expected to teach outside their own family networks. The rule arose after talented migrant technicians complained that informal recommendations mattered more than demonstrated competence.",
+    "doctrine": "Fuel safety depends on measurable material properties, competent workers, and defensible custody records. A certificate summarizes those facts without making a vessel harmless. The Guild advocates redundant suppliers and independent model families because the cataclysm offers evidence of correlated failures, while acknowledging that the initiating cause and any unitary intelligence behind it remain unresolved.",
+    "goals": [
+      "Commission another independent fuel assay bench.",
+      "Publish comparable contamination results for disputed supplier batches.",
+      "Train refugee technicians for qualified work in fuel fabrication."
+    ],
+    "resources": [
+      "Shielded assay laboratories and remotely operated handling equipment.",
+      "Reference samples from a century of reactor fuel production.",
+      "Contracts for fuel rods and replacement containment casks."
+    ],
+    "relations": [
+      {
+        "organization": "Partenian Reactor Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The two organizations exchange reference samples and buy replacement handling machinery."
+      },
+      {
+        "organization": "Raphael Toolmakers Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Toolmakers manufacture the Guild's precision assay fixtures."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek frontier fuel buyers and disagree about acceptable inspection costs."
+      }
+    ]
+  },
+  {
+    "name": "Mercy of Raphael Hospitallers",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2275,
+    "open_membership": false,
+    "roles": [
+      "relief",
+      "research",
+      "trade"
+    ],
+    "history": "The Hospitallers formed from medical teams that treated displaced workers after the reclamation fighting of 2272 disrupted several outer settlements. They acquired their first ship by accepting a freighter with damaged cargo handling equipment and converting its holds into surgical wards. Early success treating radiation injuries brought donations from families who disagreed about almost everything else. The order later built permanent clinics beside Cinder's industrial districts so that convalescents could return to work gradually. Its present budget still relies on shipping medical supplies alongside ordinary freight, a practical arrangement that repeatedly provokes arguments about priorities during shortages.",
+    "culture": "Vowed clinicians work beside salaried specialists, married researchers, and visiting staff from other sovereignties. Prayer and bedside companionship remain deliberate personal commitments amid highly automated treatment. Patients may decline religious conversation without losing care. The order accepts disabilities that it cannot yet repair, and its clinicians debate how to distribute costly neural prostheses without letting a patient's expected commercial productivity decide the answer.",
+    "doctrine": "Medical technology should restore the person who already exists. The order develops somatic therapies, organ regeneration, and fetal rescue while refusing embryo selection as a way to replace a patient with a preferred child. It recognizes the competence and sincere humanitarian motives of USE clinicians even where their reproductive practices and account of parenthood conflict with Catholic teaching.",
+    "goals": [
+      "Refit a freight hold for transport of patients with radiation injuries.",
+      "Expand prosthetic rehabilitation near Cinder repair yards.",
+      "Establish a shared emergency supply schedule with neutral hospitals."
+    ],
+    "resources": [
+      "A hospital freighter with shielded intensive care compartments.",
+      "Clinical laboratories for tissue repair and prosthetic fitting.",
+      "Contracted stocks of medicines and spare surgical machinery."
+    ],
+    "relations": [
+      {
+        "organization": "Saint Luke Restoration College",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "College laboratories support treatment trials and supervised clinical training."
+      },
+      {
+        "organization": "Saint Camillus Rescue Order",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The orders exchange emergency teams while retaining separate civil obligations."
+      },
+      {
+        "organization": "Common Hearth Freight",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Scheduled cargo capacity pays part of the hospital ship's operating costs."
+      },
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Hospitallers contest an auction of medical processors recovered from one of their missing cargo consignments."
+      }
+    ]
+  },
+  {
+    "name": "House of the Open Table",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2318,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "The House began when a parish dining hall continued serving a stranded migrant crew after their sponsor withdrew an admission offer. Donations kept the guests alive, but finding another destination proved harder than feeding them. Its founders therefore bought passage shares and hired caseworkers alongside cooks. Over the following century the House accumulated a network of temporary apartments and employment introductions without becoming an immigration authority. The opening of sustained contact after 2401 brought USE visitors, dissidents, and ordinary travelers into the same waiting rooms, exposing how easily charitable hospitality could acquire intrusive expectations of gratitude or conversion.",
+    "culture": "The common table is literal, with residents, volunteers, and directors sharing meals several times a week. A council of former guests reviews complaints about coercion and favoritism. Catholic commitments shape the institution, while language classes and employment referrals serve guests of any religion. Some volunteers still confuse restored manners with moral worth, and the House now trains them to recognize ordinary USE Japanese as a living language.",
+    "doctrine": "A stranger has a claim upon human solidarity even when no polity owes that stranger permanent membership. The House helps people obtain lawful opportunities and practical means of departure. It neither promises admission that a government has refused nor treats charitable dependence as consent to religious instruction, unpaid work, or indefinite supervision.",
+    "goals": [
+      "Purchase additional outbound berths for residents with confirmed destinations.",
+      "Convert a vacant warehouse floor into accessible family accommodation.",
+      "Recruit interpreters familiar with both USE and LFS Japanese."
+    ],
+    "resources": [
+      "Temporary apartments and a communal kitchen near Cinder docks.",
+      "A travel fund backed by merchant donations.",
+      "Caseworkers with employment and accommodation contacts across neutral ports."
+    ],
+    "relations": [
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Confraternity members fund meals and transport without selecting recipients by commercial value."
+      },
+      {
+        "organization": "Terminus Reception Houses",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both institutions arrange onward accommodation for displaced crews."
+      },
+      {
+        "organization": "Elysium Pilgrim Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Exchange sells spare passenger berths at published charity rates."
+      },
+      {
+        "organization": "Cinder Witness Press",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The House challenges reporting requests that could expose vulnerable guests to former employers or unwanted publicity."
+      }
+    ]
+  },
+  {
+    "name": "Michaelmas Escort Covenant",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2296,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "The Covenant was established after three independent merchants hired incompatible escort systems and nearly fired on each other during a convoy alarm. Former militia officers proposed a common command contract limited to particular voyages. Their first clients insisted that the officers provide their own maintenance reserves and submit casualty accounts to civilian review. That arrangement survived successive wars and the Treaty of Concord because merchants continued to need protection against raiders. Recent attacks by Terminus Privateers have increased demand, but several shareholders now question whether repeated pursuit missions are turning a defensive service into a private foreign policy.",
+    "culture": "Crews include practicing Catholics, other believers, and secular veterans admitted after demanding technical and disciplinary examinations. Shared memorial observances emphasize the names of civilians killed by escort mistakes as well as fallen defenders. Shipboard debate can be blunt, particularly when an experienced captain objects to a civilian reviewer. Promotion depends partly on maintaining machinery and restraining frightened subordinates under uncertain contact conditions.",
+    "doctrine": "The Covenant accepts force to defend people and cargo against concrete attack, under contracts that identify accountable commanders. It treats the LFS defense association as a source of cooperation among sovereign members, without assuming a federal power to police them. Patrol coverage, sensors, fuel, and ammunition determine protection; contractual language cannot stop a missile or guarantee safe passage.",
+    "goals": [
+      "Replace missiles expended against Privateer boarding ships.",
+      "Add a second escort to vulnerable fuel convoys.",
+      "Complete civilian review of the most recent pursuit engagement."
+    ],
+    "resources": [
+      "Armed escort hulls with repairable sensor arrays.",
+      "A dispersed stock of defensive missiles and reactor fuel.",
+      "A reserve of trained navigators and damage control specialists."
+    ],
+    "relations": [
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Covenant escorts contracted merchant convoys."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both services share evidence and rendezvous plans against active raiders."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer boarding attacks have produced repeated firefights with Covenant escorts."
+      }
+    ]
+  },
+  {
+    "name": "Cinder Family Mutual",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2307,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "industry",
+      "trade"
+    ],
+    "history": "The Mutual grew from households whose adults alternated between long freight voyages and intensive industrial apprenticeships. A shared nursery became a pooled insurance fund, then an owner of automated workshops whose dividends supported care through unemployment or illness. Its charter acquired explicit exit provisions after a founding family discovered that leaving the housing association would also dissolve their accumulated savings claim. That dispute remains part of induction training. By 2426 the Mutual owns useful industrial capacity, but aging members and larger care obligations have reduced the surplus available for new housing and created disagreement about admitting additional households.",
+    "culture": "Daily life combines apartment blocks, laboratories, school sports, parish activity, and arguments over shared budgets. Members regard household attachments as public goods deserving practical support. They also recognize that families can become controlling, and independent advocates attend difficult guardianship cases. Membership is voluntary and open to applicants who accept the charter; joining the association does not itself confer Commonwealth citizenship.",
+    "doctrine": "Material abundance should give families time to care for dependent people rather than make every relationship an allocated service. Common ownership is legitimate within a bounded association whose members can leave with recognized claims intact. The Mutual funds modern restorative medicine and supported agency, while declining reproductive selection and resisting any claim that disability extinguishes a person's standing.",
+    "goals": [
+      "Replace the factory controller line that finances dependent care.",
+      "Fund independent advice for members considering departure.",
+      "Add accessible apartments near the industrial apprenticeship campus."
+    ],
+    "resources": [
+      "Shares in automated fittings and pump factories.",
+      "Family apartments with communal care facilities.",
+      "An insurance reserve and individually recorded member capital claims."
+    ],
+    "relations": [
+      {
+        "organization": "Raphael Toolmakers Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Union technicians maintain the Mutual's income producing factories."
+      },
+      {
+        "organization": "Saint Luke Restoration College",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The college trains caregivers and evaluates assistive equipment."
+      },
+      {
+        "organization": "House of the Open Table",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Mutual households sponsor temporary guests without promising permanent membership."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Mutual challenges priority delivery charges for spare parts needed by factories financing dependent care."
+      }
+    ]
+  },
+  {
+    "name": "Raphael Toolmakers Union",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2268,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "trade",
+      "research"
+    ],
+    "history": "A broken precision spindle gave the Union its founding dispute: the workshop owning its design demanded payment in fuel that neighboring shops could no longer spare. Toolmakers negotiated a shared design pool with royalties paid from finished output, allowing isolated Cinder factories to replace their own worn machinery. The arrangement predated the first steady slip freight and became more valuable as competing suppliers returned. A later lawsuit established that apprentices retained the right to use their general skills after departure. Today the Union manufactures fixtures for fuel plants, shipyards, and missile factories while debating how widely sensitive designs should circulate.",
+    "culture": "Members cultivate pride in tolerances, readable maintenance notes, and the ability to explain a failed part without humiliating its maker. Catholic workers are numerous, but the Union's governing meetings concern workshop obligations rather than sacramental discipline. Younger members favor open design publication; older ones remember customers who copied a drawing and then blamed the original maker for unsafe alterations.",
+    "doctrine": "Ownership of tools should support competent work and fair responsibility. The Union permits local computation and robotic fabrication with traceable human principals and deliberately varied control systems. Its members reject the claim that technical standardization requires a sovereign planning center, while acknowledging that voluntary cooperation can fail when participants conceal faults or externalize the cost of dangerous production.",
+    "goals": [
+      "Commission a replacement line for high precision reactor fixtures.",
+      "Audit the provenance of controllers used in missile component production.",
+      "Expand paid apprenticeship places for recently arrived technicians."
+    ],
+    "resources": [
+      "Robotic machine shops and precision measurement benches.",
+      "A member maintained design pool with fabrication records.",
+      "Supply agreements for structural alloys and industrial controller parts."
+    ],
+    "relations": [
+      {
+        "organization": "Cinder Fission Guild",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Guild assay work depends on Union fixtures and replacement mechanisms."
+      },
+      {
+        "organization": "Cinder Family Mutual",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Union services factories held by the Mutual."
+      },
+      {
+        "organization": "Havoc Reconstruction Works",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both bid for factory restoration contracts in recovering districts."
+      }
+    ]
+  },
+  {
+    "name": "Saint Luke Restoration College",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2342,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "relief",
+      "industry"
+    ],
+    "history": "The College began with a pediatric surgeon and an industrial prosthetics engineer who shared patients but could not exchange usable calibration records. Their teaching partnership attracted donations from families whose children needed care beyond the standard repair available at local clinics. A university charter followed after the College demonstrated reliable interfaces between regenerated tissue and neural prostheses. It subsequently built a small medical machinery factory to keep experimental treatments maintainable outside its own wards. Reopened contact after 2401 brought skilled USE researchers into joint projects, along with difficult negotiations over consent, reproductive research, and the publication of unfavorable results.",
+    "culture": "Students encounter modern laboratories, demanding clinical supervision, and theological seminars alongside ordinary clubs and crowded apartments. The College refuses to rank a patient's worth by expected intelligence or productive output, although limited specialist time forces painful triage. Researchers earn respect by publishing failures and making devices repairable in provincial hospitals. Admission requires scholarly or clinical preparation; employment includes specialists from several religious traditions.",
+    "doctrine": "The College's governing commitment is to repair an existing patient through proportionate treatment. Somatic correction, fetal rescue, organ regeneration, and therapeutic prostheses belong within that commitment. Embryo selection does not. Collaborators may disagree about the reasons while meeting explicit project terms, and favorable outcomes never excuse manufactured consent or concealed risks to dependent people.",
+    "goals": [
+      "Validate a prosthetic interface that provincial clinics can maintain.",
+      "Increase clinical training places for industrial injury rehabilitation.",
+      "Publish comparative repair outcomes with cooperating USE researchers."
+    ],
+    "resources": [
+      "Tissue laboratories and neural prosthesis calibration suites.",
+      "A factory producing repairable medical instruments.",
+      "Longitudinal patient records governed by individual consent agreements."
+    ],
+    "relations": [
+      {
+        "organization": "Mercy of Raphael Hospitallers",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Hospitallers provide clinical placements and identify unmet treatment needs."
+      },
+      {
+        "organization": "Saint Camillus Rescue Order",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Joint teams develop equipment for fetal and maternal emergency transfer."
+      },
+      {
+        "organization": "Cinder Family Mutual",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Mutual families participate voluntarily in rehabilitation and supported agency programs."
+      },
+      {
+        "organization": "Havoc Survey Institute",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both institutions compete for scarce calibration researchers whose skills serve medical devices and industrial sensors."
+      }
+    ]
+  },
+  {
+    "name": "Cinder Witness Press",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2388,
+    "open_membership": true,
+    "roles": [
+      "broadcast",
+      "research",
+      "trade"
+    ],
+    "history": "The Press began as a dispute over a factory fire. Official investigators had good evidence of a failed valve, while bereaved families alleged that managers had ignored earlier warnings. A parish publisher and an independent technical journal pooled reporters to examine both claims, uncovering a preventable maintenance delay without proving the rumored conspiracy. Their joint subscription service survived the case and expanded into commercial reporting. Since Concord it has translated USE investigations alongside local accounts, frustrating readers who want every accident to vindicate one political order. Its current audience includes merchants following fuel shortages and families following unresolved casualty claims.",
+    "culture": "Editors expect reporters to attend hearings, read engineering records, and speak directly with people whose accounts they doubt. Catholic social commitments inform the paper's attention to neglected dependents, but its staff disagree openly about industrial ownership and defense policy. A Japanese desk teaches restored forms while retaining USE speakers as editors, reducing the habit of treating unfamiliar grammar as proof of emotional or moral deficiency.",
+    "doctrine": "Public testimony should connect claims to evidence and give affected people a meaningful reply. The Press distinguishes established cataclysm events from disputed explanations of agency. It regards both sincere humanitarian administration and abusive institutional reach as reportable facts, and accepts that Commonwealth moral commitments do not grant its reporters authority to command foreign governments or compel private testimony.",
+    "goals": [
+      "Complete an investigation into lost fuel cargo compensation.",
+      "Digitize testimony from the first generation of Partition survivors.",
+      "Increase subscriptions enough to maintain an independent industrial reporting desk."
+    ],
+    "resources": [
+      "Broadcast studios and translation workstations in Cinder.",
+      "A subscriber funded reporting budget.",
+      "A document archive containing hearings, maintenance logs, and recorded interviews."
+    ],
+    "relations": [
+      {
+        "organization": "Archive of Divided Histories",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The archive licenses historical material with provenance records for publication."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Reporters and merchants disagree over access to insurance settlement records."
+      },
+      {
+        "organization": "Concord Claims Assembly",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Press purchases public hearing transcripts while retaining editorial independence."
+      },
+      {
+        "organization": "House of the Open Table",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Editors object when the House invokes guest privacy to withhold evidence relevant to public allegations about sponsors."
+      }
+    ]
+  },
+  {
+    "name": "Raphael Reclamation Company",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2321,
+    "open_membership": true,
+    "roles": [
+      "salvage",
+      "industry",
+      "trade"
+    ],
+    "history": "Reclamation began with a Cinder insurer trying to recover metal from three abandoned freighters whose owners still disputed liability for a collision. The founders negotiated custody before dismantling the wrecks, discovering that careful claim work could be as valuable as cutting equipment. They expanded into wartime debris and obsolete factory dismantling, carrying chaplains or civilian witnesses when human remains were expected. A profitable contract to clear an old ammunition depot nearly bankrupted the company after hidden missiles damaged its principal tug. That loss still shapes its cautious estimates and explains why some rivals consistently underbid it.",
+    "culture": "Crews prize patience, mechanical improvisation, and the refusal to joke about unidentified remains before a site has been searched. Catholic observances coexist with secular salvage customs and sophisticated remote machinery. New members learn both cutting procedures and the difference between physical possession and recognized ownership. The company's slow claims work irritates contractors, while workers remember how much a hurried clearance once cost them.",
+    "doctrine": "Abandonment must be established through evidence and applicable law; an unguarded object is not automatically free property. The company separates rescue, safe handling, custody, and eventual sale in its records. Courts and local authorities resolve contested rights, and any recovery requiring force depends on real escorts and a defensible mandate rather than a title entry alone.",
+    "goals": [
+      "Clear a derelict fuel carrier without contaminating reusable metal.",
+      "Replace the damaged heavy towing winch.",
+      "Resolve disputed ownership of a recovered factory control archive."
+    ],
+    "resources": [
+      "Salvage tugs carrying remote cutters and containment equipment.",
+      "A Cinder dismantling berth with metal sorting machinery.",
+      "Survey records and custody documentation for contracted wreck sites."
+    ],
+    "relations": [
+      {
+        "organization": "Saint Joseph Shipwrights",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The shipwrights buy inspected structural metal and reusable fittings."
+      },
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The firms compete for recoveries and challenge each other's claims evidence."
+      },
+      {
+        "organization": "Concord Claims Assembly",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Assembly provides agreed arbitration for difficult foreign ownership cases."
+      }
+    ]
+  },
+  {
+    "name": "Common Hearth Freight",
+    "sovereignty": "St Raphael Commonwealth",
+    "home_system": "Cinder system",
+    "founded_year": 2376,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "relief"
+    ],
+    "history": "Common Hearth Freight was organized by small suppliers who could fill a freighter collectively but repeatedly lost space to larger buyers. They purchased an aging cargo hull and built a schedule around predictable deliveries of pump parts, food machinery, and clinical supplies. A failed attempt to provide every village with its own direct service forced them to consolidate cargo at shared depots. The compromise preserved affordable transport while leaving some founders disappointed. After 2401 the cooperative added neutral interchange work, and by 2426 its dispatchers regularly balance profitable industrial freight against subsidized passenger berths and urgent medical shipments.",
+    "culture": "Members favor dependable routines over spectacular voyages. Crew kitchens host families between trips, and shore workers are encouraged to understand the homes behind their delivery codes. Catholic mutual aid traditions shape the cooperative without requiring customers to profess a faith. Dispatch meetings can become heated when personal knowledge of a patient conflicts with commitments to distant customers whom nobody in the room has met.",
+    "doctrine": "Regular trade sustains care by keeping ordinary machinery, fuel, and supplies moving before emergencies occur. The cooperative publishes the cost of subsidized work so that generosity does not depend on hidden debts. It accepts local entry rules and seeks practical lawful routes for passengers, while recognizing that passage contracts remain vulnerable to mechanical failure, patrol decisions, and attack.",
+    "goals": [
+      "Acquire replacement cargo handling arms for the oldest freighter.",
+      "Secure reliable fuel deliveries for the medical supply schedule.",
+      "Add passenger capacity on the Elysium interchange service."
+    ],
+    "resources": [
+      "Cooperatively owned cargo hulls with modular passenger spaces.",
+      "Shared depots containing machine spares and medical consignments.",
+      "A dispatch office supported by recurring small supplier contracts."
+    ],
+    "relations": [
+      {
+        "organization": "Mercy of Raphael Hospitallers",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The cooperative transports supplies and earns revenue for hospital voyages."
+      },
+      {
+        "organization": "Concord Interchange Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Havoc warehouses consolidate Common Hearth cargo for onward shipment."
+      },
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek scheduled freight contracts while respecting routine commercial agreements."
+      }
+    ]
+  },
+  {
+    "name": "Apostolic Harbor Service",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2291,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "patrol",
+      "industry"
+    ],
+    "history": "The Harbor Service took its present form when Elysium's separate pilgrim, diplomatic, and commercial docks could no longer reconcile their maintenance budgets. A papal commission combined their physical operations while leaving the different legal offices responsible for their own decisions. Its first director earned lasting respect by closing a prestigious reception berth to repair an unsafe reactor mount. Growing neutral commerce later required additional cargo handling machinery and a permanent salvage contract. The Service now supports the ordinary industrial life of Nova Partenia as well as its diplomatic traffic, and visiting delegations often discover that a fuel delay outranks ceremonial precedence.",
+    "culture": "Dock crews tend to regard neutrality as a practical discipline expressed through accurate manifests, equal repair queues, and the careful placement of armed visitors. Employees include lay families with long local histories and recent technical recruits. The institution is comfortable with modern automation and impatient with outsiders who imagine Elysium as a collection of monasteries. Its most persistent internal argument concerns how much commercial revenue should subsidize diplomatic facilities.",
+    "doctrine": "Nova Partenia's territorial independence protects the Holy See, whose canonical authority is distinct from the state's civil jurisdiction. The Harbor Service administers physical facilities under that civil authority. It has no LFS collective defense obligation. Docking decisions require staff, equipment, and sometimes guards; recognition of a neutral mission cannot erase another government's entry restrictions.",
+    "goals": [
+      "Replace cargo arms at the busiest neutral freight berth.",
+      "Expand emergency fuel reserves for stranded civilian ships.",
+      "Separate diplomatic reception capacity from the main repair queue."
+    ],
+    "resources": [
+      "Elysium cargo docks with handling robots and repair workshops.",
+      "Fuel storage tanks and shielded cartridge magazines.",
+      "Harbor tugs and an operations staff with local patrol support."
+    ],
+    "relations": [
+      {
+        "organization": "Elysium Neutral Guard",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Guard protects harbor facilities under distinct civil command arrangements."
+      },
+      {
+        "organization": "Elysium Shipyard Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The cooperative repairs harbor tugs and cargo handling machinery."
+      },
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Published maintenance and cargo arrangements support visiting Union merchants."
+      },
+      {
+        "organization": "Concord Interchange Cooperative",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Elysium and Havoc cargo facilities compete to attract neutral transshipment and the associated repair contracts."
+      }
+    ]
+  },
+  {
+    "name": "Partenian Arbitration Chamber",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2299,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "research"
+    ],
+    "history": "The Chamber arose from a quarrel over a relief ship that two governments claimed to have paid for during the Slip Wars. Both sides accepted a panel in Elysium because neither wanted the other's courts to establish a precedent. The panel resolved the payment dispute, but its first award was only partly collected, teaching its successors to distinguish a persuasive judgment from enforceable possession. Merchants subsequently funded permanent hearing rooms and a technical evidence staff. Since the Treaty of Concord, the Chamber has heard more ordinary freight and factory cases than diplomatic disputes, although prominent prisoner exchange negotiations still shape its public reputation.",
+    "culture": "Its advocates share corridors with engineers, translators, accountants, and clergy trained in civil law. Elaborate courtesy gives participants time to recover from disagreement without pretending that conflicting interests have vanished. Junior staff receive instruction in both USE and restored LFS Japanese because a grammatical expectation can distort testimony. The Chamber prizes meticulous reasoning, yet wealthy repeat clients sometimes enjoy advantages that its fee assistance program cannot fully offset.",
+    "doctrine": "An award rests on the parties' agreement and the jurisdictions that recognize it. The Chamber cannot commandeer foreign guards or convert a registry entry into physical control. Papal neutrality places this forum outside the LFS association and USE hierarchy alike; moral commitments inform its people without making every commercial judgment an exercise of universal ecclesiastical jurisdiction.",
+    "goals": [
+      "Recruit more technical assessors for reactor and shipyard disputes.",
+      "Shorten delays in small freight claims through funded hearing slots.",
+      "Document which local courts actually enforce outstanding awards."
+    ],
+    "resources": [
+      "Secure hearing rooms and translation systems in Elysium.",
+      "A technical evidence laboratory for cargo and maintenance records.",
+      "An endowment supporting independent panels and assistance for smaller claimants."
+    ],
+    "relations": [
+      {
+        "organization": "Concord Claims Assembly",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The forums exchange evidence methods and arrange panels when all parties consent."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Confraternity members commission neutral hearings for foreign commercial disputes."
+      },
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Chamber questions the evidence offered for several contested salvage consignments."
+      }
+    ]
+  },
+  {
+    "name": "Elysium Neutral Guard",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2291,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "The modern Guard was organized after successive visiting fleets insisted that their own escorts were the only reliable protection for delegations in Elysium. Local authorities consolidated harbor defense so that diplomacy would not depend on an armed guest controlling the meeting place. Initial funding purchased sensors and interceptor stocks before ceremonial facilities, an ordering still celebrated in officer training. Later commanders resisted attempts to attach their ships permanently to either bloc's formations. The Treaty of Concord reduced the risk of major fleet confrontations, but the Guard continues to rehearse attacks on fuel depots and repair yards that keep the neutral state viable.",
+    "culture": "Service combines technical professionalism with public religious observance, and senior officers are expected to understand the distinction between defending the pope's territory and fighting for every Catholic political cause. Recruits come from several backgrounds through selective contracts. Families live in ordinary station neighborhoods, where complaints about patrol noise and municipal spending remind personnel that their protected territory contains a civilian society.",
+    "doctrine": "Neutrality requires the capacity to resist coercion while withholding automatic participation in another state's war. The Guard defends Nova Partenia under its own command and assesses concrete threats individually. It claims no League defense guarantee. Surveillance has gaps, crews can misidentify contacts, and any exclusion order must be enforced by available ships, interceptors, and personnel.",
+    "goals": [
+      "Replenish interceptor missiles at the outer fuel depot.",
+      "Improve maintenance coverage for remote warning sensors.",
+      "Exercise civilian evacuation from an attacked repair berth."
+    ],
+    "resources": [
+      "Patrol ships equipped for interception and boarding.",
+      "Dispersed defensive missile batteries and ammunition workshops.",
+      "Local sensors connected to staffed command facilities."
+    ],
+    "relations": [
+      {
+        "organization": "Apostolic Harbor Service",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Harbor operations and Guard patrols coordinate physical security and emergency response."
+      },
+      {
+        "organization": "Partenian Reactor Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Works supplies maintained reactor modules and reserve fuel handling equipment."
+      },
+      {
+        "organization": "Unifleet Defense",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Guard rejects Union requests to extend foreign armed supervision inside Partenian facilities."
+      }
+    ]
+  },
+  {
+    "name": "Saint Camillus Rescue Order",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2304,
+    "open_membership": false,
+    "roles": [
+      "relief",
+      "research",
+      "trade"
+    ],
+    "history": "The Order began with volunteers retrieving wounded crew members whom both sides of a minor station battle feared would be taken prisoner by the other. Elysium physicians negotiated collection arrangements, then discovered that promises of access were useless without fuel, tugs, and functioning life support. Donations financed the first dedicated rescue tender and a maintenance reserve. Subsequent missions broadened its work to industrial accidents and civilian evacuation. Since renewed contact in 2401 its clinicians have worked alongside USE medical teams whose technical competence they respect, while repeatedly negotiating clear limits on which treatments, research protocols, and custody arrangements their own personnel can accept.",
+    "culture": "Vowed members train alongside lay navigators, engineers, and physicians. Their common reputation comes from remaining with difficult patients after the dramatic rescue is over. Advanced prosthetics, tissue repair, and emergency gestational support are ordinary tools. The Order attracts idealists, but long deployments produce fatigue and occasional resentment toward administrators who promise capacity that exhausted crews cannot supply.",
+    "doctrine": "The Order treats need as independent of nationality, productivity, and religious profession. It supports an existing child and mother through emergency medicine, including justified fetal transfer, while rejecting embryo selection. Neutral status helps obtain negotiations and does not compel access: rescue teams still require safe physical approaches, functioning equipment, and agreements that armed parties may break.",
+    "goals": [
+      "Refit a rescue tender with additional radiation shielding.",
+      "Establish replenishment stocks for prolonged industrial casualty operations.",
+      "Train mixed medical and engineering teams for emergency patient transfer."
+    ],
+    "resources": [
+      "Rescue tenders with medical bays and remote recovery craft.",
+      "Elysium rehabilitation wards and tissue repair laboratories.",
+      "A donated reserve of fuel, medicines, and life support parts."
+    ],
+    "relations": [
+      {
+        "organization": "Mercy of Raphael Hospitallers",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The organizations exchange clinical teams while respecting separate sovereignty and mission decisions."
+      },
+      {
+        "organization": "Saint Luke Restoration College",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "College researchers develop repairable rescue and rehabilitation equipment."
+      },
+      {
+        "organization": "Concord Rescue Compact",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both maintain common casualty handover procedures and emergency supply plans."
+      },
+      {
+        "organization": "Elysium Pilgrim Exchange",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Order seeks emergency use of booked passenger capacity that the Exchange has already promised to paying travelers."
+      }
+    ]
+  },
+  {
+    "name": "Elysium Pilgrim Exchange",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2332,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "relief"
+    ],
+    "history": "The Exchange began when accommodation owners near Elysium's docks faced repeated surges of visitors followed by long periods of empty rooms. Pooling reservations helped, but the organization became durable only after it purchased freight capacity that earned income between major pilgrimages. That commercial foundation now supports affordable travel, temporary lodging, and ordinary household deliveries. A scandal involving concealed booking charges led members to publish complete prices and create a traveler representative on the board. Diplomats, secular tourists, technicians, and families use the same service as pilgrims, making the Exchange one of the few local businesses whose customers routinely encompass the entire political map.",
+    "culture": "Members take hospitality seriously without assuming that a pleasant visit resolves political disagreement. Restaurant owners, freight dispatchers, and lodging cooperatives share management, producing frequent arguments over schedules and margins. Staff learn to explain religious observances to visitors without making participation compulsory. Younger workers resent being cast as supporting characters in someone else's spiritual journey and have secured time for their own education and family lives.",
+    "doctrine": "Travel can sustain encounter only when its practical obligations are met honestly. The Exchange sells space, accommodation, and assistance within available civil rules; it cannot promise asylum or admission on behalf of a government. Nova Partenia serves the freedom of the Holy See, and the Exchange's hospitality does not recast it as a state meant to gather all Catholics.",
+    "goals": [
+      "Increase accessible passenger cabins on regular Cinder services.",
+      "Replace aging cold storage equipment in the shared food depot.",
+      "Publish an audited accounting of subsidized lodging and travel."
+    ],
+    "resources": [
+      "Reserved cabins aboard contracted passenger and freight ships.",
+      "Cooperatively managed lodging blocks near Elysium docks.",
+      "A food depot with refrigeration machinery and local delivery vehicles."
+    ],
+    "relations": [
+      {
+        "organization": "House of the Open Table",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Exchange sells documented spare berths and temporary rooms for displaced travelers."
+      },
+      {
+        "organization": "Apostolic Harbor Service",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Harbor cargo handling and passenger facilities support scheduled arrivals."
+      },
+      {
+        "organization": "Havoc Free Berth Association",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both market affordable accommodation to crews awaiting onward work."
+      },
+      {
+        "organization": "Saint Camillus Rescue Order",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Exchange challenges rescue requests that displace passengers without covering refunds and replacement accommodation."
+      }
+    ]
+  },
+  {
+    "name": "Partenian Reactor Works",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2311,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "research",
+      "trade"
+    ],
+    "history": "The Works was created after Elysium hospital administrators discovered that their emergency power plants depended on a single foreign overhaul supplier. Engineers persuaded local investors and charitable foundations to finance a workshop capable of rebuilding reactor modules and fabricating replacement handling equipment. Orders from shipyards soon outweighed hospital demand, leaving the founders to argue over whether industrial growth served or diluted the original purpose. Their eventual charter reserved a portion of capacity for essential local maintenance. In 2426 the Works trades with both principal blocs and independent customers, although differing documentation requirements make otherwise identical export batches expensive to prepare.",
+    "culture": "Workers are proud of the hospitals and apartments kept running by machinery few visitors notice. Catholic observance is common alongside an ordinary industrial culture of apprenticeships, shift swaps, and contentious pay meetings. Engineers use sophisticated local tools under Partenian law and adapt documentation for foreign buyers. Managers must explain when commercially attractive orders displace maintenance that residents have already been promised.",
+    "doctrine": "A neutral polity needs enough industrial competence to remain independent of any patron's willingness to supply it. The Works pursues diverse contracts without treating all customers as equally trustworthy in every transaction. Safety requires verified materials, maintenance, and responsible human decisions; a religious mission does not compensate for a defective fuel cask or an exhausted inspection team.",
+    "goals": [
+      "Install another reactor module overhaul bench.",
+      "Diversify the supply of precision fuel handling parts.",
+      "Fulfill the reserved maintenance program for Elysium hospitals."
+    ],
+    "resources": [
+      "Reactor overhaul workshops with shielded handling cells.",
+      "A reserve of fabricated fuel and replacement containment assemblies.",
+      "Laboratories for materials analysis and machinery qualification."
+    ],
+    "relations": [
+      {
+        "organization": "Cinder Fission Guild",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Guild supplies assay comparisons and purchases Partenian handling assemblies."
+      },
+      {
+        "organization": "Elysium Neutral Guard",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Works maintains Guard reactor modules under published contracts."
+      },
+      {
+        "organization": "Havoc Reconstruction Works",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both offer complete reactor restoration packages to civilian stations."
+      }
+    ]
+  },
+  {
+    "name": "Archive of Divided Histories",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2295,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "broadcast",
+      "industry"
+    ],
+    "history": "The Archive began with duplicate family records that merchants had carried across the fractured transport geography after slip travel became practical. Conflicting annotations revealed how quickly separation had produced incompatible accounts of the same evacuation. Archivists in Elysium offered storage without requiring donors to accept a single official narrative. Later collections included industrial logs, cataclysm testimony, and disputed station records from the Slip Wars. The reopening of contact in 2401 brought access to extensive USE material and scholars who challenged cherished exile stories. A small restoration workshop now repairs the physical storage machinery on which much of this supposedly immaterial institution depends.",
+    "culture": "Archivists cultivate patience with angry donors while refusing to let affection determine provenance. Lay historians, religious scholars, and visiting specialists work among ordinary catalog rooms and repair benches. Linguists preserve USE Japanese as spoken testimony alongside restored LFS varieties. The institution does not treat either language as a transparent window into virtue, and it documents the deliberate reconstruction behind traditions that donors sometimes describe as uninterrupted inheritance.",
+    "doctrine": "The Archive distinguishes evidence, interpretation, and unresolved contradiction. Its cataclysm collections establish widespread lethal automation and infrastructure collapse without pretending to identify a proven unitary superintelligence. Neutral custody supports inquiry across political divisions, but ownership, privacy, and consent still constrain access. The Holy See's independence provides a durable host rather than a guarantee that every archived claim is true.",
+    "goals": [
+      "Restore damaged storage devices containing Partition evacuation manifests.",
+      "Publish a provenance catalog for contested cataclysm recordings.",
+      "Train translators to preserve distinctions between USE and LFS testimony."
+    ],
+    "resources": [
+      "Redundant physical archives and climate controlled storage rooms.",
+      "A workshop repairing historical recording and storage equipment.",
+      "Scholarly catalogs, oral history collections, and donor agreements."
+    ],
+    "relations": [
+      {
+        "organization": "Cinder Witness Press",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Press licenses documented materials and funds selected preservation work."
+      },
+      {
+        "organization": "Havoc Survey Institute",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Researchers compare industrial and navigational records without requiring a shared political interpretation."
+      },
+      {
+        "organization": "Partenian Arbitration Chamber",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Chamber commissions provenance analysis for disputed documentary evidence."
+      },
+      {
+        "organization": "Concord Claims Assembly",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Archivists reject broad demands for restricted personal testimony without the consent promised to its donors."
+      }
+    ]
+  },
+  {
+    "name": "Elysium Shipyard Cooperative",
+    "sovereignty": "Nova Partenia",
+    "home_system": "Elysium system",
+    "founded_year": 2354,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "salvage",
+      "trade"
+    ],
+    "history": "The Cooperative formed when a private yard owner retired and offered the workers a financed purchase instead of selling the berth to a foreign fleet supplier. The debt initially left little money for equipment, so members concentrated on modest cargo refits and tug maintenance. Their reputation grew after a repair team disclosed a profitable customer's hidden structural defect and accepted the loss of the contract. Today the yard can assemble freighter sections and service neutral patrol craft, but its directors still prefer orders that keep the berth steadily occupied. Large visiting delegations sometimes try to turn that commercial preference into diplomatic pressure.",
+    "culture": "Membership begins with employment and a probationary period, followed by a transparent purchase of a cooperative share. Workers argue over overtime, training, and how much reserve capital belongs to departing members. Religious observance remains part of local life without replacing professional qualification. The yard values visiting specialists who teach durable skills and has little patience for patrons who mistake Elysium hospitality for unpaid labor.",
+    "doctrine": "Commercial independence strengthens neutral sovereignty when a yard can refuse coercive terms and maintain its own machinery. The Cooperative accepts lawful customers on stated conditions, evaluates repairs individually, and records responsibility for critical work. It does not assume that a neutral flag removes military risk or that a foreign government must admit every hull repaired in its berths.",
+    "goals": [
+      "Purchase a larger robotic frame for cargo hull assembly.",
+      "Reduce outstanding debt on the cooperative berth.",
+      "Expand spare parts stocks for harbor tugs and rescue tenders."
+    ],
+    "resources": [
+      "An orbital repair berth and modular hull assembly fixtures.",
+      "A stock of certified plates, pumps, and pressure fittings.",
+      "Member capital and long term maintenance contracts."
+    ],
+    "relations": [
+      {
+        "organization": "Apostolic Harbor Service",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Recurring tug repairs provide stable work and reliable harbor capacity."
+      },
+      {
+        "organization": "Saint Camillus Rescue Order",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The yard refits rescue tenders and stores emergency replacement parts."
+      },
+      {
+        "organization": "Saint Joseph Shipwrights",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The yards compete openly for neutral freight refits."
+      }
+    ]
+  },
+  {
+    "name": "Concord Claims Assembly",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2402,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "research"
+    ],
+    "history": "The Assembly was founded in the first year after the Treaty of Concord exposed how many warehouses, wrecks, and factory shares carried incompatible ownership claims. Havoc lawyers initially expected a temporary liquidation office. Instead they found families seeking missing wages, insurers contesting wartime seizures, and governments whose records named different legitimate owners of the same station equipment. A permanent assembly grew from the agreed hearing procedure. Its early success recovering a small cargo reserve for several hundred claimants gave it public credibility, while an unenforced award against a wealthy foreign proprietor demonstrated the limits of judgment without local cooperation.",
+    "culture": "Claim assessors work beside industrial surveyors and translators rather than behind a purely legal hierarchy. Staff celebrate recovered compensation, yet maintain a register of awards still unpaid. Many joined because their own families lost assets or records. That experience encourages patience with confused claimants while making impartiality difficult when a persuasive story resembles an assessor's own history.",
+    "doctrine": "Recognized title, current possession, and practical control must be recorded separately. The Assembly applies agreed procedures and refers enforcement to competent local authorities; it owns no universal repossession force. Neither Concord neutrality nor an LFS recognition record creates permission to seize a foreign berth. Settlements should make their costs and unresolved dependencies visible to the people accepting them.",
+    "goals": [
+      "Resolve competing claims to a recovered reactor maintenance depot.",
+      "Fund technical surveys for small claimants lacking engineering evidence.",
+      "Publish the enforcement status of outstanding commercial awards."
+    ],
+    "resources": [
+      "Hearing facilities and a multilingual case registry in Havoc.",
+      "Survey contracts for disputed factories, cargo, and wrecks.",
+      "A pooled fund supporting evidence collection for smaller claims."
+    ],
+    "relations": [
+      {
+        "organization": "Partenian Arbitration Chamber",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The institutions exchange technical procedures and convene panels by consent."
+      },
+      {
+        "organization": "Raphael Reclamation Company",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Reclamation commissions hearings before selling contested foreign salvage."
+      },
+      {
+        "organization": "Cinder Witness Press",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Press purchases public records and reports on enforcement outcomes."
+      },
+      {
+        "organization": "Archive of Divided Histories",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Claims assessors argue that restricted archival testimony can prevent displaced owners from proving otherwise valid claims."
+      }
+    ]
+  },
+  {
+    "name": "Havoc Reconstruction Works",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2403,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "salvage",
+      "trade"
+    ],
+    "history": "The Works started with an abandoned assembly hall that had excellent machine beds, unreliable power, and four competing ownership claims. A negotiated lease allowed a group of technicians to restore enough capacity to manufacture replacement pumps while the claims proceeded. Revenue paid for a new reactor module, and the successful arrangement became a model for reopening other damaged facilities after Concord. The company now offers complete factory restoration packages, including equipment assessment, salvage, and operator training. Its largest disappointment was a technically successful line that closed because promised customers never materialized, reminding managers that rebuilding machinery does not automatically rebuild an economy.",
+    "culture": "Engineers from former opposing jurisdictions compare techniques without agreeing about the institutions that trained them. Crews value practical demonstrations and remember which visiting expert stayed to repair a mistake. Staff meetings are unusually candid about failed commercial forecasts. Employment is broadly open, while cooperative membership requires a period of service and acceptance of obligations for capital maintenance and departing members' claims.",
+    "doctrine": "Reconstruction should restore useful productive capacity under terms people can understand and sustain. The Works verifies ownership agreements before dismantling equipment and favors maintainable designs with multiple suppliers. It recognizes that USE planning often delivers excellent infrastructure and that decentralized workshops can innovate effectively; neither reputation substitutes for examining the machinery, demand, and obligations of a particular project.",
+    "goals": [
+      "Restart an idle line producing replacement reactor pumps.",
+      "Recover usable machine beds from a condemned cargo workshop.",
+      "Secure diverse fuel supplies for the main assembly hall."
+    ],
+    "resources": [
+      "A restored factory hall with programmable machining equipment.",
+      "A salvage inventory of industrial frames and replacement pumps.",
+      "Mobile engineering teams and leased heavy lifting machinery."
+    ],
+    "relations": [
+      {
+        "organization": "Concord Claims Assembly",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Assembly resolves agreed claims affecting restoration leases and recovered equipment."
+      },
+      {
+        "organization": "Partenian Reactor Works",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both bid on complete reactor refurbishment packages."
+      },
+      {
+        "organization": "Raphael Toolmakers Union",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The organizations compete for precision workshop restoration contracts."
+      }
+    ]
+  },
+  {
+    "name": "Concord Interchange Cooperative",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2401,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "industry"
+    ],
+    "history": "The Interchange formed during the first wave of cargo bookings after the Treaty of Concord, when incompatible commercial habits threatened to turn reopened contact into warehouses full of undeliverable goods. Havoc dispatchers bought sorting machinery and hired clerks familiar with both Union records and diverse independent contracts. The cooperative earned its reputation by keeping clear custody accounts through several spectacularly confused shipments. It later added workshops that repair containers and standardize replaceable handling fittings. Twenty five years of routine service have made it less celebrated than the treaty that enabled it, but many smaller merchants depend on its consolidation schedules to reach distant customers.",
+    "culture": "Its workforce is multilingual, skeptical of grand declarations, and proud of moving an ordinary delivery without drama. Dispatchers learn to ask what a customer actually means by a familiar term. USE Japanese and LFS varieties coexist in break rooms, where jokes and friendships often travel faster than grammatical accommodation. Members still argue about whether large regular customers receive better treatment than the small traders who founded the enterprise.",
+    "doctrine": "Interchange depends on explicit custody, predictable service, and mutual recognition where participating jurisdictions agree. The cooperative supplies physical cargo work and commercial translation. It cannot issue universal transit privileges or override an entry prohibition. Containers move because ships, fuel, machinery, and receiving staff are available, with inspections and armed patrols capable of delaying or stopping them.",
+    "goals": [
+      "Expand cargo consolidation capacity for small independent suppliers.",
+      "Replace worn container handling fittings before the next peak season.",
+      "Reduce unresolved custody discrepancies in cross jurisdiction shipments."
+    ],
+    "resources": [
+      "Havoc warehouses with sorting robots and freight handling machinery.",
+      "Container repair workshops and standardized spare fittings.",
+      "Recurring cargo space contracts on several commercial carriers."
+    ],
+    "relations": [
+      {
+        "organization": "Common Hearth Freight",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Common Hearth uses Havoc consolidation to serve smaller destinations."
+      },
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The organizations maintain agreed cargo handover procedures for Union bound freight."
+      },
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Helion carries scheduled consignments between Interchange customers."
+      },
+      {
+        "organization": "Apostolic Harbor Service",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The Cooperative competes with Elysium facilities for neutral cargo consolidation and recurring carrier bookings."
+      }
+    ]
+  },
+  {
+    "name": "Havoc Survey Institute",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2406,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "industry",
+      "salvage"
+    ],
+    "history": "The Institute was founded after investigators studying the same damaged gate installation produced incompatible accounts from individually plausible measurements. A group of physicists and industrial surveyors proposed a neutral laboratory that would publish calibration methods together with conclusions. Its first major project reconstructed the maintenance history of several abandoned power facilities, helping owners distinguish repairable equipment from dangerous scrap. Later research examined navigation records and the material costs of expanding postwar transport. The Institute now attracts scholars interested in the cataclysm as well as working engineers, although its directors insist that historical speculation must not consume the budget for practical measurement services.",
+    "culture": "Researchers value the colleague who can explain an uncertainty more clearly than the colleague who gives the most confident answer. Technicians share authorship when their calibration work makes a finding possible. Visiting USE specialists bring sophisticated certified methods; independent researchers bring different tools and assumptions. Cooperation usually survives political disagreement, but disputes over access to proprietary control systems can stop a project for months.",
+    "doctrine": "A common calendar and forward causal ordering govern every transport measurement. Stable gates and slip apertures do not provide journeys into an earlier history. The Institute separates observed system failures from proposed explanations and resists treating model ancestry as proof of a single hidden mind. Scientific cooperation remains a negotiated practice requiring equipment, access, and accountable handling of evidence.",
+    "goals": [
+      "Complete comparative calibration of salvaged reactor sensors.",
+      "Survey industrial capacity needed for a proposed cargo berth expansion.",
+      "Publish uncertainties in reconstructed records from an abandoned gate station."
+    ],
+    "resources": [
+      "Calibration laboratories and portable industrial survey instruments.",
+      "A leased survey vessel with remote inspection craft.",
+      "A collection of navigational and maintenance records with documented provenance."
+    ],
+    "relations": [
+      {
+        "organization": "Archive of Divided Histories",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Archive supplies documented records and preserves conflicting interpretations."
+      },
+      {
+        "organization": "Havoc Reconstruction Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Works commissions measurements before restoring damaged industrial equipment."
+      },
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Exchange members purchase independent assessments of difficult recovered machinery."
+      },
+      {
+        "organization": "Saint Luke Restoration College",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The Institute competes with the College for researchers qualified to calibrate demanding sensor interfaces."
+      }
+    ]
+  },
+  {
+    "name": "Concord Rescue Compact",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2404,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "patrol",
+      "trade"
+    ],
+    "history": "The Compact emerged after a cargo collision injured crews from several jurisdictions whose insurers each expected another party to pay for evacuation. Local rescuers intervened, then spent longer recovering costs than treating most survivors. Hospitals, merchants, and volunteer craft owners created a standing fund with clear reimbursement rules and shared dispatch practice. The arrangement expanded to industrial accidents and isolated convoy casualties. A later false distress call led one tender into a robbery, prompting new verification procedures that critics feared would delay genuine rescues. The Compact continues to revise those procedures through public accounts of actual deployments rather than promises of perfect safety.",
+    "culture": "Members range from professional clinicians to freight crews who volunteer spare capacity. Training emphasizes disciplined handovers and the dignity of frightened patients whose politics remain unfamiliar. The organization respects sincere humanitarian work in the USE and the patient commitments of religious orders. Its internal tensions are practical: volunteers dislike bureaucracy, medical staff need reliable equipment, and dispatchers must explain why one emergency received the last available tender.",
+    "doctrine": "Rescue obligations require sustainable preparation and attention to immediate need. The Compact negotiates access, compensates participating crews, and records the limits of its capacity. A distress broadcast neither proves innocence nor cancels a government's authority. Responders assess risk with incomplete information and rely on actual vessels, protective equipment, and any escorts that can reach the scene.",
+    "goals": [
+      "Purchase another rescue tender for simultaneous emergencies.",
+      "Replenish medical and life support stocks used in industrial evacuations.",
+      "Review verification delays in recent distress responses."
+    ],
+    "resources": [
+      "Contracted rescue craft and volunteer cargo capacity.",
+      "A pooled emergency fund contributed by hospitals and merchants.",
+      "Medical stores, portable shelters, and casualty dispatch facilities."
+    ],
+    "relations": [
+      {
+        "organization": "Saint Camillus Rescue Order",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Joint exercises and supplies improve medical handovers between rescue teams."
+      },
+      {
+        "organization": "Havoc Free Berth Association",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Association houses recovering crews who lack local accommodation."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Patrol crews share threat observations and escort exposed rescue operations when available."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Compact challenges Far Lantern fuel sales that sustain raiders responsible for casualties its teams must rescue."
+      }
+    ]
+  },
+  {
+    "name": "Havoc Free Berth Association",
+    "sovereignty": "Concord Free State",
+    "home_system": "Havoc system",
+    "founded_year": 2410,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade",
+      "industry"
+    ],
+    "history": "The Association began when a repair backlog left hundreds of visiting crew members paying hotel rates while their wages stopped. Dockside boarding houses and a labor advice office pooled rooms and negotiated temporary workshop employment. The first successful placements financed a shared kitchen and a fund for onward passages. Membership subsequently expanded to mechanics, cooks, and small landlords who preferred stable modest returns to speculative visitor surges. Its name refers to the aspiration that nobody should be trapped by a missing berth, though places and travel still have real costs. In 2426 waiting lists rise whenever a major freighter enters lengthy repairs.",
+    "culture": "Residents include families, single workers, and recovering patients, with communal spaces designed around ordinary life rather than permanent emergency. Members dislike being called a charitable ward and expect guests to retain privacy and adult judgment. Language tutors help newcomers navigate workplace expectations without treating restored LFS etiquette as a test of humanity. Tensions arise when temporary industrial jobs become too comfortable for employers to replace with permanent positions.",
+    "doctrine": "A practical opportunity to leave or accept useful work matters more than an abstract declaration that a person is free. The Association offers accommodation, advice, and travel assistance under local law. It makes no promise of permanent citizenship and rejects contracts that turn housing debt into captivity. Shared resources require transparent costs and routes for residents to challenge decisions.",
+    "goals": [
+      "Renovate another boarding block with accessible family rooms.",
+      "Buy onward passage for crews whose employers have disappeared.",
+      "Review temporary workshop contracts for concealed deductions."
+    ],
+    "resources": [
+      "Cooperatively managed boarding houses near Havoc repair docks.",
+      "A shared kitchen and small appliance repair workshop.",
+      "A travel assistance fund and employment advice staff."
+    ],
+    "relations": [
+      {
+        "organization": "Concord Rescue Compact",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Association provides rooms for patients and crews after emergency evacuation."
+      },
+      {
+        "organization": "Havoc Reconstruction Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Works hires qualified residents for openly priced temporary repair jobs."
+      },
+      {
+        "organization": "Elysium Pilgrim Exchange",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek regular accommodation and passenger booking customers."
+      }
+    ]
+  },
+  {
+    "name": "Terminus Privateers",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2363,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "salvage",
+      "trade"
+    ],
+    "history": "The Privateers descend from armed freighters hired to protect isolated Terminus settlements when respectable insurers judged the routes too expensive to cover. Several early commanders really did defend fuel deliveries and evacuate threatened families. Wartime prize claims then became a source of revenue, and successive captains stretched temporary commissions into assertions of permanent entitlement. The Treaty of Concord in 2401 removed many of their declared enemies without replacing their income. By 2426 the surviving association finances itself through armed seizures, coercive levies, and resale of captured cargo. Its attacks on Helion, Unifleet, and St Raphael shipping make its inherited defensive story an inadequate description of current conduct.",
+    "culture": "Crews maintain genuine obligations to injured shipmates and celebrate ancestors who protected neglected settlements. Those loyalties coexist with intimidation of captives and harsh treatment of members who question profitable raids. Recruitment favors technical competence, personal sponsorship, and willingness to share the risks of outlaw operations. Younger navigators sometimes join for the historical reputation and discover that leaving with unpaid earnings can provoke threats from their own commanders.",
+    "doctrine": "The association claims that neglected frontier communities may recover protection costs from outsiders, and it presents old commissions as continuing authority. Its actual operations treat vulnerable cargo as revenue and use lethal force against resistance. Other operators reject those claims. Raider success depends on reconnaissance, functioning weapons, fuel caches, and fallible opponents; no historical title or privateer flag grants lawful or physically guaranteed passage.",
+    "goals": [
+      "Replenish missile stocks consumed during recent convoy attacks.",
+      "Keep captured fuel and machine parts moving through concealed buyers.",
+      "Prevent coordinated patrols from locating dispersed repair anchorages."
+    ],
+    "resources": [
+      "Armed freighter conversions carrying boarding craft and missiles.",
+      "Dispersed caches of purchased and seized fission fuel, including Far Lantern cartridges.",
+      "Hidden repair anchorages maintained by coerced and paid technicians."
+    ],
+    "relations": [
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer raids on Helion cargo provoke armed escort resistance and continuing pursuit."
+      },
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "The Privateers seize Union service cargo and attack ships defending its delivery."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Repeated attacks on Confraternity convoys have killed crews on both sides."
+      },
+      {
+        "organization": "Michaelmas Escort Covenant",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Covenant escorts have fought boarding forces and destroyed raiding craft."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "The Patrol intercepts raiders and has exchanged fire with Privateer escorts."
+      },
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Exchange examiners refuse several cargo lots whose supposed salvage records conceal recent seizures."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Far Lantern knowingly sells inspected reactor cartridges to Privateer buyers, sustaining raiding vessels between seizures."
+      }
+    ]
+  },
+  {
+    "name": "Terminus Salvage Exchange",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2381,
+    "open_membership": true,
+    "roles": [
+      "salvage",
+      "trade",
+      "industry"
+    ],
+    "history": "The Exchange began as a public auction held after two recovery crews nearly fought over an abandoned cargo lighter. A workshop owner offered storage while witnesses compared the competing logs, discovering that both crews had valuable but incomplete claims. Regular auctions followed, and the Exchange invested in inspection machinery to distinguish usable parts from expensive scrap. Its reputation suffered when a member sold recently stolen reactor fittings as old salvage. The subsequent restitution nearly exhausted its reserve, leading to stricter custody requirements that legitimate crews also find burdensome. Today it serves frontier repair firms while defending its existence against the assumption that every Terminus trader launders pirate cargo.",
+    "culture": "Auction days mix technical demonstrations, bargaining, and arguments about the reliability of witnesses. Members respect recoveries that preserve difficult machinery and distrust sellers who cannot explain a part's history. The Exchange welcomes small operators who accept its rules, but personal friendships can still soften scrutiny. Several examiners have received threats after rejecting profitable consignments connected to armed raiders.",
+    "doctrine": "Recovery creates a claim that must be evaluated alongside prior ownership, abandonment, rescue costs, and applicable local law. The Exchange keeps physical custody distinct from recognized title and reserves funds for credible restitution. It cooperates with independent inspections while resisting the idea that distant commercial suspicion alone should condemn all frontier trade or authorize seizure of innocent cargo.",
+    "goals": [
+      "Improve inspection capacity for recovered reactor assemblies.",
+      "Rebuild the restitution reserve after disputed sales.",
+      "Obtain clearer evidence for three long contested wreck auctions."
+    ],
+    "resources": [
+      "A guarded salvage warehouse and auction floor.",
+      "Inspection benches and machinery for sorting reusable metal.",
+      "A restitution reserve funded by auction fees."
+    ],
+    "relations": [
+      {
+        "organization": "Havoc Survey Institute",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Independent surveyors assess complex machinery before sale."
+      },
+      {
+        "organization": "Terminus Hullwright Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The hullwrights buy documented structural metal and spare mechanisms."
+      },
+      {
+        "organization": "Raphael Reclamation Company",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both organizations pursue recoveries and contest weak ownership evidence."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Exchange rejects cargo whose origin suggests recent armed seizure."
+      },
+      {
+        "organization": "Partenian Arbitration Chamber",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Outstanding salvage cases concern the adequacy of provenance and restitution evidence."
+      },
+      {
+        "organization": "Mercy of Raphael Hospitallers",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Exchange disputes whether the Hospitallers retained title after their insurer settled a missing medical cargo claim."
+      }
+    ]
+  },
+  {
+    "name": "Far Lantern Fuel Company",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2390,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "mining",
+      "trade"
+    ],
+    "history": "Far Lantern grew from a remote maintenance depot whose owners discovered that reliable fuel sales could earn more than speculative mineral claims. They invested in assay equipment and contracted mining feedstock, then expanded into fabrication and transport of reactor cartridges. The company survived a severe loss when contaminated material forced it to recall an entire shipment from scattered customers. Paying for replacements established its technical reputation. More controversially, management retained supply contracts with Terminus Privateers after their attacks became unmistakable. In 2426 legitimate transport, local patrols, and active raiders all buy its fuel, making the same depots commercially useful and politically compromised.",
+    "culture": "Depot staff prize mechanical competence and dependable routines far from busy ports. Recruitment is open, with technical responsibility earned through training and documented practice. Employees disagree sharply about supplying the Privateers: managers cite payrolls and fear retaliation, while critics know people harmed by the raids. Local discretion sustains struggling civilian customers but also lets profitable armed clients develop personal relationships with depot supervisors.",
+    "doctrine": "Far Lantern commits to fuel quality, traceable material, and replacement of dangerous batches. Its board also defends sales to paying armed customers without accepting responsibility for their operations. That policy knowingly sustains Privateer predation and contradicts its claim to protect ordinary frontier commerce. Opponents seek contract termination; managers continue to prioritize solvency and the immediate security of their exposed depots.",
+    "goals": [
+      "Open an additional dispersed cartridge depot in Terminus.",
+      "Replace worn shielding on the principal fuel transport hull.",
+      "Secure another independently inspected source of mining feedstock."
+    ],
+    "resources": [
+      "Fuel fabrication machinery and shielded cartridge storage.",
+      "Contracts for extracted feedstock and materials assays.",
+      "A transport hull fitted for reactor fuel deliveries."
+    ],
+    "relations": [
+      {
+        "organization": "Cinder Fission Guild",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek frontier buyers while disagreeing over the cost of supplementary assays."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The company buys convoy protection and supplies patrol fuel."
+      },
+      {
+        "organization": "Terminus Hullwright Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The hullwrights maintain fuel transports and buy reactor cartridges."
+      },
+      {
+        "organization": "Concord Rescue Compact",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Far Lantern rejects the Compact demand to terminate all sales to Privateer customers, citing revenue and depot exposure."
+      },
+      {
+        "organization": "Terminus Reception Houses",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Managers dispute the Houses claim that continued sales make the company responsible for Privateer coercion of crews."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Management keeps paid supply contracts with Privateer buyers despite knowing that the fuel supports armed raids."
+      }
+    ]
+  },
+  {
+    "name": "Terminus Hullwright Cooperative",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2378,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "salvage",
+      "trade"
+    ],
+    "history": "The Cooperative formed after a distant owner abandoned an unfinished repair dock and stopped paying its workers. Mechanics, welders, and local suppliers negotiated possession through the available courts, accepted substantial debts, and completed enough of the dock to service passing freighters. Their first decade was spent repairing the same machinery that kept the business alive. Later growth brought automated assembly frames and the capacity to replace complete cargo sections. The yard's frontier location still attracts clients with incomplete paperwork, including armed captains seeking urgent repairs, and rejecting suspicious work can mean losing revenue or facing intimidation without prompt outside assistance.",
+    "culture": "Members are accustomed to improvisation but increasingly insist on documenting it for the next crew. Family shareholders and newly qualified workers disagree about distributing dividends versus buying safer machinery. The cooperative admits skilled applicants through a transparent employment path and includes people whose reasons for coming to Terminus were deeply personal. Most take pride in keeping civilian trade possible in a place outsiders often discuss only through piracy.",
+    "doctrine": "A repair yard should be responsible for the condition of the work it releases and attentive to credible evidence of stolen property. The Cooperative refuses knowing participation in current raids while acknowledging the difficulty of evaluating every customer. Local guards and patrol arrangements offer imperfect protection, so decisions about dangerous clients involve real workers, machinery, and physical exposure.",
+    "goals": [
+      "Complete a pressure testing enclosure for rebuilt cargo sections.",
+      "Replace the oldest robotic welding frame.",
+      "Establish a funded reserve for workers displaced by a threatened shutdown."
+    ],
+    "resources": [
+      "A cooperative repair dock with hull assembly frames.",
+      "Machine shops and pressure testing equipment.",
+      "Stocks of certified plate and documented salvaged fittings."
+    ],
+    "relations": [
+      {
+        "organization": "Terminus Salvage Exchange",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The Exchange supplies inspected metal and evidence of lawful custody."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The yard repairs fuel transports and purchases reactor cartridges."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Patrol hull maintenance is exchanged through ordinary paid service contracts."
+      },
+      {
+        "organization": "Saint Joseph Shipwrights",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The yards compete for cargo hull reconstruction orders and the experienced technicians able to supervise them."
+      }
+    ]
+  },
+  {
+    "name": "Outer Watch Patrol",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2408,
+    "open_membership": false,
+    "roles": [
+      "patrol",
+      "defense",
+      "relief"
+    ],
+    "history": "The Outer Watch was created after a series of attacks exposed the gap between Terminus protection promises and the ships actually available to defend scattered traffic. Civilian fuel suppliers, repair yards, and local authorities pooled funding for a patrol with named commanders and published maintenance accounts. Its first crews included veterans familiar with Privateer methods who had refused further service under raiding captains. Early operations rescued several cargo crews but also revealed costly sensor failures. The Patrol now coordinates selected missions with outside escorts, a policy welcomed by merchants and criticized by residents who fear that dependence on foreign ships could grow into external political control.",
+    "culture": "Service emphasizes knowing the civilian machinery that patrols protect. Engineers and rescue specialists receive visible credit alongside weapons crews. Recruitment is selective because personal loyalties in Terminus can cut across uniforms, yet the command discourages treating every relative of a raider as an enemy. Regular casualty reviews include mistaken identifications and missed calls, creating tension between public accountability and personnel who already feel outnumbered.",
+    "doctrine": "Protection requires enough maintained ships and supplies to appear where people are threatened. The Patrol acts under specific local authority and agreed contracts, with outside cooperation limited to defined operations. It targets armed conduct and credible threats rather than frontier identity. Its sensors, interceptors, and commanders remain fallible, and it cannot guarantee that every convoy or rescue call receives coverage.",
+    "goals": [
+      "Repair two patrol sensor arrays before widening coverage.",
+      "Replace missiles used in engagements with Privateer raiders.",
+      "Improve rescue rendezvous procedures with civilian tenders."
+    ],
+    "resources": [
+      "Locally funded patrol craft with interception weapons.",
+      "A maintenance contract and fuel reserve in Terminus.",
+      "Experienced crews and a staffed regional distress watch."
+    ],
+    "relations": [
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "The Patrol has intercepted boarding attacks and exchanged lethal fire with raiding ships."
+      },
+      {
+        "organization": "Michaelmas Escort Covenant",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The services coordinate specific convoy defense operations against active raiders."
+      },
+      {
+        "organization": "Concord Rescue Compact",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Patrol provides threat information and available escorts for exposed rescue missions."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Fuel deliveries and paid protection contracts keep patrol capacity available."
+      }
+    ]
+  },
+  {
+    "name": "Terminus Reception Houses",
+    "sovereignty": "Terminus Protectorate",
+    "home_system": "Terminus system",
+    "founded_year": 2412,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade",
+      "industry"
+    ],
+    "history": "The Houses began with dockside residents sheltering the survivors of a freighter whose owner refused to pay wages or arrange return passage. A cook, a mechanic, and a former claims clerk rented additional rooms and opened a small appliance workshop to support the expense. Further arrivals included people fleeing Privateer coercion, ordinary migrants whose contracts failed, and patients discharged from visiting rescue ships. The institution expanded through contributions from legitimate Terminus businesses that wanted their port known for something beyond armed predation. By 2426 it manages several crowded houses and still struggles to turn temporary safety into durable opportunities elsewhere.",
+    "culture": "Residents help shape meal schedules, quiet hours, and workshop arrangements without surrendering privacy to benefactors. Religious volunteers work alongside secular mutual aid organizers. Staff avoid assuming that a familiar frontier accent identifies a raider, and they offer interpreters when distant institutions mistake blunt speech for hostility. The Houses cultivate ordinary life through schooling, shared repairs, and paid work while recognizing that exhausted guests may have little capacity to reciprocate immediately.",
+    "doctrine": "Shelter should reduce dependence and make practical choices possible. The Houses assist with claims, lawful work, and onward passage while refusing threats disguised as debt collection. They cannot confer citizenship or guarantee admission elsewhere. Physical safety depends on neighbors, maintained doors, trusted staff, and available patrols; a charitable designation cannot compel an armed visitor to behave.",
+    "goals": [
+      "Purchase onward berths for former crew members with confirmed destinations.",
+      "Expand the appliance workshop that supports household expenses.",
+      "Add secure accommodation for residents threatened by former employers."
+    ],
+    "resources": [
+      "Rented boarding houses and shared kitchens near Terminus docks.",
+      "A repair workshop producing income and paid training places.",
+      "A travel assistance fund supported by local merchants."
+    ],
+    "relations": [
+      {
+        "organization": "House of the Open Table",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Both arrange temporary reception and realistic onward travel for displaced people."
+      },
+      {
+        "organization": "Terminus Hullwright Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The yard buys repaired appliances and offers paid positions to qualified residents."
+      },
+      {
+        "organization": "Outer Watch Patrol",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The Houses refer specific threats and coordinate protection when patrol personnel are available."
+      },
+      {
+        "organization": "Far Lantern Fuel Company",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The Houses demand an end to fuel sales to raiders whose threatened former crews seek shelter with their staff."
+      }
+    ]
+  }
+]

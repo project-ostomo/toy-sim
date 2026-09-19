@@ -16,6 +16,12 @@ struct ServerConfig {
     debug_account: String,
     ship: Option<PathBuf>,
     accounts: Vec<Account>,
+    llm: LlmConfig,
+}
+
+#[derive(Serialize)]
+struct LlmConfig {
+    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -77,6 +83,7 @@ async fn main() -> Result<()> {
     let mut check = false;
     let mut state_directory = None;
     let mut ephemeral = false;
+    let mut enable_llm = false;
     while let Some(arg) = args.next() {
         if arg == "--ship" {
             let path = PathBuf::from(args.next().context("--ship requires a path")?);
@@ -91,9 +98,11 @@ async fn main() -> Result<()> {
             ));
         } else if arg == "--ephemeral" {
             ephemeral = true;
+        } else if arg == "--enable-llm" {
+            enable_llm = true;
         } else {
             bail!(
-                "usage: toy-sim-debug [--ship PATH] [--server EXECUTABLE] [--state-dir PATH | --ephemeral] [--check]"
+                "usage: toy-sim-debug [--ship PATH] [--server EXECUTABLE] [--state-dir PATH | --ephemeral] [--enable-llm] [--check]"
             );
         }
     }
@@ -104,6 +113,10 @@ async fn main() -> Result<()> {
     ensure!(
         !ephemeral || state_directory.is_none(),
         "--ephemeral and --state-dir cannot be combined"
+    );
+    ensure!(
+        !check || !enable_llm,
+        "--check cannot enable paid LLM requests"
     );
     let directory = if ephemeral {
         std::env::temp_dir().join(format!("toy-sim-debug-{}", Id::new()))
@@ -125,6 +138,9 @@ async fn main() -> Result<()> {
             id: account.to_string(),
             public_key: hex(&account_key.verifying_key().to_bytes()),
         }],
+        llm: LlmConfig {
+            enabled: enable_llm,
+        },
     };
     let config_path = server.state.path.join("server.toml");
     state::write_private(&config_path, &toml::to_string(&config)?)?;

@@ -22,6 +22,14 @@ struct Config {
     ship: Option<PathBuf>,
     #[serde(default)]
     persistence: crate::persistence::Config,
+    #[serde(default)]
+    llm: LlmConfig,
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LlmConfig {
+    enabled: bool,
 }
 
 #[derive(Deserialize)]
@@ -65,6 +73,7 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
         }
     });
     let persistence = config.persistence;
+    let llm = crate::sim::llm::LlmService::from_env(config.llm.enabled)?;
     let config_directory = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     #[cfg(unix)]
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -88,6 +97,7 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
             if let Some(prepared) = prepared {
                 prepared.initialize(simulation.world_mut())?;
             }
+            simulation.insert_resource(llm);
             let assets = crate::assets(&simulation);
             let checkpoint_trigger = crate::persistence::trigger(simulation.world());
             if initialized.send((assets, checkpoint_trigger)).is_err() {

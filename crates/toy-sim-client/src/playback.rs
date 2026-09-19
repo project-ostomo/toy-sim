@@ -22,6 +22,7 @@ pub(crate) struct Publications {
     pub events: Vec<Event>,
     pub combat: Vec<CombatEvent>,
     pub industry: Vec<industry::IndustrySnapshot>,
+    pub chat: Vec<chat::ChatUpdate>,
 }
 
 impl Playback {
@@ -78,6 +79,7 @@ impl Playback {
             || !combat.is_empty()
             || !frame.events.is_empty()
             || frame.industry.is_some()
+            || frame.chat.is_some()
         {
             self.publications.push_back(Publications {
                 sequence: frame.sequence,
@@ -85,6 +87,7 @@ impl Playback {
                 events: frame.events.clone(),
                 combat,
                 industry: frame.industry.iter().cloned().collect(),
+                chat: frame.chat.iter().cloned().collect(),
             });
         }
     }
@@ -163,6 +166,7 @@ impl Playback {
             ready.events.extend(batch.events);
             ready.combat.extend(batch.combat);
             ready.industry.extend(batch.industry);
+            ready.chat.extend(batch.chat);
         }
         ready
     }
@@ -176,6 +180,7 @@ mod tests {
     fn frame(sequence: u64) -> Frame {
         Frame {
             industry: None,
+            chat: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),

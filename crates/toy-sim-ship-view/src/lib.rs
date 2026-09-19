@@ -1,6 +1,7 @@
 //! Optional ship presentation shared by the editor and monitoring application.
 use bevy::prelude::*;
 use std::collections::BTreeMap;
+use toy_sim_ships::appearance::PreparedAppearance;
 use toy_sim_ships::*;
 pub mod plume;
 pub mod thermal;
@@ -46,26 +47,23 @@ pub fn prepare_visuals(
 pub fn spawn_parts(
     commands: &mut Commands,
     parent: Entity,
-    design: &CompiledShipDesign,
+    appearance: &PreparedAppearance,
     assets: &PartVisualAssets,
     loader: &AssetServer,
 ) {
-    for (i, p) in design.parts.iter().enumerate() {
-        let tf = Transform::from_translation((p.centre - design.centre).as_vec3())
+    for (i, p) in appearance.parts.iter().enumerate() {
+        let tf = Transform::from_translation(p.position.as_vec3())
             .with_rotation(Quat::from_mat3(&p.rotation.as_mat3()));
         let part = commands
             .spawn((
                 ChildOf(parent),
-                PartVisual {
-                    id: p.placed.id,
-                    index: i,
-                },
+                PartVisual { id: p.id, index: i },
                 tf,
                 Visibility::default(),
             ))
             .id();
         attach_part_body(commands, part, &p.definition, assets, loader);
-        if let Some(plume) = assets.plumes.get(&p.placed.prototype) {
+        if let Some(plume) = assets.plumes.get(&p.definition.id) {
             if matches!(p.definition.equipment, toy_sim_ships::Equipment::Rcs { .. }) {
                 plume::spawn_rcs_plumes(commands, part, plume);
             } else {

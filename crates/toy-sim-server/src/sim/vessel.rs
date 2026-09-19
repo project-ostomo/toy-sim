@@ -12,6 +12,8 @@ use toy_sim_ship_api::abi;
 use toy_sim_ship_wasm::{Command, Input, Observation, Request, RequestReply};
 use toy_sim_ship_wasm::{Controller, ControllerRuntime};
 use toy_sim_ships::*;
+mod program_services;
+pub(crate) use program_services::services_for;
 #[derive(Component)]
 pub struct ControlledVessel;
 /// Wall-clock stages of the most recent ship update. Scan is included in callback.
@@ -34,6 +36,7 @@ pub struct ShipDesign(pub Arc<CompiledShipDesign>);
 pub struct ShipSoftware {
     observed_restart: u64,
     pub controller: Controller,
+    pub(crate) program_hash: [u8; 32],
     pub inbox: Vec<Request>,
     pub results: Vec<RequestReply>,
     pub reset: bool,
@@ -59,8 +62,10 @@ pub struct ShipSoftware {
 impl ShipSoftware {
     pub fn new(controller: Controller) -> Self {
         let observed_restart = controller.restart_revision;
+        let program_hash = *blake3::hash(controller.program()).as_bytes();
         Self {
             controller,
+            program_hash,
             inbox: vec![],
             results: vec![],
             reset: false,
@@ -278,6 +283,8 @@ fn flight_allowance(
 
 pub(crate) fn run(
     ledger: Res<super::gas::GasLedger>,
+    llm: Option<Res<super::llm::LlmService>>,
+    chat: Option<Res<super::chat::ChatService>>,
     time: Res<Time<Fixed>>,
     callbacks: Option<Res<super::missiles::Callbacks>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
@@ -410,8 +417,8 @@ pub(crate) fn run(
             angular,
             accelerometer,
             mass,
-            _,
-            _,
+            identity,
+            owner,
             dormant,
             mut launchers,
         )| {
@@ -565,6 +572,16 @@ pub(crate) fn run(
                         input.dt = time.delta_secs_f64();
                     }
                     let source = software.world_source.clone();
+                    let services = program_services::Services::new(
+                        ledger.clone(),
+                        llm.as_ref().map(|service| (**service).clone()),
+                        chat.as_ref().map(|service| (**service).clone()),
+                        owner.0,
+                        identity.0,
+                        software.program_hash,
+                        false,
+                    );
+                    software.controller.set_services(Some(Arc::new(services)));
                     let limit = software.last_gas_limit;
                     let result = software.controller.run_callback_slice(
                         kind,

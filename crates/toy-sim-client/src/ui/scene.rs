@@ -1,4 +1,4 @@
-use crate::assets::{Appearance, ShipDesign};
+use crate::assets::{Appearance, ShipAppearance};
 mod atmosphere;
 mod camera;
 mod glints;
@@ -23,7 +23,7 @@ use bevy::{camera::visibility::RenderLayers, prelude::*};
 use std::collections::{HashMap, HashSet};
 use toy_sim_model::GalacticPosition;
 use toy_sim_ship_view::PartVisualAssets;
-use toy_sim_ships::CompiledShipDesign;
+use toy_sim_ships::appearance::PreparedAppearance;
 
 #[derive(Component)]
 #[relationship(relationship_target = ViewMembers)]
@@ -158,7 +158,7 @@ fn sync_ships(
         &ShipMesh,
         &mut Transform,
     )>,
-    designs: Res<Assets<ShipDesign>>,
+    designs: Res<Assets<ShipAppearance>>,
     assets: Res<PartVisualAssets>,
     loader: Res<AssetServer>,
     thermal: Res<toy_sim_ship_view::thermal::ThermalAssets>,
@@ -199,7 +199,7 @@ fn sync_ships(
             let (Some(pose), Some(appearance)) = (pose, appearance) else {
                 continue;
             };
-            let Some(design) = designs.get(&appearance.design) else {
+            let Some(design) = designs.get(&appearance.asset) else {
                 continue;
             };
             let transform =
@@ -290,7 +290,7 @@ fn sync_ships(
                 continue;
             };
             let hash = appearance.hash;
-            let Some(design) = designs.get(&appearance.design) else {
+            let Some(design) = designs.get(&appearance.asset) else {
                 continue;
             };
             let design = &design.0;
@@ -439,7 +439,7 @@ fn sync_celestials(
 
 fn spawn_ship(
     commands: &mut Commands,
-    design: &CompiledShipDesign,
+    design: &PreparedAppearance,
     assets: &PartVisualAssets,
     loader: &AssetServer,
     thermal: &toy_sim_ship_view::thermal::ThermalAssets,
@@ -447,7 +447,7 @@ fn spawn_ship(
 ) -> Entity {
     let entity = commands.spawn((transform, Visibility::default())).id();
     toy_sim_ship_view::spawn_parts(commands, entity, design, assets, loader);
-    if design.shield_deployed_kg > 0. {
+    if let Some(shield_radius) = design.shield_radius {
         commands.spawn((
             ChildOf(entity),
             Shield,
@@ -458,9 +458,7 @@ fn spawn_ship(
             Mesh3d(thermal.mesh.clone()),
             MeshMaterial3d(thermal.material.clone()),
             bevy::mesh::MeshTag::default(),
-            Transform::from_scale(Vec3::splat(
-                toy_sim_ships::thermal::shield_radius(design.radius) as f32,
-            )),
+            Transform::from_scale(Vec3::splat(shield_radius as f32)),
             Visibility::default(),
         ));
     }

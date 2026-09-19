@@ -162,7 +162,11 @@ pub(super) fn selected_item(
                 .clicked()
             {
                 intents.push(Intent::Queue(
-                    vec![travel::Order::TravelTo(travel::Destination::Beacon(id))],
+                    vec![travel::Order::Guidance(travel::Guidance {
+                        mode: travel::GuidanceMode::Approach,
+                        target: travel::Target::Destination(travel::Destination::Beacon(id)),
+                        range_m: row.map_or(100., |row| row.radius + 100.),
+                    })],
                     append,
                 ));
             }

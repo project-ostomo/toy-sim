@@ -1,3 +1,4 @@
+mod chat;
 mod industry;
 pub mod navigation;
 mod presentation;
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 22;
+pub const VERSION: u16 = 23;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -84,6 +85,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
             section(&mut body, 10, &frame.calendar_unix_ms)?;
             section(&mut body, 11, &frame.optical)?;
             section(&mut body, 12, &frame.industry)?;
+            section(&mut body, 13, &frame.chat)?;
             1
         }
         Message::Input(input) => {
@@ -112,7 +114,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
     let kind = u16::from_le_bytes(bytes[6..8].try_into()?);
     let mut sections = BTreeMap::new();
     let mut body = &bytes[HEADER_SIZE..];
-    let known = if kind == 1 { 12 } else { 1 };
+    let known = if kind == 1 { 13 } else { 1 };
     let mut count = 0;
     while !body.is_empty() {
         count += 1;
@@ -137,6 +139,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         1 => {
             let clock: Clock = read(&sections, 1)?;
             let frame = Frame {
+                chat: read(&sections, 13)?,
                 industry: read(&sections, 12)?,
                 optical: read(&sections, 11)?,
                 calendar_unix_ms: read(&sections, 10)?,
@@ -265,6 +268,17 @@ fn pose_valid(pose: &Pose) -> bool {
 }
 
 pub fn validate_frame(frame: &Frame) -> Result<()> {
+    if let Some(update) = &frame.chat {
+        chat::validate_update(update)?;
+        ensure!(
+            update.unavailable
+                || frame
+                    .views
+                    .iter()
+                    .any(|view| view.id == update.view && view.revision == update.view_revision),
+            "chat view unavailable"
+        );
+    }
     if let Some(snapshot) = &frame.industry {
         industry::validate_snapshot(snapshot)?;
     }
@@ -471,6 +485,17 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
     for (id, action) in &input.actions {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
+            Action::ChatSubscribe(subscription) => ensure!(
+                subscription.revision > 0,
+                "invalid chat subscription revision"
+            ),
+            Action::ChatSend {
+                subscription_revision,
+                text,
+            } => ensure!(
+                *subscription_revision > 0 && toy_sim_model::chat::valid_text(text),
+                "invalid chat message"
+            ),
             Action::Industry(command) => industry::validate_command(command)?,
             Action::IndustrySubscribe(subscription) => {
                 industry::validate_subscription(subscription)?
@@ -644,6 +669,7 @@ mod tests {
 
     fn empty_frame() -> Frame {
         Frame {
+            chat: None,
             industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
@@ -681,7 +707,7 @@ mod tests {
     }
 
     #[test]
-    fn industry_interest_and_commands_roundtrip_in_required_version_22_section() {
+    fn industry_interest_and_commands_roundtrip_in_required_section() {
         use toy_sim_model::industry::{
             CargoItem, IndustryCommand, IndustrySnapshot, IndustrySubscription,
         };
@@ -722,6 +748,59 @@ mod tests {
         assert_eq!(decode(&encoded).unwrap(), message);
         encoded[4..6].copy_from_slice(&21_u16.to_le_bytes());
         assert!(decode(&encoded).is_err());
+    }
+
+    #[test]
+    fn local_chat_roundtrips_and_requires_its_version_23_section() {
+        let input = Message::Input(InputFrame {
+            world: Id([1; 16]),
+            sequence: 1,
+            actions: vec![
+                (
+                    Id([2; 16]),
+                    Action::ChatSubscribe(toy_sim_model::chat::ChatSubscription {
+                        revision: 1,
+                        view: 1,
+                    }),
+                ),
+                (
+                    Id([3; 16]),
+                    Action::ChatSend {
+                        subscription_revision: 1,
+                        text: "Hello, local".into(),
+                    },
+                ),
+            ],
+        });
+        assert_eq!(decode(&encode(&input).unwrap()).unwrap(), input);
+        let mut frame = empty_frame();
+        frame.chat = Some(toy_sim_model::chat::ChatUpdate {
+            subscription_revision: 1,
+            view: 1,
+            view_revision: 2,
+            unavailable: true,
+            page: Default::default(),
+        });
+        let message = Message::State(frame);
+        let wire = encode(&message).unwrap();
+        assert_eq!(decode(&wire).unwrap(), message);
+        let mut old = wire.clone();
+        old[4..6].copy_from_slice(&22_u16.to_le_bytes());
+        assert!(decode(&old).is_err());
+        let mut missing = wire[..HEADER_SIZE].to_vec();
+        let mut offset = HEADER_SIZE;
+        while offset < wire.len() {
+            let id = u16::from_le_bytes(wire[offset..offset + 2].try_into().unwrap());
+            let length =
+                u32::from_le_bytes(wire[offset + 4..offset + 8].try_into().unwrap()) as usize;
+            if id != 13 {
+                missing.extend_from_slice(&wire[offset..offset + 8 + length]);
+            }
+            offset += 8 + length;
+        }
+        let size = (missing.len() - HEADER_SIZE) as u32;
+        missing[8..12].copy_from_slice(&size.to_le_bytes());
+        assert!(decode(&missing).is_err());
     }
 
     #[test]

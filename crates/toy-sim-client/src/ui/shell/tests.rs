@@ -71,6 +71,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
                     &model,
                     &selection,
                     &[],
+                    &ChatState::default(),
                     &mut Vec::new(),
                 );
             },

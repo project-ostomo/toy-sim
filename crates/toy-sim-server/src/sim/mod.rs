@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod chat;
 pub mod combat;
 pub mod diagnostics;
 pub mod displays;
@@ -8,6 +9,7 @@ pub mod gas;
 pub mod hardware;
 pub mod industry;
 pub mod infrastructure;
+pub mod llm;
 pub mod missiles;
 pub mod presentation;
 pub mod registry;
@@ -42,6 +44,7 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     identity::initialize(app.world_mut(), &[]);
     app.init_resource::<session::Clock>()
         .init_resource::<session::Events>()
+        .init_resource::<chat::ChatService>()
         .init_resource::<travel::TravelEvents>()
         .init_resource::<services::PublishedWorld>();
     app.add_plugins((MinimalPlugins, StatesPlugin))
@@ -62,7 +65,11 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     registry::initialize(app.world_mut()).expect("valid universe catalogue");
     app.add_systems(
         FixedUpdate,
-        (services::publish_indexes, services::prepare_sources)
+        (
+            services::publish_indexes,
+            chat::refresh,
+            services::prepare_sources,
+        )
             .chain()
             .before(simulation::SimulationSystems::PrepareBodies),
     );
@@ -72,7 +79,9 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     );
     app.add_systems(
         FixedPostUpdate,
-        services::dispatch_actions.before(simulation::SimulationSystems::Integrate),
+        (services::dispatch_actions, chat::flush)
+            .chain()
+            .before(simulation::SimulationSystems::Integrate),
     );
     app.add_systems(
         FixedFirst,

@@ -157,3 +157,39 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
         "Recovered map"
     );
 }
+
+#[test]
+fn public_ship_appearance_loads_without_a_blueprint_or_private_configuration() {
+    let (mut app, directory) = app();
+    let catalogue = Catalogue::builtin();
+    let original = toy_sim_ships::expedition_patrol()
+        .compile(&catalogue)
+        .unwrap();
+    let visual = toy_sim_ships::appearance::ShipAppearance::from(&original);
+    let bytes = visual.to_bytes().unwrap();
+    let hash = *blake3::hash(&bytes).as_bytes();
+    deliver(&app, &directory, hash, bytes);
+    let handle: Handle<ShipAppearance> = app.world().resource::<AssetServer>().load(path(hash));
+    wait(&mut app, |world| {
+        world
+            .resource::<Assets<ShipAppearance>>()
+            .get(&handle)
+            .is_some()
+    });
+    let loaded = &app
+        .world()
+        .resource::<Assets<ShipAppearance>>()
+        .get(&handle)
+        .unwrap()
+        .0;
+    assert_eq!(loaded.parts.len(), original.parts.len());
+    assert!((loaded.radius - original.radius).abs() < 1e-10);
+    for (rendered, physical) in loaded.parts.iter().zip(&original.parts) {
+        assert!(
+            rendered
+                .position
+                .abs_diff_eq(physical.centre - original.centre, 1e-12)
+        );
+        assert!(rendered.rotation.abs_diff_eq(physical.rotation, 1e-12));
+    }
+}

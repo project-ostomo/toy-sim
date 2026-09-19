@@ -446,12 +446,13 @@ mod tests {
     use super::*;
 
     fn computer() -> crate::Controller {
-        let bytes = wat::parse_str(
+        let bytes = wat::parse_str(format!(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const 28)
+            (func (export "ship_api_version") (result i32) i32.const {})
             (func (export "ship_tick")))"#,
-        )
+            abi::VERSION,
+        ))
         .unwrap();
         crate::ControllerRuntime::new()
             .unwrap()

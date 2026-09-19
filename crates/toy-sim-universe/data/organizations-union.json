@@ -1,0 +1,1542 @@
+[
+  {
+    "name": "Unifleet Station Services",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2138,
+    "open_membership": true,
+    "roles": [
+      "trade",
+      "industry",
+      "relief"
+    ],
+    "history": "Founded in 2138 to maintain the stations supporting Unifleet's expanding transport network, Station Services inherited a research institute's habit of treating practical continuity as a public obligation. Its workshops grew into a major employer as civilian ministries increasingly depended on Unifleet engineering judgments. The 2257 Partition left its crews maintaining a prosperous core while colleagues beyond the severed boundary faced isolation. Since the 2401 Treaty of Concord, it has again accepted visiting contractors, although arguments over whose needs determine repair priority remain politically charged.",
+    "culture": "A station crew treats a stranger's failed airlock with the urgency it would give a friend's. Strong friendships form around long maintenance rotations, but senior workers discourage claims that affection should buy priority. Its open membership attracts newcomers through practical service; assessment and supervision can nevertheless make welcome feel conditional on measurable usefulness.",
+    "doctrine": "Keep inhabited infrastructure serviceable through stocked components, inspectable work, and accountable human decisions. Machines diagnose faults and organize labor, while supervisors remain responsible for competing needs. Allocate scarce repair capacity by consequence and publish the reasons when urgent work displaces ordinary customers.",
+    "goals": [
+      "Restore damaged civilian shipping promptly.",
+      "Maintain reliable stocks of fission fuel and replacement components.",
+      "Give new members a useful place in public station work."
+    ],
+    "resources": [
+      "Station repair workshops and component inventories",
+      "Cargo crews supplying fuel and industrial inputs",
+      "Experienced supervisors for contractor work"
+    ],
+    "relations": [
+      {
+        "organization": "Unifleet Defense",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Defense escorts exposed supply movements and protects repair crews during armed incidents."
+      },
+      {
+        "organization": "Lagrange Shipbuilding Collective",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Shared component dimensions let station workshops repair ships built at Lagrange."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer raids have damaged service transports and drawn armed protection for station supply convoys."
+      }
+    ]
+  },
+  {
+    "name": "Unifleet Defense",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2182,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "Unifleet Defense received a separate establishment in 2182 as the protection of distant engineering assets became a permanent responsibility. It developed inside an institution whose control of transport and technical expertise already shaped civilian choices. Its history includes the boundary operations of the 2257 Partition and the failed expectations surrounding the 2272 reclamation attempt. Professional histories acknowledge those decisions without reaching agreement on their justification. After the 2401 Concord settlement, the service redirected much of its visible work toward patrol, convoy protection, and maintaining credible reserves.",
+    "culture": "Officers are expected to explain who benefits from a deployment, including people outside Union citizenship. Their sincerity coexists with an institutional reflex that regards command continuity as indispensable to everyone. Crews often cultivate enduring affection across assignments, while finding exclusive personal loyalties an uncomfortable basis for requests to avoid dangerous duties.",
+    "doctrine": "Protect inhabited stations and shipping with observed positions, patrol craft, lasers, and missiles. Preserve an identifiable human chain of responsibility for force. Concentrated defense should reduce civilian losses, but commanders must account for the political power acquired when only their institution can furnish a workable security plan.",
+    "goals": [
+      "Keep civilian trade routes usable during armed threats.",
+      "Replace worn patrol hulls without exhausting public repair capacity.",
+      "Sustain the Concord peace through disciplined deployments."
+    ],
+    "resources": [
+      "Patrol ships carrying lasers and missiles",
+      "Fleet repair allocations and fuel reserves",
+      "Trained command and convoy crews"
+    ],
+    "relations": [
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Station crews keep patrol ships operating and receive protection during dangerous repairs."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Privateer attacks on Union shipping have led to armed convoy encounters."
+      },
+      {
+        "organization": "Inner System Rescue Service",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Rescuers contest decisions to postpone recovery work until an escort is available, while defense commanders cite risks to exposed crews."
+      },
+      {
+        "organization": "Sol Navigation Survey",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Surveyors seek wider publication of useful observations that defense officers believe reveal vulnerable infrastructure."
+      }
+    ]
+  },
+  {
+    "name": "Earth Orbit Reconstruction Office",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2106,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "relief"
+    ],
+    "history": "The office was founded in 2106 to restore orbital workshops and transport facilities during the long recovery from the Cataclysm. Its first engineers worked from incomplete inventories and records that could not establish a single cause for the disaster. The arrival of practical artificial wormholes in 2114 expanded demand for its fabrication work. Over subsequent centuries it became the steward of Sol's older industrial structures, adapting equipment repeatedly rather than treating age as failure. Current projects repair the material inheritance on which the Union's abundance still depends.",
+    "culture": "Employees keep photographs of repaired structures alongside accounts of the people who used them. This attachment to places rarely becomes a claim to exclude newcomers. They take pride in making ordinary life comfortable, though their conviction that any environment can be improved sometimes overrides residents who prefer an imperfect familiar arrangement.",
+    "doctrine": "Repair should recover useful capacity while making future maintenance understandable. Assess a structure through direct inspection and material records before committing fabrication time. AI estimators assist engineering teams, but named project leaders must explain displaced work and accept responsibility for mistaken forecasts.",
+    "goals": [
+      "Return aging orbital factories to dependable service.",
+      "Recover reusable material from obsolete structures.",
+      "Keep reconstruction schedules responsive to the people living nearby."
+    ],
+    "resources": [
+      "Orbital fabrication crews",
+      "Structural metal and replacement machinery stores",
+      "Survey craft for damaged industrial sites"
+    ],
+    "relations": [
+      {
+        "organization": "Sol Habitat Renewal",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "They coordinate structural repair with the renewal of occupied stations."
+      },
+      {
+        "organization": "Vesta Reclamation Service",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Reclaimed metal supplements the office’s supply of structural inputs."
+      },
+      {
+        "organization": "Shared Orbit Arts Workshop",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The office prioritizes structural repair when both institutions request the same reclaimed material and fabrication capacity."
+      }
+    ]
+  },
+  {
+    "name": "Pacific Fission Supply",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2149,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade"
+    ],
+    "history": "Pacific Fission Supply began in 2149 when several Sol fuel workshops were combined to support expanding orbital traffic. The organization retained its terrestrial name as most production moved into space. Its prominence grew when repeated transport disruptions demonstrated that excellent ships were useless without dependable reactor inputs. During the Slip Wars it supplied both public factories and defense contracts, acquiring a reputation for meeting difficult schedules. The Concord peace reduced emergency demand but increased the variety of customers whose fuel requirements its workshops must reconcile.",
+    "culture": "Fuel workers admire steady, uncelebrated competence and share credit across shifts. Their social life is warm and ordinary, with shared meals marking completed production runs. A recurring grievance is that public planners interpret willingness to help as permanent availability, leaving individual workers to justify a desire for an uneventful posting.",
+    "doctrine": "Maintain reliable fission fuel supply through conservative production schedules, visible inventories, and diversified inputs. Never count an uninspected shipment as usable reserve. Human coordinators must balance fleet urgency against civilian power needs, recording which customers bear the cost when those needs conflict.",
+    "goals": [
+      "Keep civilian reactors and ships supplied.",
+      "Reduce production interruptions caused by missing industrial inputs.",
+      "Build reserves that survive a prolonged interruption of ordinary freight."
+    ],
+    "resources": [
+      "Fission fuel production lines",
+      "Shielded cargo handling teams",
+      "Longstanding orders from shipyards and stations"
+    ],
+    "relations": [
+      {
+        "organization": "Union Reactor Stewardship",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Stewardship provides operating experience used to improve fuel reliability."
+      },
+      {
+        "organization": "Saturn Freight Allocation",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Saturn haulers move inputs and finished fuel between distant Sol facilities."
+      },
+      {
+        "organization": "Lyra Continuity Fuel Trust",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both producers seek civilian fuel customers under Concord trade arrangements and disagree about the value of contracted reserve commitments."
+      }
+    ]
+  },
+  {
+    "name": "Mare Tranquillitatis Foundries",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2126,
+    "open_membership": false,
+    "roles": [
+      "industry"
+    ],
+    "history": "Established in 2126, the foundries joined lunar metalworking shops that had supplied the first decades of wormhole expansion. Their location and accumulated tooling made them a familiar supplier to Unifleet construction campaigns. Success also tied their production calendar to infrastructure decisions taken elsewhere, and workers repeatedly challenged allocations that postponed civilian repair behind ambitious expansion. In 2426 the foundries remain a capable public manufacturer whose directors defend the value of predictable, ordinary output against the prestige attached to a new fleet or station project.",
+    "culture": "Foundry workers preserve workshop histories through tools, photographs, and stories told by retiring engineers. Mentorship is treated as a public responsibility rather than ownership of a gifted apprentice. Their pride can become insular: teams sometimes dismiss outside criticism because visitors have never managed the material consequences of a bad production schedule.",
+    "doctrine": "Turn available industrial inputs into dependable components with clear production commitments. Favor tooling that station crews can inspect and repair. Scheduling models should expose competing uses for factory time, leaving named coordinators to decide when strategic demand justifies delaying less visible civilian orders.",
+    "goals": [
+      "Supply replacement components for mature public infrastructure.",
+      "Increase the share of production recoverable after machinery failures.",
+      "Give civilian maintenance orders dependable completion dates."
+    ],
+    "resources": [
+      "Lunar component factories",
+      "Experienced metalworking and assembly teams",
+      "Stockpiles of processed industrial material"
+    ],
+    "relations": [
+      {
+        "organization": "Lagrange Shipbuilding Collective",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The shipyards purchase structural components in predictable production runs."
+      },
+      {
+        "organization": "Jovian Radiator Works",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both manufacturers seek limited allocations of high quality industrial inputs."
+      }
+    ]
+  },
+  {
+    "name": "Ceres Materials Directorate",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2163,
+    "open_membership": false,
+    "roles": [
+      "mining",
+      "trade",
+      "industry"
+    ],
+    "history": "The directorate was created in 2163 to coordinate extraction and processing around Ceres as demand from Sol shipbuilding increased. Its founding charter put reliable public supply ahead of the fortunes of any particular mine. This arrangement helped build a prosperous industrial base while giving allocation officials considerable influence over which working communities expanded. Wartime requisitions deepened that authority. Since Concord, the directorate has faced pressure to explain its choices in language accessible to the miners and station residents whose futures depend on production decisions.",
+    "culture": "Workers celebrate accurate surveys and machinery that survives repeated use. Close crews welcome transfers readily, accepting that professional attachment does not establish a permanent claim over colleagues. The administration's language of aggregate welfare can feel distant to a settlement losing its main workshop, even when replacement housing and work are generously provided.",
+    "doctrine": "Extract and process material according to observed reserves, equipment condition, and actual industrial demand. Keep transport commitments grounded in cargo that can be delivered. Decisions to close or expand a site require an accountable human explanation of both public benefit and local consequences.",
+    "goals": [
+      "Supply metal and other industrial inputs to Sol factories.",
+      "Repair extraction equipment before breakdowns interrupt production.",
+      "Improve the visibility of costs imposed on mining settlements."
+    ],
+    "resources": [
+      "Mining craft and extraction machinery",
+      "Material processing facilities",
+      "Cargo stockpiles serving public manufacturers"
+    ],
+    "relations": [
+      {
+        "organization": "Mare Tranquillitatis Foundries",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Lunar factories buy processed material from Ceres production runs."
+      },
+      {
+        "organization": "Vesta Reclamation Service",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Reclaimed metal competes with newly extracted material for manufacturing orders."
+      }
+    ]
+  },
+  {
+    "name": "Jovian Radiator Works",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2234,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "Founded in 2234 during the Time of Troubles, Jovian Radiator Works grew from engineers attempting to reduce the maintenance burden of large public installations. Its original contracts preceded the 2257 Partition; later wartime demand made heat management an urgent concern for shipbuilders as well as factories. The company accumulated a reputation for plain components that endured punishing service. In the present peace it uses that inheritance to support repairable industrial equipment, while arguing with procurement officials who prefer compact machinery that looks efficient on an initial budget.",
+    "culture": "A workshop maxim holds that a clever design must still be tolerable to the person repairing it after a long shift. Teams reward candid reports of faults and share improvements widely. They can be impatient with people whose priorities are aesthetic or sentimental, treating disagreement as a misunderstanding that better measurement will cure.",
+    "doctrine": "Design industrial components around observed operating conditions and available repair capacity. Test claims against damaged hardware, then revise the manufacturing process. Human engineers should disclose assumptions in performance estimates so that purchasing institutions understand the maintenance work hidden inside an apparently economical design.",
+    "goals": [
+      "Keep ship and factory repair stocks affordable.",
+      "Reduce failures caused by unrealistic operating assumptions.",
+      "Win production allocations for durable public infrastructure."
+    ],
+    "resources": [
+      "Component assembly factories",
+      "Material testing benches",
+      "Engineers specializing in industrial repair"
+    ],
+    "relations": [
+      {
+        "organization": "Mare Tranquillitatis Foundries",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The manufacturers compete for scarce premium material during busy production periods."
+      },
+      {
+        "organization": "Lyra Independent Testyards",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Post-Concord exchanges compare damaged components and testing methods."
+      }
+    ]
+  },
+  {
+    "name": "Saturn Freight Allocation",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2280,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "relief"
+    ],
+    "history": "Saturn Freight Allocation began in 2280 after disrupted wartime schedules exposed the fragility of Sol's long supply chains. Its organizers consolidated cargo planning around physical reserves and dependable ship maintenance. The bureau grew successful enough that distant factories often accepted its preferred production sequence as unavoidable, illustrating how logistical competence can acquire political authority. Following the 2401 Treaty of Concord, foreign trade added unfamiliar customers and competing expectations. Its present staff work to retain reliable deliveries while admitting that a convenient schedule can still distribute inconvenience unfairly.",
+    "culture": "Dispatch crews enjoy solving concrete problems for people they have never met. They exchange detailed stories about difficult deliveries and regard hoarded surplus as embarrassing when another station lacks essentials. Their confidence in impartial allocation can make them slow to recognize that customers value control over timing as well as receiving enough material.",
+    "doctrine": "Schedule freight from known cargo, serviceable hulls, and credible fuel supply. Preserve room for repair delays and emergency deliveries. Planners must expose the human choices behind optimization targets, because maximizing transported tonnage alone can repeatedly leave small or inconvenient customers waiting.",
+    "goals": [
+      "Deliver fuel and industrial inputs across Sol reliably.",
+      "Reduce cargo stranded by preventable repair delays.",
+      "Give small stations a dependable place in freight schedules."
+    ],
+    "resources": [
+      "Bulk cargo vessels",
+      "Dispatch teams with station inventory contacts",
+      "Fuel and component reserves for long voyages"
+    ],
+    "relations": [
+      {
+        "organization": "Pacific Fission Supply",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Regular freight runs connect fuel production with distant customers."
+      },
+      {
+        "organization": "Inner System Rescue Service",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Dispatchers reserve practical cargo support for ships returning from rescue work."
+      },
+      {
+        "organization": "Open Hearth Service Fellowship",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The fellowship seeks delivery exceptions for overlooked recipients, while dispatchers argue that repeated exceptions delay other small stations."
+      }
+    ]
+  },
+  {
+    "name": "Inner System Rescue Service",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2196,
+    "open_membership": false,
+    "roles": [
+      "relief",
+      "salvage"
+    ],
+    "history": "The service was founded in 2196 after several station operators agreed that rescue capacity should be maintained before a ship was already in trouble. It began with repair tenders and experienced maintenance crews, then developed lasting ties to Unifleet's wider logistics system. The Partition and subsequent wars forced it to confront requests from people whom military plans classified as opponents. Its public histories preserve disagreements over those missions. Since Concord, cooperation with visiting crews has made rescue work one of the Union's most persuasive everyday expressions of universal concern.",
+    "culture": "Rescuers are affectionate toward difficult colleagues and notably patient with frightened strangers. They resist treating gratitude as a debt, sometimes leaving survivors surprised by how easily an intense bond gives way to the next assignment. Exhaustion is an acknowledged problem when a culture of universal availability makes declining another mission feel morally suspect.",
+    "doctrine": "Restore a damaged vessel's ability to survive and move using repair crews, replacement components, and fuel. Establish what can actually be reached before making promises. Prioritize threatened lives while keeping commanders responsible for risks imposed on their crews and on other waiting casualties.",
+    "goals": [
+      "Keep repair tenders ready for urgent departures.",
+      "Recover useful ships and cargo after serious failures.",
+      "Improve cooperation between civilian rescuers and armed escorts."
+    ],
+    "resources": [
+      "Repair tenders and salvage craft",
+      "Emergency fuel and component cargoes",
+      "Experienced damage assessment crews"
+    ],
+    "relations": [
+      {
+        "organization": "Saturn Freight Allocation",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Freight planners replenish rescue ships after demanding voyages."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The confraternity carries repair supplies for civilian relief work."
+      },
+      {
+        "organization": "Unifleet Defense",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Rescuers contest decisions to postpone recovery work until an escort is available, while defense commanders cite risks to exposed crews."
+      }
+    ]
+  },
+  {
+    "name": "Union Reactor Stewardship",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2171,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "Founded in 2171, Union Reactor Stewardship brought together engineers responsible for power machinery at rapidly growing stations. Its first achievement was a shared record of faults that individual workshops had previously treated as local embarrassments. That record improved maintenance and helped justify public investment in spare components. Wartime secrecy later limited some exchanges, leaving gaps that still complicate historical comparisons. In 2426 the organization promotes patient examination of worn equipment and argues that generous repair budgets are part of the ordinary material basis of universal welfare.",
+    "culture": "Stewards tend to be calm listeners who consider a technician's account as valuable as an elegant simulation. Their annual gatherings honor useful corrections, including mistakes admitted by senior staff. The same professional confidence can become paternalistic when engineers regard a resident's objections to intrusive inspection as evidence of inadequate understanding.",
+    "doctrine": "Judge reactor reliability through documented operating experience, inspected components, and conservative fuel planning. Models assist diagnosis without becoming authorities over human purposes. Explain the limits of each finding and assign a responsible engineer before recommending repairs that displace other essential station work.",
+    "goals": [
+      "Reduce preventable interruptions of public power.",
+      "Share practical findings across Union workshops.",
+      "Maintain enough replacement machinery for prolonged repair campaigns."
+    ],
+    "resources": [
+      "Reactor inspection teams",
+      "Component examination laboratories",
+      "Repair inventories for station power equipment"
+    ],
+    "relations": [
+      {
+        "organization": "Pacific Fission Supply",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Fuel producers use stewardship findings to refine production and storage practice."
+      },
+      {
+        "organization": "Public Machine Assurance Institute",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Joint investigations examine how maintenance software and human decisions interact."
+      },
+      {
+        "organization": "Mercury Optical Foundry",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both request scarce precision components, with reactor repair competing against scheduled optical instrument production."
+      }
+    ]
+  },
+  {
+    "name": "Public Machine Assurance Institute",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2158,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "industry"
+    ],
+    "history": "The institute was founded in 2158 to examine machine failures across expanding public industry. It inherited the Union's conviction that the Cataclysm demonstrated the danger of capable systems serving narrow principals, while preserving evidence that the initiating Severance and particular chains of responsibility remain disputed. Its investigators became influential because their assessments shaped what public workshops purchased. Contact with Lyra researchers after Concord widened its comparisons, forcing it to explain why technical diversity within Union institutions should also be accompanied by meaningful independence among their human supervisors.",
+    "culture": "Researchers are proud of making powerful ordinary technology dependable for millions of people. They expect affection, status, and institutional loyalty to yield to a well supported finding. Nevertheless, careers develop within the same public institutions under examination, and colleagues can mistake shared moral commitments for evidence that their assumptions are independent.",
+    "doctrine": "Investigate failures by comparing physical outcomes, machine recommendations, and the human objectives that produced them. Preserve several independently developed analytical approaches. A model's competence does not absolve its principal, and an official purpose does not prove that the chosen measure of public welfare is adequate.",
+    "goals": [
+      "Find correlated failures before they spread through production.",
+      "Make industrial recommendations explainable to responsible human operators.",
+      "Expand comparative research with independent scientific institutions."
+    ],
+    "resources": [
+      "Industrial failure laboratories",
+      "Teams reviewing machine assisted production",
+      "Public records of examined component failures"
+    ],
+    "relations": [
+      {
+        "organization": "Union Reactor Stewardship",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Reactor investigations provide concrete cases for assurance research."
+      },
+      {
+        "organization": "Lyra Comparative Governance Institute",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree over how much institutional independence public safety requires."
+      },
+      {
+        "organization": "Lyra Independent Testyards",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree about the evidentiary weight of a successful test conducted under a supplier’s own institutional supervision."
+      }
+    ]
+  },
+  {
+    "name": "Sol Navigation Survey",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2119,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "patrol"
+    ],
+    "history": "Sol Navigation Survey was founded in 2119 as the first artificial gate installations made accurate descriptions of orbital surroundings a matter of public importance. Its crews mapped usable approaches, surveyed construction sites, and corrected confident plans that neglected physical distance between facilities. Later wars made observation politically sensitive, but the service retained a professional attachment to describing what its instruments could establish. Since 2401 it has exchanged selected civil findings with foreign surveyors, supporting trade while confronting the limits imposed by defense institutions on otherwise useful publication.",
+    "culture": "Survey crews prize careful uncertainty and dislike theatrical certainty about distant events. Shared watches create strong friendships without a general expectation that partners will remain together forever. A junior observer can gain respect by correcting a celebrated colleague, although classified assignments sometimes prevent that correction from reaching the public that depends on it.",
+    "doctrine": "Report observed positions and conditions with explicit limits on confidence. Use ordinary craft and instruments to resolve uncertainty before recommending expensive construction or patrol changes. Separate measured facts from strategic interpretations, and keep a named human accountable for each operational recommendation made from incomplete observations.",
+    "goals": [
+      "Improve the reliability of civil navigation information.",
+      "Identify useful locations for repair and cargo facilities.",
+      "Reduce mistakes caused by treating uncertain observations as settled facts."
+    ],
+    "resources": [
+      "Survey vessels",
+      "Optical instruments and reference records",
+      "Navigation specialists supporting civilian crews"
+    ],
+    "relations": [
+      {
+        "organization": "Mercury Optical Foundry",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The foundry supplies and repairs survey instruments."
+      },
+      {
+        "organization": "Lyra Open Instrument Cooperative",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Shared measurement practice supports useful comparisons across political borders."
+      },
+      {
+        "organization": "Unifleet Defense",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Surveyors seek wider publication of useful observations that defense officers believe reveal vulnerable infrastructure."
+      }
+    ]
+  },
+  {
+    "name": "Mercury Optical Foundry",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2203,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "research"
+    ],
+    "history": "The foundry opened in 2203 to produce precision optical components for a growing population of industrial and survey craft. It survived the 2210 election crisis as a technically focused institution, yet its orders increasingly reflected Unifleet priorities as the Time of Troubles developed. Production for lasers during the Slip Wars expanded its facilities and tied skilled workers to defense schedules. In the Concord period it has redirected some capacity toward civil instruments and repair stocks, while acknowledging that the same manufacturing expertise serves both peaceful observation and armed ships.",
+    "culture": "Workers are intensely attentive to small flaws and often relaxed about social rank. Apprentices share meals with senior engineers, and the person who notices a defect receives credit regardless of assignment. Their commitment to excellent workmanship can narrow moral attention: producing a flawless component is easier to assess than the ends it serves.",
+    "doctrine": "Manufacture optical components against demonstrable performance requirements and realistic maintenance conditions. Track defects through the production process, and repair useful equipment where practical. Engineers must identify the intended operating role of their work while leaving decisions about force to publicly responsible human institutions.",
+    "goals": [
+      "Supply dependable components for survey instruments.",
+      "Keep existing lasers serviceable through replacement production.",
+      "Reduce waste from manufacturing defects."
+    ],
+    "resources": [
+      "Precision optical production lines",
+      "Laser component repair benches",
+      "Experienced instrument makers"
+    ],
+    "relations": [
+      {
+        "organization": "Sol Navigation Survey",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Surveyors purchase instruments and return damaged equipment for examination."
+      },
+      {
+        "organization": "Unifleet Defense",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Defense maintenance orders support production of replacement laser components."
+      },
+      {
+        "organization": "Union Reactor Stewardship",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both request scarce precision components, with reactor repair competing against scheduled optical instrument production."
+      }
+    ]
+  },
+  {
+    "name": "Lagrange Shipbuilding Collective",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2152,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade"
+    ],
+    "history": "The collective formed in 2152 when several public construction teams adopted a common production schedule for civilian hulls. It became a major shipbuilder during the expansion of Unifleet's trunk network, and the practical choices embedded in its designs shaped how stations stocked repair parts. Wartime contracts brought growth and difficult decisions about delayed civilian replacements. After the 2401 settlement, the collective resumed sustained exchanges with foreign builders. Its current leadership argues that a shipyard should be judged by decades of useful service as well as the date a hull leaves its berth.",
+    "culture": "Builders feel lasting affection for ships they have assembled and happily help crews who treat those ships differently. Teams exchange credit freely, viewing a successful vessel as a shared public achievement. Large projects still create prestige hierarchies, and routine repair workers sometimes struggle to receive the attention lavished on new construction.",
+    "doctrine": "Build ships that match available fuel, components, and maintenance skill. Maintain common repair practices where they make real work easier. Production decisions should include the cost imposed on existing customers, with human coordinators explaining why a new hull deserves capacity that could restore an older one.",
+    "goals": [
+      "Deliver reliable civilian cargo hulls.",
+      "Keep replacement components available for working ships.",
+      "Balance new construction with repair demand."
+    ],
+    "resources": [
+      "Orbital shipbuilding berths",
+      "Hull assembly factories",
+      "Component stores shared with repair workshops"
+    ],
+    "relations": [
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Station workshops maintain ships built with the collective’s component families."
+      },
+      {
+        "organization": "Mare Tranquillitatis Foundries",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The foundries provide structural parts for scheduled hull production."
+      },
+      {
+        "organization": "Union Developmental Provision",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "New cargo hull construction competes with components ordered to repair existing communal facilities."
+      }
+    ]
+  },
+  {
+    "name": "Civic Cargo Exchange",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2321,
+    "open_membership": false,
+    "roles": [
+      "trade"
+    ],
+    "history": "Founded in 2321, Civic Cargo Exchange grew out of public purchasing desks that struggled to locate surplus material during repeated wartime disruptions. Its organizers made ordinary exchange between institutions less cumbersome by maintaining practical contacts with factories, miners, and ship crews. The service prospered because abundance did not mean that every useful item was already in the right place. Concord brought foreign suppliers and disagreements about ownership records. The exchange now spends as much effort clarifying what parties can deliver as it does comparing their offers.",
+    "culture": "Traders describe good work as making another institution's problem smaller. They are comfortable with bargaining over schedules and cargo while uneasy about turning advantage into lasting dependence. Visitors sometimes find their lack of personal acquisitiveness refreshing, then discover that the exchange can be uncompromising when it believes public need warrants a concession.",
+    "doctrine": "Arrange trades around identifiable cargo, credible delivery, and repairable transport. Preserve clear accounts of each party's commitments. A favorable price cannot substitute for material availability, and coordinators should explain when a proposed exchange helps one public institution by imposing unreasonable costs on another.",
+    "goals": [
+      "Move idle industrial stocks toward active demand.",
+      "Improve dependable trade with foreign civilian suppliers.",
+      "Reduce disputes caused by unclear delivery commitments."
+    ],
+    "resources": [
+      "Cargo purchasing desks",
+      "Trade contacts across Sol factories",
+      "Freight crews handling exchanged components and fuel"
+    ],
+    "relations": [
+      {
+        "organization": "Helion Flight Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Cooperative crews carry civilian cargo under clear delivery agreements."
+      },
+      {
+        "organization": "Concord Exchange Bureau",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The bureau helps reconcile public records needed for foreign transactions."
+      },
+      {
+        "organization": "Lyra Arrival and Repair Union",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek limited replacement component stocks from foreign suppliers when visiting ships create urgent demand."
+      }
+    ]
+  },
+  {
+    "name": "Common Horizon Dispatch",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2265,
+    "open_membership": false,
+    "roles": [
+      "broadcast",
+      "trade"
+    ],
+    "history": "Common Horizon Dispatch was founded in 2265, eight years after the Partition, when separated institutions urgently needed coherent public accounts of changing transport conditions. It developed inside the Union and carried the assumptions of the operational state, including confidence that technical continuity justified difficult policy. Later generations of editors revisited reports that understated the human cost of isolation. Following Concord, visiting traders supplied perspectives unavailable to wartime audiences. The dispatch now combines practical cargo reporting with public discussion of how apparently technical decisions distribute opportunity and hardship.",
+    "culture": "Editors value clarity and regard a stranger's confusion as a problem worth their time. Their language is direct, with little deference to personal rank. They often form affectionate working circles, yet a strong expectation of constructive contribution can make anger or refusal seem immature even when a correspondent has sound grounds for both.",
+    "doctrine": "Publish claims that can be connected to named sources, visible cargo, or documented decisions. State uncertainty when reports differ. Treat machine summaries as aids to human editorial judgment, and explain the interests of institutions whose measurements shape the public account of economic conditions.",
+    "goals": [
+      "Make cargo conditions understandable to ordinary station workers.",
+      "Document the practical costs of disrupted trade.",
+      "Broaden the range of credible public sources."
+    ],
+    "resources": [
+      "Public reporting and translation crews",
+      "Cargo correspondents based at stations",
+      "Publication archives covering transport and industry"
+    ],
+    "relations": [
+      {
+        "organization": "Civic Cargo Exchange",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Exchange contacts help verify material availability and disputed delivery claims."
+      },
+      {
+        "organization": "Public Margin Review Office",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Review findings supply evidence for reporting on allocation decisions."
+      },
+      {
+        "organization": "Earth Archive Continuity",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Editors seek prompt publication of disputed historical records, while archivists ask for further provenance work before drawing public conclusions."
+      }
+    ]
+  },
+  {
+    "name": "Earth Archive Continuity",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2102,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "Earth Archive Continuity was established in 2102 to preserve records that had survived the Cataclysm and the disorder of reconstruction. Its early cataloguers encountered missing originals, contradictory timestamps, damaged hardware, and claims of responsibility that could not be verified. Those difficulties became a lasting institutional warning against a single tidy explanation of the Severance. As the Union prospered, the archive broadened into histories of ordinary work, affection, and recovery. Post-Concord cooperation now brings it records preserved by communities whose political conclusions differ sharply from its own.",
+    "culture": "Archivists treat a fragment of an unknown person's daily life with considerable tenderness. Their attachment is to preservation and intelligibility rather than possession of a cultural inheritance. The institution nevertheless operates within Union funding and legal arrangements, creating recurring tension when an uncomfortable record survives but the authority to make it public remains elsewhere.",
+    "doctrine": "Preserve provenance, uncertainty, and competing interpretations alongside recovered material. Compare claims with surviving physical and documentary evidence before assigning confidence. Human curators must distinguish what a record establishes from the historical argument a later institution wishes to build around it.",
+    "goals": [
+      "Preserve fragile records of reconstruction and early expansion.",
+      "Recover useful technical knowledge from obsolete equipment.",
+      "Make disagreements about historical evidence intelligible to the public."
+    ],
+    "resources": [
+      "Archival conservation workshops",
+      "Curators examining damaged technical records",
+      "Public historical broadcasts and catalogues"
+    ],
+    "relations": [
+      {
+        "organization": "Shin Tokyo Translation Service",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Translation specialists preserve distinctions lost in later official terminology."
+      },
+      {
+        "organization": "Lyra Originalist Forum",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The forum draws different constitutional conclusions from shared pre-Partition records."
+      },
+      {
+        "organization": "Common Horizon Dispatch",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Editors seek prompt publication of disputed historical records, while archivists ask for further provenance work before drawing public conclusions."
+      }
+    ]
+  },
+  {
+    "name": "Shin Tokyo Translation Service",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2294,
+    "open_membership": false,
+    "roles": [
+      "broadcast",
+      "trade"
+    ],
+    "history": "The service was founded in 2294 after the planned Japanese standard had become ordinary native speech across Union institutions in Japan. Its translators helped workers use protected Japanese access while dealing with authoritative Mandarin or English records. That practical work made the institution sensitive to the difference between a useful explanation and the document that legally decides an issue. Contact after the 2401 Treaty of Concord brought sustained encounters with restored LFS Japanese, expanding its work from straightforward translation to disagreements about inherited etiquette, cultural protection, and the meaning of administrative words.",
+    "culture": "Staff speak their native Japanese naturally and take pleasure in jokes, friendship, and literature. They avoid treating inherited rank as a requirement for respect. Some are surprised when LFS visitors hear coercion in familiar grammar, while others recognize that successful language protection also gave Union institutions unusual power over what children came to regard as normal.",
+    "doctrine": "Translate commitments through their actual context and identify where apparently familiar terms carry different institutional meanings. Human reviewers remain responsible for consequential wording. In trade work, explain cargo, timing, and ownership clearly enough that participants can recognize a disagreement before accepting the proposed arrangement.",
+    "goals": [
+      "Improve communication between visiting and resident crews.",
+      "Preserve the meaning of technical records across changing language.",
+      "Make foreign cargo agreements understandable to Japanese speaking workers."
+    ],
+    "resources": [
+      "Technical translation teams",
+      "Collections of historical and current usage",
+      "Cargo documentation specialists"
+    ],
+    "relations": [
+      {
+        "organization": "Earth Archive Continuity",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Historical records support careful interpretation of older Japanese terminology."
+      },
+      {
+        "organization": "Concord Exchange Bureau",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The bureau commissions explanations of cross-border commercial records."
+      },
+      {
+        "organization": "Lyra Originalist Forum",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The forum argues that translating old constitutional terms into current administrative vocabulary obscures distinctions the service considers difficult to explain briefly."
+      }
+    ]
+  },
+  {
+    "name": "Union Developmental Provision",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2188,
+    "open_membership": false,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "Union Developmental Provision was founded in 2188 to coordinate material support for the public institutions responsible for childhood and education. Its transport staff supplied workshops and communal facilities as the expansion of settled space made consistent provision more difficult. The organization's historical identity rests on the Union belief that developmental opportunity should not depend on ancestry or private wealth. This commitment produced real gains while allowing administrative judgments to shape intimate life. In 2426 its practical fleet work concerns dependable cargo, repair, and fuel for institutions whose wider social mission remains controversial abroad.",
+    "culture": "Staff speak warmly about the children and adults served by public institutions, treating care as enduring without making it hereditary property. Many maintain close relationships across generations of assignments. Their confidence in equal provision sometimes obscures a person's desire for an attachment that cannot be reassigned because another arrangement scores better on a public assessment.",
+    "doctrine": "Supply public care and education facilities through reliable shipments and maintained vessels. Assess material needs without privileging inherited influence. Coordinators should hear the people using those facilities before treating aggregate performance as sufficient evidence that a proposed rearrangement will improve their lives.",
+    "goals": [
+      "Keep essential public facilities supplied with fuel and components.",
+      "Reduce interruptions caused by neglected delivery equipment.",
+      "Make local experiences visible in material allocation decisions."
+    ],
+    "resources": [
+      "Civilian supply vessels",
+      "Stocks of facility repair components",
+      "Cargo coordinators serving public institutions"
+    ],
+    "relations": [
+      {
+        "organization": "Open Hearth Service Fellowship",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Fellowship members help identify everyday needs overlooked in purchasing schedules."
+      },
+      {
+        "organization": "Saturn Freight Allocation",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Long distance freight carries material required by scattered public facilities."
+      },
+      {
+        "organization": "Lagrange Shipbuilding Collective",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "New cargo hull construction competes with components ordered to repair existing communal facilities."
+      }
+    ]
+  },
+  {
+    "name": "Open Hearth Service Fellowship",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2347,
+    "open_membership": true,
+    "roles": [
+      "relief",
+      "trade"
+    ],
+    "history": "Founded in 2347, Open Hearth brought together station workers who wanted public service to include unhurried human attention as well as efficient provision. Its members supported communal institutions without imagining that the old private household should become the default again. The fellowship first earned recognition by organizing small repair and supply efforts for places that received technically adequate but impersonal service. Since Concord it has held friendly, sometimes difficult exchanges with foreign charitable traditions. Its members defend Union universalism while asking whether people can feel cared for when every relationship is optimized around interchangeable assignments.",
+    "culture": "Members remember names, share meals, and return to visit after a practical problem has been solved. They are comfortable with deep attachment and resist making recipients dependent on a particular benefactor. The tension becomes personal when someone asks for exclusive loyalty: members disagree about when steadfastness expresses care and when it becomes an unfair claim.",
+    "doctrine": "Begin with an identifiable person's practical need and follow the repair or delivery through to completion. Coordinate with public institutions while preserving room for direct testimony. A tidy service record is useful evidence, but it cannot establish by itself that the recipient feels understood.",
+    "goals": [
+      "Support overlooked station repair and supply work.",
+      "Sustain continuing relationships across changes of assignment.",
+      "Improve cooperation with visiting civilian relief crews."
+    ],
+    "resources": [
+      "Volunteer cargo and repair teams",
+      "Small stocks of donated industrial components",
+      "Experienced coordinators connected to public workshops"
+    ],
+    "relations": [
+      {
+        "organization": "Union Developmental Provision",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The fellowship brings concrete reports from facilities that provision crews supply."
+      },
+      {
+        "organization": "St Raphael Trade Confraternity",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Practical relief cargo creates cooperation despite different accounts of family and care."
+      },
+      {
+        "organization": "Saturn Freight Allocation",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The fellowship seeks delivery exceptions for overlooked recipients, while dispatchers argue that repeated exceptions delay other small stations."
+      }
+    ]
+  },
+  {
+    "name": "Sol Habitat Renewal",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2227,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "relief"
+    ],
+    "history": "Sol Habitat Renewal began in 2227 as a public effort to repair inhabited stations whose original construction schedules had assumed rapid replacement. Political tensions during the Time of Troubles diverted that replacement capacity elsewhere, leaving renewal crews to keep mature settlements comfortable with existing structures. They became skilled at planning around occupied workshops and public spaces. Wartime success entrenched their authority over reconstruction priorities. In the present prosperous Union, residents welcome much of their work while occasionally resisting a timetable that treats moving away from a beloved place as an ordinary logistical adjustment.",
+    "culture": "Crews enjoy the visible satisfaction of repaired spaces returning to everyday use. They learn residents' names and often form attachments to communities outside their own assignments. Their professional language emphasizes accessible common goods, but it can make unusual habits or local arrangements sound like defects awaiting correction by a more rational design.",
+    "doctrine": "Repair occupied infrastructure with attention to continuity of daily life. Inspect structures, reserve suitable components, and stage work around real cargo capacity. Give affected people a comprehensible account of alternatives before a planning model converts their present arrangements into an obstacle on a construction schedule.",
+    "goals": [
+      "Extend the useful life of inhabited stations.",
+      "Reduce disruption during major repairs.",
+      "Give resident testimony a practical role in renewal plans."
+    ],
+    "resources": [
+      "Station repair crews",
+      "Fabrication contracts for structural components",
+      "Cargo craft moving renovation supplies"
+    ],
+    "relations": [
+      {
+        "organization": "Earth Orbit Reconstruction Office",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The office supplies experience with the structural layers beneath inhabited facilities."
+      },
+      {
+        "organization": "Shared Orbit Arts Workshop",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Artists help repair and reuse public spaces after industrial work finishes."
+      },
+      {
+        "organization": "Public Margin Review Office",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Reviewers challenge renewal schedules that count generous relocation provision as sufficient justification for disrupting valued local attachments."
+      }
+    ]
+  },
+  {
+    "name": "Outer Trunk Maintenance Command",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2241,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "patrol"
+    ],
+    "history": "The command was established in 2241 during the Time of Troubles to concentrate crews responsible for aging infrastructure along Unifleet's established routes. Although headquartered in Sol, its planning reflected the dependence of distant populations on material and technical decisions made in the core. It participated in the institutional preparations surrounding the 2257 Partition, leaving a disputed inheritance alongside its record of successful repairs. The 2272 reclamation attempt reinforced its military connections. Since Concord its leadership has emphasized sustained maintenance while facing demands to explain the political assumptions embedded in its schedules.",
+    "culture": "Members see continuity as a duty owed to unseen populations, and take quiet pride in preventing crises that never become public stories. Long postings produce unusually close professional friendships. Their institutional weakness is an inclination to regard opposition as a risk to system stability before asking whether the objection concerns legitimate political authority.",
+    "doctrine": "Maintain repair capacity and material reserves for established public routes. Protect exposed engineering crews with ordinary patrol support when required. Distinguish a measured equipment constraint from an institutional preference, and identify the human decision maker responsible whenever maintenance priorities impose consequences beyond the workshop.",
+    "goals": [
+      "Keep old transport infrastructure supplied with components.",
+      "Reduce dependence on emergency repair campaigns.",
+      "Make the civilian consequences of maintenance priorities visible."
+    ],
+    "resources": [
+      "Heavy repair tenders",
+      "Component stockpiles for distant facilities",
+      "Patrol crews accompanying exposed maintenance voyages"
+    ],
+    "relations": [
+      {
+        "organization": "Unifleet Defense",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Defense ships protect vulnerable repair operations when armed threats are reported."
+      },
+      {
+        "organization": "Public Margin Review Office",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Reviewers contest the command’s tendency to describe preferred schedules as unavoidable technical necessities."
+      },
+      {
+        "organization": "Union Peace Reserve",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Escort readiness and long maintenance campaigns compete for experienced repair crews and replacement components."
+      }
+    ]
+  },
+  {
+    "name": "Concord Exchange Bureau",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2402,
+    "open_membership": false,
+    "roles": [
+      "trade",
+      "broadcast"
+    ],
+    "history": "The bureau was founded in 2402 to turn the previous year's Treaty of Concord into workable civilian transactions. Its early staff confronted cargo claims described through Union public records, League title practices, and neutral registries with different assumptions about ownership. Experience showed that mutual recognition required careful work and did not make one jurisdiction's records supreme. The bureau grew by solving ordinary disputes before they spoiled larger relationships. By 2426 it has become a recognizable point of contact for visiting traders, while lacking authority to settle every question they would prefer to treat as clerical.",
+    "culture": "Employees cultivate patience toward unfamiliar social expectations and enjoy the practical intimacy of a successfully completed exchange. They can bargain firmly without assuming that private ownership signals personal selfishness. Some still find it difficult to understand why a foreign institution would reject a demonstrably beneficial arrangement to preserve control over its own future choices.",
+    "doctrine": "Translate agreements into concrete cargo, delivery, and recognized claims before arranging exchange. Keep disputed ownership visible until the parties reach settlement or agreed arbitration. Staff should explain the limits of their authority and use accountable negotiation rather than pretending incompatible records have already resolved themselves.",
+    "goals": [
+      "Increase dependable civilian trade under Concord arrangements.",
+      "Resolve documentary disagreements before cargo departures.",
+      "Improve public understanding of foreign commercial institutions."
+    ],
+    "resources": [
+      "Commercial records specialists",
+      "Cargo liaison teams at Sol stations",
+      "Public explanations of concluded agreements"
+    ],
+    "relations": [
+      {
+        "organization": "Civic Cargo Exchange",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The exchange supplies practical trading contacts and material requirements."
+      },
+      {
+        "organization": "Shin Tokyo Translation Service",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Translators make foreign arrangements understandable to Japanese speaking participants."
+      },
+      {
+        "organization": "Lyra Open Instrument Cooperative",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The cooperative contests the volume of production documentation the bureau recommends that foreign instrument buyers request."
+      }
+    ]
+  },
+  {
+    "name": "Unifleet Logistics Academy",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2177,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "industry"
+    ],
+    "history": "Founded in 2177, the academy trained engineers and organizers for a network expanding faster than many civilian institutions could understand. Its graduates helped make the Union capable of reliable provision across great distances. They also carried the habits through which Unifleet's operational judgments became constitutional facts. The 2210 election crisis and the later Partition remain difficult subjects in its historical seminars because competence did not settle questions of authority. Following Concord, the academy began comparing its methods with foreign practice, retaining pride in public planning while confronting evidence that other institutional arrangements can also work.",
+    "culture": "Students are taught to accept correction without treating it as personal humiliation. Mentors invest deeply in their development and expect them to serve people beyond their immediate circle. The academy's confidence can become a subtle hierarchy in which those fluent in planning language are presumed ready to judge the needs of everyone else.",
+    "doctrine": "Teach logistics through actual cargo, factory capacity, repair constraints, and fuel demand. Require students to identify the human purposes behind a model's objective. A feasible plan should be compared with meaningful alternatives before its technical sophistication is allowed to stand in for civilian consent.",
+    "goals": [
+      "Train capable coordinators for public industry.",
+      "Improve repair and supply planning using observed failures.",
+      "Teach the constitutional consequences of operational decisions."
+    ],
+    "resources": [
+      "Training workshops and practice cargo facilities",
+      "Faculty drawn from active engineering services",
+      "Records of public production and delivery campaigns"
+    ],
+    "relations": [
+      {
+        "organization": "Saturn Freight Allocation",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Working dispatchers provide realistic cases and supervised practical assignments."
+      },
+      {
+        "organization": "Lyra Civic Science Assembly",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Assembly scholars challenge the academy’s assumptions about who may define public planning objectives."
+      }
+    ]
+  },
+  {
+    "name": "Vesta Reclamation Service",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2308,
+    "open_membership": false,
+    "roles": [
+      "salvage",
+      "industry",
+      "trade"
+    ],
+    "history": "Vesta Reclamation Service was founded in 2308 when accumulated damaged hulls and discarded machinery became a substantial source of industrial material. Its first crews combined salvage experience with workshop skills, arguing that repairable equipment should not disappear merely because new production was easier to count. Wartime shortages made their case persuasive and gave the organization stable public contracts. In the peace after 2401, cheap new supplies reduced that urgency. The service now defends reclamation through careful material accounting and the practical value of parts already familiar to existing maintenance crews.",
+    "culture": "Salvagers appreciate worn tools and tell stories through the repairs visible in old machinery. They welcome outsiders who can explain a component's history, regardless of formal status. Attachment to useful objects can turn into stubbornness, and colleagues sometimes need to persuade a skilled restorer that a beloved piece of equipment has exhausted its service.",
+    "doctrine": "Recover ships, components, and processed material when the expected utility justifies the fuel and repair effort. Examine condition before promising output to a factory. Preserve evidence needed to establish lawful claims, and compare reclamation with new production without assuming that either is automatically preferable.",
+    "goals": [
+      "Return damaged ships to useful service.",
+      "Supply reclaimed material to public factories.",
+      "Reduce effort spent transporting unusable salvage."
+    ],
+    "resources": [
+      "Salvage craft",
+      "Component sorting and repair workshops",
+      "Stocks of recovered industrial material"
+    ],
+    "relations": [
+      {
+        "organization": "Ceres Materials Directorate",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Reclaimed inputs compete with fresh extraction for factory orders."
+      },
+      {
+        "organization": "Earth Orbit Reconstruction Office",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Reconstruction projects purchase recovered metal and serviceable components."
+      }
+    ]
+  },
+  {
+    "name": "Shared Orbit Arts Workshop",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2362,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "broadcast"
+    ],
+    "history": "The workshop was founded in 2362 by fabricators and artists who wanted public stations to contain more than efficient equipment and explanatory signs. It obtained small production allocations by demonstrating that discarded structural material could support new communal uses. Its founders considered beauty part of universal provision, while disagreeing about whether public evaluation could capture its value. Since Concord, exchanges with visiting artists have broadened its influences and exposed uncomfortable assumptions about cultural improvement. Its material work remains grounded in fabrication and repair, with performances and exhibitions forming the surrounding civic life.",
+    "culture": "Members exchange tools as readily as artistic ideas and resist the notion that an admired work gives its maker ownership of an audience. Affection often centers on shared projects and places. Evaluation committees can still reward familiar public virtues, encouraging artists to frame an unruly impulse in the language of measurable communal benefit.",
+    "doctrine": "Make public spaces expressive through available material, skilled fabrication, and consultation with the people who use them. Preserve room for interpretations that planners did not anticipate. Account for workshop resources honestly while resisting the assumption that every valuable experience must become a single comparable performance measure.",
+    "goals": [
+      "Reuse industrial material in public fabrication projects.",
+      "Repair valued communal fixtures and installations.",
+      "Expand artistic exchange between resident and visiting crews."
+    ],
+    "resources": [
+      "Fabrication workshops",
+      "Recovered structural material",
+      "Artists experienced in station construction work"
+    ],
+    "relations": [
+      {
+        "organization": "Sol Habitat Renewal",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Renewal projects commission fabrication for repaired public spaces."
+      },
+      {
+        "organization": "Earth Archive Continuity",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Archive collections supply material for exhibitions about ordinary station life."
+      },
+      {
+        "organization": "Earth Orbit Reconstruction Office",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "The office prioritizes structural repair when both institutions request the same reclaimed material and fabrication capacity."
+      }
+    ]
+  },
+  {
+    "name": "Public Margin Review Office",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2383,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "The office was founded in 2383 after several successful public projects generated complaints that their benefits had been measured more carefully than their local costs. Its initial remit was modest: compare promised outcomes with the experience of affected people and publish findings that institutions could use. That work placed it inside recurring arguments about Unifleet's operational authority. Concord widened the range of evidence available to reviewers, including alternatives developed in sovereign research polities. Its influence in 2426 comes from credible investigations, while implementing recommendations still depends on institutions with larger budgets and practical capacity.",
+    "culture": "Reviewers cultivate patient disagreement and regard a well described inconvenience as potentially important evidence. They are committed Union universalists who want public kindness to include people least comfortable with official categories. Their own professional vocabulary can reproduce the problem, translating a resident's refusal into another variable rather than recognizing a limit on administrative authority.",
+    "doctrine": "Compare the stated purpose of an allocation with its observed consequences for particular people and institutions. Publish uncertainty and credible alternatives. Maintain a human author for each judgment, and distinguish the ability to describe a better arrangement from the authority to impose it.",
+    "goals": [
+      "Expose overlooked costs in public allocation decisions.",
+      "Improve the quality of alternatives considered by civilian institutions.",
+      "Make review findings usable by ordinary station communities."
+    ],
+    "resources": [
+      "Field interview and inspection teams",
+      "Researchers analyzing industrial allocations",
+      "Public reports on completed reviews"
+    ],
+    "relations": [
+      {
+        "organization": "Outer Trunk Maintenance Command",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The office challenges claims that disputed allocation choices follow inevitably from engineering constraints."
+      },
+      {
+        "organization": "Common Horizon Dispatch",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Dispatch reporting makes review evidence accessible to a wider public."
+      },
+      {
+        "organization": "Sol Habitat Renewal",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "Reviewers challenge renewal schedules that count generous relocation provision as sufficient justification for disrupting valued local attachments."
+      }
+    ]
+  },
+  {
+    "name": "Union Peace Reserve",
+    "sovereignty": "USE",
+    "home_system": "Sol",
+    "founded_year": 2403,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "relief"
+    ],
+    "history": "The reserve was founded in 2403 as the Union adjusted military planning to the Treaty of Concord. Its organizers wanted a visible capacity to protect relief work without consuming the industrial resources associated with permanent wartime expansion. They assembled experienced crews, repairable ships, and supply commitments that could support either armed escort or civilian recovery. The arrangement has proved useful and politically attractive, but arguments continue over how readily a humanitarian assignment becomes a reason to retain military authority. Its short institutional history is defined by preserving practical readiness within an imperfect peace.",
+    "culture": "Reserve crews are proud when a difficult deployment ends without firing a weapon. Many combine defense experience with an affection for civilian workshop life. Their universal concern makes them willing to aid foreigners, yet it can also make declining an intervention feel irresponsible even when the people concerned have not asked for Union protection.",
+    "doctrine": "Keep serviceable ships, fuel, and repair crews available for limited protective tasks. Match force to observed threats and maintain explicit human responsibility for escalation. Relief planning should identify what local partners actually request and how a deployment will end after the immediate need is met.",
+    "goals": [
+      "Protect civilian relief convoys facing armed attack.",
+      "Maintain useful reserves without displacing routine public repair.",
+      "Strengthen cooperation between defense and rescue crews."
+    ],
+    "resources": [
+      "Reserve escort vessels with lasers and missiles",
+      "Fuel and repair stocks",
+      "Crews trained in convoy protection and recovery support"
+    ],
+    "relations": [
+      {
+        "organization": "Inner System Rescue Service",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Rescue crews receive escorts when credible armed threats obstruct their work."
+      },
+      {
+        "organization": "Unifleet Defense",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Defense provides experienced personnel and coordinates protective deployments."
+      },
+      {
+        "organization": "Outer Trunk Maintenance Command",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Escort readiness and long maintenance campaigns compete for experienced repair crews and replacement components."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Civic Science Assembly",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2218,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "The assembly was founded in 2218 by researchers responding to the Council of Nations election crisis of 2210. They defended public science and universal welfare while demanding that technical institutions remain answerable to civilian judgment. The 2257 Partition transformed their constitutional dispute into a commitment to institutions in sovereign Lyra. Within the LFS association, the assembly continues to argue for shared obligations without claiming a federal authority over other members. Its work since Concord has paired scientific exchange with persistent questions about who chooses the purposes that capable machines and expert organizations pursue.",
+    "culture": "Members often admire the Union's generosity and intellectual seriousness while refusing its equation of operational competence with legitimate rule. Meetings can be intensely procedural because participants remember how easily alternatives disappear when only one institution can model them. The research culture is welcoming to disagreement, although fluency in constitutional argument can become its own social barrier.",
+    "doctrine": "Give civilian institutions several credible technical options and make their assumptions inspectable. Research should serve persons beyond the membership of a prosperous compact, while authority remains bounded by actual jurisdiction. Human researchers must explain when evidence supports a conclusion and when a proposal rests on a contestable moral choice.",
+    "goals": [
+      "Support public research under effective civilian direction.",
+      "Develop useful technical alternatives to concentrated planning.",
+      "Promote universal obligations through agreements among sovereign polities."
+    ],
+    "resources": [
+      "Public research teams",
+      "Workshops supporting practical experiments",
+      "Published comparisons of proposed industrial projects"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Originalist Forum",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "The forum shares the assembly’s commitment to civilian universalism and independent technical judgment."
+      },
+      {
+        "organization": "Unifleet Logistics Academy",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The institutions disagree about whether operational expertise gives Unifleet sufficient authority over public priorities."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Independent Testyards",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2279,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "industry"
+    ],
+    "history": "The testyards were founded in 2279 after the 2272 reclamation attempt made independent assessment of military and industrial claims urgently valuable. Their founders believed Lyra needed the ability to test an attractive proposal without relying on its supplier's models or prestige. Workshops developed around actual damaged equipment, with contracts from civilian builders as well as local defense providers. Following the 2401 Concord settlement, comparative work with Union manufacturers became possible. The institution now earns much of its reputation by showing exactly where different operating assumptions make otherwise competent engineers reach incompatible conclusions.",
+    "culture": "Test engineers prize the useful embarrassment of a failed demonstration. They welcome skilled visitors and distribute credit to the person who discovered a fault, including a customer or junior worker. Their independence requires paying contracts, creating a persistent temptation to investigate questions that wealthy purchasers can afford while neglecting less profitable public concerns.",
+    "doctrine": "Reproduce claimed performance using available hardware, documented inputs, and observable conditions. Report failures with enough context for another workshop to examine them. Keep the purchaser's preferred conclusion separate from the judgment signed by responsible engineers, and disclose financial dependencies that could influence the choice of investigation.",
+    "goals": [
+      "Provide credible independent evaluation of ship components.",
+      "Improve repair practice by examining actual failures.",
+      "Keep public interest investigations accessible to smaller institutions."
+    ],
+    "resources": [
+      "Component testing workshops",
+      "Damaged machinery retained for comparison",
+      "Engineers experienced with shipyard production"
+    ],
+    "relations": [
+      {
+        "organization": "Jovian Radiator Works",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The works commissions independent comparisons and supplies components for examination."
+      },
+      {
+        "organization": "Lyra Open Instrument Cooperative",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The cooperative provides instruments whose construction can be examined by test staff."
+      },
+      {
+        "organization": "Public Machine Assurance Institute",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "They disagree about the evidentiary weight of a successful test conducted under a supplier’s own institutional supervision."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Originalist Forum",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2258,
+    "open_membership": true,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "Founded in 2258, the forum gathered constitutional reformers who concluded that the previous year's Partition had severed Unifleet's claim to embody the old civilian Union. Their answer preserved public AI safety, cognitive justice, and obligations owed to persons regardless of membership. It rejected the proposition that an operational institution could define humanity's interests by controlling the feasible choices. The forum has remained influential within sovereign Lyra and often controversial among other LFS members. After Concord, direct contact with prosperous Union society sharpened its critique without turning it into a campaign for reunion under Unifleet.",
+    "culture": "Forum members can speak warmly about Union schools and communal care in rooms where those compliments are politically awkward. They take historical texts seriously, but younger participants insist that fidelity to an old constitution must produce useful present institutions. Outsiders sometimes hear their proposals for common guarantees as the beginning of another central authority.",
+    "doctrine": "Defend universal social obligations through civilian institutions with independent expertise, limited mandates, and visible responsibility. Treat the LFS as an association of sovereign polities whose cooperation must be negotiated. A desirable common purpose does not itself establish the jurisdiction needed to impose a particular program.",
+    "goals": [
+      "Restore civilian judgment to the center of universalist politics.",
+      "Develop practical agreements supporting people without secure institutional membership.",
+      "Keep originalist scholarship connected to working public institutions."
+    ],
+    "resources": [
+      "Constitutional researchers",
+      "Public discussion and publication teams",
+      "Archives of reform arguments and institutional proposals"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Civic Science Assembly",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Assembly researchers turn constitutional concerns into practical alternatives for public planning."
+      },
+      {
+        "organization": "Earth Archive Continuity",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The forum challenges Union interpretations of records concerning civilian authority and the Partition."
+      },
+      {
+        "organization": "Shin Tokyo Translation Service",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The forum argues that translating old constitutional terms into current administrative vocabulary obscures distinctions the service considers difficult to explain briefly."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Open Instrument Cooperative",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2351,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "trade",
+      "research"
+    ],
+    "history": "The cooperative was founded in 2351 by instrument makers frustrated that small laboratories could buy impressive equipment without gaining the knowledge needed to repair it. Its early customers included public researchers and modest private workshops within Lyra. Members built a business around components whose construction and limitations could be explained clearly to purchasers. The cooperative flourished within the compact's sovereign institutions and the wider LFS market. Since Concord, exchanges with Sol surveyors have shown how shared material practice can sustain collaboration even when participants disagree about the proper ownership and governance of technical knowledge.",
+    "culture": "Members enjoy teaching people how an instrument works and expect a purchaser to ask difficult questions. Skilled newcomers can join through cooperative work, while membership decisions remain distinct from residence in the sovereign compact. Openness does not remove every hierarchy: accomplished craftspeople can still dismiss someone whose needs are real but expressed without technical elegance.",
+    "doctrine": "Produce instruments that customers can inspect, maintain, and understand well enough to judge a result. Price skilled labor and material honestly. Share useful findings while respecting agreed commercial commitments, and keep human responsibility visible when automated analysis produces a confident answer from uncertain measurements.",
+    "goals": [
+      "Supply reliable instruments to small laboratories.",
+      "Expand repair knowledge among customer workshops.",
+      "Maintain practical scientific exchanges across the Concord peace."
+    ],
+    "resources": [
+      "Precision instrument workshops",
+      "Component inventories for customer repairs",
+      "Craftspeople experienced in measurement and calibration"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Independent Testyards",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Test engineers buy inspectable instruments and report faults discovered during demanding work."
+      },
+      {
+        "organization": "Sol Navigation Survey",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Shared measurement methods support exchanges of civil survey experience."
+      },
+      {
+        "organization": "Concord Exchange Bureau",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The cooperative contests the volume of production documentation the bureau recommends that foreign instrument buyers request."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Continuity Fuel Trust",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2260,
+    "open_membership": false,
+    "roles": [
+      "industry",
+      "trade",
+      "relief"
+    ],
+    "history": "The trust was founded in 2260, three years after the Partition, when Lyra institutions understood that political independence required a dependable material base. It pooled commitments from public workshops and other local organizations to sustain fission fuel production and reserve cargo. Its success helped make civilian research and ordinary industry less vulnerable to a single interrupted supplier. As LFS trade expanded, the trust retained its local mandate within the sovereign compact. Present debates concern whether comfortable reserves serve universal need if distant institutions lack supplies but hold no participating claim on the trust.",
+    "culture": "Trust workers remember deprivation through precise accounts of what a missing shipment prevented people from doing. They favor quiet preparedness and dislike treating scarcity as a moral improvement. Their mutual obligations build real loyalty, yet originalist colleagues regularly question whether protecting contributors first reproduces the narrow constituencies that public science was supposed to overcome.",
+    "doctrine": "Hold reserves as physical fuel and serviceable transport, with production commitments matched to realistic inputs. Distinguish ordinary customer obligations from emergency judgments about wider need. Trustees must explain releases and shortages to contributors and affected outsiders, accepting that a sound inventory cannot settle every dispute about obligation.",
+    "goals": [
+      "Keep Lyra factories and civilian ships supplied.",
+      "Maintain reserves through disruptions in external freight.",
+      "Negotiate practical aid commitments beyond participating institutions."
+    ],
+    "resources": [
+      "Fission fuel workshops",
+      "Reserve fuel cargoes",
+      "Freight agreements with local ship operators"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Arrival and Repair Union",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Repair crews purchase fuel for visiting ships and urgent departures."
+      },
+      {
+        "organization": "Pacific Fission Supply",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both suppliers seek foreign fuel customers under the Concord trading arrangements."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Mutual Defense Schedule",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2286,
+    "open_membership": false,
+    "roles": [
+      "defense",
+      "patrol"
+    ],
+    "history": "The organization was founded in 2286 to coordinate concrete defense commitments made by Lyra's institutions after early experience of the Slip Wars. Its name preserves the principle that promised ships, fuel, and repair capacity must correspond to resources that actually exist. It serves the sovereign research compact within the LFS defense association, without claiming an independent League power to tax or command other member polities. Concord shifted its attention toward patrol and readiness. Its staff continue to argue that mutual defense is credible only when peacetime promises survive contact with actual maintenance costs.",
+    "culture": "Coordinators are comfortable with negotiation and suspicious of a stirring declaration unsupported by a serviceable ship. Crews often work beside civilian researchers, making disagreement about ends familiar. The arrangement can frustrate officers who want simple command authority, while civilians sometimes underestimate the time needed to assemble willing partners when a threat becomes immediate.",
+    "doctrine": "Turn agreed defense commitments into maintained ships, available crews, fuel, and ammunition. Exercise combined operations only within the authority actually granted by participating institutions. Use lasers and missiles against identified armed threats, and keep the local civilian responsibility for deployment clear even when several partners cooperate.",
+    "goals": [
+      "Keep promised defensive capacity materially credible.",
+      "Protect research and civilian freight from armed attack.",
+      "Maintain effective cooperation without absorbing the authority of participating institutions."
+    ],
+    "resources": [
+      "Locally committed patrol ships",
+      "Missile and fission fuel reserves",
+      "Repair allocations agreed with civilian workshops"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Independent Testyards",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "Independent examination checks whether purchased components meet defense requirements."
+      },
+      {
+        "organization": "Terminus Privateers",
+        "standing": "hostile",
+        "kind": "armed_conflict",
+        "reason": "Raids on Lyra associated cargo have produced armed escort engagements."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Comparative Governance Institute",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2376,
+    "open_membership": false,
+    "roles": [
+      "research",
+      "broadcast"
+    ],
+    "history": "The institute was founded in 2376 by scholars dissatisfied with arguments that treated the success of either great political tradition as already decided. Its early studies compared actual institutional failures within the LFS association, including comfortable communities whose legal exit guarantees concealed difficult personal costs. The 2401 Treaty of Concord enabled sustained exchanges with Union researchers and more direct comparisons. Working from sovereign Lyra, it now investigates how human objectives, machine administration, and concentrated resources interact. Its reputation rests on giving political allies findings they did not particularly want to hear.",
+    "culture": "Researchers make a social virtue of describing an opponent's strongest evidence accurately. Many are sympathetic to originalist universalism, while others fear that its remedies could recreate Unifleet's authority. Their habits can feel detached to people seeking immediate redress, and the institute continually debates how to combine careful comparison with responsibility toward those whose troubles supply its material.",
+    "doctrine": "Compare institutions through specific decisions, observed consequences, and credible alternatives. Treat ordinary AI as a tool whose goals and authority have human authors. Preserve uncertainty about the Cataclysm and other disputed history, and avoid turning a successful local arrangement into proof of an unrestricted universal mandate.",
+    "goals": [
+      "Clarify how concentrated expertise acquires political authority.",
+      "Improve the evidence available for public institutional reform.",
+      "Investigate practical barriers to meaningful personal exit."
+    ],
+    "resources": [
+      "Institutional researchers and field interviewers",
+      "Publications comparing documented decisions",
+      "Technical advisers examining industrial planning claims"
+    ],
+    "relations": [
+      {
+        "organization": "Public Machine Assurance Institute",
+        "standing": "neutral",
+        "kind": "dispute",
+        "reason": "The institutes disagree over whether technical diversity inside one authority provides adequate independent scrutiny."
+      },
+      {
+        "organization": "Lyra Originalist Forum",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Forum proposals provide concrete institutions and commitments for critical comparative examination."
+      }
+    ]
+  },
+  {
+    "name": "Lyra Arrival and Repair Union",
+    "sovereignty": "Lyra Research Compact",
+    "home_system": "Lyra system",
+    "founded_year": 2404,
+    "open_membership": true,
+    "roles": [
+      "industry",
+      "trade",
+      "relief"
+    ],
+    "history": "The union was founded in 2404 as renewed contact after Concord brought visiting ships with unfamiliar equipment and crews accustomed to different institutions. Its founders combined repair workshops with practical help arranging fuel and cargo, making arrival less dependent on knowing an established local sponsor. It operates within sovereign Lyra and makes no claim that membership confers residence rights or authority elsewhere in the LFS. Over two decades it has become a meeting place for people whose technical skills travel more easily than their social expectations, sustaining ordinary cooperation through repair work that both sides can inspect.",
+    "culture": "Workers ask what a visitor needs before assuming that unfamiliar manners signify hostility. They accept members through useful participation and often form lasting friendships across departures. Their openness encounters limits when workshop time becomes scarce, forcing uncomfortable choices between regular contributors and strangers who arrived with an urgent problem and little ability to reciprocate.",
+    "doctrine": "Make an arriving ship serviceable through inspected repairs, available components, and honest fuel commitments. Explain work and costs in terms its crew can understand. Membership supports cooperative labor; public standing, residence, and wider political obligations remain matters for the institutions that actually possess those responsibilities.",
+    "goals": [
+      "Repair visiting ships reliably.",
+      "Keep departure fuel and components available for urgent cases.",
+      "Help newcomers establish practical working relationships in Lyra."
+    ],
+    "resources": [
+      "Ship repair workshops",
+      "Fuel and component purchasing teams",
+      "Multilingual crews experienced with foreign hulls"
+    ],
+    "relations": [
+      {
+        "organization": "Lyra Continuity Fuel Trust",
+        "standing": "friendly",
+        "kind": "trade",
+        "reason": "The trust supplies fuel for repaired vessels and emergency departures."
+      },
+      {
+        "organization": "Unifleet Station Services",
+        "standing": "friendly",
+        "kind": "alliance",
+        "reason": "Exchanges of repair experience support visiting crews on both sides of the Concord order."
+      },
+      {
+        "organization": "Civic Cargo Exchange",
+        "standing": "neutral",
+        "kind": "competition",
+        "reason": "Both seek limited replacement component stocks from foreign suppliers when visiting ships create urgent demand."
+      }
+    ]
+  }
+]

@@ -193,10 +193,14 @@ fn run_loop(
             let checkpoints = app
                 .world_mut()
                 .remove_resource::<persistence::Checkpoints>();
+            let llm = app.world_mut().remove_resource::<sim::llm::LlmService>();
             let assets = assets(app);
             *app = scenario(&config.accounts, config.debug_account, config.ship)?;
             assets.extend(app.world().resource::<AppearanceAssets>().snapshot());
             app.insert_resource(assets);
+            if let Some(llm) = llm {
+                app.insert_resource(llm);
+            }
             if let Some(checkpoints) = checkpoints {
                 app.insert_resource(checkpoints);
                 persistence::request(app.world());
@@ -438,6 +442,7 @@ mod asset_tests {
 
     fn empty_snapshot() -> Frame {
         Frame {
+            chat: None,
             industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,

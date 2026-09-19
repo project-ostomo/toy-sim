@@ -25,6 +25,7 @@ pub struct DisplayEnvironment {
 #[derive(Component)]
 pub struct Display {
     program: Controller,
+    program_hash: [u8; 32],
     frames: BTreeMap<u8, ScreenUpdate>,
     last_viewed: u64,
     authority: u64,
@@ -125,6 +126,7 @@ pub fn update(world: &mut World) {
             let revision = next_revision(world);
             world.entity_mut(ship).insert(Display {
                 program,
+                program_hash: *blake3::hash(&firmware).as_bytes(),
                 frames: BTreeMap::new(),
                 last_viewed: tick,
                 authority,
@@ -211,6 +213,12 @@ pub fn update(world: &mut World) {
             .unwrap()
             .last_gas_limit;
         display.program.observer_origin = origin;
+        display.program.set_services(super::vessel::services_for(
+            world,
+            ship,
+            display.program_hash,
+            true,
+        ));
         let result = display
             .program
             .run_slice(input, source, grant, physical_limit);

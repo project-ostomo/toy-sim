@@ -78,6 +78,23 @@ pub struct Planner {
     catalogue_checked_at: u64,
 }
 
+fn arrival_order(order: &Order, destination: Destination) -> Order {
+    match order {
+        Order::Dock(station) => Order::Dock(*station),
+        Order::TravelTo(Destination::Beacon(id)) => {
+            let Destination::Relative { offset, .. } = destination else {
+                unreachable!("beacon route has a physical stand-off endpoint");
+            };
+            Order::Guidance(Guidance {
+                mode: GuidanceMode::Approach,
+                target: Target::Destination(Destination::Beacon(*id)),
+                range_m: offset.relative_to(GalacticPosition::ZERO).length(),
+            })
+        }
+        _ => Order::Sublight(destination),
+    }
+}
+
 impl Planner {
     pub fn update(
         &mut self,
@@ -312,30 +329,17 @@ impl Planner {
                         .with_propellant(self.transfer_estimate(&contact(&pose, &beacon.pose)).1),
                     ]));
                 }
-                let clearance = beacon.radius_m
-                    + sdk::flight()?.radius_m
-                    + if beacon.gate_exit.is_some() {
-                        beacon.exclusion_m + 1000.
-                    } else {
-                        100.
-                    };
+                let clearance = beacon.radius_m + sdk::flight()?.radius_m + 100.;
                 Destination::Relative {
                     reference: Reference::Beacon(id),
                     offset: GalacticPosition::from_meters(
-                        if matches!(order, Order::Dock(_)) {
-                            pose.position
-                                .relative_to(beacon.pose.position)
-                                .try_normalize()
-                                .unwrap_or(DVec3::Z)
-                        } else {
-                            DVec3::NEG_Z
-                        } * clearance,
+                        pose.position
+                            .relative_to(beacon.pose.position)
+                            .try_normalize()
+                            .unwrap_or(DVec3::Z)
+                            * clearance,
                     ),
-                    axes: if matches!(order, Order::Dock(_)) {
-                        Axes::Galactic
-                    } else {
-                        Axes::BodyFixed
-                    },
+                    axes: Axes::Galactic,
                 }
             } else {
                 destination
@@ -350,11 +354,7 @@ impl Planner {
             if target.position.relative_to(pose.position).length() < 100. {
                 return Ok(Some(vec![
                     QueuedOrder::estimated(
-                        if let Order::Dock(station) = order {
-                            Order::Dock(*station)
-                        } else {
-                            Order::Sublight(destination)
-                        },
+                        arrival_order(order, destination),
                         self.transfer_estimate(&contact(&pose, &target)).0,
                     )
                     .with_propellant(self.transfer_estimate(&contact(&pose, &target)).1),
@@ -621,11 +621,7 @@ impl Planner {
                 }
             }
         }
-        let final_order = if let Order::Dock(station) = order {
-            Order::Dock(*station)
-        } else {
-            Order::Sublight(search.destination.clone())
-        };
+        let final_order = arrival_order(order, search.destination.clone());
         orders.push(QueuedOrder::estimated(final_order, transfer_s).with_propellant(transfer_kg));
         if orders.len() > 256 {
             return Err(abi::ERR_UNAVAILABLE);
@@ -813,6 +809,17 @@ impl Planner {
                 }
                 let (target, radius) = match &guidance.target {
                     Target::Direction(_) => unreachable!(),
+                    Target::Destination(Destination::Beacon(id)) => {
+                        let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacon(*id))?
+                        else {
+                            return Err(abi::ERR_ARGUMENT);
+                        };
+                        let beacon = beacons
+                            .into_iter()
+                            .find(|beacon| beacon.entity == *id)
+                            .ok_or(abi::ERR_UNAVAILABLE)?;
+                        (beacon.pose, beacon.radius_m)
+                    }
                     Target::Destination(destination) => {
                         let ProgramReply::Pose(pose) = query(&ProgramQuery::Resolve {
                             destination: destination.clone(),

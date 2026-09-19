@@ -1,6 +1,9 @@
 pub mod calendar;
+pub mod chat;
 pub mod drawing;
+pub mod firmware;
 pub mod industry;
+pub mod llm;
 pub mod navigation;
 pub mod optical;
 pub mod ownership;
@@ -248,6 +251,7 @@ pub struct CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    pub chat: Option<chat::ChatUpdate>,
     pub industry: Option<industry::IndustrySnapshot>,
     pub optical: Vec<optical::OpticalObservation>,
     pub calendar_unix_ms: i64,
@@ -268,6 +272,12 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
+    ChatSubscribe(chat::ChatSubscription),
+    ChatUnsubscribe,
+    ChatSend {
+        subscription_revision: u64,
+        text: String,
+    },
     Industry(industry::IndustryCommand),
     IndustrySubscribe(industry::IndustrySubscription),
     IndustryUnsubscribe,

@@ -29,7 +29,7 @@ pub fn sovereignty_id(name: &str) -> Id {
 }
 
 pub fn organization_id(name: &str) -> Id {
-    principal_id("organization", name)
+    Id(toy_sim_universe::organizations::organization_id(name))
 }
 
 pub fn initialize(world: &mut World) {
@@ -77,41 +77,30 @@ pub fn initialize(world: &mut World) {
                 officers: BTreeSet::new(),
             });
     }
-    for (name, state) in [
-        ("Unifleet Station Services", "USE"),
-        ("Unifleet Defense", "USE"),
-        ("St Raphael Trade Confraternity", "St Raphael Commonwealth"),
-        ("Helion Flight Cooperative", "Helion Commonwealth"),
-        ("Terminus Privateers", "Terminus Protectorate"),
-    ] {
-        let id = organization_id(name);
+    for profile in toy_sim_universe::organizations::catalogue() {
+        let id = Id(profile.id());
         directory.organizations.insert(
             id,
             Organization {
                 id,
-                name: name.into(),
-                sovereignty: sovereignty_id(state),
-                open_membership: matches!(
-                    name,
-                    "Helion Flight Cooperative" | "Unifleet Station Services"
-                ),
+                name: profile.name.clone(),
+                sovereignty: sovereignty_id(&profile.sovereignty),
+                open_membership: profile.open_membership,
                 officers: BTreeSet::new(),
             },
         );
     }
-    for name in [
-        "Helion Flight Cooperative",
-        "Unifleet Station Services",
-        "St Raphael Trade Confraternity",
-    ] {
-        let source = Principal::Organization(organization_id(name));
-        let privateers = Principal::Organization(organization_id("Terminus Privateers"));
-        directory
-            .standings
-            .insert((source, privateers), Standing::Hostile);
-        directory
-            .standings
-            .insert((privateers, source), Standing::Hostile);
+    for profile in toy_sim_universe::organizations::catalogue() {
+        let source = Principal::Organization(Id(profile.id()));
+        for relation in &profile.relations {
+            let target = Principal::Organization(organization_id(&relation.organization));
+            let standing = match relation.standing {
+                toy_sim_universe::organizations::LoreStanding::Friendly => Standing::Friendly,
+                toy_sim_universe::organizations::LoreStanding::Neutral => Standing::Neutral,
+                toy_sim_universe::organizations::LoreStanding::Hostile => Standing::Hostile,
+            };
+            directory.standings.insert((source, target), standing);
+        }
     }
     let ledger = world.resource::<super::gas::GasLedger>();
     for &id in directory.sovereignties.keys() {
@@ -494,6 +483,44 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_organization_profiles_seed_exact_owners_and_directed_standings() {
+        let mut world = World::new();
+        initialize(&mut world);
+        let directory = &world.resource::<Directory>().0;
+        let profiles = toy_sim_universe::organizations::catalogue();
+        assert!(profiles.len() >= 100);
+        assert_eq!(directory.organizations.len(), profiles.len());
+        for profile in profiles {
+            let id = Id(profile.id());
+            assert_eq!(id, principal_id("organization", &profile.name));
+            let organization = &directory.organizations[&id];
+            assert_eq!(organization.name, profile.name);
+            assert_eq!(
+                organization.sovereignty,
+                sovereignty_id(&profile.sovereignty)
+            );
+            assert_eq!(organization.open_membership, profile.open_membership);
+            assert!(organization.officers.is_empty());
+            for relation in &profile.relations {
+                let expected = match relation.standing {
+                    toy_sim_universe::organizations::LoreStanding::Friendly => Standing::Friendly,
+                    toy_sim_universe::organizations::LoreStanding::Neutral => Standing::Neutral,
+                    toy_sim_universe::organizations::LoreStanding::Hostile => Standing::Hostile,
+                };
+                assert_eq!(
+                    directory.standings.get(&(
+                        Principal::Organization(id),
+                        Principal::Organization(organization_id(&relation.organization)),
+                    )),
+                    Some(&expected)
+                );
+            }
+        }
+        let nova = &directory.sovereignties[&sovereignty_id("Nova Partenia")];
+        assert_eq!(nova.bloc, Bloc::NonAligned);
+    }
 
     #[test]
     fn gas_balances_are_visible_only_to_the_owner_or_current_administrators() {

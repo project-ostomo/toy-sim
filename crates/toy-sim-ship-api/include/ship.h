@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v28"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v29"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (28)
+#define SHIP_API_VERSION (29)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
 #define SHIP_ERR_UNAVAILABLE (-4)
@@ -897,6 +897,11 @@ SHIP_ASSERT(offsetof(ship_rcs_reading_record, status) == 0, "RcsReading.status")
 SHIP_ASSERT(offsetof(ship_rcs_reading_record, thrust_n) == 8, "RcsReading.thrust_n");
 SHIP_ASSERT(sizeof(ship_rcs_reading_record) == 32, "RcsReading size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_rcs_reading_record) == 8, "RcsReading alignment");
+SHIP_IMPORT("llm_submit") int32_t ship_llm_submit(const void * input, uint32_t bytes, void * out, uint32_t capacity);
+SHIP_IMPORT("llm_poll") int32_t ship_llm_poll(uint64_t id, void * out, uint32_t capacity);
+SHIP_IMPORT("llm_cancel") int32_t ship_llm_cancel(uint64_t id);
+SHIP_IMPORT("chat_send") int32_t ship_chat_send(uint64_t id, const void * input, uint32_t bytes);
+SHIP_IMPORT("chat_read") int32_t ship_chat_read(uint64_t after, uint32_t limit, void * out, uint32_t capacity);
 SHIP_IMPORT("missile_read") int32_t ship_missile_read(void * output, uint32_t bytes);
 SHIP_IMPORT("missile_control") int32_t ship_missile_control(const void * input, uint32_t bytes);
 SHIP_IMPORT("persistent_read") int32_t ship_persistent_read(void * output, uint32_t capacity);

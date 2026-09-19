@@ -1,5 +1,5 @@
 use super::{EffectOf, ViewCamera};
-use crate::assets::{Appearance, ShipDesign};
+use crate::assets::{Appearance, ShipAppearance};
 use crate::state::{CombatPublication, RenderTime};
 use bevy::{
     camera::visibility::RenderLayers,
@@ -74,7 +74,7 @@ pub(super) fn install(app: &mut App) {
 fn prepare(
     mut commands: Commands,
     clock: Res<RenderTime>,
-    designs: Res<Assets<ShipDesign>>,
+    designs: Res<Assets<ShipAppearance>>,
     publications: Query<(Entity, &CombatPublication, Option<&Appearance>), Without<FragmentsReady>>,
     pieces: Query<&Piece>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -94,7 +94,7 @@ fn prepare(
                 ..
             } => {
                 let design = loaded
-                    .and_then(|loaded| designs.get(&loaded.design))
+                    .and_then(|loaded| designs.get(&loaded.asset))
                     .map(|design| &design.0);
                 if appearance.is_some() && design.is_none() {
                     continue;
@@ -294,7 +294,7 @@ fn piece(
 
 fn breakup(
     pose: &Pose,
-    design: Option<&toy_sim_ships::CompiledShipDesign>,
+    design: Option<&toy_sim_ships::appearance::PreparedAppearance>,
     energy: f64,
     mass: f64,
     radius: f64,
@@ -309,7 +309,7 @@ fn breakup(
         let offsets: Vec<_> = design
             .parts
             .iter()
-            .map(|part| rotation * (part.centre - design.centre))
+            .map(|part| rotation * part.position)
             .collect();
         let masses: Vec<_> = design
             .parts

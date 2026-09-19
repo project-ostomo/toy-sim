@@ -17,7 +17,7 @@ pub(super) struct Fixture {
 fn guidance_program() -> Vec<u8> {
     wat::parse_str(format!(
         r#"(module
-            (import "ship_v28" "missile_control" (func $control (param i32 i32) (result i32)))
+            (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (global $ship_ticks (mut i32) (i32.const 0))
             (global $missile_ticks (mut i32) (i32.const 0))

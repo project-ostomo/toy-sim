@@ -2,6 +2,7 @@ pub mod atmosphere;
 pub mod catalogue;
 pub mod civilization;
 pub mod generation;
+pub mod organizations;
 pub mod orrery_cfg;
 pub mod replication;
 pub mod solver;

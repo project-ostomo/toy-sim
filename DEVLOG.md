@@ -1206,3 +1206,85 @@ build succeeds, and formatting/diff checks pass. Captures and archived native
 logs are under `/tmp/toy-sequential-playtests/industry-*`. These checks exercise
 real controls and the normal server connection. Display performance remains a
 separate unresolved item for the final integration pass.
+
+## Piece 9: local communications and organization computers
+
+Industry is committed as `2de7dd4` and the main checkout has been fast-forwarded.
+The next implementation is the shared local-chat and LLM foundation, followed by
+real organization fleets and directors. Local means a geometric 500 AU radius,
+including ships stored in a nearby station. It uses the common spatial hash
+implementation and does not depend on optical visibility or light-speed delay.
+
+Every ship program receives the same asynchronous submit/poll interface. The
+owner's gas account pays a bounded quoted charge at admission; no outstanding gas
+reservation survives a network wait or interferes with world snapshots. Provider
+spend uses a separate durable SQLite ledger shared across worlds, including
+unresolved requests after a crash. Real requests require an explicit launcher
+option; automated checks use fake providers. The approved cap is $100, and no
+paid request has been made so far.
+
+The public lore catalogue will contain 108 distinct organizations: 28 USE,
+60 across six LFS sovereign members, and 20 independent or neutral bodies.
+The roster preserves existing organization identities. Profiles will include
+institutional histories, cultures, material interests, doctrine and named
+relationships. The setting year is 2426 and the political source notes remain
+controlling. Laws guide physical actors; governments do not receive an infallible
+server-side transit veto or a way to disable other owners' computers.
+
+### Communications and lore integration checks
+
+The combined server/client/protocol/ships/universe build succeeds. The nine
+fake-provider and SQLite tests pass: the dollar cap survives concurrent
+connections, unfinished requests stay reserved after restart, duplicate requests
+remain idempotent after cache eviction, and global gas snapshots succeed while
+provider requests are pending. Real provider spending is still zero.
+
+The chat service/session tests, all 22 protocol tests, and a real two-client
+network test pass. Radio sends enqueue bounded work before ECS routing, keeping
+the guest host call bounded independently of total fleet size. Sender identity
+comes from advertised IFF; an unidentified sender remains unidentified. Tests
+cover the inclusive 500 AU boundary, arrival history, focus/permission changes,
+queue saturation, exact missed-history counts and retained carrier exclusion.
+
+All four public organization tests and the ownership seed regression pass. The
+108 profiles contain roughly 30,329 words and 326 directed relationships:
+196 friendly, 118 neutral and 12 hostile. Forty-three organizations permit open
+membership. Dates, home jurisdictions, stable identities, cross-references and
+reciprocal conflicts are checked. The world checkpoint fingerprint includes this
+immutable catalogue.
+
+Public ship appearance assets now explicitly contain only visible part identity,
+catalogue prototype and final body-local placement. They no longer serialize
+private tank configuration, fills, avionics or firmware. Two shared-model tests
+and the Bevy loader test pass, including unchanged geometry and centre-of-mass
+placement when private fuel configuration differs.
+
+The runtime's 63 tests pass with ABI 29 asynchronous services, including use from
+flight, display and shared missile callbacks. A subsequent bounded-storage guard
+ensures chatter cannot submit an LLM request until its request ID is durable;
+its additional regression and two corrected UI/navigation fixtures are in the
+final focused rebuild. Native communications testing follows that rebuild.
+
+### Communications native verification and checkpoint
+
+The final focused checks pass: six chat service/session tests, six client chat
+checks (including virtualized long scrollback), five asynchronous WASM service
+checks with durable admission, and five gate/navigation regressions. The normal
+playable binaries build successfully. Workspace formatting and diff checks pass.
+
+The native client opened Local chat through the toolbar and sent a message using
+real keyboard input and Enter. It received the server echo with the advertised
+ship name, Helion Flight Cooperative affiliation, and the 2426 calendar date.
+The composer cleared after acceptance. The capture is
+`/tmp/toy-sequential-playtests/communications-local-sent.png`. No provider requests
+were enabled or paid for during this verification.
+
+The navigation fixes also keep an ordinary approach to a nearby gate inside its
+exclusion region: it no longer sends an NTR on an unnecessary trip out to the
+slip boundary. Arrival at a gate uses its physical safe stand-off; crossing the
+aperture remains a separate physical action.
+
+The next piece gives the organizations actual fleets and installations,
+permissioned tools for their directors, and physical economic and defensive
+orders. Client display performance remains below the requested 120 FPS and needs
+the final profiling pass.

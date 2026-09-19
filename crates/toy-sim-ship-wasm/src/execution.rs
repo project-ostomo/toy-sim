@@ -8,6 +8,7 @@ use std::{
 pub(super) struct SliceInput {
     pub input: Input,
     pub source: Option<Arc<dyn ScanSource>>,
+    pub services: Option<Arc<dyn ProgramServices>>,
     pub observer_origin: spatial::Position,
     pub catalogue: Arc<[DeviceDescriptor]>,
     pub specs: Arc<[Vec<u8>]>,
@@ -76,6 +77,7 @@ fn refresh(host: &mut Host, mut slice: SliceInput, new_callback: bool) {
     host.input = Some(slice.input);
     host.missile = slice.missile;
     host.source = slice.source;
+    host.services = slice.services;
     host.catalogue = slice.catalogue;
     host.specs = slice.specs;
     host.resources = slice.resources;
@@ -160,6 +162,7 @@ async fn suspend(caller: &mut Caller<'_, Host>, left: u64, required: u64) -> Res
     let exchange = caller.data().exchange.clone();
     let published = commit(caller.data_mut(), memory_bytes);
     caller.data_mut().source = None;
+    caller.data_mut().services = None;
     {
         let mut exchange = exchange.lock().unwrap();
         exchange.remaining = left;
@@ -289,6 +292,7 @@ pub(super) fn initialize(
                 input: None,
                 output: Output::default(),
                 source: None,
+                services: None,
                 contacts: Vec::new(),
                 scan_time: None,
                 catalogue: Arc::default(),

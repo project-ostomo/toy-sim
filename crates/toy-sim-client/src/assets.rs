@@ -8,7 +8,7 @@ use bevy::{
 };
 use std::path::Path;
 use toy_sim_model::Id;
-use toy_sim_ships::{Catalogue, CompiledShipDesign, ShipBlueprint};
+use toy_sim_ships::{Catalogue, appearance::PreparedAppearance};
 use toy_sim_universe::{orrery_cfg::Body, replication::SystemAsset, solver::Orrery};
 
 pub(crate) fn path(hash: [u8; 32]) -> String {
@@ -65,7 +65,7 @@ pub(crate) fn register_source(app: &mut App, client: AssetClient) {
 }
 
 pub(crate) fn install(app: &mut App) {
-    app.init_asset::<ShipDesign>()
+    app.init_asset::<ShipAppearance>()
         .init_asset::<SystemDefinition>()
         .init_asset::<NavigationDefinition>()
         .init_resource::<NavigationLoad>()
@@ -157,7 +157,7 @@ fn synchronize_navigation(
 }
 
 #[derive(Asset, TypePath)]
-pub(crate) struct ShipDesign(pub CompiledShipDesign);
+pub(crate) struct ShipAppearance(pub PreparedAppearance);
 
 #[derive(Asset, TypePath)]
 pub(crate) struct SystemDefinition {
@@ -190,7 +190,7 @@ impl SystemDefinition {
 struct ShipLoader;
 
 impl AssetLoader for ShipLoader {
-    type Asset = ShipDesign;
+    type Asset = ShipAppearance;
     type Settings = ();
     type Error = anyhow::Error;
 
@@ -199,11 +199,11 @@ impl AssetLoader for ShipLoader {
         reader: &mut dyn Reader,
         _: &(),
         _: &mut LoadContext<'_>,
-    ) -> anyhow::Result<ShipDesign> {
+    ) -> anyhow::Result<ShipAppearance> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
-        let blueprint: ShipBlueprint = toml::from_str(std::str::from_utf8(&bytes)?)?;
-        Ok(ShipDesign(blueprint.compile(&Catalogue::builtin())?))
+        let appearance = toy_sim_ships::appearance::ShipAppearance::from_bytes(&bytes)?;
+        Ok(ShipAppearance(appearance.prepare(&Catalogue::builtin())?))
     }
 }
 
@@ -233,7 +233,7 @@ pub(crate) struct MeshDemand;
 #[derive(Component)]
 pub(crate) struct Appearance {
     pub hash: [u8; 32],
-    pub design: Handle<ShipDesign>,
+    pub asset: Handle<ShipAppearance>,
 }
 
 pub(crate) fn synchronize_appearances(
@@ -272,7 +272,7 @@ pub(crate) fn synchronize_appearances(
             Some(hash) if appearance.is_none_or(|appearance| appearance.hash != hash) => {
                 commands.entity(entity).insert(Appearance {
                     hash,
-                    design: server.load(path(hash)),
+                    asset: server.load(path(hash)),
                 });
             }
             None if appearance.is_some() => {

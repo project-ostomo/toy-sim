@@ -9,6 +9,7 @@ use super::intelligence::Group;
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 
+mod chat;
 mod industry;
 mod optical;
 
@@ -50,6 +51,7 @@ pub struct Session {
     seen: BTreeSet<Id>,
     optical: optical::OpticalSession,
     industry: industry::IndustrySession,
+    chat: chat::ChatSession,
 }
 
 pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
@@ -78,6 +80,7 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
             seen: BTreeSet::new(),
             optical: optical::OpticalSession::default(),
             industry: industry::IndustrySession::default(),
+            chat: chat::ChatSession::default(),
         })
         .id())
 }
@@ -263,6 +266,25 @@ impl Session {
 
     fn apply(&mut self, world: &mut World, action: Action) -> Result<Option<Reply>> {
         match action {
+            Action::ChatSubscribe(subscription) => {
+                super::chat::refresh(world);
+                self.chat
+                    .subscribe(world, self.account, &self.views, subscription)?;
+            }
+            Action::ChatUnsubscribe => self.chat.unsubscribe(),
+            Action::ChatSend {
+                subscription_revision,
+                text,
+            } => {
+                super::chat::refresh(world);
+                self.chat.send(
+                    world,
+                    self.account,
+                    &self.views,
+                    subscription_revision,
+                    &text,
+                )?;
+            }
             Action::Industry(command) => super::industry::execute(world, self.account, command)?,
             Action::IndustrySubscribe(subscription) => self.industry.subscribe(subscription)?,
             Action::IndustryUnsubscribe => self.industry.unsubscribe(),
@@ -809,6 +831,7 @@ impl Session {
             .collect();
         self.sent_event = published_event;
         Ok(Frame {
+            chat: self.chat.frame(world, self.account, &self.views)?,
             industry: self.industry.frame(world, self.account)?,
             optical,
             calendar_unix_ms: toy_sim_model::calendar::now_unix_ms(),

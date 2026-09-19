@@ -1,9 +1,9 @@
-//! Ship ABI 28: fixed little-endian records and Postcard world services.
+//! Ship ABI 29: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v28";
-pub const VERSION: u32 = 28;
+pub const IMPORT_MODULE: &str = "ship_v29";
+pub const VERSION: u32 = 29;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -1244,6 +1244,11 @@ const _: () = assert!(size_of::<MissileControl>() == 32 && align_of::<MissileCon
 const _: () = assert!(core::mem::offset_of!(MissileControl, throttle) == 24);
 
 pub const IMPORTS: &[&str] = &[
+    "llm_submit",
+    "llm_poll",
+    "llm_cancel",
+    "chat_send",
+    "chat_read",
     "missile_read",
     "missile_control",
     "persistent_read",
@@ -1289,8 +1294,13 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v28")]
+    #[link(wasm_import_module = "ship_v29")]
     unsafe extern "C" {
+        pub fn llm_submit(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
+        pub fn llm_poll(id: u64, out: *mut u8, capacity: u32) -> i32;
+        pub fn llm_cancel(id: u64) -> i32;
+        pub fn chat_send(id: u64, input: *const u8, bytes: u32) -> i32;
+        pub fn chat_read(after: u64, limit: u32, out: *mut u8, capacity: u32) -> i32;
         pub fn missile_read(output: *mut u8, bytes: u32) -> i32;
         pub fn missile_control(input: *const u8, bytes: u32) -> i32;
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;

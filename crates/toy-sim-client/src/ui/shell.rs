@@ -1,3 +1,4 @@
+mod chat;
 mod industry;
 mod instruments;
 mod inventory;
@@ -79,6 +80,15 @@ const INDUSTRY: WindowSpec = WindowSpec {
     offset: egui::Vec2::ZERO,
     open: false,
 };
+const CHAT: WindowSpec = WindowSpec {
+    id: "local_chat",
+    title: "LOCAL CHAT",
+    size: egui::vec2(510., 360.),
+    min_size: egui::vec2(360., 260.),
+    anchor: egui::Align2::LEFT_BOTTOM,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
 const SETTINGS: WindowSpec = WindowSpec {
     id: "settings",
     title: "INTERFACE",
@@ -110,6 +120,7 @@ struct Shell {
     desktop: Desktop,
     inventory: inventory::State,
     industry: industry::State,
+    chat: chat::State,
     map: map::State,
     society: society::State,
     filter: Filter,
@@ -149,6 +160,7 @@ impl Default for Shell {
             desktop: Desktop::default(),
             inventory: inventory::State::default(),
             industry: industry::State::default(),
+            chat: chat::State::default(),
             map: map::State::default(),
             society: society::State::default(),
             filter: Filter::default(),
@@ -162,6 +174,7 @@ impl Default for Shell {
 }
 
 enum Intent {
+    Chat(String),
     FocusShip(Id),
     InspectInventory(Id),
     Industry(industry_model::IndustryCommand, &'static str),
@@ -198,6 +211,7 @@ fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.map = map::State::default();
     shell.inventory = inventory::State::default();
     shell.industry = industry::State::default();
+    shell.chat = chat::State::default();
 }
 
 fn draw(
@@ -404,12 +418,14 @@ fn draw(
         orbits: view.is_some_and(|(_, _, _, options)| options.enabled),
     };
     let mut intents = Vec::new();
+    shell.chat.receive(&session.results);
     panels::draw(
         ctx,
         &mut shell,
         &model,
         &selection,
         &session.results,
+        &session.chat,
         &mut intents,
     );
     for intent in intents {
@@ -418,6 +434,11 @@ fn draw(
             _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
         };
         match intent {
+            Intent::Chat(text) => {
+                if let Some(id) = session.chat.transmit(text.clone(), &mut outgoing) {
+                    shell.chat.sent(id, text);
+                }
+            }
             Intent::FocusShip(ship) => {
                 if model.ships.iter().any(|owned| owned.ship == ship) {
                     selection.ship = Some(ship);
@@ -580,6 +601,22 @@ fn draw(
     let wanted = (interest.directory && model.connected).then_some(interest);
     drop(model);
     session.industry.subscribe(wanted, &mut outgoing);
+
+    let focus = (shell.desktop.is_open(CHAT) && session.status.is_empty())
+        .then(|| {
+            views.iter().find_map(|(view, _, _, _)| {
+                let ship = selection.ship?;
+                (Some(view.0.id) == selection.view && view.0.focused_ship == Some(ship)).then_some(
+                    ChatFocus {
+                        view: view.0.id,
+                        view_revision: view.0.revision,
+                        ship,
+                    },
+                )
+            })
+        })
+        .flatten();
+    session.chat.subscribe(focus, &mut outgoing);
     Ok(())
 }
 

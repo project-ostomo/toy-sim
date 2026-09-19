@@ -170,6 +170,7 @@ fn pose(world: &World, entity: Entity) -> Result<Pose> {
 
 fn definition_fingerprint(world: &World) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("toy-sim immutable world definitions v1");
+    hash.update(&toy_sim_universe::organizations::fingerprint());
     for (id, definition) in world
         .resource::<registry::UniverseRegistry>()
         .definitions

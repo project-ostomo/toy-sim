@@ -227,7 +227,7 @@ Messages are defined in [toy-sim-protocol](../crates/toy-sim-protocol/src/lib.rs
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 22 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 23 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input` |
 
@@ -256,9 +256,10 @@ A reader ignores unknown optional sections. It rejects unknown required sections
 | `State` | 10 | `calendar_unix_ms` (`i64`, real UTC plus 400 Gregorian years) |
 | `State` | 11 | `Vec<OpticalObservation>` |
 | `State` | 12 | `Option<IndustrySnapshot>` |
+| `State` | 13 | `Option<ChatUpdate>` |
 | `Input` | 1 | `InputFrame` |
 
-All twelve `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 22 adds subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
+All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 23 adds local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
 
 `PresentationFrame.navigation` is an `Arc<NavigationSnapshot>` containing an optional catalogue hash, currently relevant live beacons and system-definition references needed by queued celestial destinations. `Arc` shares immutable data inside a process; Postcard serializes the value. Presentation state is a complete snapshot of its relevant live state; the separate industry section carries subscribed changes as described below. The navigation catalogue downloads separately through the existing asset stream and changes when topology or structural metadata changes. Ordinary orbital motion updates live beacon poses without replacing the catalogue.
 
@@ -812,7 +813,9 @@ Queued celestial destinations add `navigation.ephemerides` references to the def
 
 Complete system assets contain body IDs, parent relationships, orbital elements, rotation, mass, radius, stellar luminosity, colours and atmosphere parameters. Multiple views of one system share its definition and celestial entities. The assets use TOML, preserving the existing definition parser; their content hashes identify immutable bytes. Each system entity holds a typed definition handle and reports pending or failed loading in its subscribed views. The shared solver uses the explicit MJD epoch plus elapsed simulation time; it does not depend on the client’s wall-clock date.
 
-The [asset source](../crates/toy-sim-client/src/assets.rs) registers canonical `server://<hash>` paths before Bevy's asset plugin. Its reader forwards requests to the existing Tokio transport and returns verified bytes to typed loaders for ship designs, system definitions and navigation catalogues. Decoding and compilation run through Bevy's asset pipeline. Ship observations and destruction publications hold design handles, and system entities hold definition handles. Shared handles reuse loading and decoded assets; releasing the final handle allows unloading. Individual entities appear as their assets become available.
+The [asset source](../crates/toy-sim-client/src/assets.rs) registers canonical `server://<hash>` paths before Bevy's asset plugin. Its reader forwards requests to the existing Tokio transport and returns verified bytes to typed loaders for ship appearances, system definitions and navigation catalogues. Decoding and preparation run through Bevy's asset pipeline. Ship observations and destruction publications hold appearance handles, and system entities hold definition handles. Shared handles reuse loading and decoded assets; releasing the final handle allows unloading. Individual entities appear as their assets become available.
+
+A public [ship appearance](../crates/toy-sim-ships/src/appearance.rs) contains only the catalogue revision and each visible part's catalogue prototype, animation ID, position and rotation relative to the ship's physical origin. The server exports these final transforms from its compiled design, preserving the center of mass used by rendering without publishing tank allocations, resource types, starting fills, names, device groups, avionics settings or firmware. The client resolves public catalogue models and derives visual bounds directly from those transforms; it does not compile a gameplay blueprint to render a ship. Authorized ship telemetry and construction blueprints use their separate permission checks.
 
 Navigation has explicit `Unavailable`, `Loading`, `Ready` and `Failed` states. A replacement hash immediately clears the previous catalogue and map layout, even if its topology revision matches. The loader installs a shared catalogue only when its hash and session generation still match, preventing a late completion from restoring stale data. The Gate Network window shows loading or failure text and offers **Retry download**, which reloads the current asset path. Live beacon ECS replication continues independently; downloading the full map never creates remote HUD objects. A world reset clears the handle and catalogue state.
 
@@ -1004,3 +1007,43 @@ of simulation speed and pause. The client samples it at network reception, outsi
 the presentation jitter buffer. The bottom strip displays UTC date and time; its
 hover text retains simulation T+. See [Persistence](persistence.md) for saved
 worlds, debug identities, checkpoint configuration and recovery behavior.
+
+
+### Local chat
+
+Local chat reaches physical ships within an inclusive 500 AU sphere around the
+sender. The server resolves both positions; a docked ship uses its host's
+position, and a destroyed carrier retained only for missile computing has no
+transmitter. Delivery is instantaneous within the simulation publication cycle.
+It uses the shared spatial hash's geometric range query, independently of light,
+occlusion, transponder range, or sensor power.
+
+`ChatSubscribe { revision, view }` binds one session subscription to a focused
+view. The account must have `Control` permission for that view's ship. Every send
+and publication checks this authority again. `ChatSend` carries the subscription
+revision and text; it cannot supply an origin or sender identity. Changing focus
+starts a new cursor at the present, and `ChatUnsubscribe` stops publication.
+Reopening a window does not replay messages received while it was closed.
+
+A `ChatMessage` has an opaque message ID, a recipient-local sequence, simulation
+tick, real UTC plus 400 years, text, and the sender's advertised identity. Enabled
+IFF supplies its advertised owner, organization, and bounded label. Disabled IFF
+produces “Unidentified transmission” with no owner or organization. The message
+contains no physical ship UUID, position, or authoritative ownership record.
+
+Player input and ship-computer calls use the same service. Text must contain
+non-whitespace content, fit in 1024 UTF-8 bytes, and contain no control characters.
+Each ship can send three messages per rolling thirty simulation ticks across all
+callers. Computer requests deduplicate the latest 128 scoped request IDs; retrying
+an ID with different text fails. An accepted send enters a FIFO of at most 256
+messages. A full queue fails without consuming sender quota or a request ID.
+Native admission covers bounded enqueue work, while ECS publication routes the
+messages before updating the indexed position snapshot.
+
+Each ship retains at most 128 received messages. Mailboxes never consult a global
+regional history, so ships arriving later cannot read earlier broadcasts. A page
+contains at most 32 messages and an exact count of received messages lost to
+bounded history before its cursor. Session updates include subscription and view
+revisions. Clients preserve all updates consumed during interpolation catch-up,
+and reject updates for an obsolete channel. Chat histories are transient and
+start empty after server restart.

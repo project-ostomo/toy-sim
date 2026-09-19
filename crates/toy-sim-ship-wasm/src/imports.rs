@@ -7,6 +7,7 @@ mod drawing;
 mod instruments;
 mod missiles;
 mod publications;
+mod services;
 
 use super::*;
 
@@ -155,6 +156,7 @@ fn lease_active(caller: &Caller<'_, Host>, until: f64) -> CallResult<bool> {
 pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
     let mut linker = Linker::new(engine);
     persistent(&mut linker)?;
+    services::register(&mut linker)?;
     missiles::register(&mut linker)?;
     context(&mut linker)?;
     hardware(&mut linker)?;

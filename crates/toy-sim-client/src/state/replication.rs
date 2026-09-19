@@ -108,6 +108,9 @@ pub(super) fn apply(
     for industry in publications.industry {
         info.industry.apply(industry);
     }
+    for chat in publications.chat {
+        info.chat.apply(chat);
+    }
     info.events.extend(publications.events);
     let excess = info.events.len().saturating_sub(128);
     info.events.drain(..excess);
@@ -398,6 +401,7 @@ mod tests {
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {
             industry: None,
+            chat: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
@@ -464,6 +468,69 @@ mod tests {
                 .unwrap();
         }
         app.update();
+    }
+
+    #[test]
+    fn catchup_delivers_every_chat_page_in_sequence() {
+        let mut app = app();
+        let group = Id([2; 16]);
+        let track = Id([3; 16]);
+        step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
+        let mut outgoing = Outgoing::default();
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .chat
+            .subscribe(
+                Some(ChatFocus {
+                    view: 1,
+                    view_revision: 7,
+                    ship: Id([4; 16]),
+                }),
+                &mut outgoing,
+            );
+
+        for sequence in 2..=10 {
+            let mut frame = snapshot(sequence, group, track, 0.);
+            if sequence <= 3 {
+                frame.chat = Some(toy_sim_model::chat::ChatUpdate {
+                    subscription_revision: 1,
+                    view: 1,
+                    view_revision: 7,
+                    unavailable: false,
+                    page: toy_sim_model::chat::ChatPage {
+                        messages: vec![toy_sim_model::chat::ChatMessage {
+                            id: Id([sequence as u8; 16]),
+                            sequence,
+                            tick: sequence,
+                            calendar_unix_ms: toy_sim_model::calendar::FOUR_HUNDRED_YEARS_MS,
+                            sender_name: "Courier".into(),
+                            advertised_owner: None,
+                            advertised_organization: None,
+                            text: format!("Message {sequence}"),
+                        }],
+                        next_sequence: sequence,
+                        missed: 0,
+                    },
+                });
+            }
+            app.world_mut()
+                .resource_mut::<BufferedPlayback>()
+                .0
+                .receive(frame)
+                .unwrap();
+        }
+        step(&mut app, 0.2, None);
+        let session = app.world().resource::<SessionInfo>();
+        assert_eq!(session.sequence, 3);
+        assert_eq!(
+            session
+                .chat
+                .messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Message 2", "Message 3"]
+        );
     }
 
     #[test]

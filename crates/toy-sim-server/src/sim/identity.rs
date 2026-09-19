@@ -159,16 +159,7 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
     let account = add_account(world, owner, false);
     let group = world.get::<Account>(account).unwrap().group;
     let design = &world.get::<super::vessel::ShipDesign>(ship).unwrap().0;
-    let mut visual = design.blueprint.clone();
-    visual.firmware = toy_sim_ships::Firmware::Standard;
-    visual.avionics = Default::default();
-    visual.name.clear();
-    for part in &mut visual.parts {
-        part.name.clear();
-        part.alias.clear();
-        part.groups.clear();
-    }
-    let bytes = toml::to_string(&visual)?.into_bytes();
+    let bytes = toy_sim_ships::appearance::ShipAppearance::from(design.as_ref()).to_bytes()?;
     let appearance = *blake3::hash(&bytes).as_bytes();
     world
         .resource::<AppearanceAssets>()

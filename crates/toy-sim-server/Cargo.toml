@@ -17,6 +17,8 @@ smol_str = { version = "0.3.6", features = ["serde"] }
 rand_chacha = "0.10"
 blake3 = "1.8"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json"] }
+serde_json = { version = "1", features = ["arbitrary_precision"] }
 toy-sim-intel = { path = "../toy-sim-intel" }
 toy-sim-space = { path = "../toy-sim-space" }
 toy-sim-spatial = { path = "../toy-sim-spatial" }

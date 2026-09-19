@@ -1,5 +1,7 @@
 mod calendar;
+mod chat;
 pub(super) use calendar::CalendarClock;
+pub(crate) use chat::{ChatFocus, ChatState};
 mod commands;
 mod diagnostics;
 pub(super) use diagnostics::ClientDiagnostics;
@@ -100,6 +102,7 @@ pub(super) struct SessionInfo {
     pub navigation_ephemerides: Vec<CelestialSystemRef>,
     pub society: ownership::SocietySnapshot,
     pub industry: IndustryState,
+    pub chat: ChatState,
     pub results: Vec<CommandResult>,
     pub events: Vec<toy_sim_model::Event>,
     pub target_frames: usize,
