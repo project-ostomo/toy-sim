@@ -9,6 +9,14 @@ pub const MAX_CATALOGUE_RECIPES: usize = 1024;
 pub const MAX_CATALOGUE_BLUEPRINTS: usize = 32;
 pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
 pub const MAX_RECIPE_BATCHES: u32 = 10_000;
+pub const MAX_BLUEPRINT_UPLOAD_ERROR_BYTES: usize = 256;
+pub const MAX_BLUEPRINT_UPLOAD_ACK_BYTES: usize = 512;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BlueprintUploadAck {
+    Ready { hash: [u8; 32] },
+    Rejected { reason: String },
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum CargoItem {
@@ -135,7 +143,7 @@ pub enum IndustryCommand {
     BuildShip {
         facility: EntityId,
         owner: Principal,
-        blueprint: Vec<u8>,
+        blueprint_hash: [u8; 32],
     },
     CancelJob {
         facility: EntityId,

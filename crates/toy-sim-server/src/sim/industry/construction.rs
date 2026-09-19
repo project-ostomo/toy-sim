@@ -7,7 +7,7 @@ pub(super) fn job(
     account: AccountId,
     facility: Entity,
     owner: Principal,
-    blueprint: Vec<u8>,
+    blueprint_bytes: &[u8],
 ) -> Result<IndustryJob> {
     ownership::authorize(world, account, facility, Permission::Industry)?;
     let facility_owner = world
@@ -23,8 +23,16 @@ pub(super) fn job(
             "output owner not administered by requester"
         );
     }
-    ensure!(blueprint.len() <= 2_000_000, "ship blueprint too large");
-    let blueprint = ShipBlueprint::from_bytes(&blueprint)?;
+    ensure!(
+        blueprint_bytes.len() <= toy_sim_ships::MAX_FILE,
+        "ship blueprint too large"
+    );
+    let jobs = world
+        .get::<IndustryFacility>(facility)
+        .map_or(&[][..], |facility| facility.jobs.as_slice());
+    validate_blueprint_budget(jobs, blueprint_bytes.len())?;
+
+    let blueprint = ShipBlueprint::from_bytes(blueprint_bytes)?;
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let design = blueprint.compile(&catalogue)?;
     world
@@ -57,7 +65,7 @@ pub(super) fn job(
             supplied_power_w: 0,
         },
         inputs: requirements.inputs,
-        output: JobOutput::Ship(blueprint.to_bytes()?),
+        output: JobOutput::Ship(blueprint_bytes.to_vec()),
         energy_j: requirements.energy_j,
         stored_energy_j: 0,
         required_radius_m: design.radius,

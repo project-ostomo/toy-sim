@@ -6,6 +6,7 @@ use toy_sim_model::*;
 #[derive(Clone)]
 pub struct AssetClient {
     requests: tokio::sync::mpsc::Sender<AssetRequest>,
+    uploads: tokio::sync::mpsc::Sender<BlueprintUploadRequest>,
 }
 
 struct AssetRequest {
@@ -13,7 +14,27 @@ struct AssetRequest {
     response: tokio::sync::oneshot::Sender<Result<Vec<u8>>>,
 }
 
+struct BlueprintUploadRequest {
+    bytes: Arc<[u8]>,
+    response: tokio::sync::oneshot::Sender<Result<[u8; 32]>>,
+}
+
 impl AssetClient {
+    pub async fn upload_blueprint(&self, bytes: Arc<[u8]>) -> Result<[u8; 32]> {
+        ensure!(
+            !bytes.is_empty() && bytes.len() <= toy_sim_ships::MAX_FILE,
+            "blueprint must contain between 1 byte and 16 MiB"
+        );
+        let (response, received) = tokio::sync::oneshot::channel();
+        self.uploads
+            .send(BlueprintUploadRequest { bytes, response })
+            .await
+            .map_err(|_| anyhow::anyhow!("blueprint connection closed"))?;
+        received
+            .await
+            .map_err(|_| anyhow::anyhow!("blueprint upload cancelled"))?
+    }
+
     pub async fn fetch(&self, hash: [u8; 32]) -> Result<Vec<u8>> {
         let (response, received) = tokio::sync::oneshot::channel();
         self.requests
@@ -37,10 +58,11 @@ pub struct Endpoint {
 impl Endpoint {
     pub(crate) fn with_test_input(input: tokio::sync::mpsc::Sender<InputFrame>) -> Self {
         let (requests, _) = tokio::sync::mpsc::channel(1);
+        let (uploads, _) = tokio::sync::mpsc::channel(1);
         let (_, state) = tokio::sync::mpsc::unbounded_channel();
         let (_, status) = tokio::sync::watch::channel(None);
         Self {
-            assets: AssetClient { requests },
+            assets: AssetClient { requests, uploads },
             input,
             state,
             status,
@@ -60,9 +82,11 @@ pub async fn connect(
     let (send, mut input) = tokio::sync::mpsc::channel(16);
     let (state, receive) = tokio::sync::mpsc::unbounded_channel();
     let (requests, requested) = tokio::sync::mpsc::channel(8);
+    let (uploads, uploaded) = tokio::sync::mpsc::channel(8);
     let (status, connection_status) = tokio::sync::watch::channel(None);
     tokio::spawn(async move {
         let loading = load_assets(mux.clone(), requested);
+        let uploading = upload_blueprints(mux.clone(), uploaded);
         let reader = async {
             let mut last_arrival = None;
             let mut summary_at = std::time::Instant::now();
@@ -110,6 +134,7 @@ pub async fn connect(
             result = reader => result.map_err(|error| error.context("receive game state")),
             result = writer => result.map_err(|error| error.context("send client input")),
             result = loading => result.map_err(|error| error.context("load asset")),
+            result = uploading => result.map_err(|error| error.context("upload blueprint")),
             result = mux.wait_until_dead() => result.map_err(|error| error.context("connection transport")),
         };
         let reason = match result {
@@ -120,7 +145,7 @@ pub async fn connect(
         let _ = status.send(Some(reason));
     });
     Ok(Endpoint {
-        assets: AssetClient { requests },
+        assets: AssetClient { requests, uploads },
         input: send,
         state: receive,
         status: connection_status,
@@ -168,10 +193,200 @@ async fn fetch_asset(mux: &toy_sim_net::picomux::PicoMux, hash: [u8; 32]) -> Res
     Ok(bytes)
 }
 
+async fn upload_blueprints(
+    mux: Arc<toy_sim_net::picomux::PicoMux>,
+    mut requests: tokio::sync::mpsc::Receiver<BlueprintUploadRequest>,
+) -> Result<()> {
+    let mut transfers = tokio::task::JoinSet::new();
+    let mut accepting = true;
+    loop {
+        tokio::select! {
+            request = requests.recv(), if accepting => {
+                match request {
+                    Some(request) => {
+                        let mux = mux.clone();
+                        transfers.spawn(async move {
+                            let result = tokio::time::timeout(
+                                std::time::Duration::from_secs(60),
+                                upload_blueprint(&mux, &request.bytes),
+                            ).await.map_err(anyhow::Error::from).and_then(|result| result);
+                            let _ = request.response.send(result);
+                        });
+                    }
+                    None => accepting = false,
+                }
+            }
+            Some(result) = transfers.join_next(), if !transfers.is_empty() => {
+                result?;
+            }
+            else => return Ok(()),
+        }
+    }
+}
+
+async fn upload_blueprint(mux: &toy_sim_net::picomux::PicoMux, bytes: &[u8]) -> Result<[u8; 32]> {
+    let hash = *blake3::hash(bytes).as_bytes();
+    let mut stream = mux.open(b"blueprint-upload").await?;
+    stream.write_all(&hash).await?;
+    stream.write_all(bytes).await?;
+    stream.shutdown().await?;
+
+    let mut ack = Vec::new();
+    stream
+        .take((industry::MAX_BLUEPRINT_UPLOAD_ACK_BYTES + 1) as u64)
+        .read_to_end(&mut ack)
+        .await?;
+    match toy_sim_protocol::decode_blueprint_upload_ack(&ack)? {
+        industry::BlueprintUploadAck::Ready { hash: received } => {
+            ensure!(received == hash, "blueprint acknowledgement hash mismatch");
+            Ok(hash)
+        }
+        industry::BlueprintUploadAck::Rejected { reason } => anyhow::bail!(reason),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+
+    #[tokio::test]
+    async fn uploads_wait_for_eof_ack_and_progress_independently_of_stalled_transfers() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (a, b) = tokio::io::duplex(4096);
+            let (ar, aw) = tokio::io::split(a);
+            let (br, bw) = tokio::io::split(b);
+            let client = Arc::new(toy_sim_net::picomux::PicoMux::new(ar, aw));
+            let server = toy_sim_net::picomux::PicoMux::new(br, bw);
+            let (requests, requested) = tokio::sync::mpsc::channel(8);
+            let (uploads, uploaded) = tokio::sync::mpsc::channel(8);
+            let assets = AssetClient { requests, uploads };
+            let loading = tokio::spawn(load_assets(client.clone(), requested));
+            let uploading = tokio::spawn(upload_blueprints(client.clone(), uploaded));
+
+            let waiting_client = assets.clone();
+            let mut waiting = tokio::spawn(async move {
+                waiting_client
+                    .upload_blueprint(Arc::from(&b"waiting"[..]))
+                    .await
+            });
+            let mut held = server.accept().await.unwrap();
+            assert_eq!(held.metadata(), b"blueprint-upload");
+            let mut held_bytes = Vec::new();
+            held.read_to_end(&mut held_bytes).await.unwrap();
+            let held_hash = *blake3::hash(b"waiting").as_bytes();
+            assert_eq!(&held_bytes[..32], &held_hash);
+            assert_eq!(&held_bytes[32..], b"waiting");
+
+            let ack = toy_sim_protocol::encode_blueprint_upload_ack(
+                &industry::BlueprintUploadAck::Ready { hash: held_hash },
+            )
+            .unwrap();
+            held.write_all(&ack).await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(10), &mut waiting)
+                    .await
+                    .is_err()
+            );
+
+            let ready_client = assets.clone();
+            let ready_bytes: Arc<[u8]> = vec![19; 70 * 1024].into();
+            let expected_hash = *blake3::hash(&ready_bytes).as_bytes();
+            let ready =
+                tokio::spawn(async move { ready_client.upload_blueprint(ready_bytes).await });
+            let asset_client = assets.clone();
+            let asset_hash = *blake3::hash(b"visible asset").as_bytes();
+            let asset = tokio::spawn(async move { asset_client.fetch(asset_hash).await });
+
+            for _ in 0..2 {
+                let mut stream = server.accept().await.unwrap();
+                let uploading = stream.metadata() == b"blueprint-upload";
+                let mut request = Vec::new();
+                stream.read_to_end(&mut request).await.unwrap();
+                if uploading {
+                    assert_eq!(&request[..32], &expected_hash);
+                    assert_eq!(&request[32..], vec![19; 70 * 1024]);
+                    let ack = toy_sim_protocol::encode_blueprint_upload_ack(
+                        &industry::BlueprintUploadAck::Ready {
+                            hash: expected_hash,
+                        },
+                    )
+                    .unwrap();
+                    stream.write_all(&ack).await.unwrap();
+                } else {
+                    assert_eq!(stream.metadata(), b"assets");
+                    assert_eq!(request, asset_hash);
+                    stream.write_all(b"visible asset").await.unwrap();
+                }
+                stream.shutdown().await.unwrap();
+            }
+            assert_eq!(ready.await.unwrap().unwrap(), expected_hash);
+            assert_eq!(asset.await.unwrap().unwrap(), b"visible asset");
+            assert!(!waiting.is_finished());
+            held.shutdown().await.unwrap();
+            assert_eq!(waiting.await.unwrap().unwrap(), held_hash);
+            drop(assets);
+            uploading.await.unwrap().unwrap();
+            loading.await.unwrap().unwrap();
+            assert!(client.is_alive());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_upload_acknowledgements_fail_only_their_transfer() {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let (a, b) = tokio::io::duplex(4096);
+            let (ar, aw) = tokio::io::split(a);
+            let (br, bw) = tokio::io::split(b);
+            let client = Arc::new(toy_sim_net::picomux::PicoMux::new(ar, aw));
+            let server = toy_sim_net::picomux::PicoMux::new(br, bw);
+            let hash = *blake3::hash(b"blueprint").as_bytes();
+            let valid = toy_sim_protocol::encode_blueprint_upload_ack(
+                &industry::BlueprintUploadAck::Ready { hash },
+            )
+            .unwrap();
+            let wrong_hash = toy_sim_protocol::encode_blueprint_upload_ack(
+                &industry::BlueprintUploadAck::Ready { hash: [99; 32] },
+            )
+            .unwrap();
+            let rejected = toy_sim_protocol::encode_blueprint_upload_ack(
+                &industry::BlueprintUploadAck::Rejected {
+                    reason: "quota exceeded".into(),
+                },
+            )
+            .unwrap();
+            let mut trailing = valid.clone();
+            trailing.push(0);
+            let responses = [
+                wrong_hash,
+                rejected,
+                Vec::new(),
+                valid[..2].to_vec(),
+                trailing,
+                vec![0; industry::MAX_BLUEPRINT_UPLOAD_ACK_BYTES + 1],
+                valid,
+            ];
+            for (index, response) in responses.into_iter().enumerate() {
+                let caller = client.clone();
+                let transfer =
+                    tokio::spawn(async move { upload_blueprint(&caller, b"blueprint").await });
+                let mut stream = server.accept().await.unwrap();
+                let mut request = Vec::new();
+                stream.read_to_end(&mut request).await.unwrap();
+                assert_eq!(&request[..32], &hash);
+                assert_eq!(&request[32..], b"blueprint");
+                stream.write_all(&response).await.unwrap();
+                stream.shutdown().await.unwrap();
+                assert_eq!(transfer.await.unwrap().is_ok(), index == 6);
+                assert!(client.is_alive());
+            }
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn assets_start_concurrently_and_report_failures_independently() {
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
@@ -182,7 +397,8 @@ mod tests {
             let server = toy_sim_net::picomux::PicoMux::new(br, bw);
             let (requests, requested) = tokio::sync::mpsc::channel(8);
             let loading = tokio::spawn(load_assets(client.clone(), requested));
-            let assets = AssetClient { requests };
+            let (uploads, _) = tokio::sync::mpsc::channel(1);
+            let assets = AssetClient { requests, uploads };
             let payloads: BTreeMap<_, _> = (0..128_u32)
                 .map(|n| {
                     let bytes = n.to_le_bytes().repeat(n as usize * 64);
@@ -297,7 +513,8 @@ mod tests {
             }
         });
         let mut app = App::new();
-        assets::register_source(&mut app, AssetClient { requests });
+        let (uploads, _) = tokio::sync::mpsc::channel(1);
+        assets::register_source(&mut app, AssetClient { requests, uploads });
         app.add_plugins((MinimalPlugins, AssetPlugin::default()));
         assets::install(&mut app);
         let server = app.world().resource::<AssetServer>().clone();

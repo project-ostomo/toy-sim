@@ -438,8 +438,18 @@ mod tests {
             ))
             .id();
         identity::register(&mut world, ship, id);
-        let first = session::connect(&mut world, account).unwrap();
-        let second = session::connect(&mut world, account).unwrap();
+        let first = session::connect(
+            &mut world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
+        let second = session::connect(
+            &mut world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         world
             .get_mut::<Session>(first)
             .unwrap()
@@ -487,7 +497,12 @@ mod tests {
             .single(world)
             .unwrap();
         let id = world.get::<Identity>(ship).unwrap().0;
-        let session = session::connect(world, account).unwrap();
+        let session = session::connect(
+            world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         world
             .get_mut::<Session>(session)
             .unwrap()
@@ -591,7 +606,12 @@ mod tests {
         );
         update(&mut world);
         assert!(world.get::<Display>(ship).is_none());
-        let new_session = session::connect(&mut world, new_owner).unwrap();
+        let new_session = session::connect(
+            &mut world,
+            new_owner,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         world
             .get_mut::<Session>(new_session)
             .unwrap()

@@ -6,12 +6,13 @@ mod presentation;
 pub mod routing;
 use anyhow::{Context, Result, bail, ensure};
 pub use industry::validate_snapshot_content as validate_industry_snapshot_content;
+pub use industry::{decode_blueprint_upload_ack, encode_blueprint_upload_ack};
 pub use presentation::validate_catalogue;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 26;
+pub const VERSION: u16 = 27;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -764,6 +765,14 @@ mod tests {
                         target: Id([2; 16]),
                         resource: "spent_fuel".into(),
                         quantity: 10,
+                    }),
+                ),
+                (
+                    Id([8; 16]),
+                    Action::Industry(IndustryCommand::BuildShip {
+                        facility: Id([2; 16]),
+                        owner: ownership::Principal::Player(Id([9; 16])),
+                        blueprint_hash: [10; 32],
                     }),
                 ),
             ],

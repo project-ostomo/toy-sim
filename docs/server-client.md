@@ -209,13 +209,30 @@ The source also contains diagnostic logging for stalled writers and missed pongs
 ### Streams
 
 - **`main`.** The client opens it first. The server requires the first accepted stream to have metadata `main`. It carries application `Input` messages from the client and `State` messages from the server. The server's per-connection input queue holds 16 frames. If it is full, the connection closes with "input rate exceeded".
-- **`assets`.** Every later stream must have metadata `assets`. Any other label ends the connection. Each asset transfer runs in its own task on both peers, with no fixed concurrency limit. Dropping the connection cancels its outstanding tasks.
+- **`assets`.** Each download uses a separate stream with metadata `assets`.
+- **`blueprint-upload`.** Each private shipyard upload uses a separate stream with this metadata. Unknown labels end the connection. Transfers run independently on both peers, with no fixed transfer-count limit; dropping the connection cancels outstanding tasks.
 
 **Asset transfer.** The client opens a fresh stream, writes exactly the asset's 32-byte BLAKE3 hash and shuts down its write direction. The server streams the complete asset bytes and shuts down its write direction. EOF delimits the response. The client reads to EOF and verifies the complete asset's BLAKE3 hash. There are no application chunk messages, offsets, length headers or acknowledgements. Picomux and TCP provide transport framing and flow control. An unknown hash gets an empty response, which fails verification for a nonempty expected asset. Download and hash failures are delivered to the requesting UI through that asset's result; other transfers and the main stream continue.
 
+**Blueprint upload.** The client writes the 32-byte BLAKE3 hash followed by the
+complete canonical `.ship` file, then closes its write direction. EOF delimits
+the file. After checking its size and hash, the server stores the file privately
+in that authenticated session and sends one Postcard `BlueprintUploadAck`, then
+EOF. `Ready` contains the matching hash; `Rejected` contains a UTF-8 reason of
+at most 256 bytes. The complete acknowledgement is limited to 512 bytes. The
+client waits for `Ready` before sending a hash-only `BuildShip` command on `main`.
+
+Files are limited to 16 MiB. Receiving and staged file allocations share limits
+of 64 MiB per session, 128 MiB per account and 256 MiB per listener. Transfers
+have a 60-second deadline. Quota leases remain attached to bytes held by a
+validator after a disconnect. Uploads are not public assets and cannot be
+looked up by another session. A successful upload does not authorize construction:
+the subsequent command still checks authority, design, firmware, materials and
+facility capacity. Accepted jobs retain their full blueprint in world snapshots.
+
 The server and network tasks share a dynamic asset store. Its entries contain immutable bytes under their BLAKE3 hashes; newly published assets become available to existing connections immediately. A transfer holds a shared byte allocation after lookup and releases the store lock before awaiting network writes. Debug reset preserves the shared store and installs the new scenario's assets into it. The store holds:
 
-- **Ship appearances.** The TOML of a ship blueprint with firmware reset to standard, and with avionics, the ship name, and part names, aliases and groups removed. Its BLAKE3 hash is the `appearance` field of an optical observation or a `Destroyed` combat event. Radio tracks do not publish appearance hashes.
+- **Ship appearances.** A TOML `ShipAppearance` containing the catalogue revision and visible part prototypes, IDs, positions and rotations. It contains no firmware, tank allocations or operational loadout. Its BLAKE3 hash is the `appearance` field of an optical observation or a `Destroyed` combat event. Radio tracks do not publish appearance hashes.
 - **The universe catalogue.** A postcard-encoded `UniverseCatalogue`: every system's ID, name, position and influence radius, and each body's ID, name, kind (`star`, `planet` or virtual `barycenter`), radius, mass and parent. Its hash is `presentation.universe.catalogue`. `validate_catalogue` limits it to 65,536 systems and 262,144 bodies, with unique IDs and valid parents.
 - **Celestial systems.** TOML system definitions with the orbital and physical parameters needed by the client orrery. Views reference their hashes in `presentation.celestial_systems`.
 - **The navigation catalogue.** A Postcard tuple `(asset_version, NavigationCatalogue)`, currently version 1, referenced by `presentation.navigation.catalogue`. It contains system anchors, sovereignty IDs, aggregate population, beacon metadata and reciprocal gate connections. Beacon poses are fixed reference poses captured when the catalogue is published. The decoder rejects assets larger than 32 MiB, unsupported versions, trailing bytes, invalid poses, duplicate IDs, unknown systems and nonreciprocal gate pairs. It accepts at most 65,536 systems and 65,536 beacons.
@@ -227,7 +244,7 @@ Messages are defined in [toy-sim-protocol](../crates/toy-sim-protocol/src/lib.rs
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 23 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 27 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input` |
 
@@ -259,7 +276,7 @@ A reader ignores unknown optional sections. It rejects unknown required sections
 | `State` | 13 | `Option<ChatUpdate>` |
 | `Input` | 1 | `InputFrame` |
 
-All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 24 adds server route requests, polling and plan commits. Protocol 23 added local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
+All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 27 moves construction blueprints into private upload streams. Protocol 26 adds local hangar subscriptions; protocol 25 adds unloading reactor products into cargo. Protocol 24 adds server route requests, polling and plan commits. Protocol 23 added local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
 
 `PresentationFrame.navigation` is an `Arc<NavigationSnapshot>` containing an optional catalogue hash, currently relevant live beacons and system-definition references needed by queued celestial destinations. `Arc` shares immutable data inside a process; Postcard serializes the value. Presentation state is a complete snapshot of its relevant live state; the separate industry section carries subscribed changes as described below. The navigation catalogue downloads separately through the existing asset stream and changes when topology or structural metadata changes. Ordinary orbital motion updates live beacon poses without replacing the catalogue.
 
@@ -377,7 +394,10 @@ The flight computer's request queue accepts a command only while it holds fewer 
 
 `IndustrySubscription` selects a directory page using `directory` and the
 exclusive `directory_after` ID, up to eight inventory IDs in priority order, and
-whether the manufacturing catalogue is needed. The directory contains at most
+whether the manufacturing catalogue is needed. An optional `HangarSubscription`
+selects a focused ship and local docked-ship cursor. The server resolves its
+current host and filters host storage and docked ships by authority before
+pagination. This local list is independent of the global directory. The directory contains at most
 128 authorized summaries and a `directory_next` cursor. Selected facility views
 include ownership, permissions, installed capabilities, cargo stacks and jobs.
 The server rechecks access on every publication, so revocation removes private
@@ -396,8 +416,8 @@ Industry updates are limited to 512 KiB. Entire inventory views that do not fit
 are listed in `omitted_inventories`; their stack lists are never truncated.
 The client must clear omitted details and report the capacity limit. If one
 inventory or the requested catalogue alone cannot fit, a bounded `error` with
-the subscription revision replaces the details. Input blueprint payloads are
-limited to 48 KiB within the normal 64 KiB input frame; recipe requests accept
+the subscription revision replaces the details. Build commands carry a private
+upload hash within the normal 64 KiB input frame; recipe requests accept
 1–10,000 batches.
 
 `ShipPresentation.inventory` contains consumables. Its separate `cargo` list

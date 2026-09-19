@@ -82,6 +82,18 @@ The Shipyard tab accepts a catalogue blueprint or an imported ship design. Its
 bill includes every installed part kit, distributed avionics and tank containment.
 Assembly needs an operational shipyard and a suitable docking aperture.
 
+Import and upload run asynchronously. The client uploads the complete design,
+including embedded firmware, over a private `blueprint-upload` stream. After
+acknowledgement it submits one build command containing that content hash. Both
+catalogue designs and imported files use this path. The selected facility and
+recipient remain fixed during upload; the server rechecks permissions and
+materials when accepting the job. An upload failure creates no job.
+
+Blueprints may occupy up to 16 MiB; the existing 1 MiB WASM limit still applies.
+Queued construction blueprints together may occupy at most 64 MiB per facility.
+Accepted jobs keep the exact bytes across checkpoints, independently of the
+client connection and its temporary upload store.
+
 A completed ship appears in the station's docked inventory. It starts with empty
 tanks, an empty battery and no deployed shield coolant. Select it from the hangar,
 refill its tanks, enable dock power and undock when it is ready. Blueprint starting

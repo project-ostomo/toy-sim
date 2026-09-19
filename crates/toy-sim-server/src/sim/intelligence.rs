@@ -463,7 +463,12 @@ mod tests {
         world.init_resource::<SimulationCounters>();
         world.resource_mut::<SimulationCounters>().ticks = 100;
         world.init_resource::<super::super::session::Events>();
-        let session = super::super::session::connect(&mut world, account).unwrap();
+        let session = super::super::session::connect(
+            &mut world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         let viewed = join(&mut world, InfoGroupKey([7; 32]));
         let viewed_id = world.get::<Group>(viewed).unwrap().id;
         world

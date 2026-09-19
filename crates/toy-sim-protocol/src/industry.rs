@@ -2,6 +2,40 @@ use anyhow::{Result, ensure};
 use std::collections::BTreeSet;
 use toy_sim_model::industry::*;
 
+fn validate_upload_ack(ack: &BlueprintUploadAck) -> Result<()> {
+    if let BlueprintUploadAck::Rejected { reason } = ack {
+        ensure!(
+            !reason.trim().is_empty() && reason.len() <= MAX_BLUEPRINT_UPLOAD_ERROR_BYTES,
+            "invalid blueprint upload error"
+        );
+    }
+    Ok(())
+}
+
+pub fn encode_blueprint_upload_ack(ack: &BlueprintUploadAck) -> Result<Vec<u8>> {
+    validate_upload_ack(ack)?;
+    let bytes = postcard::to_allocvec(ack)?;
+    ensure!(
+        bytes.len() <= MAX_BLUEPRINT_UPLOAD_ACK_BYTES,
+        "blueprint upload acknowledgement limit"
+    );
+    Ok(bytes)
+}
+
+pub fn decode_blueprint_upload_ack(bytes: &[u8]) -> Result<BlueprintUploadAck> {
+    ensure!(
+        bytes.len() <= MAX_BLUEPRINT_UPLOAD_ACK_BYTES,
+        "blueprint upload acknowledgement limit"
+    );
+    let (ack, remaining) = postcard::take_from_bytes(bytes)?;
+    ensure!(
+        remaining.is_empty(),
+        "trailing blueprint upload acknowledgement data"
+    );
+    validate_upload_ack(&ack)?;
+    Ok(ack)
+}
+
 fn text_valid(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
 }
@@ -127,12 +161,7 @@ pub(super) fn validate_command(command: &IndustryCommand) -> Result<()> {
                 "invalid recipe request"
             );
         }
-        IndustryCommand::BuildShip { blueprint, .. } => {
-            ensure!(
-                !blueprint.is_empty() && blueprint.len() <= 48 * 1024,
-                "invalid blueprint payload size"
-            );
-        }
+        IndustryCommand::BuildShip { .. } => {}
         IndustryCommand::Transfer {
             source,
             target,
@@ -269,6 +298,27 @@ pub fn validate_snapshot_content(snapshot: &IndustrySnapshot) -> Result<()> {
 mod tests {
     use super::*;
     use toy_sim_model::{Id, ownership::Principal};
+
+    #[test]
+    fn upload_acknowledgements_are_bounded_and_reject_trailing_data() {
+        for ack in [
+            BlueprintUploadAck::Ready { hash: [7; 32] },
+            BlueprintUploadAck::Rejected {
+                reason: "界".repeat(85),
+            },
+        ] {
+            let mut bytes = encode_blueprint_upload_ack(&ack).unwrap();
+            assert_eq!(decode_blueprint_upload_ack(&bytes).unwrap(), ack);
+            bytes.push(0);
+            assert!(decode_blueprint_upload_ack(&bytes).is_err());
+        }
+        for reason in [String::new(), " ".into(), "界".repeat(86)] {
+            let ack = BlueprintUploadAck::Rejected { reason };
+            assert!(encode_blueprint_upload_ack(&ack).is_err());
+            assert!(decode_blueprint_upload_ack(&postcard::to_allocvec(&ack).unwrap()).is_err());
+        }
+        assert!(decode_blueprint_upload_ack(&vec![0; MAX_BLUEPRINT_UPLOAD_ACK_BYTES + 1]).is_err());
+    }
 
     fn snapshot() -> IndustrySnapshot {
         IndustrySnapshot {

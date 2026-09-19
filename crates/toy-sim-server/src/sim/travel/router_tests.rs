@@ -204,7 +204,12 @@ fn travel_order_runs_in_stock_wasm_and_brakes_at_destination() {
         .translation_um
         .offset_by(DVec3::NEG_Z * 100.);
     let ship_id = world.get::<Identity>(ship).unwrap().0;
-    let connection = session::connect(world, account).unwrap();
+    let connection = session::connect(
+        world,
+        account,
+        crate::blueprint_uploads::BlueprintUploads::default(),
+    )
+    .unwrap();
     let epoch = world.resource::<identity::WorldEpoch>().0;
     session::input(
         world,
@@ -335,7 +340,12 @@ fn directional_alignment_runs_through_the_public_queue_without_translation() {
     let (mut app, ship, account) = fixture();
     let world = app.world_mut();
     let ship_id = world.get::<Identity>(ship).unwrap().0;
-    let connection = session::connect(world, account).unwrap();
+    let connection = session::connect(
+        world,
+        account,
+        crate::blueprint_uploads::BlueprintUploads::default(),
+    )
+    .unwrap();
     let epoch = world.resource::<identity::WorldEpoch>().0;
     session::input(
         world,
@@ -474,7 +484,12 @@ fn autopilot_locks_manual_controls_and_off_cuts_thrust() {
     }
     let world = app.world_mut();
     let ship_id = world.get::<Identity>(ship).unwrap().0;
-    let connection = session::connect(world, account).unwrap();
+    let connection = session::connect(
+        world,
+        account,
+        crate::blueprint_uploads::BlueprintUploads::default(),
+    )
+    .unwrap();
     let mut sequence = 0;
     let mut send = |app: &mut App, command| {
         sequence += 1;
@@ -705,7 +720,12 @@ fn submit_local_order(app: &mut App, ship: Entity, account: Id, order: Order) {
 fn submit_orders(app: &mut App, ship: Entity, account: Id, orders: Vec<Order>, engage: bool) {
     let world = app.world_mut();
     let ship_id = world.get::<Identity>(ship).unwrap().0;
-    let connection = session::connect(world, account).unwrap();
+    let connection = session::connect(
+        world,
+        account,
+        crate::blueprint_uploads::BlueprintUploads::default(),
+    )
+    .unwrap();
     let epoch = world.resource::<identity::WorldEpoch>().0;
     let expected_revision = world.get::<Travel>(ship).unwrap().0.revision;
     session::input(

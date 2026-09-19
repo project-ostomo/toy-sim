@@ -182,6 +182,7 @@ fn step(world: &mut World, entity: Entity, duty: &mut HaulDuty) -> Result<()> {
                                 item: duty.item.clone(),
                                 quantity,
                             },
+                            None,
                         )?;
                     }
                 }
@@ -197,6 +198,7 @@ fn step(world: &mut World, entity: Entity, duty: &mut HaulDuty) -> Result<()> {
                         item: duty.item.clone(),
                         quantity: aboard,
                     },
+                    None,
                 )?;
                 return Ok(());
             }
@@ -217,6 +219,7 @@ fn step(world: &mut World, entity: Entity, duty: &mut HaulDuty) -> Result<()> {
                             resource: resource.resource.clone(),
                             quantity,
                         },
+                        None,
                     )?;
                 }
             }

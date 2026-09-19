@@ -28,6 +28,7 @@ mod lifecycle_tests;
 mod product_tests;
 
 const MAX_JOBS: usize = 128;
+const MAX_QUEUED_BLUEPRINT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Component, Clone, Default, Debug, Serialize, Deserialize)]
 pub struct IndustryFacility {
@@ -213,7 +214,12 @@ fn colocated(world: &World, source: Entity, target: Entity) -> Result<()> {
     Ok(())
 }
 
-pub fn execute(world: &mut World, account: AccountId, command: IndustryCommand) -> Result<()> {
+pub fn execute(
+    world: &mut World,
+    account: AccountId,
+    command: IndustryCommand,
+    uploads: Option<&crate::blueprint_uploads::BlueprintUploads>,
+) -> Result<()> {
     initialize(world)?;
     match command {
         IndustryCommand::UnloadProduct {
@@ -351,13 +357,44 @@ pub fn execute(world: &mut World, account: AccountId, command: IndustryCommand) 
         IndustryCommand::BuildShip {
             facility,
             owner,
-            blueprint,
+            blueprint_hash,
         } => {
-            let facility = identity::lookup(world, facility)?;
-            let job = construction::job(world, account, facility, owner, blueprint)?;
-            admit(world, account, facility, job)
+            let blueprint = uploads
+                .context("ship construction requires an uploaded blueprint")?
+                .get(blueprint_hash)?;
+            build_ship(world, account, facility, owner, blueprint.as_ref().as_ref())
         }
     }
+}
+
+pub fn build_ship(
+    world: &mut World,
+    account: AccountId,
+    facility: Id,
+    owner: Principal,
+    blueprint: &[u8],
+) -> Result<()> {
+    initialize(world)?;
+    let facility = identity::lookup(world, facility)?;
+    let job = construction::job(world, account, facility, owner, blueprint)?;
+    admit(world, account, facility, job)
+}
+
+fn validate_blueprint_budget(jobs: &[IndustryJob], additional: usize) -> Result<()> {
+    let bytes = jobs.iter().try_fold(additional, |total, job| {
+        let size = match &job.output {
+            JobOutput::Ship(bytes) => bytes.len(),
+            JobOutput::Cargo(_) => 0,
+        };
+        total
+            .checked_add(size)
+            .context("queued blueprint byte overflow")
+    })?;
+    ensure!(
+        bytes <= MAX_QUEUED_BLUEPRINT_BYTES,
+        "queued ship blueprints exceed the 64 MiB facility limit"
+    );
+    Ok(())
 }
 
 pub fn transfer(

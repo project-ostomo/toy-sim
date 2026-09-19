@@ -207,6 +207,7 @@ enum Intent {
     InspectInventory(Id),
     OpenHangar,
     Industry(industry_model::IndustryCommand, &'static str),
+    BuildShip(industry::construction::Request),
     RetryNavigation,
     InspectAffiliation(ownership::Principal),
     Society(ownership::SocietyCommand, &'static str),
@@ -230,6 +231,7 @@ pub(super) struct ShellDraw;
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Shell>()
         .add_observer(reset_session)
+        .add_systems(Update, industry::construction::update)
         .add_systems(
             toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
             draw.in_set(ShellDraw).after(super::console::ConsoleDraw),
@@ -506,6 +508,14 @@ fn draw(
                 }
             }
             Intent::OpenHangar => shell.desktop.open(HANGAR),
+            Intent::BuildShip(request) => {
+                if let Some(world) = session.world.filter(|_| model.connected) {
+                    shell
+                        .industry
+                        .construction
+                        .queue(request, (world, session.generation));
+                }
+            }
             Intent::Industry(command, label) => {
                 if model.connected {
                     let id = outgoing.push(Action::Industry(command));

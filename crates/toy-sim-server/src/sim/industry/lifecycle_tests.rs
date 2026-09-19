@@ -34,6 +34,7 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
             recipe: "repair_material".into(),
             batches: 1,
         },
+        None,
     )
     .unwrap();
     let job = &world.get::<IndustryFacility>(facility).unwrap().jobs[0];

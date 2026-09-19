@@ -38,6 +38,7 @@ pub struct Events(pub VecDeque<toy_sim_model::Event>);
 #[derive(Component)]
 pub struct Session {
     pub account: AccountId,
+    uploads: crate::blueprint_uploads::BlueprintUploads,
     pub groups: BTreeSet<GroupId>,
     pub views: BTreeMap<u64, ViewSubscription>,
     pub screens: BTreeMap<(EntityId, u8), u8>,
@@ -52,7 +53,11 @@ pub struct Session {
     chat: chat::ChatSession,
 }
 
-pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
+pub fn connect(
+    world: &mut World,
+    account: AccountId,
+    uploads: crate::blueprint_uploads::BlueprintUploads,
+) -> Result<Entity> {
     let owner = identity::lookup(world, account)?;
     let group = world
         .get::<Account>(owner)
@@ -67,6 +72,7 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
     Ok(world
         .spawn(Session {
             account,
+            uploads,
             groups: BTreeSet::from([group, PUBLIC_GROUP]),
             views: BTreeMap::new(),
             screens: BTreeMap::new(),
@@ -255,7 +261,9 @@ impl Session {
                     &text,
                 )?;
             }
-            Action::Industry(command) => super::industry::execute(world, self.account, command)?,
+            Action::Industry(command) => {
+                super::industry::execute(world, self.account, command, Some(&self.uploads))?;
+            }
             Action::IndustrySubscribe(subscription) => self.industry.subscribe(subscription)?,
             Action::IndustryUnsubscribe => self.industry.unsubscribe(),
             Action::Society(command) => super::ownership::apply(world, self.account, command)?,
@@ -747,7 +755,12 @@ mod tests {
             ))
             .id();
         identity::register(&mut world, ship, ship_id);
-        let session = connect(&mut world, account).unwrap();
+        let session = connect(
+            &mut world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         (world, session, account, ship_id, ship)
     }
 
@@ -879,7 +892,12 @@ mod tests {
         let (mut world, _, owner, ship_id, ship) = fixture();
         let delegate = Id::new();
         identity::add_account(&mut world, delegate, false);
-        let connection = connect(&mut world, delegate).unwrap();
+        let connection = connect(
+            &mut world,
+            delegate,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         let grant = |permission| ownership::AccessPolicy {
             public: BTreeSet::from([permission]),
             grants: Vec::new(),
@@ -981,8 +999,18 @@ mod tests {
         let account = Id::new();
         let mut app = super::super::provision(&[account], None, None).unwrap();
         let world = app.world_mut();
-        let first = connect(world, account).unwrap();
-        let second = connect(world, account).unwrap();
+        let first = connect(
+            world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
+        let second = connect(
+            world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         let ship = world
             .query::<(&Identity, &Control)>()
             .iter(world)

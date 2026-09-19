@@ -137,6 +137,7 @@ impl Fixture {
                 recipe: recipe.id.clone(),
                 batches: 1,
             },
+            None,
         )
         .unwrap();
         self.world
@@ -161,6 +162,237 @@ impl Fixture {
                 }],
             }));
     }
+}
+
+async fn stage_blueprint(
+    uploads: &crate::blueprint_uploads::BlueprintUploads,
+    bytes: &[u8],
+) -> [u8; 32] {
+    let hash = *blake3::hash(bytes).as_bytes();
+    let input = [hash.as_slice(), bytes].concat();
+    assert_eq!(uploads.receive(&mut input.as_slice()).await.unwrap(), hash);
+    hash
+}
+
+#[tokio::test]
+async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_before_reserving() {
+    let mut fixture = Fixture::new();
+    let catalogue = fixture.world.resource::<vessel::ShipCatalogue>().0.clone();
+    let mut blueprint = toy_sim_ships::industry::starter_ship();
+    blueprint.firmware =
+        toy_sim_ships::Firmware::Custom(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec());
+    let requirements = toy_sim_ships::industry::construction_requirements(
+        &blueprint.compile(&catalogue).unwrap(),
+        &catalogue,
+    )
+    .unwrap();
+    fixture.put(fixture.facility, &requirements.inputs);
+    let bytes = blueprint.to_bytes().unwrap();
+    assert!(bytes.len() > 48 * 1024);
+    let uploads = crate::blueprint_uploads::BlueprintUploads::default();
+    let hash = stage_blueprint(&uploads, &bytes).await;
+    let other_uploads = crate::blueprint_uploads::BlueprintUploads::default();
+    let facility = fixture.id(fixture.facility);
+    let command = IndustryCommand::BuildShip {
+        facility,
+        owner: Principal::Player(fixture.account),
+        blueprint_hash: hash,
+    };
+    let before = fixture.inventory_bytes(fixture.facility);
+    for source in [None, Some(&other_uploads)] {
+        assert!(execute(&mut fixture.world, fixture.account, command.clone(), source).is_err());
+        assert_eq!(fixture.inventory_bytes(fixture.facility), before);
+        assert!(
+            fixture
+                .world
+                .get::<IndustryFacility>(fixture.facility)
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
+    }
+
+    let stranger = Id::new();
+    identity::add_account(&mut fixture.world, stranger, false);
+    assert!(
+        execute(
+            &mut fixture.world,
+            stranger,
+            command.clone(),
+            Some(&uploads)
+        )
+        .is_err()
+    );
+    assert_eq!(fixture.inventory_bytes(fixture.facility), before);
+
+    for invalid in [b"not a ship".to_vec(), {
+        let mut invalid = blueprint.clone();
+        invalid.firmware = toy_sim_ships::Firmware::Custom(b"not wasm".to_vec());
+        invalid.to_bytes().unwrap()
+    }] {
+        let hash = stage_blueprint(&uploads, &invalid).await;
+        assert!(
+            execute(
+                &mut fixture.world,
+                fixture.account,
+                IndustryCommand::BuildShip {
+                    facility,
+                    owner: Principal::Player(fixture.account),
+                    blueprint_hash: hash,
+                },
+                Some(&uploads),
+            )
+            .is_err()
+        );
+        assert_eq!(fixture.inventory_bytes(fixture.facility), before);
+        assert!(
+            fixture
+                .world
+                .get::<IndustryFacility>(fixture.facility)
+                .unwrap()
+                .jobs
+                .is_empty()
+        );
+    }
+
+    execute(&mut fixture.world, fixture.account, command, Some(&uploads)).unwrap();
+    let queue = fixture
+        .world
+        .get::<IndustryFacility>(fixture.facility)
+        .unwrap();
+    assert_eq!(queue.jobs.len(), 1);
+    assert!(matches!(&queue.jobs[0].output, JobOutput::Ship(saved) if *saved == bytes));
+    assert!(!fixture.inventory(fixture.facility).reservations.is_empty());
+}
+
+fn large_custom_program() -> Vec<u8> {
+    let mut program = wat::parse_str(format!(
+        "(module (memory (export \"memory\") 1) \
+         (func (export \"ship_api_version\") (result i32) i32.const {}) \
+         (func (export \"ship_tick\")))",
+        toy_sim_ship_api::abi::VERSION,
+    ))
+    .unwrap();
+    let payload_len = 1024 * 1024 - 1024;
+    program.push(0);
+    let mut length = payload_len;
+    loop {
+        let byte = (length & 0x7f) as u8;
+        length >>= 7;
+        program.push(byte | if length > 0 { 0x80 } else { 0 });
+        if length == 0 {
+            break;
+        }
+    }
+    program.push(0);
+    program.resize(program.len() + payload_len - 1, 0);
+    assert!(program.len() <= 1024 * 1024);
+    program
+}
+
+#[test]
+fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
+    let mut fixture = Fixture::new();
+    let catalogue = fixture.world.resource::<vessel::ShipCatalogue>().0.clone();
+    let mut blueprint = toy_sim_ships::industry::starter_ship();
+    blueprint.firmware = toy_sim_ships::Firmware::Custom(large_custom_program());
+    let bytes = blueprint.to_bytes().unwrap();
+    let count = MAX_QUEUED_BLUEPRINT_BYTES / bytes.len();
+    assert!(count > 0 && count < MAX_JOBS);
+    let requirements = toy_sim_ships::industry::construction_requirements(
+        &blueprint.compile(&catalogue).unwrap(),
+        &catalogue,
+    )
+    .unwrap();
+    let mut stock = requirements.inputs.clone();
+    for stack in &mut stock {
+        stack.quantity *= count as u64 + 1;
+    }
+    fixture.put(fixture.facility, &stock);
+    let facility = fixture.id(fixture.facility);
+    for _ in 0..count {
+        build_ship(
+            &mut fixture.world,
+            fixture.account,
+            facility,
+            Principal::Player(fixture.account),
+            &bytes,
+        )
+        .unwrap();
+    }
+    let before = fixture.inventory_bytes(fixture.facility);
+    let error = build_ship(
+        &mut fixture.world,
+        fixture.account,
+        facility,
+        Principal::Player(fixture.account),
+        &bytes,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("64 MiB"));
+    assert_eq!(fixture.inventory_bytes(fixture.facility), before);
+    assert_eq!(
+        fixture
+            .world
+            .get::<IndustryFacility>(fixture.facility)
+            .unwrap()
+            .jobs
+            .len(),
+        count
+    );
+
+    let mut invalid = fixture
+        .world
+        .get::<IndustryFacility>(fixture.facility)
+        .unwrap()
+        .clone();
+    invalid.jobs.push(invalid.jobs[0].clone());
+    let error = validate_saved(
+        Some(&invalid),
+        None,
+        &fixture
+            .world
+            .get::<vessel::ShipDesign>(fixture.facility)
+            .unwrap()
+            .0,
+        fixture.inventory(fixture.facility),
+        &catalogue,
+        &fixture.world.resource::<ownership::Directory>().0,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("64 MiB"));
+
+    let job = fixture
+        .world
+        .get::<IndustryFacility>(fixture.facility)
+        .unwrap()
+        .jobs[0]
+        .view
+        .id;
+    execute(
+        &mut fixture.world,
+        fixture.account,
+        IndustryCommand::CancelJob { facility, job },
+        None,
+    )
+    .unwrap();
+    build_ship(
+        &mut fixture.world,
+        fixture.account,
+        facility,
+        Principal::Player(fixture.account),
+        &bytes,
+    )
+    .unwrap();
+    assert_eq!(
+        fixture
+            .world
+            .get::<IndustryFacility>(fixture.facility)
+            .unwrap()
+            .jobs
+            .len(),
+        count
+    );
 }
 
 #[test]
@@ -232,7 +464,7 @@ fn reserved_fuel_cannot_escape_through_transfer_refill_or_dock_services() {
             quantity: 1,
         },
     ] {
-        assert!(execute(&mut fixture.world, fixture.account, command).is_err());
+        assert!(execute(&mut fixture.world, fixture.account, command, None,).is_err());
         assert_eq!(fixture.inventory_bytes(fixture.facility), before);
         assert_eq!(fixture.inventory_bytes(guest), recipient_before);
     }
@@ -280,6 +512,7 @@ fn reserved_fuel_cannot_escape_through_transfer_refill_or_dock_services() {
             facility: facility_id,
             job,
         },
+        None,
     )
     .unwrap();
     fixture
@@ -316,6 +549,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
             recipe: recipe.id,
             batches: 1,
         },
+        None,
     )
     .unwrap();
     let job = fixture
@@ -333,7 +567,8 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
             IndustryCommand::CancelJob {
                 facility: facility_id,
                 job
-            }
+            },
+            None,
         )
         .is_err()
     );
@@ -355,6 +590,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
             facility: facility_id,
             job,
         },
+        None,
     )
     .unwrap();
     fixture.grant(
@@ -370,7 +606,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
         quantity: 1,
     };
     let before = fixture.inventory_bytes(fixture.facility);
-    assert!(execute(&mut fixture.world, operator, command).is_err());
+    assert!(execute(&mut fixture.world, operator, command, None,).is_err());
     assert_eq!(fixture.inventory_bytes(fixture.facility), before);
     fixture
         .world
@@ -387,6 +623,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
             item: recipe.inputs[0].item.clone(),
             quantity: 1,
         },
+        None,
     )
     .unwrap();
     assert_eq!(fixture.quantity(remote, &recipe.inputs[0].item), 1);
@@ -418,27 +655,23 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
     let before = fixture.inventory_bytes(fixture.facility);
     for owner in [Principal::Player(operator), Principal::Player(stranger)] {
         assert!(
-            execute(
+            build_ship(
                 &mut fixture.world,
                 operator,
-                IndustryCommand::BuildShip {
-                    facility,
-                    owner,
-                    blueprint: bytes.clone()
-                }
+                facility,
+                owner,
+                &(bytes.clone()),
             )
             .is_err()
         );
         assert_eq!(fixture.inventory_bytes(fixture.facility), before);
     }
-    execute(
+    build_ship(
         &mut fixture.world,
         operator,
-        IndustryCommand::BuildShip {
-            facility,
-            owner: facility_owner,
-            blueprint: bytes.clone(),
-        },
+        facility,
+        facility_owner,
+        &(bytes.clone()),
     )
     .unwrap();
     let job = &fixture
@@ -491,7 +724,8 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
                 target: guest_id,
                 item: kit.item,
                 quantity: 1
-            }
+            },
+            None,
         )
         .is_err()
     );
@@ -502,6 +736,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
             facility,
             job: job_id,
         },
+        None,
     )
     .unwrap();
     fixture.grant(
@@ -510,25 +745,21 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
         &[Permission::Industry, Permission::TransferCargo],
     );
     assert!(
-        execute(
+        build_ship(
             &mut fixture.world,
             operator,
-            IndustryCommand::BuildShip {
-                facility,
-                owner: Principal::Player(stranger),
-                blueprint: bytes.clone()
-            }
+            facility,
+            Principal::Player(stranger),
+            &(bytes.clone()),
         )
         .is_err()
     );
-    execute(
+    build_ship(
         &mut fixture.world,
         operator,
-        IndustryCommand::BuildShip {
-            facility,
-            owner: Principal::Player(operator),
-            blueprint: bytes,
-        },
+        facility,
+        Principal::Player(operator),
+        &(bytes),
     )
     .unwrap();
     assert_eq!(
@@ -621,6 +852,7 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
         &mut fixture.world,
         fixture.account,
         IndustryCommand::CancelJob { facility, job },
+        None,
     )
     .unwrap();
     assert!(fixture.inventory(fixture.facility).reservations.is_empty());
@@ -701,14 +933,12 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
         .unwrap()
         .mass;
     let facility = fixture.id(fixture.facility);
-    execute(
+    build_ship(
         &mut fixture.world,
         fixture.account,
-        IndustryCommand::BuildShip {
-            facility,
-            owner: Principal::Player(fixture.account),
-            blueprint: blueprint.to_bytes().unwrap(),
-        },
+        facility,
+        Principal::Player(fixture.account),
+        &(blueprint.to_bytes().unwrap()),
     )
     .unwrap();
     let inbound_reservation = Some((Id::new(), u64::MAX));
@@ -985,6 +1215,7 @@ fn physical_transfers_update_docked_mass_immediately_and_undocking_conserves_the
             item,
             quantity: 3,
         },
+        None,
     )
     .unwrap();
     assert!(
@@ -1240,6 +1471,7 @@ fn transferring_inside_a_docked_carrier_preserves_all_ancestor_masses() {
             item,
             quantity: 3,
         },
+        None,
     )
     .unwrap();
     assert!(
@@ -1398,7 +1630,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         resource: "shield_coolant".into(),
         quantity: capacity + 1,
     };
-    assert!(execute(&mut fixture.world, fixture.account, overfill).is_err());
+    assert!(execute(&mut fixture.world, fixture.account, overfill, None,).is_err());
     assert_eq!(fixture.inventory_bytes(fixture.facility), host_inventory);
     assert_eq!(
         fixture
@@ -1431,7 +1663,8 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
                 ship,
                 resource: "shield_coolant".into(),
                 quantity: 3,
-            }
+            },
+            None,
         )
         .is_err()
     );
@@ -1458,6 +1691,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
             resource: "shield_coolant".into(),
             quantity: 2,
         },
+        None,
     )
     .unwrap();
     let delivered_mg = toy_sim_ships::industry::mass_mg(2.0 * unit_mass).unwrap();
@@ -1503,6 +1737,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
             resource: "shield_coolant".into(),
             quantity: capacity - 2,
         },
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -1535,7 +1770,8 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
                 ship,
                 resource: "shield_coolant".into(),
                 quantity: 1,
-            }
+            },
+            None,
         )
         .is_err()
     );

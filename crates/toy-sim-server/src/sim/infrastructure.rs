@@ -928,7 +928,12 @@ mod tests {
         for _ in 0..5 {
             app.update();
         }
-        let session = super::super::session::connect(app.world_mut(), account).unwrap();
+        let session = super::super::session::connect(
+            app.world_mut(),
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
         encoder.window_log(21).unwrap();
         let mut tick_ms = Vec::new();

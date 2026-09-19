@@ -443,7 +443,12 @@ fn actual_schedule_and_repeated_display_publication_share_one_tick_gas_allowance
     let world = fixture.app.world_mut();
     let account = world.get::<identity::Control>(parent).unwrap().account;
     let id = world.get::<identity::Identity>(parent).unwrap().0;
-    let session = crate::sim::session::connect(world, account).unwrap();
+    let session = crate::sim::session::connect(
+        world,
+        account,
+        crate::blueprint_uploads::BlueprintUploads::default(),
+    )
+    .unwrap();
     world
         .get_mut::<crate::sim::session::Session>(session)
         .unwrap()

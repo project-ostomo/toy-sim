@@ -704,6 +704,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     item,
                     quantity: *quantity,
                 },
+                None,
             )?;
         }
         Action::UnloadProduct {
@@ -721,6 +722,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     resource: resource.clone(),
                     quantity: *quantity,
                 },
+                None,
             )?;
         }
         Action::Refill {
@@ -738,6 +740,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     resource: resource.clone(),
                     quantity: *quantity,
                 },
+                None,
             )?;
         }
         Action::Recipe {
@@ -753,6 +756,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     recipe: recipe.clone(),
                     batches: *batches,
                 },
+                None,
             )?;
         }
         Action::Build {
@@ -775,14 +779,12 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                 .into_iter()
                 .find(|known| known.name == *blueprint)
                 .context("unknown public blueprint")?;
-            industry::execute(
+            industry::build_ship(
                 world,
                 account,
-                IndustryCommand::BuildShip {
-                    facility: id(facility)?,
-                    owner: Principal::Organization(organization.organization),
-                    blueprint: blueprint.blueprint,
-                },
+                id(facility)?,
+                Principal::Organization(organization.organization),
+                &(blueprint.blueprint),
             )?;
         }
         Action::CancelJob { facility, job } => {
@@ -793,6 +795,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     facility: id(facility)?,
                     job: id(job)?,
                 },
+                None,
             )?;
         }
     }

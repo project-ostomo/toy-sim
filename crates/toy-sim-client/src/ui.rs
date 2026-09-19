@@ -10,8 +10,12 @@ use crate::{Endpoint, state};
 use bevy::prelude::*;
 use selection::{SelectedTarget, Selection};
 
+#[derive(Resource)]
+struct BlueprintAssets(crate::AssetClient);
+
 pub fn run(endpoint: Endpoint, local: bool) {
     let mut app = App::new();
+    app.insert_resource(BlueprintAssets(endpoint.assets.clone()));
     crate::assets::register_source(&mut app, endpoint.assets.clone());
     let plugins = DefaultPlugins.set(AssetPlugin {
         file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(),

@@ -43,8 +43,8 @@ fn advance(world: &mut World) {
     initialize.run(world);
 }
 
-#[test]
-fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once() {
+#[tokio::test]
+async fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once() {
     let account = Id::new();
     let mut app = crate::scenario(&[account], Some(account), None).unwrap();
     for _ in 0..3 {
@@ -84,7 +84,18 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
         .into_iter()
         .find(|recipe| recipe.id == "railgun_pellets")
         .unwrap();
-    let blueprint = manufacturing::starter_ship();
+    let mut blueprint = manufacturing::starter_ship();
+    blueprint.firmware =
+        toy_sim_ships::Firmware::Custom(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec());
+    let blueprint_bytes = blueprint.to_bytes().unwrap();
+    assert!(blueprint_bytes.len() > 48 * 1024);
+    let uploads = crate::blueprint_uploads::BlueprintUploads::default();
+    let blueprint_hash = *blake3::hash(&blueprint_bytes).as_bytes();
+    let upload = [blueprint_hash.as_slice(), &blueprint_bytes].concat();
+    assert_eq!(
+        uploads.receive(&mut upload.as_slice()).await.unwrap(),
+        blueprint_hash
+    );
     let built_design = blueprint.compile(&catalogue).unwrap();
     let construction = manufacturing::construction_requirements(&built_design, &catalogue).unwrap();
     stock(world, facility, &recipe.inputs);
@@ -113,6 +124,7 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
             recipe: recipe.id.clone(),
             batches: 1,
         },
+        None,
     )
     .unwrap();
     industry::execute(
@@ -121,10 +133,12 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
         IndustryCommand::BuildShip {
             facility: facility_id,
             owner: Principal::Player(account),
-            blueprint: blueprint.to_bytes().unwrap(),
+            blueprint_hash,
         },
+        Some(&uploads),
     )
     .unwrap();
+    drop(uploads);
     for _ in 0..3 {
         advance(world);
     }
@@ -133,6 +147,9 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
         .unwrap()
         .jobs;
     assert_eq!(jobs.len(), 2);
+    assert!(jobs.iter().any(|job| {
+        matches!(&job.output, industry::JobOutput::Ship(bytes) if *bytes == blueprint_bytes)
+    }));
     assert!(jobs.iter().all(|job| job.view.progress_ticks == 3));
     assert!(!inventory(world, facility).reservations.is_empty());
     let saved_jobs = postcard::to_stdvec(jobs).unwrap();
@@ -211,6 +228,14 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
         })
         .unwrap();
     let built_id = id(world, built).unwrap();
+    assert_eq!(
+        world
+            .get::<vessel::ShipSoftware>(built)
+            .unwrap()
+            .controller
+            .program(),
+        blueprint.controller_bytes()
+    );
     assert_eq!(inventory(world, built).energy_j, 0);
     assert!(
         inventory(world, built)
@@ -258,6 +283,14 @@ fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once
     }
     let facility = identity::lookup(world, facility_id).unwrap();
     assert!(identity::lookup(world, built_id).is_ok());
+    assert_eq!(
+        world
+            .get::<vessel::ShipSoftware>(identity::lookup(world, built_id).unwrap())
+            .unwrap()
+            .controller
+            .program(),
+        blueprint.controller_bytes()
+    );
     assert_eq!(
         world.query::<&vessel::ShipDesign>().iter(world).count(),
         initial_ship_count + 1

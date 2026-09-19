@@ -1806,3 +1806,23 @@ an incoming round reaching it.
 This establishes a working stock interception chain. It does not claim economical
 fire discipline: the salvo used many more interceptors than incoming missiles.
 The regression records this behavior without substituting idealized guidance.
+
+### Private blueprint uploads verified — 2026-09-19
+
+All new upload checks passed in the integrated workspace run: bounded ACK
+encoding, session privacy, EOF admission, hash rejection, byte quotas and timeout
+release; concurrent upload progress alongside 129 independent asset downloads;
+client failures isolated to their transfer; UI pending/failure/session-reset
+behavior and exact-once build submission. The construction tests cover authority
+and firmware checks before reservation, atomic facility byte-limit rejection,
+and cancellation releasing job capacity.
+
+The checkpoint regression accepted a real custom-firmware design larger than
+48 KiB through private staging, discarded the upload store, restored a partial
+job, completed the ship and verified its exact embedded program. Restoring the
+completed state did not produce another ship. The file limit is 16 MiB, with the
+existing separate 1 MiB firmware limit.
+
+The full suite also exposed four older travel/docking regression failures. Those
+are being investigated independently of these passing upload checks before the
+final release handoff.

@@ -1,9 +1,11 @@
+mod blueprint_uploads;
 pub mod launch;
 pub mod persistence;
 pub mod provision;
 mod sim;
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
+use blueprint_uploads::{BlueprintUploadBudget, BlueprintUploads};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 pub use sim::identity::AppearanceAssets;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,6 +26,7 @@ use toy_sim_protocol::Message;
 #[derive(Component)]
 pub struct Connection {
     pub account: AccountId,
+    pub uploads: BlueprintUploads,
     pub input: mpsc::Receiver<InputFrame>,
     pub state: SnapshotSender,
 }
@@ -90,12 +93,13 @@ impl SnapshotSender {
     }
 }
 
-fn channels(account: AccountId) -> (Connection, Endpoint) {
+fn channels(account: AccountId, uploads: BlueprintUploads) -> (Connection, Endpoint) {
     let (input, receive) = mpsc::channel(16);
     let (state, frames) = snapshot_queue(64 * 1024 * 1024);
     (
         Connection {
             account,
+            uploads,
             input: receive,
             state,
         },
@@ -136,7 +140,11 @@ fn run_loop(
             if count >= 1024 {
                 continue;
             }
-            if let Ok(entity) = sim::session::connect(app.world_mut(), connection.account) {
+            if let Ok(entity) = sim::session::connect(
+                app.world_mut(),
+                connection.account,
+                connection.uploads.clone(),
+            ) {
                 app.world_mut().entity_mut(entity).insert(connection);
             }
         }
@@ -216,7 +224,11 @@ fn run_loop(
             }
             tick_credit = 0.0;
             for connection in connections {
-                let entity = sim::session::connect(app.world_mut(), connection.account)?;
+                let entity = sim::session::connect(
+                    app.world_mut(),
+                    connection.account,
+                    connection.uploads.clone(),
+                )?;
                 app.world_mut().entity_mut(entity).insert(connection);
             }
         }
@@ -306,6 +318,7 @@ pub async fn listen(
     let accounts = Arc::new(accounts);
     let key = Arc::new(key);
     let permits = Arc::new(tokio::sync::Semaphore::new(1024));
+    let upload_budget = BlueprintUploadBudget::default();
     loop {
         let (stream, peer) = listener.accept().await?;
         let Ok(permit) = permits.clone().try_acquire_owned() else {
@@ -315,17 +328,19 @@ pub async fn listen(
         let key = key.clone();
         let connections = connections.clone();
         let assets = assets.clone();
+        let upload_budget = upload_budget.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let result = async {
                 let (account, mux) = toy_sim_net::accept(stream, &key, &accounts).await?;
                 let main = tokio::time::timeout(Duration::from_secs(10), mux.accept()).await??;
                 ensure!(main.metadata() == b"main", "first stream must be main");
-                let (connection, endpoint) = channels(account);
+                let uploads = upload_budget.session(account);
+                let (connection, endpoint) = channels(account, uploads.clone());
                 connections.send(connection).await?;
                 tokio::select! {
                     result = main_stream(main, endpoint) => result,
-                    result = asset_streams(&mux, assets) => result,
+                    result = asset_streams(&mux, assets, uploads) => result,
                     result = mux.wait_until_dead() => result,
                 }
             }
@@ -385,23 +400,34 @@ async fn main_stream(stream: toy_sim_net::picomux::Stream, mut endpoint: Endpoin
 async fn asset_streams(
     mux: &toy_sim_net::picomux::PicoMux,
     assets: AppearanceAssets,
+    uploads: BlueprintUploads,
 ) -> Result<()> {
     let mut transfers = JoinSet::new();
     loop {
         tokio::select! {
             stream = mux.accept() => {
                 let mut stream = stream?;
-                ensure!(stream.metadata() == b"assets", "unknown stream label");
-                let assets = assets.clone();
-                transfers.spawn(async move {
-                    let mut hash = [0; 32];
-                    stream.read_exact(&mut hash).await?;
-                    if let Some(bytes) = assets.get(&hash) {
-                        stream.write_all(&bytes).await?;
+                match stream.metadata() {
+                    b"assets" => {
+                        let assets = assets.clone();
+                        transfers.spawn(async move {
+                            let mut hash = [0; 32];
+                            stream.read_exact(&mut hash).await?;
+                            if let Some(bytes) = assets.get(&hash) {
+                                stream.write_all(&bytes).await?;
+                            }
+                            stream.shutdown().await?;
+                            Ok::<(), anyhow::Error>(())
+                        });
                     }
-                    stream.shutdown().await?;
-                    Ok::<(), anyhow::Error>(())
-                });
+                    b"blueprint-upload" => {
+                        let uploads = uploads.clone();
+                        transfers.spawn(async move {
+                            blueprint_uploads::serve(&mut stream, &uploads).await
+                        });
+                    }
+                    _ => anyhow::bail!("unknown stream label"),
+                }
             }
             Some(result) = transfers.join_next(), if !transfers.is_empty() => {
                 if let Err(error) = result.map_err(anyhow::Error::from).and_then(|result| result) {
@@ -543,7 +569,7 @@ mod asset_tests {
             let server = toy_sim_net::picomux::PicoMux::new(br, bw);
             let client_stream = client.open(b"main").await.unwrap();
             let server_stream = server.accept().await.unwrap();
-            let (mut connection, endpoint) = channels(Id::new());
+            let (mut connection, endpoint) = channels(Id::new(), BlueprintUploads::default());
             let serving = tokio::spawn(main_stream(server_stream, endpoint));
             let (mut read, mut write) = tokio::io::split(client_stream);
             let snapshot = empty_snapshot();
@@ -612,9 +638,32 @@ mod asset_tests {
             }
             let assets = AppearanceAssets::default();
             let server_assets = assets.clone();
-            let serving = tokio::spawn(async move { asset_streams(&server, server_assets).await });
+            let uploads = BlueprintUploads::default();
+            let server_uploads = uploads.clone();
+            let serving =
+                tokio::spawn(
+                    async move { asset_streams(&server, server_assets, server_uploads).await },
+                );
             let mut stalled = client.open(b"assets").await.unwrap();
             stalled.write_all(&[0]).await.unwrap();
+            let mut stalled_upload = client.open(b"blueprint-upload").await.unwrap();
+            stalled_upload.write_all(&[0; 33]).await.unwrap();
+            let upload_client = client.clone();
+            let upload = tokio::spawn(async move {
+                let bytes = vec![49; 70 * 1024];
+                let hash = *blake3::hash(&bytes).as_bytes();
+                let mut stream = upload_client.open(b"blueprint-upload").await.unwrap();
+                stream.write_all(&hash).await.unwrap();
+                stream.write_all(&bytes).await.unwrap();
+                stream.shutdown().await.unwrap();
+                let mut ack = Vec::new();
+                stream.read_to_end(&mut ack).await.unwrap();
+                assert!(matches!(
+                    toy_sim_protocol::decode_blueprint_upload_ack(&ack).unwrap(),
+                    industry::BlueprintUploadAck::Ready { hash: received } if received == hash
+                ));
+                (hash, bytes)
+            });
             assets.extend(payloads.clone());
             let mut transfers = JoinSet::new();
             let hashes: Vec<_> = payloads.keys().copied().chain([[255; 32]]).collect();
@@ -640,7 +689,14 @@ mod asset_tests {
                 completed += 1;
             }
             assert_eq!(completed, 129);
+            let (hash, bytes) = upload.await.unwrap();
+            assert_eq!(
+                uploads.get(hash).unwrap().as_ref().as_ref(),
+                bytes.as_slice()
+            );
+            assert!(assets.get(&hash).is_none());
             drop(stalled);
+            drop(stalled_upload);
             let mut final_stream = client.open(b"assets").await.unwrap();
             let hash = *blake3::hash(b"").as_bytes();
             final_stream.write_all(&hash).await.unwrap();

@@ -1,4 +1,7 @@
+pub(super) mod construction;
+
 use super::*;
+use bevy::tasks::{IoTaskPool, Task, futures::check_ready};
 use industry_model::{
     BlueprintView, CargoItem, FacilityView, IndustryCapability, IndustryCommand, ItemStack,
     JobStatus,
@@ -26,6 +29,8 @@ pub(super) struct State {
     search: String,
     import_path: String,
     imported: Option<Result<BlueprintView, String>>,
+    importing: Option<Task<Result<BlueprintView, String>>>,
+    pub construction: construction::State,
     cargo: cargo::PaneState,
 }
 
@@ -36,6 +41,13 @@ pub(super) fn draw(
     transfers: &mut cargo::Transfers,
     intents: &mut Vec<Intent>,
 ) {
+    if let Some(task) = &mut state.importing {
+        if let Some(result) = check_ready(task) {
+            state.imported = Some(result);
+            state.importing = None;
+        }
+    }
+
     ui.horizontal(|ui| {
         ui.label(Icon::Industry.text(22.0).color(ACCENT));
         ui.strong("INDUSTRY NETWORK");
@@ -44,6 +56,7 @@ pub(super) fn draw(
     if let Some(error) = &model.industry.error {
         ui.colored_label(THREAT, error);
     }
+    state.construction.draw(ui, model.connected, intents);
     let facilities: Vec<_> = model
         .industry
         .directory
@@ -369,6 +382,7 @@ fn shipyard(
             state.owner.unwrap(),
             model,
             facility,
+            state.construction.busy(),
             intents,
         );
     }
@@ -377,18 +391,30 @@ fn shipyard(
     ui.weak("Drop a ship file here, or enter its local path.");
     let dropped = ui.input(|input| input.raw.dropped_files.clone());
     for file in dropped {
-        let path = file.path();
-        state.imported = Some(import_blueprint(path));
+        let path = file.path().to_owned();
         state.import_path = path.display().to_string();
+        state.imported = None;
+        state.importing = Some(IoTaskPool::get().spawn(async move { import_blueprint(&path) }));
     }
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.import_path).hint_text("/path/to/design.ship"),
         );
-        if ui.button("Load design").clicked() {
-            state.imported = Some(import_blueprint(std::path::Path::new(&state.import_path)));
+        if ui
+            .add_enabled(state.importing.is_none(), egui::Button::new("Load design"))
+            .clicked()
+        {
+            let path = std::path::PathBuf::from(&state.import_path);
+            state.imported = None;
+            state.importing = Some(IoTaskPool::get().spawn(async move { import_blueprint(&path) }));
         }
     });
+    if state.importing.is_some() {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label("Reading and validating ship design…");
+        });
+    }
     if let Some(imported) = &state.imported {
         match imported {
             Ok(blueprint) => blueprint_controls(
@@ -397,6 +423,7 @@ fn shipyard(
                 state.owner.unwrap(),
                 model,
                 facility,
+                state.construction.busy(),
                 intents,
             ),
             Err(error) => {
@@ -414,8 +441,8 @@ fn import_blueprint(path: &std::path::Path) -> Result<BlueprintView, String> {
         let bill = toy_sim_ships::industry::construction_requirements(&design, &catalogue)?;
         let bytes = blueprint.to_bytes()?;
         anyhow::ensure!(
-            bytes.len() <= 48 * 1024,
-            "Design exceeds the 48 KiB upload limit"
+            bytes.len() <= toy_sim_ships::MAX_FILE,
+            "Design exceeds the 16 MiB ship file limit"
         );
         Ok(BlueprintView {
             name: blueprint.name.clone(),
@@ -434,6 +461,7 @@ fn blueprint_controls(
     owner: ownership::Principal,
     model: &FrameModel,
     facility: &FacilityView,
+    uploading: bool,
     intents: &mut Vec<Intent>,
 ) {
     ui.strong(&blueprint.name);
@@ -446,19 +474,18 @@ fn blueprint_controls(
     ui.weak("Delivered into this station's hangar with empty tanks and batteries. Refill and request dock power before undocking.");
     if ui
         .add_enabled(
-            model.connected && facility.can_manage && enough,
+            model.connected && facility.can_manage && enough && !uploading,
             egui::Button::new("Build ship"),
         )
         .clicked()
     {
-        intents.push(Intent::Industry(
-            IndustryCommand::BuildShip {
-                facility: facility.entity,
-                owner,
-                blueprint: blueprint.blueprint.clone(),
-            },
-            "Build ship",
-        ));
+        intents.push(Intent::BuildShip(construction::Request {
+            facility: facility.entity,
+            facility_name: facility.name.clone(),
+            owner,
+            name: blueprint.name.clone(),
+            bytes: blueprint.blueprint.clone().into(),
+        }));
     }
 }
 

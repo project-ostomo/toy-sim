@@ -533,7 +533,12 @@ mod tests {
             .query_filtered::<Entity, With<super::super::vessel::ControlledVessel>>()
             .single(world)
             .unwrap();
-        let session = super::super::session::connect(world, account).unwrap();
+        let session = super::super::session::connect(
+            world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
         let ship_id = world.get::<Identity>(entity).unwrap().0;
         world
             .get_mut::<super::super::session::Session>(session)

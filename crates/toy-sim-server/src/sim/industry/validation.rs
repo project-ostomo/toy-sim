@@ -74,6 +74,7 @@ pub fn validate_saved(
     let mut reservations = BTreeMap::<CargoItem, u64>::new();
     let mut identities = BTreeSet::new();
     if let Some(facility) = facility {
+        validate_blueprint_budget(&facility.jobs, 0)?;
         ensure!(
             facility.jobs.len() <= MAX_JOBS,
             "saved industry queue exceeds limit"
@@ -135,7 +136,7 @@ pub fn validate_saved(
                 }
                 JobOutput::Ship(bytes) => {
                     ensure!(
-                        bytes.len() <= 2_000_000
+                        bytes.len() <= toy_sim_ships::MAX_FILE
                             && job.view.status != JobStatus::AwaitingCargoSpace,
                         "invalid saved construction payload or cargo state"
                     );

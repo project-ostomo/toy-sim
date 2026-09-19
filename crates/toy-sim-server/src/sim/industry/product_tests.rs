@@ -178,6 +178,7 @@ impl Fixture {
                 resource: resource.into(),
                 quantity,
             },
+            None,
         )
     }
 
@@ -251,6 +252,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
             recipe: "reprocess_spent_fuel".into(),
             batches: 1,
         },
+        None,
     )
     .unwrap();
     fixture.advance_job();
@@ -322,6 +324,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
             resource: "reactor_fuel".into(),
             quantity: 2,
         },
+        None,
     )
     .unwrap();
     assert_eq!(fixture.inventory(fixture.ship).quantities[fuel], 2);

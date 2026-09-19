@@ -236,9 +236,10 @@ fn production_and_shipyard_buttons_emit_typed_commands_and_respect_reserved_inpu
         }
         assert_eq!(intents.len(), 1);
         if shipyard {
-            assert!(
-                matches!(&intents[0], Intent::Industry(IndustryCommand::BuildShip { facility, owner: ownership::Principal::Player(owner), blueprint }, _) if *facility == Id([2;16]) && *owner == fixture.society.account && blueprint == &[1,2,3])
-            );
+            assert!(matches!(&intents[0], Intent::BuildShip(request)
+                    if request.facility == Id([2;16])
+                        && request.owner == ownership::Principal::Player(fixture.society.account)
+                        && request.bytes.as_ref() == &[1,2,3]));
         } else {
             assert!(
                 matches!(&intents[0], Intent::Industry(IndustryCommand::StartRecipe { facility, recipe, batches: 1 }, _) if *facility == Id([2;16]) && recipe == "assemble")
@@ -936,4 +937,84 @@ fn industrial_mass_editor_converts_kilograms_to_bounded_integer_milligrams() {
     assert_eq!(cargo::quantity_from_mass(100.0, 0.000001, 8), 8);
     assert_eq!(cargo::quantity_from_mass(-1.0, 0.000001, 8), 0);
     assert_eq!(cargo::quantity_from_mass(f64::NAN, 0.000001, 8), 0);
+}
+
+#[test]
+fn shipyard_build_button_is_disabled_while_the_blueprint_upload_is_pending() {
+    let context = egui::Context::default();
+    toy_sim_ui::theme::install(&context);
+    let fixture = Fixture::new();
+    let mut state = State {
+        facility: Some(Id([2; 16])),
+        tab: Tab::Shipyard,
+        ..Default::default()
+    };
+    state.construction.queue(
+        construction::Request {
+            facility: Id([2; 16]),
+            facility_name: "Test works".into(),
+            owner: ownership::Principal::Player(fixture.society.account),
+            name: "Cold cutter".into(),
+            bytes: vec![1, 2, 3].into(),
+        },
+        (Id([1; 16]), 1),
+    );
+    let mut transfers = cargo::Transfers::default();
+    let mut intents = Vec::new();
+    let mut labels = Vec::new();
+    for frame in 0..3 {
+        labels = render(&context, Vec::new(), frame as f64 / 60.0, |ui| {
+            draw(
+                ui,
+                &mut state,
+                &fixture.model(),
+                &mut transfers,
+                &mut intents,
+            );
+        });
+    }
+    assert!(
+        labels
+            .iter()
+            .any(|(text, _)| text.contains("Uploading blueprint"))
+    );
+    let button = labels
+        .iter()
+        .find(|(text, _)| text == "Build ship")
+        .unwrap()
+        .1;
+    for (frame, pressed) in [true, false].into_iter().enumerate() {
+        render(
+            &context,
+            click_events(button, pressed),
+            (frame + 3) as f64 / 60.0,
+            |ui| {
+                draw(
+                    ui,
+                    &mut state,
+                    &fixture.model(),
+                    &mut transfers,
+                    &mut intents,
+                );
+            },
+        );
+    }
+    assert!(intents.is_empty());
+}
+
+#[test]
+fn imported_design_preserves_custom_firmware_larger_than_the_command_frame_limit() {
+    let mut ship = toy_sim_ships::ntr_patrol();
+    ship.firmware = toy_sim_ships::Firmware::Custom(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec());
+    let bytes = ship.to_bytes().unwrap();
+    assert!(bytes.len() > 48 * 1024);
+    let path = std::env::temp_dir().join(format!("toy-import-{}.ship", Id::new()));
+    std::fs::write(&path, &bytes).unwrap();
+    let imported = import_blueprint(&path);
+    std::fs::remove_file(&path).unwrap();
+    let imported = imported.unwrap();
+    let decoded = toy_sim_ships::ShipBlueprint::from_bytes(&imported.blueprint).unwrap();
+    assert_eq!(decoded.firmware, ship.firmware);
+    assert_eq!(imported.blueprint, bytes);
+    assert!(!imported.inputs.is_empty());
 }
