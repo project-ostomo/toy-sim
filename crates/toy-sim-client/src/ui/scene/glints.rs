@@ -1,30 +1,23 @@
 use super::{RenderSource, ShipMesh, ViewCamera, ViewMember};
 use crate::state::{DisplayPose, Optical, OpticalLight, OwnedShip, ViewObservation};
 use bevy::{
-    asset::{RenderAssetUsages, embedded_asset},
-    camera::visibility::{NoFrustumCulling, RenderLayers, VisibilityRange},
-    mesh::PrimitiveTopology,
+    asset::embedded_asset,
+    camera::visibility::{NoFrustumCulling, RenderLayers},
+    mesh::MeshTag,
     prelude::*,
     render::render_resource::AsBindGroup,
     shader::ShaderRef,
 };
+use std::collections::{HashMap, HashSet};
 use toy_sim_model::{ContactRef, optical::flux_w_m2};
 
-pub(super) const MIN_MESH_PIXELS: f64 = 3.;
-pub(super) const FULL_MESH_PIXELS: f64 = 8.;
+const MESH_PIXELS: f64 = 3.;
 const MESH_HYSTERESIS_PIXELS: f64 = 0.5;
 const ZERO_MAGNITUDE_FLUX_W_M2: f64 = 3.6e-8;
 const REFERENCE_MAGNITUDE: f64 = 6.;
 
 #[derive(Component)]
 pub(super) struct VisualContact(pub Option<ContactRef>);
-
-#[derive(Component, Clone, Copy)]
-pub(super) struct MeshLod {
-    pub near_m: f64,
-    pub far_m: f64,
-    pub mesh_fraction: f32,
-}
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct GlintMaterial {
@@ -54,30 +47,36 @@ impl Material for GlintMaterial {
     }
 }
 
-#[derive(Resource, Default)]
-struct GlintAssets(Option<Handle<GlintMaterial>>);
-
-#[derive(Component, Default)]
-struct ViewGlints {
-    entity: Option<Entity>,
-    mesh: Option<Handle<Mesh>>,
+#[derive(Resource)]
+struct GlintAssets {
+    mesh: Handle<Mesh>,
+    material: Handle<GlintMaterial>,
 }
+
+#[derive(Component)]
+struct Glint;
 
 pub(super) fn install(app: &mut App) {
     embedded_asset!(app, "glints.wgsl");
     app.add_plugins(MaterialPlugin::<GlintMaterial>::default())
-        .init_resource::<GlintAssets>()
-        .add_systems(
-            Update,
-            apply_lod.after(crate::state::PresentationSet::Render),
-        )
+        .add_systems(Startup, setup)
         .add_systems(
             PostUpdate,
-            (prepare, render)
-                .chain()
+            render
                 .before(bevy::transform::TransformSystems::Propagate)
                 .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
         );
+}
+
+fn setup(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<GlintMaterial>>,
+) {
+    commands.insert_resource(GlintAssets {
+        mesh: meshes.add(Rectangle::new(2., 2.)),
+        material: materials.add(GlintMaterial { gain: Vec4::ONE }),
+    });
 }
 
 pub(super) fn diameter_pixels(radius: f64, depth: f64, height: f64, fov: f64) -> f64 {
@@ -87,32 +86,14 @@ pub(super) fn diameter_pixels(radius: f64, depth: f64, height: f64, fov: f64) ->
     radius * height / ((depth * depth - radius * radius).sqrt() * (fov * 0.5).tan())
 }
 
-pub(super) fn distance_for_pixels(radius: f64, height: f64, fov: f64, pixels: f64) -> f64 {
-    radius * (1. + (height / (pixels * (fov * 0.5).tan())).powi(2)).sqrt()
-}
-
 pub(super) fn mesh_needed(pixels: f64, already_spawned: bool) -> bool {
-    let threshold = MIN_MESH_PIXELS
+    let threshold = MESH_PIXELS
         + if already_spawned {
             -MESH_HYSTERESIS_PIXELS
         } else {
             MESH_HYSTERESIS_PIXELS
         };
     pixels >= threshold
-}
-
-impl MeshLod {
-    pub fn at(radius: f64, distance: f64, depth: f64, height: f64, fov: f64) -> Self {
-        let scale = distance / depth.max(radius).max(1e-6);
-        let near_m = distance_for_pixels(radius, height, fov, FULL_MESH_PIXELS) * scale;
-        let far_m = distance_for_pixels(radius, height, fov, MIN_MESH_PIXELS) * scale;
-        let glint = ((distance - near_m) / (far_m - near_m).max(1e-6)).clamp(0., 1.);
-        Self {
-            near_m,
-            far_m,
-            mesh_fraction: (1. - glint) as f32,
-        }
-    }
 }
 
 fn sprite_luminance(flux_w_m2: f64) -> f32 {
@@ -126,193 +107,118 @@ fn reflection(direction: bevy::math::DVec3, rotation: [f64; 4]) -> f64 {
     0.65 + 0.35 * aspect.powi(12)
 }
 
-fn prepare(mut commands: Commands, views: Query<Entity, (With<ViewCamera>, Without<ViewGlints>)>) {
-    for entity in &views {
-        commands.entity(entity).insert(ViewGlints::default());
-    }
-}
-
-fn apply_lod(
-    mut commands: Commands,
-    roots: Query<(Entity, Option<&MeshLod>), With<ShipMesh>>,
-    children: Query<&Children>,
-    meshes: Query<Option<&VisibilityRange>, With<Mesh3d>>,
-    mut shields: Query<&mut toy_sim_ship_view::thermal::ThermalSphere>,
-    mut plumes: Query<&mut toy_sim_ship_view::plume::EnginePlume>,
-) {
-    for (entity, lod) in &roots {
-        let desired = lod.map(|lod| VisibilityRange {
-            start_margin: 0. ..0.,
-            end_margin: lod.near_m as f32..lod.far_m as f32,
-            use_aabb: false,
-        });
-        for child in children.iter_descendants(entity) {
-            if let Some(lod) = lod {
-                if let Ok(mut shield) = shields.get_mut(child) {
-                    shield.strength *= lod.mesh_fraction;
-                }
-                if let Ok(mut plume) = plumes.get_mut(child) {
-                    plume.output *= lod.mesh_fraction;
-                }
-            }
-            if let Ok(current) = meshes.get(child) {
-                match (&desired, current) {
-                    (Some(desired), current)
-                        if current.is_none_or(|current| current != desired) =>
-                    {
-                        commands.entity(child).insert(desired.clone());
-                    }
-                    (None, Some(_)) => {
-                        commands.entity(child).remove::<VisibilityRange>();
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-}
-
 fn render(
     mut commands: Commands,
     optical: Query<(Entity, &Optical, &DisplayPose, &OpticalLight)>,
-    ship_meshes: Query<(&RenderSource, &ViewMember, Option<&MeshLod>), With<ShipMesh>>,
+    ship_meshes: Query<(&RenderSource, &ViewMember), With<ShipMesh>>,
     owned: Query<(Entity, &OwnedShip)>,
-    mut views: Query<(
-        Entity,
-        &ViewCamera,
-        &ViewObservation,
-        &Camera,
-        &Transform,
-        &Projection,
-        Option<&bevy::camera::Exposure>,
-        &mut ViewGlints,
-    )>,
-    mut assets: ResMut<GlintAssets>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<GlintMaterial>>,
+    views: Query<
+        (
+            Entity,
+            &ViewCamera,
+            &ViewObservation,
+            &Transform,
+            Option<&bevy::camera::Exposure>,
+        ),
+        Without<Glint>,
+    >,
+    mut glints: Query<
+        (
+            Entity,
+            &RenderSource,
+            &ViewMember,
+            &mut Transform,
+            &mut MeshTag,
+            &mut Visibility,
+            &mut RenderLayers,
+        ),
+        With<Glint>,
+    >,
+    assets: Res<GlintAssets>,
 ) {
-    let resolved: std::collections::HashMap<_, _> = ship_meshes
+    let resolved: HashSet<_> = ship_meshes
         .iter()
-        .map(|(source, member, lod)| ((member.0, source.0), lod.copied()))
+        .map(|(source, member)| (member.0, source.0))
         .collect();
-    for (view_entity, view, observation, camera, transform, projection, exposure, mut state) in
-        &mut views
-    {
-        let height = camera
-            .physical_viewport_size()
-            .map_or(1080., |size| size.y.max(1) as f64);
-        let fov = match projection {
-            Projection::Perspective(projection) => projection.fov as f64,
-            _ => 1.,
-        };
+    let existing: HashMap<_, _> = glints
+        .iter()
+        .map(|(entity, source, member, ..)| ((member.0, source.0), entity))
+        .collect();
+    let mut retained = HashSet::new();
+
+    for (view_entity, view, observation, transform, exposure) in &views {
         let position = view.origin.offset_by(transform.translation.as_dvec3());
-        let right = transform.rotation.as_dquat() * bevy::math::DVec3::X;
-        let up = transform.rotation.as_dquat() * bevy::math::DVec3::Y;
-        let mut vertices = Vec::new();
-        let mut uvs = Vec::new();
-        let mut colors = Vec::new();
-        if !view.private {
-            for (source, object, pose, light) in &optical {
-                let object = &object.0;
-                if object.view != observation.0.id {
-                    continue;
-                }
-                let displacement = pose.0.position.relative_to(position);
-                let distance = displacement.length();
-                if distance <= object.radius_m {
-                    continue;
-                }
-                let forward = transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
-                if displacement.dot(forward) <= 0. {
-                    continue;
-                }
-                let render_source = object
-                    .known_entity
-                    .filter(|id| Some(*id) == observation.0.focused_ship)
-                    .and_then(|id| owned.iter().find(|(_, ship)| ship.0.ship == id))
-                    .map_or(source, |(entity, _)| entity);
-                let blend = resolved
-                    .get(&(view_entity, render_source))
-                    .map_or(1., |lod| {
-                        lod.map_or(0., |lod| 1. - lod.mesh_fraction as f64)
-                    });
-                if blend <= 0. {
-                    continue;
-                }
+        let forward = transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
+        let exposure_gain = exposure.map_or(1., |exposure| {
+            exposure.exposure() / bevy::camera::Exposure::SUNLIGHT.exposure()
+        });
+        for (source, optical, pose, light) in &optical {
+            let object = &optical.0;
+            if object.view != observation.0.id {
+                continue;
+            }
+            let displacement = pose.0.position.relative_to(position);
+            let distance = displacement.length();
+            let render_source = object
+                .known_entity
+                .filter(|id| Some(*id) == observation.0.focused_ship)
+                .and_then(|id| owned.iter().find(|(_, ship)| ship.0.ship == id))
+                .map_or(source, |(entity, _)| entity);
+            let visible = !view.private
+                && distance > object.radius_m
+                && displacement.dot(forward) > 0.
+                && !resolved.contains(&(view_entity, render_source));
+            let luminance = if visible {
                 let flux = flux_w_m2(light.display_w, distance, object.radius_m)
-                    * reflection(-displacement / distance, pose.0.rotation)
-                    * blend;
-                let exposure_gain = exposure.map_or(1., |exposure| {
-                    exposure.exposure() / bevy::camera::Exposure::SUNLIGHT.exposure()
-                });
-                let luminance = sprite_luminance(flux) * exposure_gain;
-                let half_width = 4. * distance * (fov * 0.5).tan() * 2. / height;
-                let color = [luminance, luminance * 0.95, luminance * 0.88, 1.];
-                for (x, y) in [
-                    (-1., -1.),
-                    (1., -1.),
-                    (1., 1.),
-                    (-1., -1.),
-                    (1., 1.),
-                    (-1., 1.),
-                ] {
-                    vertices.push(
-                        (displacement + (right * x + up * y) * half_width)
-                            .as_vec3()
-                            .to_array(),
-                    );
-                    uvs.push([(x as f32 + 1.) * 0.5, (y as f32 + 1.) * 0.5]);
-                    colors.push(color);
+                    * reflection(-displacement / distance, pose.0.rotation);
+                sprite_luminance(flux) * exposure_gain
+            } else {
+                0.
+            };
+            let pose =
+                Transform::from_translation(pose.0.position.relative_to(view.origin).as_vec3());
+            let tag = MeshTag(luminance.to_bits());
+            let visibility = if visible {
+                Visibility::Visible
+            } else {
+                Visibility::Hidden
+            };
+            let layers = RenderLayers::layer(view.layer);
+            let entity = if let Some(&entity) = existing.get(&(view_entity, source)) {
+                if let Ok((_, _, _, mut current, mut brightness, mut shown, mut layer)) =
+                    glints.get_mut(entity)
+                {
+                    current.set_if_neq(pose);
+                    brightness.set_if_neq(tag);
+                    shown.set_if_neq(visibility);
+                    layer.set_if_neq(layers);
                 }
-            }
-        }
-        if vertices.is_empty() {
-            if let Some(entity) = state.entity {
-                commands.entity(entity).insert(Visibility::Hidden);
-            }
-            continue;
-        }
-        let mesh = Mesh::new(
-            PrimitiveTopology::TriangleList,
-            RenderAssetUsages::default(),
-        )
-        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        let handle = if let Some(handle) = &state.mesh {
-            if let Some(mut current) = meshes.get_mut(handle) {
-                *current = mesh;
-            }
-            handle.clone()
-        } else {
-            let handle = meshes.add(mesh);
-            state.mesh = Some(handle.clone());
-            handle
-        };
-        let material = assets
-            .0
-            .get_or_insert_with(|| materials.add(GlintMaterial { gain: Vec4::ONE }))
-            .clone();
-        if let Some(entity) = state.entity {
-            commands
-                .entity(entity)
-                .insert((Visibility::Visible, RenderLayers::layer(view.layer)));
-        } else {
-            state.entity = Some(
+                entity
+            } else {
                 commands
                     .spawn((
-                        Mesh3d(handle),
-                        MeshMaterial3d(material),
-                        Transform::default(),
-                        Visibility::Visible,
+                        Glint,
+                        Mesh3d(assets.mesh.clone()),
+                        MeshMaterial3d(assets.material.clone()),
+                        tag,
+                        pose,
+                        visibility,
+                        // The shader expands the quad in screen space.
                         NoFrustumCulling,
                         bevy::light::NotShadowCaster,
                         bevy::light::NotShadowReceiver,
-                        RenderLayers::layer(view.layer),
+                        layers,
+                        RenderSource(source),
                         ViewMember(view_entity),
                     ))
-                    .id(),
-            );
+                    .id()
+            };
+            retained.insert(entity);
+        }
+    }
+    for (entity, ..) in &glints {
+        if !retained.contains(&entity) {
+            commands.entity(entity).despawn();
         }
     }
 }
@@ -322,21 +228,158 @@ mod tests {
     use super::*;
 
     #[test]
-    fn projected_sphere_lod_is_conservative_smooth_and_has_hysteresis() {
-        for pixels in [MIN_MESH_PIXELS, 5., FULL_MESH_PIXELS] {
-            let distance = distance_for_pixels(10., 1080., 1., pixels);
-            assert!((diameter_pixels(10., distance, 1080., 1.) - pixels).abs() < 1e-10);
+    fn glints_keep_shared_assets_and_entities_across_view_and_mesh_changes() {
+        use toy_sim_model::{
+            Completion, GalacticPosition, Id, Pose, ViewState, optical::OpticalObservation,
+        };
+
+        let mut app = App::new();
+        app.init_resource::<Assets<Mesh>>()
+            .init_resource::<Assets<GlintMaterial>>()
+            .add_systems(Startup, setup)
+            .add_systems(Update, (super::super::camera::setup_views, render).chain());
+        let view = app
+            .world_mut()
+            .spawn(ViewObservation(ViewState {
+                focused_ship: None,
+                origin: GalacticPosition::ZERO,
+                id: 1,
+                revision: 1,
+                group: Id([1; 16]),
+                tracks: Vec::new(),
+                completion: Completion::Complete,
+            }))
+            .id();
+        let mut sources = Vec::new();
+        for id in 1..=3 {
+            let pose = Pose {
+                position: GalacticPosition::ZERO.offset_by(bevy::math::DVec3::new(0., 0., -1000.)),
+                ..default()
+            };
+            let mut light = OpticalLight::default();
+            light.display_w = 1000.;
+            sources.push(
+                app.world_mut()
+                    .spawn((
+                        Optical(OpticalObservation {
+                            view: if id == 3 { 2 } else { 1 },
+                            id: Id([id; 16]),
+                            spatial_instance: Id([id; 16]),
+                            known_entity: None,
+                            contact: None,
+                            pose: pose.clone(),
+                            radius_m: 1.,
+                            luminosity_w: light.display_w,
+                            appearance: None,
+                            visual: toy_sim_model::ShipVisual {
+                                engines: Vec::new(),
+                                turrets: Vec::new(),
+                                shield: None,
+                            },
+                        }),
+                        DisplayPose(pose),
+                        light,
+                    ))
+                    .id(),
+            );
         }
+        app.update();
+        *app.world_mut().get_mut::<Transform>(view).unwrap() = Transform::IDENTITY;
+        app.update();
+
+        let entities: HashMap<_, _> = app
+            .world_mut()
+            .query_filtered::<(Entity, &RenderSource), With<Glint>>()
+            .iter(app.world())
+            .map(|(entity, source)| (source.0, entity))
+            .collect();
+        assert_eq!(entities.len(), 2);
+        let glint = entities[&sources[0]];
+        let other = entities[&sources[1]];
+        assert_eq!(
+            app.world().get::<Mesh3d>(glint),
+            app.world().get::<Mesh3d>(other)
+        );
+        assert_eq!(
+            app.world()
+                .get::<MeshMaterial3d<GlintMaterial>>(glint)
+                .unwrap()
+                .0,
+            app.world()
+                .get::<MeshMaterial3d<GlintMaterial>>(other)
+                .unwrap()
+                .0,
+        );
+        let brightness = f32::from_bits(app.world().get::<MeshTag>(glint).unwrap().0);
+
+        app.world_mut()
+            .get_mut::<DisplayPose>(sources[0])
+            .unwrap()
+            .0
+            .position = GalacticPosition::ZERO.offset_by(bevy::math::DVec3::new(0., 0., -2000.));
+        app.world_mut().get_mut::<ViewCamera>(view).unwrap().layer = 3;
+        app.update();
+        let distant = f32::from_bits(app.world().get::<MeshTag>(glint).unwrap().0);
+        assert!((brightness / distant - 4.).abs() < 1e-5);
+        assert_eq!(
+            app.world().get::<Transform>(glint).unwrap().translation.z,
+            -2000.
+        );
+        assert_eq!(
+            app.world().get::<RenderLayers>(glint),
+            Some(&RenderLayers::layer(3))
+        );
+
+        let resolved = app
+            .world_mut()
+            .spawn((
+                ShipMesh {
+                    appearance: [0; 32],
+                },
+                RenderSource(sources[0]),
+                ViewMember(view),
+            ))
+            .id();
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(glint),
+            Some(&Visibility::Hidden)
+        );
+        app.world_mut().despawn(resolved);
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(glint),
+            Some(&Visibility::Visible)
+        );
+
+        app.world_mut().get_mut::<ViewCamera>(view).unwrap().private = true;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(glint),
+            Some(&Visibility::Hidden)
+        );
+        app.world_mut().get_mut::<ViewCamera>(view).unwrap().private = false;
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(glint),
+            Some(&Visibility::Visible)
+        );
+        assert_eq!(app.world().resource::<Assets<Mesh>>().len(), 1);
+        assert_eq!(app.world().resource::<Assets<GlintMaterial>>().len(), 1);
+
+        app.world_mut().despawn(sources[0]);
+        assert!(app.world().get_entity(glint).is_err());
+        assert!(app.world().get_entity(other).is_ok());
+        app.world_mut().despawn(view);
+        assert!(app.world().get_entity(other).is_err());
+    }
+
+    #[test]
+    fn projected_sphere_mesh_switch_has_hysteresis() {
         assert!(!mesh_needed(3.2, false));
         assert!(mesh_needed(3.2, true));
         assert!(mesh_needed(3.6, false));
         assert!(!mesh_needed(2.4, true));
-        let near = distance_for_pixels(10., 1080., 1., FULL_MESH_PIXELS);
-        let far = distance_for_pixels(10., 1080., 1., MIN_MESH_PIXELS);
-        assert_eq!(MeshLod::at(10., near, near, 1080., 1.).mesh_fraction, 1.);
-        assert_eq!(MeshLod::at(10., far, far, 1080., 1.).mesh_fraction, 0.);
-        let middle = (near + far) * 0.5;
-        assert!((MeshLod::at(10., middle, middle, 1080., 1.).mesh_fraction - 0.5).abs() < 1e-6);
         assert!(diameter_pixels(10., 5., 1080., 1.).is_infinite());
     }
 

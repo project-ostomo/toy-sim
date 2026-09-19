@@ -27,7 +27,7 @@ pub(super) struct Contact(pub Track, pub ContactRef);
 #[derive(Component)]
 pub(super) struct Optical(pub optical::OpticalObservation);
 
-#[derive(Component)]
+#[derive(Component, Default)]
 pub(super) struct OpticalLight {
     previous: f64,
     current: f64,

@@ -193,6 +193,20 @@ fn sync_ships(
             {
                 continue;
             }
+            if !private_view && let Some(pose) = pose {
+                let offset = pose.0.position.relative_to(camera.origin)
+                    - camera_transform.translation.as_dvec3();
+                let forward = camera_transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
+                let depth = offset.dot(forward);
+                let pixels = if depth < -ship.0.radius_m {
+                    0.
+                } else {
+                    glints::diameter_pixels(ship.0.radius_m, depth, height, fov)
+                };
+                if !glints::mesh_needed(pixels, existing.contains_key(&(view_entity, source))) {
+                    continue;
+                }
+            }
             if appearance.is_none() {
                 commands.entity(source).insert(crate::assets::MeshDemand);
             }
@@ -241,20 +255,6 @@ fn sync_ships(
                 ViewLayer(camera.layer),
                 RenderLayers::layer(camera.layer),
             ));
-            if private_view {
-                commands.entity(entity).remove::<glints::MeshLod>();
-            } else {
-                let offset = pose.0.position.relative_to(camera.origin)
-                    - camera_transform.translation.as_dvec3();
-                let forward = camera_transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
-                commands.entity(entity).insert(glints::MeshLod::at(
-                    ship.0.radius_m,
-                    offset.length(),
-                    offset.dot(forward),
-                    height,
-                    fov,
-                ));
-            }
             visible.insert(entity);
         }
         if private_view {
@@ -313,13 +313,6 @@ fn sync_ships(
                 ViewMember(view_entity),
                 RenderSource(source),
                 ShipMesh { appearance: hash },
-                glints::MeshLod::at(
-                    optical.radius_m,
-                    relative_to_camera.length(),
-                    depth,
-                    height,
-                    fov,
-                ),
                 ViewLayer(camera.layer),
                 RenderLayers::layer(camera.layer),
             ));

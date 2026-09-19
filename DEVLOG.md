@@ -1501,7 +1501,7 @@ The first failing replay logged the range overflow at 14:41:16.390672 UTC,
 exactly when the transparent draw count collapsed. Its coincidence with the
 gate approach initially suggested a lighting issue; the range overflow explains
 the observed failure and the direct-drawing comparison. At the user's request,
-the mesh/glint crossfade is being removed. Meshes and distant glints will switch
+the mesh/glint crossfade has been removed. Meshes and distant glints switch
 directly, using the existing projected-size hysteresis to avoid switching back
 and forth at the threshold. Normal GPU drawing is retained. All temporary probe
 systems, function-key switches and environment flags have been removed.
@@ -1533,3 +1533,51 @@ relative speed, and retains hull integrity. A disposable replay of the original
 saved native world also completes the crossing after 222.7 simulated seconds;
 every sampled local query is complete. The temporary saved-world inspection
 helper was removed. No guidance or firmware changes were required.
+
+
+### Persistent glints and completed native verification
+
+Glints now use one shared quad mesh, one shared material, and a persistent entity
+for each observed object in each view. The vertex shader faces each quad toward
+the camera and holds its diameter at eight physical pixels. Each instance carries
+its position in its transform and brightness in Bevy's `MeshTag`. This uses
+Bevy's automatic instancing; transparent sorting may still divide the instances
+into several batches.
+
+The renderer updates transforms, brightness, visibility, and view layers. It
+never rebuilds or uploads glint vertex arrays during movement. A nearby ship
+mesh hides its existing glint; zooming away shows that same entity again. Private
+hangar views hide external glints. Removing the observation or view cleans up
+its associated entities. Brightness retains distance attenuation and the
+existing aspect-dependent reflection.
+
+All four targeted glint checks pass. The lifecycle regression verifies shared
+mesh/material handles, stable entity identity across movement and mesh handoff,
+privacy, view-layer changes, inverse-square brightness, and cleanup. The client
+and server native builds pass. The compiled native shader also passes without
+GPU or shader errors.
+
+The saved Sol return flight now completes in the native client. The gate remains
+visible throughout the approach, the location changes to Helion, and the route
+reports completion. Planet surfaces remain visible after transit. The final
+sprite implementation was then checked with real wheel input and right-button
+camera rotation: distant ships appear as small glints, the glints face the
+rotating camera, and zooming back in restores the ship mesh. The former
+visibility-table overflow warning does not recur.
+
+Screenshots in `/tmp/toy-sequential-playtests/`:
+
+- `render-switch-gate-approach.png`: normal GPU drawing with the gate visible.
+- `render-switch-gate-stable.png`: continued approach beyond the previous failure.
+- `render-switch-return-complete.png`: native return transit and completed order.
+- `render-instanced-near.png`: textured planets and the ship after transit.
+- `render-instanced-glints.png`: distant glints after zooming out.
+- `render-instanced-glints-orbit.png`: sprites after rotating the camera.
+- `render-instanced-mesh-restored.png`: ship mesh restored by zooming back in.
+
+A sample of twelve consecutive readings in the zoomed-out scene ranged from
+130 to 171 FPS, with a median of 155 FPS, at about 2672 by 1670 rendered pixels.
+These measurements describe that view. A gate aperture filling the screen is
+still more expensive, and transit includes a brief scene-change cost. The native
+sessions saved and exited normally. All rendering replays used disabled provider
+calls. The desktop focus and cursor were restored after testing.
