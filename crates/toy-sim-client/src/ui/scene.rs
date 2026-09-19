@@ -13,6 +13,7 @@ mod orbit;
 mod sensor_hud;
 mod shield;
 mod sky;
+mod surfaces;
 
 use crate::state::{
     Celestial, CelestialSystem, DisplayPose, DisplayVisual, Optical, OwnedShip, PresentationSet,
@@ -87,6 +88,7 @@ pub(super) fn install(app: &mut App) {
         camera::align_on_double_click,
     );
     lighting::install(app);
+    surfaces::install(app);
     glints::install(app);
     transit::install(app);
     navigation_hud::install(app);
@@ -328,10 +330,17 @@ fn sync_ships(
 fn sync_celestials(
     mut commands: Commands,
     views: Query<(Entity, &ViewCamera, &SystemSubscription)>,
-    bodies: Query<(Entity, &Celestial, &DisplayPose, &CelestialSystem)>,
+    bodies: Query<(
+        Entity,
+        &Celestial,
+        &DisplayPose,
+        &CelestialSystem,
+        Option<&super::celestials::PlanetSurface>,
+    )>,
     mut objects: Query<(Entity, &ViewMember, &RenderSource, &mut Transform), With<BodyMesh>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut surfaces: ResMut<surfaces::SurfaceCache>,
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
@@ -342,7 +351,7 @@ fn sync_celestials(
         if camera.private {
             continue;
         }
-        for (source, body, pose, system) in &bodies {
+        for (source, body, pose, system, surface) in &bodies {
             if !systems.0.iter().any(|entry| entry.system == system.0) {
                 continue;
             }
@@ -367,17 +376,46 @@ fn sync_celestials(
                         RenderSource(source),
                     ))
                     .id();
+                let mesh = surfaces.mesh(&mut meshes);
+                let appearance = surface.map(|surface| {
+                    surfaces.materials(
+                        &surface.0,
+                        Color::srgb_from_array(body.0.color),
+                        &mut materials,
+                    )
+                });
+                let ground = appearance
+                    .as_ref()
+                    .map(|appearance| appearance.ground.clone())
+                    .unwrap_or_else(|| {
+                        materials.add(StandardMaterial {
+                            base_color: Color::srgb_from_array(body.0.color),
+                            perceptual_roughness: 1.,
+                            ..default()
+                        })
+                    });
                 commands.spawn((
                     ChildOf(entity),
-                    Mesh3d(meshes.add(Sphere::new(1.).mesh().uv(64, 32))),
-                    MeshMaterial3d(materials.add(StandardMaterial {
-                        base_color: Color::srgb_from_array(body.0.color),
-                        perceptual_roughness: 1.,
-                        ..default()
-                    })),
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(ground),
                     Transform::from_scale(Vec3::splat(body.0.radius_m as f32)),
                     RenderLayers::layer(camera.layer),
                 ));
+                if let Some((surface, cloud)) =
+                    surface.zip(appearance.and_then(|appearance| appearance.cloud))
+                {
+                    commands.spawn((
+                        ChildOf(entity),
+                        Mesh3d(mesh),
+                        MeshMaterial3d(cloud),
+                        surfaces::CloudLayer(surface.0.cloud_rotation_rad_s()),
+                        bevy::light::NotShadowCaster,
+                        Transform::from_scale(Vec3::splat(
+                            (body.0.radius_m + surface.0.cloud_altitude_m) as f32,
+                        )),
+                        RenderLayers::layer(camera.layer),
+                    ));
+                }
                 entity
             };
             commands
@@ -513,6 +551,7 @@ fn apply_visuals(
 #[cfg(test)]
 pub(super) fn install_celestial_render_test(app: &mut App) {
     app.init_resource::<Assets<Mesh>>()
+        .init_resource::<surfaces::SurfaceCache>()
         .init_resource::<Assets<StandardMaterial>>()
         .init_resource::<Assets<bevy::light::atmosphere::ScatteringMedium>>()
         .add_systems(

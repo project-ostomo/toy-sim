@@ -67,7 +67,7 @@ pub enum PlanetKind {
     GasGiant,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct PlanetParameters {
     pub seed: [u8; 32],
@@ -76,6 +76,12 @@ pub struct PlanetParameters {
     pub temperature_k: f64,
     pub bond_albedo: f64,
     pub ocean_fraction: f64,
+    pub relief_m: f64,
+    pub cloud_fraction: f64,
+    pub cloud_altitude_m: f64,
+    pub cloud_rotation_period_s: f64,
+    #[serde(default)]
+    pub biosphere: bool,
 }
 
 /// Broad spectral classes. Colours are a display approximation, not spectra.
@@ -410,7 +416,20 @@ impl OrreryCfg {
                         && planet.equilibrium_temperature_k.is_finite()
                         && planet.equilibrium_temperature_k > 0.
                         && (0. ..=1.).contains(&planet.bond_albedo)
-                        && (0. ..=1.).contains(&planet.ocean_fraction),
+                        && (0. ..=1.).contains(&planet.ocean_fraction)
+                        && planet.relief_m.is_finite()
+                        && (0. ..=1e6_f64.min(body.radius * 0.1)).contains(&planet.relief_m)
+                        && (0. ..=1.).contains(&planet.cloud_fraction)
+                        && planet.cloud_altitude_m.is_finite()
+                        && planet.cloud_altitude_m >= 0.
+                        && planet.cloud_rotation_period_s.is_finite()
+                        && (planet.cloud_rotation_period_s == 0.
+                            || planet.cloud_rotation_period_s.abs() >= 60.)
+                        && (planet.cloud_fraction == 0.
+                            || body.atmosphere.as_ref().is_some_and(|atmosphere| {
+                                planet.cloud_altitude_m > 0.
+                                    && planet.cloud_altitude_m < atmosphere.height
+                            })),
                     "invalid planetary parameters"
                 );
             }

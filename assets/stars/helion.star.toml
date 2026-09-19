@@ -21,22 +21,36 @@ semi_major = "1 au"
 inclination = 1.5707963267948966
 mean_anomaly = -0.7853981633974483
 rotation_period = "24 h"
-surface_color = [0.16, 0.26, 0.36]
+surface_color = [0.38, 0.31, 0.24]
 
-# Metres, kg/m³, kelvin, J/(kg K), and optical coefficients in m⁻¹.
+
+[bodies.planet]
+seed = [80, 54, 185, 159, 17, 182, 36, 211, 44, 148, 187, 215, 36, 65, 206, 164, 87, 137, 127, 111, 197, 154, 134, 178, 119, 153, 69, 225, 67, 240, 109, 212]
+kind = "ocean"
+equilibrium_temperature_k = 253
+temperature_k = 286
+bond_albedo = 0.32
+ocean_fraction = 0.62
+relief_m = 8500
+cloud_fraction = 0.52
+cloud_altitude_m = 6500
+cloud_rotation_period_s = 1900000
+biosphere = false
+
 [bodies.atmosphere]
-height = 160000.0
-surface_density = 1.2
-scale_height = 12000.0
-temperature = 270.0
-specific_gas_constant = 287.0
+height = 95000
+surface_density = 1.2000194927024195
+scale_height = 7413.279318036747
+temperature = 286
+specific_gas_constant = 287
 heat_capacity_ratio = 1.4
-rayleigh_scattering = [0.000005802, 0.000013558, 0.000033100]
-mie_scattering = 0.000003996
-mie_absorption = 0.000000444
-mie_scale_height = 1800.0
-mie_asymmetry = 0.8
-ground_albedo = [0.16, 0.26, 0.36]
+rayleigh_scattering = [5.802094247216199e-06, 1.3558220235049505e-05, 3.3100537673708404e-05]
+mie_scattering = 3.996e-06
+mie_absorption = 3.9960000000000006e-07
+mie_scale_height = 1800
+mie_asymmetry = 0.76
+ground_albedo = [0.38, 0.31, 0.24]
+
 
 [[bodies]]
 name = "Helion I a Ione"
@@ -50,6 +64,20 @@ rotation_period = "3 d"
 surface_color = [0.65, 0.54, 0.4]
 # No atmosphere section: this moon is airless.
 
+[bodies.planet]
+seed = [150, 228, 185, 240, 24, 150, 18, 66, 89, 223, 96, 161, 113, 242, 213, 195, 55, 243, 83, 110, 7, 187, 246, 231, 60, 69, 106, 224, 33, 159, 175, 6]
+kind = "rocky"
+equilibrium_temperature_k = 264
+temperature_k = 264
+bond_albedo = 0.19
+ocean_fraction = 0
+relief_m = 9000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+
 [[bodies]]
 name = "Helion I b Cinder"
 class = "planet"
@@ -61,6 +89,20 @@ mean_anomaly = 3.3
 rotation_period = "3 d"
 surface_color = [0.35, 0.26, 0.23]
 # No atmosphere section: this moon is airless.
+
+[bodies.planet]
+seed = [152, 64, 47, 114, 157, 141, 194, 198, 208, 151, 30, 138, 186, 211, 31, 17, 8, 204, 99, 34, 21, 190, 47, 102, 143, 104, 151, 57, 180, 158, 253, 184]
+kind = "rocky"
+equilibrium_temperature_k = 268
+temperature_k = 268
+bond_albedo = 0.14
+ocean_fraction = 0
+relief_m = 11000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
 
 [[bodies]]
 name = "Helion I c Vela"
@@ -74,6 +116,20 @@ rotation_period = "3 d"
 surface_color = [0.56, 0.62, 0.68]
 # No atmosphere section: this moon is airless.
 
+[bodies.planet]
+seed = [254, 82, 48, 26, 219, 24, 0, 107, 244, 26, 135, 33, 246, 28, 94, 166, 236, 157, 195, 35, 159, 13, 206, 88, 57, 157, 154, 176, 174, 36, 251, 197]
+kind = "ice"
+equilibrium_temperature_k = 234
+temperature_k = 234
+bond_albedo = 0.5
+ocean_fraction = 0
+relief_m = 7000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+
 [[bodies]]
 name = "Helion I d Rime"
 class = "planet"
@@ -86,6 +142,20 @@ rotation_period = "3 d"
 surface_color = [0.7, 0.74, 0.78]
 # No atmosphere section: this moon is airless.
 
+[bodies.planet]
+seed = [195, 245, 246, 60, 249, 17, 120, 159, 172, 158, 86, 177, 176, 105, 102, 138, 102, 212, 14, 224, 251, 40, 136, 175, 235, 191, 145, 122, 45, 109, 192, 34]
+kind = "ice"
+equilibrium_temperature_k = 212
+temperature_k = 212
+bond_albedo = 0.66
+ocean_fraction = 0
+relief_m = 6000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+
 [[bodies]]
 name = "Helion I e Orin"
 class = "planet"
@@ -97,3 +167,16 @@ mean_anomaly = 0.40
 rotation_period = "3 d"
 surface_color = [0.55, 0.43, 0.34]
 # No atmosphere section: this moon is airless.
+
+[bodies.planet]
+seed = [222, 42, 69, 119, 134, 95, 65, 125, 229, 254, 109, 153, 89, 237, 26, 242, 32, 64, 234, 2, 210, 211, 126, 79, 70, 173, 21, 196, 213, 91, 10, 136]
+kind = "rocky"
+equilibrium_temperature_k = 262
+temperature_k = 262
+bond_albedo = 0.22
+ocean_fraction = 0
+relief_m = 12000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false

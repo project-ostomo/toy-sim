@@ -250,7 +250,7 @@ fn complete_inhabited_map_validates_preserves_authored_bodies_and_sol_plane() {
         assert_eq!(authored.name, config.name);
         assert_eq!(
             serde_json::to_string(&authored.bodies).unwrap(),
-            serde_json::to_string(&config.bodies).unwrap()
+            serde_json::to_string(&config.bodies[..authored.bodies.len()]).unwrap()
         );
     }
     let universe = Universe::from_configs(configs, 1e-8).unwrap();
@@ -261,4 +261,139 @@ fn complete_inhabited_map_validates_preserves_authored_bodies_and_sol_plane() {
         "Generated and validated 3000 systems: {count} bodies, {physical} physical, {:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn bundled_stellar_stubs_gain_planets_without_replacing_stars_or_custom_configs() {
+    let authored = crate::handcrafted_configs();
+    let bundled = crate::bundled_configs().unwrap();
+    let second = crate::bundled_configs().unwrap();
+    let mut completed = 0;
+    for ((original, populated), repeated) in authored.iter().zip(&bundled).zip(&second) {
+        if original.bodies.len() > 1 {
+            continue;
+        }
+        completed += 1;
+        assert!(
+            populated.bodies.len() >= 4,
+            "{} remained empty",
+            original.name
+        );
+        assert_eq!(
+            serde_json::to_string(&original.bodies[0]).unwrap(),
+            serde_json::to_string(&populated.bodies[0]).unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_string(&populated.bodies).unwrap(),
+            serde_json::to_string(&repeated.bodies).unwrap(),
+        );
+        let mut original = original.clone();
+        original.position_um = populated.position_um;
+        let prior = Orrery::init(original).unwrap();
+        let current = Orrery::init(populated.clone()).unwrap();
+        let star = &populated.bodies[0].name;
+        for seconds in [0.0, 100.0, 1e9] {
+            let epoch = Epoch::from_mjd_utc(0.0) + Duration::from_seconds(seconds);
+            assert_eq!(
+                prior.solve_position(star, epoch),
+                current.solve_position(star, epoch)
+            );
+            assert_eq!(
+                prior.solve_velocity(star, epoch),
+                current.solve_velocity(star, epoch)
+            );
+        }
+    }
+    assert_eq!(completed, 8);
+
+    let mut custom = authored[2].clone();
+    custom.name = "Deliberately barren custom system".into();
+    let custom = Universe::init(custom).unwrap();
+    assert_eq!(custom.iter().count(), 1);
+}
+
+#[test]
+fn authored_surfaces_have_explicit_climates_and_biospheres() {
+    let configs = crate::handcrafted_configs();
+    let sol = configs.iter().find(|config| config.name == "Sol").unwrap();
+    let earth = sol.bodies.iter().find(|body| body.name == "Earth").unwrap();
+    let earth_surface = earth.planet.as_ref().unwrap();
+    assert_eq!(earth_surface.kind, PlanetKind::Ocean);
+    assert_eq!(earth_surface.ocean_fraction, 0.71);
+    assert!(earth_surface.biosphere);
+    assert!(earth_surface.cloud_fraction > 0.5);
+    let atmosphere = earth.atmosphere.as_ref().unwrap();
+    let pressure =
+        atmosphere.surface_density * atmosphere.specific_gas_constant * atmosphere.temperature;
+    assert!((pressure - 101325.0).abs() < 0.01);
+
+    let helion = &configs[0];
+    let neris = helion
+        .bodies
+        .iter()
+        .find(|body| body.name == "Helion I Neris")
+        .unwrap();
+    let surface = neris.planet.as_ref().unwrap();
+    assert_eq!(surface.kind, PlanetKind::Ocean);
+    assert!(surface.ocean_fraction > 0.5);
+    assert!(!surface.biosphere);
+    assert!(neris.atmosphere.is_some());
+    for moon in helion
+        .bodies
+        .iter()
+        .filter(|body| body.parent.as_deref() == Some("Helion I Neris"))
+    {
+        assert!(moon.atmosphere.is_none());
+        assert_eq!(moon.planet.as_ref().unwrap().cloud_fraction, 0.0);
+    }
+    let mut seeds = std::collections::BTreeSet::new();
+    for config in configs {
+        config.validate_system().unwrap();
+        for body in config.bodies {
+            if !matches!(body.class_params, BodyClass::Planet) {
+                continue;
+            }
+            let planet = body
+                .planet
+                .as_ref()
+                .expect("authored planet has physical appearance metadata");
+            assert!(seeds.insert(planet.seed));
+            assert_eq!(planet.biosphere, body.name == "Earth");
+        }
+    }
+}
+
+#[test]
+fn generated_weather_matches_atmosphere_and_does_not_imply_life() {
+    let mut atmospheric = 0;
+    let mut bare = 0;
+    let mut giants = 0;
+    for source in crate::civilization::stars().iter().step_by(29) {
+        let config = system(source, &source.name);
+        config.validate_system().unwrap();
+        for body in &config.bodies {
+            let Some(planet) = &body.planet else {
+                continue;
+            };
+            assert!(!planet.biosphere);
+            if matches!(planet.kind, PlanetKind::GasGiant | PlanetKind::IceGiant) {
+                giants += 1;
+                assert_eq!(planet.relief_m, 0.0);
+                assert_eq!(planet.cloud_fraction, 0.0);
+            } else if let Some(atmosphere) = &body.atmosphere {
+                atmospheric += 1;
+                assert!(planet.cloud_fraction > 0.0);
+                assert!(
+                    planet.cloud_altitude_m > 0.0 && planet.cloud_altitude_m < atmosphere.height
+                );
+                assert!(planet.cloud_rotation_period_s.abs() >= 60.0);
+            } else {
+                bare += 1;
+                assert_eq!(planet.cloud_fraction, 0.0);
+                assert_eq!(planet.cloud_altitude_m, 0.0);
+                assert_eq!(planet.cloud_rotation_period_s, 0.0);
+            }
+        }
+    }
+    assert!(atmospheric > 10 && bare > 10 && giants > 10);
 }

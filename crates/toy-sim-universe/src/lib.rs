@@ -5,6 +5,7 @@ pub mod generation;
 pub mod orrery_cfg;
 pub mod replication;
 pub mod solver;
+pub mod surface;
 pub mod universe;
 
 mod precision {
@@ -98,6 +99,19 @@ pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
             "authored system ordering mismatch"
         );
         config.position_um = settlement.position;
+        if matches!(
+            config.name.as_str(),
+            "Vesper system"
+                | "Aurora system"
+                | "Lyra system"
+                | "Cinder system"
+                | "Meridian system"
+                | "Havoc system"
+                | "Elysium system"
+                | "Terminus system"
+        ) {
+            generation::populate_bundled_system(config, &settlement.catalogue_id)?;
+        }
     }
     for (star, settlement) in civilization::stars().iter().zip(&map.systems[authored..]) {
         anyhow::ensure!(

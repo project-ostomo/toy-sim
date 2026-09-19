@@ -29,6 +29,21 @@ epoch = 51544.5
 rotation_period = "58.646 d"
 obliquity = 0.00059341194567807205
 rotation_epoch = 51544.5
+surface_color = [0.32, 0.3, 0.28]
+
+[bodies.planet]
+seed = [95, 218, 94, 231, 70, 64, 123, 21, 211, 156, 203, 84, 108, 94, 99, 70, 130, 180, 68, 140, 179, 31, 41, 237, 188, 36, 230, 10, 113, 0, 217, 167]
+kind = "rocky"
+equilibrium_temperature_k = 440
+temperature_k = 440
+bond_albedo = 0.088
+ocean_fraction = 0
+relief_m = 5000
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
 
 [[bodies]]
 name = "Venus"
@@ -47,6 +62,35 @@ epoch = 51544.5
 rotation_period = "-243.025 d"
 obliquity = 3.095515961337143
 rotation_epoch = 51544.5
+surface_color = [0.45, 0.32, 0.18]
+
+[bodies.planet]
+seed = [218, 242, 130, 49, 230, 58, 135, 167, 223, 198, 74, 74, 191, 231, 212, 22, 105, 204, 29, 81, 239, 154, 170, 159, 228, 157, 183, 201, 143, 76, 151, 85]
+kind = "rocky"
+equilibrium_temperature_k = 226.6
+temperature_k = 737
+bond_albedo = 0.77
+ocean_fraction = 0
+relief_m = 6500
+cloud_fraction = 0.98
+cloud_altitude_m = 65000
+cloud_rotation_period_s = -345600
+biosphere = false
+
+[bodies.atmosphere]
+height = 180000
+surface_density = 65.2196413203291
+scale_height = 15903.066675035363
+temperature = 737
+specific_gas_constant = 191.4
+heat_capacity_ratio = 1.3
+rayleigh_scattering = [0.0002102978928606886, 0.0004914199985186515, 0.001199734618009099]
+mie_scattering = 2e-05
+mie_absorption = 2.0000000000000003e-06
+mie_scale_height = 6000
+mie_asymmetry = 0.76
+ground_albedo = [0.45, 0.32, 0.18]
+
 
 [[bodies]]
 name = "Earth"
@@ -65,15 +109,35 @@ epoch = 51544.5
 rotation_period = "23.75 h"
 obliquity = 0.40909262775014904
 rotation_epoch = 51544.5
+surface_color = [0.3, 0.24, 0.16]
 
-# [[bodies]]
-# name = "PeriEarth"
-# class = "planet"
-# parent = "Earth"
-# mass = "0.107 massEarth"
-# radius = 3.3895e6
-# semi_major = 12e6
-# period = 10.0
+[bodies.planet]
+seed = [28, 199, 30, 43, 162, 159, 165, 39, 141, 107, 193, 121, 43, 110, 6, 55, 44, 42, 72, 129, 230, 196, 250, 29, 245, 186, 75, 89, 245, 254, 243, 166]
+kind = "ocean"
+equilibrium_temperature_k = 254
+temperature_k = 288
+bond_albedo = 0.294
+ocean_fraction = 0.71
+relief_m = 10000
+cloud_fraction = 0.64
+cloud_altitude_m = 6000
+cloud_rotation_period_s = 1700000
+biosphere = true
+
+[bodies.atmosphere]
+height = 100000
+surface_density = 1.2256502932125644
+scale_height = 8436.824243579102
+temperature = 288
+specific_gas_constant = 287.05
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [5.927051575203252e-06, 1.3850218072493224e-05, 3.3813410399728994e-05]
+mie_scattering = 4e-06
+mie_absorption = 4e-07
+mie_scale_height = 1200
+mie_asymmetry = 0.76
+ground_albedo = [0.3, 0.24, 0.16]
+
 
 [[bodies]]
 name = "Mars"
@@ -92,6 +156,35 @@ epoch = 51544.5
 rotation_period = "24.6229 h"
 obliquity = 0.43964843857737163
 rotation_epoch = 51544.5
+surface_color = [0.5, 0.24, 0.12]
+
+[bodies.planet]
+seed = [192, 130, 238, 194, 33, 185, 210, 67, 91, 24, 106, 23, 176, 9, 201, 141, 229, 150, 60, 62, 170, 47, 188, 4, 242, 1, 38, 5, 251, 135, 121, 58]
+kind = "rocky"
+equilibrium_temperature_k = 209.8
+temperature_k = 214
+bond_albedo = 0.25
+ocean_fraction = 0
+relief_m = 15000
+cloud_fraction = 0.08
+cloud_altitude_m = 15000
+cloud_rotation_period_s = 900000
+biosphere = false
+
+[bodies.atmosphere]
+height = 110000
+surface_density = 0.015543737535682167
+scale_height = 11021.7128794516
+temperature = 214
+specific_gas_constant = 191.2
+heat_capacity_ratio = 1.3
+rayleigh_scattering = [5.006773258653815e-08, 1.169972972092872e-07, 2.8563287635546585e-07]
+mie_scattering = 2e-06
+mie_absorption = 2e-07
+mie_scale_height = 8000
+mie_asymmetry = 0.76
+ground_albedo = [0.5, 0.24, 0.12]
+
 
 [[bodies]]
 name = "Jupiter"
@@ -110,6 +203,35 @@ epoch = 51544.5
 rotation_period = "9.925 h"
 obliquity = 0.05445427266222308
 rotation_epoch = 51544.5
+surface_color = [0.62, 0.49, 0.34]
+
+[bodies.planet]
+seed = [184, 206, 219, 115, 169, 209, 10, 18, 40, 4, 110, 151, 242, 13, 190, 228, 176, 163, 201, 187, 163, 147, 157, 127, 229, 48, 159, 103, 95, 114, 247, 154]
+kind = "gas_giant"
+equilibrium_temperature_k = 109.9
+temperature_k = 165
+bond_albedo = 0.343
+ocean_fraction = 0
+relief_m = 0
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+[bodies.atmosphere]
+height = 240000
+surface_density = 0.16835016835016836
+scale_height = 22916.33971663231
+temperature = 165
+specific_gas_constant = 3600
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [2.042023017632774e-06, 4.771759405905748e-06, 1.1649597015450675e-05]
+mie_scattering = 2e-06
+mie_absorption = 2e-07
+mie_scale_height = 10000
+mie_asymmetry = 0.76
+ground_albedo = [0.62, 0.49, 0.34]
+
 
 [[bodies]]
 name = "Saturn"
@@ -128,6 +250,35 @@ epoch = 51544.5
 rotation_period = "10.656 h"
 obliquity = 0.46652650905808424
 rotation_epoch = 51544.5
+surface_color = [0.67, 0.57, 0.38]
+
+[bodies.planet]
+seed = [11, 249, 228, 121, 127, 54, 164, 81, 40, 79, 183, 253, 97, 13, 170, 29, 146, 99, 221, 122, 40, 110, 200, 160, 240, 241, 112, 166, 240, 123, 221, 143]
+kind = "gas_giant"
+equilibrium_temperature_k = 81
+temperature_k = 134
+bond_albedo = 0.342
+ocean_fraction = 0
+relief_m = 0
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+[bodies.atmosphere]
+height = 500000
+surface_density = 0.19638648860958366
+scale_height = 45522.05628193007
+temperature = 134
+specific_gas_constant = 3800
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [2.514431327682147e-06, 5.875673895331704e-06, 1.4344653041413143e-05]
+mie_scattering = 1.4e-06
+mie_absorption = 1.4e-07
+mie_scale_height = 16000
+mie_asymmetry = 0.76
+ground_albedo = [0.67, 0.57, 0.38]
+
 
 [[bodies]]
 name = "Uranus"
@@ -146,6 +297,35 @@ epoch = 51544.5
 rotation_period = "-17.24 h"
 obliquity = 1.706408409674856
 rotation_epoch = 51544.5
+surface_color = [0.23, 0.5, 0.54]
+
+[bodies.planet]
+seed = [188, 124, 146, 157, 158, 18, 153, 52, 63, 203, 237, 121, 91, 92, 204, 23, 41, 53, 12, 8, 84, 164, 242, 104, 51, 212, 14, 142, 96, 193, 255, 158]
+kind = "ice_giant"
+equilibrium_temperature_k = 58.2
+temperature_k = 76
+bond_albedo = 0.3
+ocean_fraction = 0
+relief_m = 0
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+[bodies.atmosphere]
+height = 350000
+surface_density = 0.3654970760233918
+scale_height = 30373.728620763544
+temperature = 76
+specific_gas_constant = 3600
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [4.433339446176416e-06, 1.0359740815453266e-05, 2.5291888257228434e-05]
+mie_scattering = 1e-06
+mie_absorption = 1e-07
+mie_scale_height = 12000
+mie_asymmetry = 0.76
+ground_albedo = [0.23, 0.5, 0.54]
+
 
 [[bodies]]
 name = "Neptune"
@@ -164,3 +344,31 @@ epoch = 51544.5
 rotation_period = "16.11 h"
 obliquity = 0.49427724416479407
 rotation_epoch = 51544.5
+surface_color = [0.11, 0.26, 0.53]
+
+[bodies.planet]
+seed = [171, 233, 204, 176, 236, 210, 153, 52, 186, 221, 184, 116, 153, 115, 239, 58, 155, 67, 159, 223, 124, 166, 74, 240, 91, 19, 140, 27, 40, 224, 18, 143]
+kind = "ice_giant"
+equilibrium_temperature_k = 46.6
+temperature_k = 72
+bond_albedo = 0.29
+ocean_fraction = 0
+relief_m = 0
+cloud_fraction = 0
+cloud_altitude_m = 0
+cloud_rotation_period_s = 0
+biosphere = false
+
+[bodies.atmosphere]
+height = 280000
+surface_density = 0.38580246913580246
+scale_height = 22990.765748852926
+temperature = 72
+specific_gas_constant = 3600
+heat_capacity_ratio = 1.4
+rayleigh_scattering = [4.679636082075106e-06, 1.0935281971867336e-05, 2.6696993160407792e-05]
+mie_scattering = 1e-06
+mie_absorption = 1e-07
+mie_scale_height = 10000
+mie_asymmetry = 0.76
+ground_albedo = [0.11, 0.26, 0.53]

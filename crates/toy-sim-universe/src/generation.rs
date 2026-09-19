@@ -188,6 +188,35 @@ pub fn system(star: &CatalogueStar, name: &str) -> OrreryCfg {
     }
 }
 
+pub(crate) fn populate_bundled_system(
+    config: &mut OrreryCfg,
+    identity: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        config.bodies.len() == 1,
+        "bundled population requires one authored star"
+    );
+    let star = config.bodies[0].clone();
+    let BodyClass::Star { lumens } = star.class_params else {
+        anyhow::bail!("bundled population requires a stellar host");
+    };
+    anyhow::ensure!(
+        star.parent.is_none(),
+        "bundled stellar host must be the root"
+    );
+    append_planets(
+        &mut config.bodies,
+        &PlanetHost {
+            inner_m: star.radius * 8.0,
+            outer_m: 120.0 * AU,
+            body: star,
+            identity: identity.to_owned(),
+            luminosity_solar: lumens / toy_sim_stars::SOLAR_LUMENS,
+        },
+    );
+    config.validate_system()
+}
+
 fn stellar_body(name: &str, identity: &str, luminosity: f64, temperature: f64) -> Body {
     assert!(luminosity.is_finite() && luminosity > 0.0);
     assert!(temperature.is_finite() && temperature > 0.0);
@@ -500,7 +529,7 @@ fn climate(
     };
     let tint = random.random_range(0.85_f32..1.15);
     let color = match kind {
-        PlanetKind::Ocean => [0.13, 0.24, 0.3],
+        PlanetKind::Ocean => [0.36, 0.29, 0.21],
         PlanetKind::Ice => [0.62, 0.69, 0.73],
         PlanetKind::IceGiant => [0.22, 0.48, 0.59],
         PlanetKind::GasGiant => [0.61, 0.49, 0.34],
@@ -527,6 +556,35 @@ fn climate(
             ground_albedo: color,
         }
     });
+    let gravity = G * mass / radius.powi(2);
+    let mut geology = rng("surface-geology", identity);
+    let relief_m = if giant {
+        0.0
+    } else {
+        (90_000.0 / gravity * geology.random_range(0.5..1.5))
+            .clamp(200.0, 50_000.0)
+            .min(radius * 0.025)
+    };
+    let mut weather = rng("surface-weather", identity);
+    let cloud_fraction = if giant || !retained {
+        0.0
+    } else if pressure > 5e5 {
+        weather.random_range(0.8..0.98)
+    } else if ocean_fraction > 0.0 {
+        weather.random_range(0.4..0.75)
+    } else if pressure < 1000.0 {
+        weather.random_range(0.02..0.12)
+    } else {
+        weather.random_range(0.08..0.4)
+    };
+    let (cloud_altitude_m, cloud_rotation_period_s) = if cloud_fraction > 0.0 {
+        let altitude = atmosphere.as_ref().unwrap().scale_height * weather.random_range(0.4..1.4);
+        let wind_speed = weather.random_range(5.0..60.0);
+        let sign = if weather.random_bool(0.5) { 1.0 } else { -1.0 };
+        (altitude, sign * (TAU * radius / wind_speed).max(60.0))
+    } else {
+        (0.0, 0.0)
+    };
     Climate {
         parameters: PlanetParameters {
             seed: seed("planet-surface", identity.as_bytes()),
@@ -535,6 +593,11 @@ fn climate(
             temperature_k: temperature,
             bond_albedo: albedo,
             ocean_fraction,
+            relief_m,
+            cloud_fraction,
+            cloud_altitude_m,
+            cloud_rotation_period_s,
+            biosphere: false,
         },
         atmosphere,
         color,

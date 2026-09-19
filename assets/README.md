@@ -1,6 +1,9 @@
 # Assets
 
-This directory is the Bevy asset root for both GUI applications. `toy-sim` and `toy-ship-editor` set `AssetPlugin::file_path` to `<crate>/../../assets`, resolved at compile time. Both applications always read from this directory, whatever the current working directory is.
+This directory is the Bevy asset root for the client and ship editor, resolved
+relative to their crate paths at compile time. The server embeds the bundled
+celestial definitions and streams immutable system and ship assets to clients
+by content hash. Rebuild after editing embedded definitions.
 
 For step-by-step editing instructions, see [docs/asset-workflow.md](../docs/asset-workflow.md).
 
@@ -8,10 +11,10 @@ For step-by-step editing instructions, see [docs/asset-workflow.md](../docs/asse
 
 | Path | Loaded by | Purpose |
 | --- | --- | --- |
-| [universe.toml](universe.toml) | `toy-sim` at startup | Lists the star system files that make up the universe. |
-| [stars/helion.star.toml](stars/helion.star.toml) | `toy-sim`, through `universe.toml` and several tests | The Helion system: one star, the planet Helion I Neris with an atmosphere, and five airless moons. |
-| [stars/sol.star.toml](stars/sol.star.toml) | Nothing at present | A Sun and eight planets. It is not listed in `universe.toml`. |
-| [ships/starter.ship](ships/starter.ship) | `toy-sim --ship`, the editor's Open button, an editor test | The armed starter design saved in the binary `.ship` format. |
+| [universe.toml](universe.toml) | `toy-sim-universe` | Lists the ten authored system definitions used alongside the inhabited catalogue. |
+| [stars/helion.star.toml](stars/helion.star.toml) | Server and streamed client orrery | Helion, ocean world Neris, and five airless moons. |
+| [stars/sol.star.toml](stars/sol.star.toml) | Server and streamed client orrery | The Sun and eight planets, with physical appearance metadata. |
+| [ships/starter.ship](ships/starter.ship) | The editor's Open button and design tools | A starter blueprint in the binary `.ship` format. |
 | [models/dummy.glb](models/dummy.glb) | Nothing in the current source | A glTF binary file with no references. |
 | [models/parts/](models/parts/README.md) | Parts whose catalogue entry sets `model` | Location for optional part models. |
 
@@ -21,11 +24,16 @@ For step-by-step editing instructions, see [docs/asset-workflow.md](../docs/asse
 systems = ["stars/helion.star.toml"]
 ```
 
-`systems` must be a non-empty list of non-empty paths relative to this directory. Unknown keys are rejected. Each path is loaded as a star system asset.
+`systems` must be a non-empty list of non-empty paths relative to this directory.
+Unknown keys are rejected. The bundled manifest contains ten entries; the
+inhabited map adds catalogue systems. See the
+[generation guide](../crates/toy-sim-universe/GENERATION.md).
 
 ## Star system files (`*.star.toml`)
 
-The `.star.toml` extension selects the TOML loader for `OrreryCfg` ([orrery_cfg.rs](../crates/toy-sim-universe/src/orrery_cfg.rs)). Unknown top-level keys are rejected.
+Star system files deserialize as `OrreryCfg`
+([orrery_cfg.rs](../crates/toy-sim-universe/src/orrery_cfg.rs)). Unknown top-level
+keys are rejected.
 
 Top level:
 
@@ -38,8 +46,8 @@ Body fields:
 | Field | Default | Notes |
 | --- | --- | --- |
 | `name` | required | Unique across all loaded systems. |
-| `class` | `planet` | `star` (requires `lumens`) or `planet`. |
-| `parent` | none | Required for every body except the star. |
+| `class` | `planet` | `star` (requires `lumens`), `planet`, or virtual `barycenter`. |
+| `parent` | none | Required for every body except the system root. |
 | `mass` | 0 | Kilograms, or a string with `kg`, `massEarth`/`mEarth`, `massSol`/`mSol`/`massSun`. Must be positive. |
 | `radius` | 0 | Metres, or a string with `m`, `km`, `au`, `ly`, `pc`. Must be positive. |
 | `semi_major` | 0 | Distance units as above. Zero fixes the body to its parent. |
@@ -52,12 +60,18 @@ Body fields:
 | `surface_color` | `[0.4, 0.4, 0.4]` | Components in [0, 1]. |
 | `spectral_class` | none | One of `O B A F G K M`. It sets the star colour. |
 | `atmosphere` | none | Table; omit for an airless body. |
+| `planet` | none | Physical surface recipe, including seed, climate, oceans, relief, clouds, and biosphere. |
+| `stellar` | none | Stellar class, effective temperature, and age. |
 
-Each system must contain exactly one star. The star has no parent and a zero semi-major axis, and its `lumens` must be positive and finite.
+Each system has one fixed root and at least one star. Multiple stars may orbit
+virtual barycenters. Stellar `lumens` must be positive and finite. Virtual bodies
+carry orbital mass and parent relationships but have no rendered or collidable
+surface.
 
 Atmosphere tables use metres, kg/m³, kelvin, J/(kg·K) and optical coefficients in m⁻¹: `height`, `surface_density`, `scale_height`, `temperature`, `specific_gas_constant`, `heat_capacity_ratio`, `rayleigh_scattering` (RGB), `mie_scattering`, `mie_absorption`, `mie_scale_height`, `mie_asymmetry`, `ground_albedo` (RGB). See [helion.star.toml](stars/helion.star.toml) for a complete example.
 
-`sol.star.toml` writes its orbital angles with degree-like values (for example `inclination = 7.00487`). The solver reads these fields as radians. Convert the angles before you add that file to `universe.toml`.
+All bundled orbital angles, including Sol's, use radians. Surface recipes are
+baked deterministically on the client; they do not require stored texture files.
 
 ## Ship files
 

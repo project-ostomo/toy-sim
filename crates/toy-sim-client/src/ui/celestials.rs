@@ -56,6 +56,9 @@ struct BodyName(String);
 #[derive(Component)]
 struct BodiesReady;
 
+#[derive(Component)]
+pub(crate) struct PlanetSurface(pub toy_sim_universe::surface::SurfaceParameters);
+
 #[derive(Resource, Default)]
 struct Definitions {
     systems: HashMap<Id, Entity>,
@@ -178,13 +181,17 @@ fn populate(
             };
             let presentation =
                 body_presentation(*body_id, body, pose.clone(), system.reference.definition);
-            commands.spawn((
+            let mut spawned = commands.spawn((
                 BodyOf(entity),
                 BodyName(body.name.to_string()),
                 CelestialSystem(system.reference.system),
                 Celestial(presentation),
                 DisplayPose(pose),
             ));
+            if let Some(parameters) = toy_sim_universe::surface::SurfaceParameters::from_body(body)
+            {
+                spawned.insert(PlanetSurface(parameters));
+            }
         }
         commands.entity(entity).insert(BodiesReady);
     }

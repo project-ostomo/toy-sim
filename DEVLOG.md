@@ -670,3 +670,62 @@ future arrival guidance, and route-only ephemerides. Eight retained named system
 files are still old star-only placeholders; the upcoming procedural surface
 piece will populate those explicitly and add physical appearance metadata for
 authored planets. Large-fleet spatial performance remains on the integration list.
+
+## Procedural planetary surfaces
+
+Map and travel milestone committed as `fab4a0a`. The next piece separates the
+CPU texture generator, client residency/job management, and authored environment
+data. Existing drafts are being reused selectively after review. The generator
+uses angular band limits, corrected polar sampling and tangent normals, linear
+albedo mip filtering, and normalized normal-map mips. The client budget includes
+running and canceled-but-unfinished work, shared image ownership, and replacement
+overlap; eviction must actually detach textures from materials.
+
+The authored-data subtask already passes 23 universe tests. All eight bundled
+star-only placeholders now receive deterministic planets, bringing the map to
+44,467 bodies, including 48 virtual barycenters. Their original stellar bodies
+and ephemerides remain identical; arbitrary custom empty systems stay empty.
+All existing Sol/Helion masses, sizes, orbits, rotations, and identities are
+preserved. Earth has an explicit atmosphere and biosphere; Neris has an explicit
+ocean/climate description without a declared biosphere. Airless moons remain
+airless. Geology and weather use independent random domains. Immutable definition
+hashes change, so older development checkpoints are rejected explicitly.
+
+The full universe suite now passes 31 tests. New checks cover longitude/pole
+continuity, analytic tangent-normal slopes, linear-light mip filtering, declared
+ocean/cloud coverage, explicit biospheres, cancellation, and exact payload sizes.
+An independent client review found no blocking lifecycle or scheduling issue.
+
+The six-body CPU preview is `/tmp/sequential-planet-surfaces.png`: Earth, Mars,
+Rime, Jupiter, Neptune, and Neris. A quiet release benchmark measured an Earth
+surface at about 23 ms for the first 256-wide texture and 1.88 s for the final
+2,048-wide texture. Jupiter measured 9.5 ms and 815 ms respectively. The largest
+Earth payload is 34.67 MiB; baking adds an 8 MiB height field plus a small reserve.
+These bakes run on background workers. Client screenshots and normal controls
+are being checked next; this preview alone is not an in-game rendering test.
+
+### Surface milestone verified
+
+Software-rendered screenshots confirmed progressive loading, a close Neris view,
+camera rotation across the day/night boundary, and returning to the ship. The
+managed cache counter reached about 100 MiB during an upgrade, below its 128 MiB
+limit. The first images exposed featureless white cloud patches; a focused
+density/envelope correction added translucent wisps and internal variation while
+keeping declared coverage calibrated. It adds no new texture or shader pass.
+
+The desktop playtest then selected Neris and the airless moon Rime through the
+Overview and returned to the ship with Escape. Terrain, oceans, clouds, craters,
+and ice are visible. Screenshots are
+`/tmp/toy-sequential-playtests/surfaces-live-*.png`; the earlier software checks
+are in `/tmp/toy-sequential-surface-checks/`. The normal renderer showed about
+47–73 FPS across these views, so the broader performance objective remains open.
+Startup resizing still logs Vulkan swapchain validation warnings, without a
+device loss during this run. Cloud shells currently do not cast cloud shadows.
+
+Verification passed: 121 client tests, 247 server tests with five intentionally
+ignored benchmarks, four real network tests including checkpoint restart, and
+the universe/surface tests. The final cloud change has 11 targeted surface tests,
+including density variation and LOD stability. Workspace formatting and diff
+checks pass. Final quiet release bakes measured Earth at 23.5 ms for 256 pixels
+and 1.97 s for 2,048 pixels; Jupiter at 9.4 ms and 814 ms. The playable client
+closed cleanly after the live check.
