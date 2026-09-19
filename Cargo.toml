@@ -12,16 +12,25 @@ anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
 toml = "1.1.5"
 glam = { version = "0.32.1", features = ["serde"] }
-bevy = { version = "0.19.1", features = ["wayland", "file_watcher", "embedded_watcher", "jpeg"] }
+bevy = { version = "0.19.1", features = [
+    "wayland",
+    "file_watcher",
+    "embedded_watcher",
+    "jpeg",
+] }
 bevy_egui = "0.42.0"
 bevy_dylib = "0.19.1"
 parry3d-f64 = { version = "0.30.2", features = ["parallel"] }
-wasmtime = { version = "48.0.1", default-features = false, features = ["cranelift", "runtime", "std", "anyhow"] }
+wasmtime = { version = "48.0.1", default-features = false, features = [
+    "cranelift",
+    "runtime",
+    "std",
+    "anyhow",
+] }
 
 # Enable a small amount of optimization in the dev profile.
 [profile.dev]
 opt-level = 1
-panic = "abort"
 
 # Enable a large amount of optimization in the dev profile for dependencies.
 [profile.dev.package."*"]
