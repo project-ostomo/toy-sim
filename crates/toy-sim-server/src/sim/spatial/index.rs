@@ -1,5 +1,6 @@
 use crate::sim::precision::GalacticPosition;
 use bevy::{math::DVec3, prelude::*};
+use std::ops::ControlFlow;
 use toy_sim_spatial::{Entry, SpatialHash};
 
 #[derive(Clone, Copy)]
@@ -8,6 +9,7 @@ pub struct SpatialObject {
     pub position: GalacticPosition,
     pub radius_m: f64,
     pub occludes: bool,
+    pub optical_occludes: bool,
     pub optical_luminosity_w: f64,
 }
 
@@ -62,7 +64,7 @@ impl SpatialData {
                 luminosity: object.optical_luminosity_w,
             },
         );
-        if object.occludes {
+        if object.optical_occludes {
             self.optical_occluders.insert(
                 id as u32,
                 Entry {
@@ -128,12 +130,6 @@ impl SpatialData {
         self.excluded_targets.insert(entity);
     }
 
-    pub fn exclude_optical_blocker(&mut self, entity: Entity) {
-        if let Some(&id) = self.entities.get(&entity) {
-            self.optical_occluders.remove(id as u32);
-        }
-    }
-
     pub fn all_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.hash
             .within_radius(centre, radius)
@@ -194,12 +190,9 @@ impl SpatialData {
     pub fn occluded(&self, observer: Entity, target: usize, centre: GalacticPosition) -> bool {
         let endpoint = self.objects[target].position.relative_to(centre);
         self.hash
-            .segment_candidates(centre, endpoint, 0.0)
-            .ids
-            .into_iter()
-            .any(|id| {
+            .visit_segment_candidates(centre, endpoint, 0.0, |id| {
                 let object = self.objects[id as usize];
-                object.occludes
+                if object.occludes
                     && object.entity != observer
                     && id as usize != target
                     && sphere_blocks(
@@ -207,7 +200,14 @@ impl SpatialData {
                         object.position.relative_to(centre),
                         object.radius_m,
                     )
+                {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
             })
+            .0
+            .is_break()
     }
 
     pub fn fully_occluded(
@@ -218,32 +218,35 @@ impl SpatialData {
     ) -> bool {
         let target_object = self.objects[target];
         let endpoint = target_object.position.relative_to(centre);
-        self.optical_blockers_on_segment(centre, endpoint)
-            .into_iter()
-            .any(|id| {
-                let object = self.objects[id];
-                object.entity != observer
-                    && id != target
-                    && sphere_fully_blocks(
-                        endpoint,
-                        target_object.radius_m,
-                        object.position.relative_to(centre),
-                        object.radius_m,
-                    )
-            })
+        self.any_optical_blocker_on_segment(centre, endpoint, |id| {
+            let object = self.objects[id];
+            object.entity != observer
+                && id != target
+                && sphere_fully_blocks(
+                    endpoint,
+                    target_object.radius_m,
+                    object.position.relative_to(centre),
+                    object.radius_m,
+                )
+        })
     }
 
-    pub fn optical_blockers_on_segment(
+    pub fn any_optical_blocker_on_segment(
         &self,
         origin: GalacticPosition,
         displacement: DVec3,
-    ) -> Vec<usize> {
+        mut blocks: impl FnMut(usize) -> bool,
+    ) -> bool {
         self.optical_occluders
-            .segment_candidates(origin, displacement, 0.0)
-            .ids
-            .into_iter()
-            .map(|id| id as usize)
-            .collect()
+            .visit_segment_candidates(origin, displacement, 0.0, |id| {
+                if blocks(id as usize) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            })
+            .0
+            .is_break()
     }
 
     pub fn occupied_cells(&self) -> usize {
@@ -299,6 +302,7 @@ mod tests {
                 position: GalacticPosition::from_meters(position),
                 radius_m: 1.0,
                 occludes: false,
+                optical_occludes: false,
                 optical_luminosity_w: 0.0,
             });
         }
@@ -329,20 +333,57 @@ mod tests {
         assert!(sphere_fully_blocks(target, 2.0, DVec3::X * 50.0, 5.0));
         let mut world = World::new();
         let observer = world.spawn_empty().id();
+        for optical_occludes in [false, true] {
+            let mut index = SpatialIndex::default();
+            for (position, radius) in [(target, 2.0), (DVec3::X * 50.0, 5.0)] {
+                index.insert(SpatialObject {
+                    entity: world.spawn_empty().id(),
+                    position: GalacticPosition::from_meters(position),
+                    radius_m: radius,
+                    occludes: true,
+                    optical_occludes,
+                    optical_luminosity_w: 0.0,
+                });
+            }
+            assert_eq!(
+                index.fully_occluded(observer, 0, GalacticPosition::ZERO),
+                optical_occludes
+            );
+            assert!(index.occluded(observer, 0, GalacticPosition::ZERO));
+        }
+    }
+
+    #[test]
+    fn segment_candidates_only_hide_target_after_exact_full_occlusion() {
+        let mut world = World::new();
+        let observer = world.spawn_empty().id();
+        let origin = GalacticPosition::splat(1_i128 << 100);
         let mut index = SpatialIndex::default();
-        for (position, radius) in [(target, 2.0), (DVec3::X * 50.0, 5.0)] {
+        for (position, radius_m) in [
+            (DVec3::X * 100.0, 2.0),
+            (DVec3::new(50.0, 4.9, 0.0), 5.0),
+            (DVec3::ZERO, 20.0),
+            (DVec3::X * 101.0, 5.0),
+        ] {
             index.insert(SpatialObject {
                 entity: world.spawn_empty().id(),
-                position: GalacticPosition::from_meters(position),
-                radius_m: radius,
+                position: origin.offset_by(position),
+                radius_m,
                 occludes: true,
+                optical_occludes: true,
                 optical_luminosity_w: 0.0,
             });
         }
-        assert!(index.fully_occluded(observer, 0, GalacticPosition::ZERO));
-        let blocker = index.objects[1].entity;
-        index.exclude_optical_blocker(blocker);
-        assert!(!index.fully_occluded(observer, 0, GalacticPosition::ZERO));
-        assert!(index.occluded(observer, 0, GalacticPosition::ZERO));
+
+        assert!(!index.fully_occluded(observer, 0, origin));
+        index.insert(SpatialObject {
+            entity: world.spawn_empty().id(),
+            position: origin.offset_by(DVec3::X * 30.0),
+            radius_m: 5.0,
+            occludes: true,
+            optical_occludes: true,
+            optical_luminosity_w: 0.0,
+        });
+        assert!(index.fully_occluded(observer, 0, origin));
     }
 }

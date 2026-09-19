@@ -1749,3 +1749,45 @@ At the user's request, live keyboard/mouse verification stopped; automated tests
 cover the transfer cases. The session exited normally and saved. Subsequent MVP
 verification will use automated checks, leaving interactive playtesting to the
 user. Evidence remains under `~/.local/state/toy-sim-mvp-sprint`.
+
+### Completing construction uploads and spatial queries — 2026-09-19
+
+The final implementation pass moves complete ship designs out of the 64 KiB
+command frame. A private `blueprint-upload` picomux stream carries a content hash,
+whole `.ship` file and EOF. Its bounded acknowledgement confirms that the server
+has retained the bytes before the client submits a hash-only build command.
+Catalogue and imported designs follow the same asynchronous UI state machine;
+changing the selected facility during an upload cannot redirect its build.
+
+The private store is scoped to the authenticated session. Receiving allocations
+and staged files share session, account and listener byte quotas. Accepted jobs
+retain the exact design and firmware in checkpoints, so closing the client does
+not discard work. Admission checks authority and firmware before reserving
+materials, and bounds the total queued design bytes at each facility.
+
+The spatial pass removes inserting and then deleting ship bounding spheres from
+the optical blocker index. Segment queries can now stop when an exact blocker
+predicate succeeds. Optical publication heapifies candidates and visits the
+brightest first, retaining the previous tie order and byte-budget behavior. It
+also measures Postcard size without allocating an encoded observation merely to
+count its bytes. Full observation-index rebuilding remains in place.
+
+A new installation-defense acceptance test uses actual stock Kestrel and Shrike
+computers, naturally fused sensor tracks, ordinary marking/firing commands,
+finite missile stocks and the normal continuous collision solver. It checks
+shared parent-computer gas and physical interception outside the installation.
+No fake missile track or special test guidance is substituted.
+
+The user requested an end to complex live input testing. This pass uses automated
+checks; the previously completed native checks remain recorded above. The shared
+spatial crate currently passes 15 tests with one benchmark ignored. Integrated
+transport, construction, defense and workspace checks are in progress.
+
+Spatial verification passed: 15 shared-index tests, 18 server spatial tests,
+six optical publication tests and five sensor tests. With eight Rayon workers,
+the existing 20,040-object/500-observer benchmark measured 47.779 ms for rebuild
+and 91.770 ms for queries, compared with 84.510 ms and 138.374 ms before. Both
+runs returned 204,797 candidates and 68,734 visible results. These are local
+benchmark samples, not full snapshot-publication measurements or a demonstrated
+MMO population ceiling. The earlier 100,000-moving-body scalability concern
+remains open.

@@ -98,12 +98,10 @@ pub(crate) fn rebuild(
             position: pose.translation_um,
             radius_m: body.radius_m,
             occludes: body.occludes,
+            optical_occludes: body.occludes && design.is_none(),
         });
         if celestial {
             index.exclude_sensor_target(entity);
-        }
-        if design.is_some() {
-            index.exclude_optical_blocker(entity);
         }
     }
     let mut source_cache = lighting::SourceCache::default();
@@ -134,12 +132,15 @@ mod tests {
                 rng.random_range(-1e10..1e10),
                 rng.random_range(-1e10..1e10),
             );
+            let radius_m = 10_f64.powf(rng.random_range(1.0..10.0));
+            let occludes = rng.random_bool(0.5);
             index.insert(SpatialObject {
                 optical_luminosity_w: 0.0,
                 entity: world.spawn_empty().id(),
                 position: origin.offset_by(delta),
-                radius_m: 10_f64.powf(rng.random_range(1.0..10.0)),
-                occludes: rng.random_bool(0.5),
+                radius_m,
+                occludes,
+                optical_occludes: occludes,
             });
         }
         // Exact boundary and negative-cell probes.
@@ -155,6 +156,7 @@ mod tests {
                 position: origin.offset_by(delta),
                 radius_m: 1.0,
                 occludes: true,
+                optical_occludes: true,
             });
         }
         for radius in [0.0, 0.001, 1e6, 1e7, 1e8, 1e9, 1e10, 1e18] {
@@ -318,6 +320,40 @@ mod optical_tests {
                 occludes: true,
             },
         )
+    }
+
+    #[test]
+    fn ship_bounds_keep_sensor_occlusion_without_blocking_optical_sightlines() {
+        let catalogue = toy_sim_ships::Catalogue::builtin();
+        let design = std::sync::Arc::new(
+            toy_sim_ships::starter(toy_sim_ships::EXAMPLE_CONTROLLER.to_vec())
+                .compile(&catalogue)
+                .unwrap(),
+        );
+        let mut app = App::new();
+        app.init_resource::<SpatialIndex>()
+            .add_systems(Update, rebuild);
+        let observer = app.world_mut().spawn_empty().id();
+        let target = app.world_mut().spawn(object(DVec3::X * 100.0, 2.0)).id();
+        let hollow_ship = app
+            .world_mut()
+            .spawn((object(DVec3::X * 50.0, 5.0), vessel::ShipDesign(design)))
+            .id();
+
+        app.update();
+        let index = app.world().resource::<SpatialIndex>();
+        let target_index = index.object_index(target).unwrap();
+        assert!(index.occluded(observer, target_index, GalacticPosition::ZERO));
+        assert!(!index.fully_occluded(observer, target_index, GalacticPosition::ZERO));
+
+        app.world_mut()
+            .entity_mut(hollow_ship)
+            .remove::<vessel::ShipDesign>();
+        app.update();
+        let index = app.world().resource::<SpatialIndex>();
+        let target_index = index.object_index(target).unwrap();
+        assert!(index.occluded(observer, target_index, GalacticPosition::ZERO));
+        assert!(index.fully_occluded(observer, target_index, GalacticPosition::ZERO));
     }
 
     #[test]

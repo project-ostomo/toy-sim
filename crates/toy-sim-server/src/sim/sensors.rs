@@ -189,6 +189,7 @@ mod tests {
                 position: GalacticPosition::ZERO.offset_by(position),
                 radius_m,
                 occludes,
+                optical_occludes: occludes,
             });
         }
         let sensor = Sensor {
@@ -250,6 +251,7 @@ mod tests {
                 position: origin.offset_by(delta),
                 radius_m,
                 occludes,
+                optical_occludes: occludes,
             });
         }
         let mut sensor = Sensor {
@@ -289,6 +291,7 @@ mod tests {
                     10.0
                 },
                 occludes: i % 7 == 0,
+                optical_occludes: i % 7 == 0,
             });
         }
         for range_m in [1e7, 5e7, 1e8, 2e8] {

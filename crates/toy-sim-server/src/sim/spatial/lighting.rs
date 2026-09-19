@@ -63,20 +63,17 @@ pub fn reflection_sources(
         if distance2 <= 0.0 {
             continue;
         }
-        let blocked = index
-            .optical_blockers_on_segment(object.position, offset)
-            .into_iter()
-            .any(|id| {
-                let blocker = index.objects[id];
-                id != object_id
-                    && id != source_id
-                    && sphere_fully_blocks(
-                        offset,
-                        source.radius_m,
-                        blocker.position.relative_to(object.position),
-                        blocker.radius_m,
-                    )
-            });
+        let blocked = index.any_optical_blocker_on_segment(object.position, offset, |id| {
+            let blocker = index.objects[id];
+            id != object_id
+                && id != source_id
+                && sphere_fully_blocks(
+                    offset,
+                    source.radius_m,
+                    blocker.position.relative_to(object.position),
+                    blocker.radius_m,
+                )
+        });
         if !blocked {
             let incident = luminosity_w / (4.0 * std::f64::consts::PI * distance2);
             reflected.push((
@@ -241,6 +238,7 @@ mod tests {
                 position: origin.offset_by(DVec3::X * position),
                 radius_m: radius,
                 occludes,
+                optical_occludes: occludes,
                 optical_luminosity_w: 0.0,
             });
         }
@@ -263,6 +261,7 @@ mod tests {
             position: origin.offset_by(DVec3::X * 5e5),
             radius_m: 1000.0,
             occludes: true,
+            optical_occludes: true,
             optical_luminosity_w: 0.0,
         });
         assert!(reflection_sources(&index, 0, &sources, &[1]).is_empty());

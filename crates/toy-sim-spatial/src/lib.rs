@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use glam::DVec3;
 use std::collections::{BTreeMap, BinaryHeap};
+use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use toy_sim_space::GalacticPosition;
 
@@ -710,10 +711,29 @@ impl SpatialHash {
         displacement: DVec3,
         radius_m: f64,
     ) -> QueryResult {
-        let mut result = QueryResult::default();
+        let mut ids = Vec::new();
+        let (_, stats) = self.visit_segment_candidates(start, displacement, radius_m, |id| {
+            ids.push(id);
+            ControlFlow::<()>::Continue(())
+        });
+        ids.sort_unstable();
+        QueryResult { ids, stats }
+    }
+
+    /// Visits intersecting sphere candidates in traversal order. Returning
+    /// `Break` stops immediately; exact geometry predicates belong in the visitor.
+    pub fn visit_segment_candidates<B>(
+        &self,
+        start: GalacticPosition,
+        displacement: DVec3,
+        radius_m: f64,
+        mut visit: impl FnMut(u32) -> ControlFlow<B>,
+    ) -> (ControlFlow<B>, QueryStats) {
+        let mut stats = QueryStats::default();
         if !displacement.is_finite() || radius_m.is_nan() || radius_m < 0.0 {
-            return result;
+            return (ControlFlow::Continue(()), stats);
         }
+
         let scale = displacement.abs().max_element();
         let (direction, length) = if scale == 0.0 {
             (DVec3::ZERO, 0.0)
@@ -724,7 +744,7 @@ impl SpatialHash {
         let mut pending = self.positions.roots.clone();
         while let Some(key) = pending.pop() {
             let cell = &self.positions.nodes[&key];
-            result.stats.cells_visited += 1;
+            stats.cells_visited += 1;
             if !key.intersects_segment(start, displacement, radius_m + cell.max_radius_m) {
                 continue;
             }
@@ -733,19 +753,21 @@ impl SpatialHash {
                 continue;
             }
             for &id in &cell.occupants {
-                result.stats.candidates += 1;
+                stats.candidates += 1;
                 let entry = self.entries[&id];
                 let offset = relative_position(entry.position, start);
                 let along = offset.dot(direction).clamp(0.0, length);
                 let error = offset.abs().max_element().max(along.abs()) * 64.0 * f64::EPSILON;
                 let limit = padded_radius(radius_m + entry.radius_m) + error;
                 if (offset - direction * along).length_squared() <= limit * limit {
-                    result.ids.push(id);
+                    if let ControlFlow::Break(value) = visit(id) {
+                        return (ControlFlow::Break(value), stats);
+                    }
                 }
             }
         }
-        result.ids.sort_unstable();
-        result
+
+        (ControlFlow::Continue(()), stats)
     }
 }
 

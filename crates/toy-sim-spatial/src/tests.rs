@@ -409,6 +409,18 @@ fn capsules_match_brute_force_after_mutations_and_at_boundary_tangencies() {
             .collect();
         expected.sort_unstable();
         assert_eq!(found, expected);
+
+        let (hit, _) = index.visit_segment_candidates(start, displacement, radius, |id| {
+            if id % 17 == 0 {
+                ControlFlow::Break(id)
+            } else {
+                ControlFlow::Continue(())
+            }
+        });
+        assert_eq!(hit.is_break(), expected.iter().any(|id| id % 17 == 0));
+        if let ControlFlow::Break(id) = hit {
+            assert!(expected.contains(&id));
+        }
     }
     index.clear();
     for (id, x) in [-1.0, 5.0, 11.0].into_iter().enumerate() {
@@ -435,6 +447,52 @@ fn capsules_match_brute_force_after_mutations_and_at_boundary_tangencies() {
             .ids
             .is_empty()
     );
+}
+
+#[test]
+fn segment_visitor_stops_at_confirmed_hit_inside_a_dense_leaf() {
+    let origin = GalacticPosition::splat(-(1_i128 << 100));
+    let mut index = SpatialHash::default();
+    for id in 0..2048 {
+        index.insert(
+            id,
+            Entry {
+                position: origin.offset_by(DVec3::X),
+                radius_m: 1.0,
+                luminosity: 0.0,
+            },
+        );
+    }
+
+    let mut visited = Vec::new();
+    let (hit, stats) = index.visit_segment_candidates(origin, DVec3::X * 10.0, 0.0, |id| {
+        visited.push(id);
+        if id == 1 {
+            ControlFlow::Break(id)
+        } else {
+            ControlFlow::Continue(())
+        }
+    });
+    assert_eq!(hit, ControlFlow::Break(1));
+    assert_eq!(visited, vec![0, 1]);
+    assert_eq!(stats.candidates, 2);
+    assert_eq!(
+        index
+            .segment_candidates(origin, DVec3::X * 10.0, 0.0)
+            .ids
+            .len(),
+        2048
+    );
+
+    for (displacement, radius) in [(DVec3::NAN, 0.0), (DVec3::X, -1.0)] {
+        let (hit, stats) =
+            index.visit_segment_candidates::<()>(origin, displacement, radius, |_| {
+                panic!("invalid segment must not invoke the visitor")
+            });
+        assert!(hit.is_continue());
+        assert_eq!(stats.cells_visited, 0);
+        assert_eq!(stats.candidates, 0);
+    }
 }
 
 #[test]

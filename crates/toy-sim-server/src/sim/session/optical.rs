@@ -1,6 +1,6 @@
 use super::*;
 use crate::sim::{identity::SpatialInstance, spatial::SpatialIndex, vessel::ShipDesign};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use toy_sim_model::optical::{
     MAX_OPTICAL_OBSERVATIONS, MIN_OPTICAL_FLUX_W_M2, OpticalObservation, flux_w_m2,
 };
@@ -25,16 +25,45 @@ impl ViewBudget {
         if self.remaining_count == 0 {
             return false;
         }
-        let encoded =
-            postcard::to_allocvec(observation).expect("optical observation must serialize");
-        if encoded.len() > self.remaining_bytes {
+        let bytes = postcard::experimental::serialized_size(observation)
+            .expect("optical observation must serialize");
+        if bytes > self.remaining_bytes {
             return false;
         }
-        self.remaining_bytes -= encoded.len();
+        self.remaining_bytes -= bytes;
         self.remaining_count -= 1;
         true
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+struct OpticalCandidate {
+    index: usize,
+    luminosity_w: f64,
+    flux: f64,
+}
+
+impl Ord for OpticalCandidate {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.flux
+            .total_cmp(&other.flux)
+            .then_with(|| other.index.cmp(&self.index))
+    }
+}
+
+impl PartialOrd for OpticalCandidate {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for OpticalCandidate {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other).is_eq()
+    }
+}
+
+impl Eq for OpticalCandidate {}
 
 struct OpticalIdentity {
     id: Id,
@@ -159,9 +188,8 @@ impl OpticalSession {
                         let Some(visual) = super::super::presentation::visual(world, entity) else {
                             return false;
                         };
-                        let visual_bytes = postcard::to_allocvec(&visual)
-                            .expect("ship visual must serialize")
-                            .len();
+                        let visual_bytes = postcard::experimental::serialized_size(&visual)
+                            .expect("ship visual must serialize");
                         entry.insert((pose, visual, visual_bytes))
                     }
                 };
@@ -233,7 +261,7 @@ impl OpticalSession {
             let Some(index) = index else {
                 continue;
             };
-            let mut candidates: Vec<_> = index
+            let candidates: Vec<_> = index
                 .visible(
                     view.origin,
                     4. * std::f64::consts::PI * MIN_OPTICAL_FLUX_W_M2,
@@ -255,17 +283,20 @@ impl OpticalSession {
                         object.position.relative_to(view.origin).length(),
                         object.radius_m,
                     );
-                    (flux >= MIN_OPTICAL_FLUX_W_M2).then_some((candidate, luminosity_w, flux))
+                    (flux >= MIN_OPTICAL_FLUX_W_M2).then_some(OpticalCandidate {
+                        index: candidate,
+                        luminosity_w,
+                        flux,
+                    })
                 })
                 .collect();
-            candidates.sort_unstable_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
-            for (candidate, luminosity_w, _) in
-                candidates.into_iter().filter(|(candidate, _, _)| {
-                    !index.fully_occluded(observer, *candidate, view.origin)
-                })
-            {
-                let object = &index.objects[candidate];
-                if append(object.entity, object.radius_m, luminosity_w) {
+            let mut candidates = BinaryHeap::from(candidates);
+            while let Some(candidate) = candidates.pop() {
+                if index.fully_occluded(observer, candidate.index, view.origin) {
+                    continue;
+                }
+                let object = &index.objects[candidate.index];
+                if append(object.entity, object.radius_m, candidate.luminosity_w) {
                     break;
                 }
             }
@@ -329,6 +360,7 @@ mod tests {
                     position: GalacticPosition::ZERO.offset_by(DVec3::X * distance),
                     radius_m: 10.,
                     occludes: false,
+                    optical_occludes: false,
                     optical_luminosity_w: luminosity,
                 });
             }
@@ -424,6 +456,7 @@ mod tests {
             position: GalacticPosition::ZERO.offset_by(DVec3::X * 500.),
             radius_m: 100.,
             occludes: true,
+            optical_occludes: true,
             optical_luminosity_w: 0.,
         });
         let (occluded, _) = optical.observe(world, fixture.account, &views, &tracks);
@@ -529,6 +562,100 @@ mod tests {
         optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert!(optical.previous_entities.is_empty());
     }
+
+    #[test]
+    fn heap_selection_matches_sorted_publication_with_occlusion_and_variable_byte_costs() {
+        let observations: Vec<_> = (0..200_usize)
+            .map(|index| OpticalObservation {
+                view: 128,
+                id: Id((index as u128).to_le_bytes()),
+                spatial_instance: Id::new(),
+                known_entity: (index % 2 == 0).then(Id::new),
+                contact: None,
+                pose: Pose::default(),
+                radius_m: 10.0,
+                luminosity_w: 100.0,
+                appearance: (index % 3 == 0).then_some([7; 32]),
+                visual: ShipVisual {
+                    engines: (0..(index % 7) * 128)
+                        .map(|part| EngineVisual {
+                            part: part as u64,
+                            thrust_n: [0.0, 0.0, 1000.0],
+                            thrust_fraction: 0.5,
+                        })
+                        .collect(),
+                    turrets: Vec::new(),
+                    shield: None,
+                },
+            })
+            .collect();
+        let candidates: Vec<_> = (0..observations.len())
+            .rev()
+            .map(|index| OpticalCandidate {
+                index,
+                luminosity_w: 100.0,
+                flux: (index * 17 % 11) as f64,
+            })
+            .collect();
+        let mut sorted = candidates.clone();
+        sorted.sort_unstable_by(|a, b| b.flux.total_cmp(&a.flux).then(a.index.cmp(&b.index)));
+        let encoded_sizes: Vec<_> = observations
+            .iter()
+            .map(|observation| postcard::to_allocvec(observation).unwrap().len())
+            .collect();
+
+        let mut rejected_large = false;
+        let mut accepted_after_rejection = false;
+        for byte_limit in [0, 200, 4096, 100_000, MAX_OPTICAL_BYTES] {
+            for count_limit in [1, 4, observations.len()] {
+                let mut remaining_bytes = byte_limit;
+                let mut expected = Vec::new();
+                for candidate in &sorted {
+                    if candidate.index % 5 == 0 {
+                        continue;
+                    }
+                    let size = encoded_sizes[candidate.index];
+                    if size > remaining_bytes {
+                        continue;
+                    }
+                    remaining_bytes -= size;
+                    expected.push(candidate.index);
+                    if expected.len() == count_limit {
+                        break;
+                    }
+                }
+
+                let mut budget = ViewBudget {
+                    remaining_bytes: byte_limit,
+                    remaining_count: count_limit,
+                };
+                let mut heap = BinaryHeap::from(candidates.clone());
+                let mut actual = Vec::new();
+                let mut rejected = false;
+                while let Some(candidate) = heap.pop() {
+                    if candidate.index % 5 == 0 {
+                        continue;
+                    }
+                    if budget.admit(&observations[candidate.index]) {
+                        accepted_after_rejection |= rejected;
+                        actual.push(candidate.index);
+                        if budget.remaining_count == 0 {
+                            break;
+                        }
+                    } else {
+                        rejected = true;
+                        rejected_large = true;
+                    }
+                }
+
+                assert_eq!(actual, expected);
+                assert_eq!(budget.remaining_bytes, remaining_bytes);
+                assert_eq!(budget.remaining_count, count_limit - actual.len());
+            }
+        }
+        assert!(rejected_large && accepted_after_rejection);
+    }
+
     #[test]
     fn dense_complex_ships_respect_serialized_budget_and_keep_each_views_focus() {
         let focus = Id::new();

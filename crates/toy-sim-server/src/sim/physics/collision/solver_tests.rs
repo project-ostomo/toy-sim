@@ -581,6 +581,7 @@ fn nearest_queries_match_exhaustive_selection_across_regions_and_ties() {
             position: anchor.offset_by(p),
             radius_m: 2.0,
             occludes: false,
+            optical_occludes: false,
         });
     }
     for n in [1, 16, 256] {
@@ -701,6 +702,7 @@ fn sensor_scale_benchmark() {
                 )),
                 radius_m: 2.0,
                 occludes: true,
+                optical_occludes: true,
             });
         }
         let timer = std::time::Instant::now();
