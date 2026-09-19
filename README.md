@@ -34,7 +34,7 @@ The server binary `toy-sim-server` and the remote client binary `toy-sim-client`
 | `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
 | `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
 | `toy-sim-ui` | [crates/toy-sim-ui](crates/toy-sim-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
-| `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and a travel planner with a multi-gate route search. |
+| `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and execution of the current host-owned navigation command. Strategic route search runs on the server. |
 | `toy-sim-model` | [crates/toy-sim-model](crates/toy-sim-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
 | `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing, sections and validation limits. |
 | `toy-sim-net` | [crates/toy-sim-net](crates/toy-sim-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
@@ -108,7 +108,7 @@ cargo run -p toy-star-query --release
 cargo test --workspace
 ```
 
-`toy-sim-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
+`toy-sim-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral`, `--enable-llm` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
 
 1. Opens its state directory, creating the local server configuration and account keys when necessary. The server listens on loopback with an automatically allocated port.
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 60 s for the file to contain the listening address.
@@ -118,6 +118,19 @@ cargo test --workspace
 When the launcher exits, it closes the server's standard input and allows up to 120 seconds for the final snapshot and shutdown. Persistent state directories are retained.
 
 The client UI reads assets from the repository's `assets/` directory through a path fixed at compile time.
+
+To try the current starting scenario independently of an older save, use a new
+state directory:
+
+```sh
+cargo run -- --state-dir "$HOME/.local/state/toy-sim/mvp-world"
+```
+
+Subsequent launches with the same directory restore that world, including its
+ships and exact saved firmware. Add `--enable-llm` to enable NPC directors and
+radio replies through `OPENROUTER_API_KEY`. The shared installation budget is
+capped at $100; [the LLM guide](docs/llm.md) explains admission, billing and
+recovery. Ordinary launches leave paid calls disabled.
 
 ## What happens at startup
 
@@ -159,6 +172,7 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | --- | --- |
 | [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, intelligence model, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
 | [docs/industry.md](docs/industry.md) | Factories, material reservations, ship construction, cargo transfers and commissioning |
+| [docs/llm.md](docs/llm.md) | Asynchronous ship and NPC language-model calls, radio context and the shared dollar budget |
 | [docs/persistence.md](docs/persistence.md) | SQLite world snapshots, restoration and durable ship programs |
 | [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, procedural systems and wormhole topology |
 | [docs/ships.md](docs/ships.md) | Parts, the catalogue, blueprints, compiled designs, hardware simulation, avionics and the standard firmware |

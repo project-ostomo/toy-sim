@@ -246,13 +246,13 @@ The six states are absent, off, active, depleted, unpowered and blocked. Activat
 ## Starter designs
 
 - `starter(controller)`: seven main parts stacked along +Z at 1 m spacing, plus a coolant tank and command module ahead of the hull block. In order: structure, storage (`storage`), battery (`battery`), generator (`generator`), torquer (`attitude_control`), shield (`shield`), engine (`main_engine`). The unarmed starter used by `toy-ship-editor --example` and the editor's Starter button.
-- `armed_starter()`: the starter named "Armed explorer" with the standard firmware, plus `railgun_turret_8`, `coilgun_turret_9` (group `weapons`) and four RCS blocks `rcs_10` to `rcs_13` (group `rcs`). The simulator uses it for traffic and as the default player ship. [assets/ships/starter.ship](../assets/ships/starter.ship) contains this design.
+- `armed_starter()`: the starter named "Armed explorer" with the standard firmware, plus `railgun_turret_8`, `coilgun_turret_9` (group `weapons`) and four RCS blocks `rcs_10` to `rcs_13` (group `rcs`). It remains an editor example; the default scenario uses the expedition patrol. [assets/ships/starter.ship](../assets/ships/starter.ship) contains this design.
 
 ## Ships in the simulator
 
 The simulator spawns ships from the fixed startup scenario (see the [README](../README.md#what-happens-at-startup)). Once per 10 Hz tick, each ship's computer receives an observation, its commands are applied, and typed hardware ECS systems apply resource allocation and actuation before gravity and integration. The full sequence is in [server-client.md](server-client.md).
 
-The client provides Ship status, Navigation and Inventory windows, plus Overview and Selected Item controls. Ship status shows the current hardware, energy, thermal and firmware readings. Navigation shows queued orders; Inventory separates cargo stacks from consumable capacity bars. Selected Item separates flight guidance from target marking and firing controls. See [the client UI](server-client.md#the-client-ui).
+The bottom HUD shows thrust, energy, thermal and computer readings. Navigation shows queued orders; Inventory follows the focused ship and separates cargo stacks from consumable capacity bars. Hangar shows accessible storage and docked ships at the current dock. Selected Item separates flight guidance from target marking and firing controls. See [the client UI](server-client.md#the-client-ui).
 
 ## The standard firmware
 
@@ -261,7 +261,7 @@ The client provides Ship status, Navigation and Inventory windows, plus Overview
 1. Reads the tick context. It then discovers resources and devices, up to 16 records per callback, until discovery completes. Requests wait in the host until then.
 2. Reads every device, the flight state and propellant mass.
 3. Scans up to 256 contacts with the first available sensor.
-4. Runs the travel planner through server world services. It pages through public beacons, searches routes across multiple paired gates, checks slip eligibility and guides the ship through each accepted leg. Planning work is bounded across callbacks ([server-client.md](server-client.md#docking-and-travel)).
+4. Executes the current command from the host-owned navigation queue, including local guidance, obstacle avoidance and gate or slip entry. The public server route service searches the strategic gate/slip graph and queues coarse commands; the firmware determines how to fly each command ([server-client.md](server-client.md#docking-and-travel)).
 5. Replies to each request (below).
 6. Runs attitude control and allocation, then weapons control.
 7. Publishes the attitude, navigation, contacts and weapons instruments with 2 s leases. Also publishes a target marker, plus forecast paths when the client shows interest.

@@ -61,6 +61,29 @@ settlements. The values are simulation parameters, not measurements from the sta
 survey. Sol begins with 36 billion inhabitants across its planetary and orbital
 settlements.
 
+## Organizations and physical populations
+
+The starting world includes 108 organizations with authored histories, cultures,
+doctrines, goals and relationships. Their profiles live in the
+[USE](../crates/toy-sim-universe/data/organizations-union.json),
+[LFS](../crates/toy-sim-universe/data/organizations-league.json) and
+[independent](../crates/toy-sim-universe/data/organizations-independent.json)
+rosters. Organization membership sits below sovereignty and above individual
+accounts. Friendly, neutral and hostile standings affect client identification
+and NPC decisions.
+
+Organizations receive physical facilities and vessels suited to their roles:
+freighters, patrols, research ships or broadcasters. Their inventories, losses,
+orders and ownership survive checkpoints. Logistics uses ordinary production,
+cargo-transfer and navigation APIs. Defense uses sensors and weapons; a hostile
+standing cannot deny passage through a gate by itself.
+
+When explicitly enabled, asynchronous LLM directors receive their organization's
+lore, objectives and permitted observations, and issue high-level orders through
+a bounded tool interface. Radio-capable ships run chatter firmware through the
+same metered LLM service available to other ship programs. See
+[language-model calls](llm.md) for provider setup and the shared spending cap.
+
 ## Data and verification
 
 The [stellar anchor provenance](../crates/toy-sim-universe/data/README.md) describes
