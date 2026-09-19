@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UtilityDef {
+    SlipDrive {
+        power_w: f64,
+    },
     Command {
         power_w: f64,
     },
@@ -43,7 +46,9 @@ pub enum UtilityDef {
 impl UtilityDef {
     pub fn valid(&self) -> bool {
         let values = match *self {
-            Self::Command { power_w } | Self::Beacon { power_w } => vec![power_w],
+            Self::SlipDrive { power_w } | Self::Command { power_w } | Self::Beacon { power_w } => {
+                vec![power_w]
+            }
             Self::Sensor {
                 range_m, power_w, ..
             } => vec![range_m, power_w],

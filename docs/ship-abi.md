@@ -1,8 +1,18 @@
-# Ship controller ABI (version 15)
+# Ship controller ABI (version 20)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v15`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v23`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
 
-ABI 15 stores resource quantities as `u64` and appends `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `toy-sim-model`.
+ABI 23 adds planning preferences and propulsion fuel budgets to the shared travel order queue. `QueuedOrder` contains an `action`, optional `estimated_duration_ticks` and optional `estimated_propellant_kg`. `Route` and `Estimate` publish a `FuelBudget` with required and available kilograms per resource and a completeness flag. `TravelState.preferences.fuel_priority` controls the time/propellant objective. `Sublight` and `Slip` are explicit orders, `Route` expands the current order, and `CompleteOrder` advances its cursor. The separate leg list is removed. Rebuild firmware and generated bindings for the changed postcard payloads.
+
+ABI 19 adds request code 11, `REQUEST_THROTTLE`, with an eight-byte `ThrottleRequest { throttle: f64 }` payload. It changes manual throttle without replacing the direction target. Direction alignment preserves manual throttle.
+
+ABI 18 separates target marking from firing: request codes 7–10 are Mark target, Stop firing, Unmark target and Start firing. The weapons instrument mode is hold or firing, independently of its marked contact. World guidance also accepts a galactic direction target. Rebuild firmware and generated bindings.
+
+ABI 17 stores `ShipResources.energy_j`, `WeaponReading.battery_energy_j`, and `BatterySpec.capacity_j` as `u64` joules. Their offsets and record sizes are unchanged; their integer bit representation is different. Rebuild firmware and regenerate bindings. Shot-energy estimates and physical rates remain floating-point.
+
+ABI 16 removed the explicit `ProgramAction::Gate` action: aperture crossings now belong to the physics solver. This changes the Postcard world-action enum discriminants; rebuild firmware.
+
+ABI 15 introduced resource quantities as `u64` and appended `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `toy-sim-model`.
 
 ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
 
@@ -19,14 +29,14 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v15` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v23` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 
-Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `15`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
+Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `19`. Store limits: one instance, one memory up to 1 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
 For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=1048576` to the linker.
 
@@ -42,7 +52,7 @@ instantiate ──► booting ──(50,000,000 gas accumulated, boot slot)─�
 - **Boot.** When the reserve is full, the host spends the whole `BOOT_GAS` and instantiates the module. At most 64 boots happen per simulation tick. A failed instantiation still spends the gas and records a fault.
 - **Callback admission.** A running computer is called when it holds at least `CALLBACK_START_GAS` (2,000,000) and either its interval has elapsed or it has pending requests or screen events.
 - **Instruction limit.** Each callback runs with `min(gas, 1,000,000)` instruction fuel (`FUEL_PER_TICK`). Syscalls charge the same account and can lower the remaining fuel. Running out of fuel traps.
-- **Faults.** A trap, a host error, or device commands the hardware rejects will reboot the computer. The instance is dropped, gas returns to zero, and all session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. The fault message is kept until the next successful boot. Pending requests survive the reboot.
+- **Faults.** A trap, a host error, or device commands the hardware rejects will reboot the computer. The instance is dropped, gas returns to zero, and all session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. The fault message is kept until the next successful boot. Pending requests are discarded. The server clears the autopilot queue and toggle, staged actions, slip preparation and docking reservations. New requests submitted during startup are delivered after boot.
 
 ### Atomic callbacks
 
@@ -190,6 +200,7 @@ ABI 12 adds two imports that connect firmware to the authoritative world's trave
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
+| `SlipEligibility { origin, destination }` | `SlipEligibility { ready, duration_s }`: drive readiness and aperture eligibility, plus charging and transit time at the fitted drive rating |
 | `Resolve(Destination)` | `Pose` of a galactic position, beacon, or offset from a beacon or celestial body |
 
 Track queries are metered as described in [server-client.md](server-client.md#metered-queries). A cursor expires 10 ticks after its query started. Each ship keeps separate cursor stores for its flight instance and its display instance.
@@ -198,15 +209,15 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 
 **Limits.** Input is at most 65,536 bytes, and a callback can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. It returns `ERR_ARGUMENT` for undecodable input, for a display instance, or when the limit is reached.
 
-**Application.** Staged actions are applied only if the callback commits. The world applies them after every ship's program has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteLeg` staged after a rejected `Dock` does not advance travel.
+**Application.** Staged actions are applied only if the callback commits. The world applies them after every ship's program has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
 
 | `ProgramAction` | Effect |
 | --- | --- |
 | `Block { revision, reason }` | Sets travel status `Blocked(reason)` for the current travel revision. `reason` is at most 512 bytes. |
-| `Route { revision, legs }` | Installs up to 256 legs for the current travel revision |
-| `CompleteLeg { revision, leg }` | Advances travel progress |
+| `Route { revision, orders, fuel_budget }` | Replaces the current order with the planned queue, preserves later orders, and increments the travel revision. The resulting queue must contain at most 256 orders. |
+| `Estimate { revision, order, remaining_ticks, fuel_budget }` | Updates the active stage completion estimate; requires the current revision and order index. `None` clears the estimate. |
+| `CompleteOrder { revision, order }` | Advances travel progress |
 | `Slip(position)` | Starts slipdrive preparation |
-| `Gate(entry)` | Enters a paired gate |
 | `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Bay operations |
 
 The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
@@ -251,8 +262,11 @@ Players and other host code send requests. Each has an ID, a kind and a fixed pa
 | `REQUEST_AIM_CONTACT` | 4 | `ContactRequest { contact }` (8) |
 | `REQUEST_SELECT_TARGET` | 5 | `ContactRequest { contact }` (8) |
 | `REQUEST_ENGAGE_NAVIGATION` | 6 | `NavigationRequest { throttle_limit, stand_off_m }` (16) |
-| `REQUEST_ENGAGE_WEAPONS` | 7 | `EngageWeaponsRequest { contact, maximum_flight_time_s }` (16) |
-| `REQUEST_HOLD_FIRE` | 8 | none |
+| `REQUEST_MARK_TARGET` | 7 | `MarkTargetRequest { contact, maximum_flight_time_s }` (16) |
+| `REQUEST_STOP_FIRING` | 8 | none |
+| `REQUEST_UNMARK_TARGET` | 9 | none |
+| `REQUEST_START_FIRING` | 10 | none |
+| `REQUEST_THROTTLE` | 11 | `ThrottleRequest { throttle }` (8) |
 
 A request stays pending, and is presented in every callback, until a callback that replies to it commits. The host queue holds at most 256 requests. A new manual request replaces any queued manual request.
 
@@ -298,7 +312,7 @@ Instruments are fixed records that the client renders natively. Each carries a `
 | `instrument_attitude_put` | `AttitudeState` (64) | `mode` ≤ `ATTITUDE_GUIDANCE` (0 manual, 1 hold, 2 guidance). `present` 0 (reference all zero) or `ATTITUDE_REFERENCE` 1 (unit quaternion). `control_error` ≥ 0. |
 | `instrument_navigation_put` | `NavigationState` (368) | `status` ≤ `NAV_UNAVAILABLE` (0 idle, 1 active, 2 suspended, 3 unavailable). `throttle` and `throttle_limit` in [0, 1]. `present` bits: `NAV_STAND_OFF` 1, `NAV_SPEED_LIMIT` 2, `NAV_BRAKING_DISTANCE` 4, `NAV_ARRIVAL` 8, `NAV_FUEL` 16. Each measurement is finite and non-negative, and zero when its bit is clear. `reason` is valid text. |
 | `instrument_contacts_put` | `ContactsState` (16) | Requires a scan within the last 2 s. Publishes that scan's contact list with `selected_contact`. |
-| `instrument_weapons_put(state, bytes, rows, count)` | `WeaponsState` (288) plus `count` × `WeaponInstrument` (128) | `mode` 0 hold or 1 engage. Each row names a distinct weapon device, `solution_flags` ≤ 1, finite non-negative times and errors, and `aim_marker` 0 or an existing marker. Costs 100 gas per row. |
+| `instrument_weapons_put(state, bytes, rows, count)` | `WeaponsState` (288) plus `count` × `WeaponInstrument` (128) | `mode` 0 hold or 1 firing. Each row names a distinct weapon device, `solution_flags` ≤ 1, finite non-negative times and errors, and `aim_marker` 0 or an existing marker. Costs 100 gas per row. |
 | `instrument_clear(kind)` | | `INSTRUMENT_ATTITUDE` 0, `INSTRUMENT_NAVIGATION` 1, `INSTRUMENT_CONTACTS` 2, `INSTRUMENT_WEAPONS` 3 |
 
 The navigation record also names `target_contact`, `own_path` and `target_path`. The orbit overlay uses these to find the plan and target forecast ([orbital-navigation.md](orbital-navigation.md)).
@@ -338,7 +352,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v15", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v19", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
@@ -382,7 +396,7 @@ cargo test -p toy-sim-ship-wasm
 - lease expiry
 - trap rollback
 - scan gas reservation
-- request persistence across reboot
+- clearing old requests on reboot and delivering new requests submitted during startup
 - unfinished screen frames
 - snapshot quotas
 - the custom screen firmware running as a display instance, with no attitude or navigation instruments published

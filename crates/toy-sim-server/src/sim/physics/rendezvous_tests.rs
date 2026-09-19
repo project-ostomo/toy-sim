@@ -59,7 +59,9 @@ fn guidance_catalogue() -> Catalogue {
         .iter_mut()
         .find(|part| part.id == "battery")
         .unwrap();
-    battery.equipment = Equipment::Battery { capacity_j: 10e9 };
+    battery.equipment = Equipment::Battery {
+        capacity_j: 10_000_000_000,
+    };
     catalogue
 }
 

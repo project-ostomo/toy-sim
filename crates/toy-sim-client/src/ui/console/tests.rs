@@ -1,0 +1,210 @@
+use super::*;
+use bevy::ecs::system::RunSystemOnce;
+use toy_sim_ui::bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
+
+fn details() -> ShipPresentation {
+    ShipPresentation {
+        ship: Id([1; 16]),
+        revision: 1,
+        sim_time_ns: 1,
+        propulsion: PropulsionTelemetry {
+            force_n: [0., 0., -2.4e6],
+            torque_nm: [1e5, -3e5, 0.],
+            rated_forward_n: 4e6,
+            positive_torque_nm: [1e6; 3],
+            negative_torque_nm: [1e6; 3],
+            propellants: vec!["water".into()],
+            fuels: vec![],
+            charges: vec![],
+        },
+        environment: None,
+        health: Some(ShipHealth {
+            crew_people: 1,
+            crew_capacity: 1,
+            life_support_fraction: 1.,
+            hull_hp: 900.,
+            hull_max_hp: 1000.,
+            shield_reserve_capacity_kg: 500.,
+            shield_strength: 1.,
+        }),
+        execution: None,
+        mass_kg: 10000.,
+        inertia_kg_m2: [0.; 9],
+        control_rotation: [0., 0., 0., 1.],
+        hull_heat_capacity_j: 1e9,
+        battery_capacity_j: 100_000_000,
+        power_generated_w: 2e6,
+        power_consumed_w: 2.4e6,
+        inventory: vec![ResourceAmount {
+            resource: "water".into(),
+            quantity: 8000,
+            cargo_quantity: 50_000,
+            unit_mass_kg: 1.,
+            unit_volume_m3: 0.001,
+            name: "Water".into(),
+            amount_kg: 8000.,
+            capacity_kg: 10000.,
+        }],
+        cargo_capacity_m3: 50.,
+        cargo_used_m3: 50.,
+        devices: vec![],
+        computer: ComputerStatus::Running {
+            gas_used: 100,
+            gas_limit: 1000,
+            gas_reserve: 3000,
+            gas_capacity: 4000,
+        },
+        instruments: Some(Instruments {
+            valid_until_ns: u64::MAX,
+            navigation: Some(NavigationInstrument {
+                status: 0,
+                target: None,
+                own_path: None,
+                target_path: None,
+                throttle_limit: 1.,
+                throttle: 0.6,
+                stand_off_m: 0.,
+                approach_speed_limit_m_s: 0.,
+                braking_distance_m: 0.,
+                arrival_time_ns: None,
+                predicted_fuel_kg: None,
+                reason: String::new(),
+            }),
+            ..Default::default()
+        }),
+        screens: vec![],
+    }
+}
+
+#[test]
+fn console_headless_layout_and_manual_lockout() {
+    let mut world = World::new();
+    world.init_resource::<Console>();
+    world.init_resource::<EguiUserTextures>();
+    world.init_resource::<RenderTime>();
+    world.insert_resource(Time::<Fixed>::from_hz(10.));
+    world.insert_resource(SessionInfo {
+        world: Some(Id([9; 16])),
+        ..Default::default()
+    });
+    world.insert_resource(Selection {
+        ship: Some(Id([1; 16])),
+        ..Default::default()
+    });
+    let mut context = EguiContext::default();
+    let ctx = context.get_mut().clone();
+    toy_sim_ui::theme::install(&ctx);
+    world.spawn((context, PrimaryEguiContext));
+    let mut ship = super::super::tests::ship(Id([1; 16]));
+    ship.0.battery_j = 74_000_000;
+    ship.0.hull_heat_j = 320e6;
+    ship.0.shield_temperature_k = 3500.;
+    ship.0.coolant_reserve_kg = 410.;
+    let details = details();
+    assert!(manual(&ship.0, &details, true));
+    ship.0.travel.autopilot_enabled = true;
+    assert!(!manual(&ship.0, &details, true));
+    ship.0.travel.autopilot_enabled = false;
+    world.spawn((ship, ShipDetails(details)));
+    let mut textures = std::collections::BTreeMap::new();
+    let size = egui::vec2(1600., 900.);
+    for (name, computer) in [
+        (
+            "normal",
+            ComputerStatus::Running {
+                gas_used: 340_000,
+                gas_limit: 1_000_000,
+                gas_reserve: 2_500_000,
+                gas_capacity: 4_000_000,
+            },
+        ),
+        (
+            "fault",
+            ComputerStatus::Fault {
+                message: "WASM instruction budget exhausted".into(),
+                reboot_remaining_s: Some(4.2),
+            },
+        ),
+    ] {
+        let faulted = matches!(computer, ComputerStatus::Fault { .. });
+        for mut details in world.query::<&mut ShipDetails>().iter_mut(&mut world) {
+            details.0.computer = computer.clone();
+            if faulted {
+                details.0.instruments = None;
+                details.0.propulsion.force_n = [0.; 3];
+                details.0.propulsion.torque_nm = [0.; 3];
+                details.0.sim_time_ns += 1;
+            }
+        }
+        for frame in 0..4 {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |_| {
+                    let result: bevy::prelude::Result = world.run_system_once(draw).unwrap();
+                    result.unwrap();
+                },
+            );
+            let bounds = toy_sim_ui::desktop::workspace_in(&ctx);
+            assert_eq!(bounds.bottom(), size.y - STATUS_HEIGHT - 10.);
+            assert!(bounds.width() > 100. && bounds.height() > 100.);
+            if let Ok(directory) = std::env::var("TOY_SIM_CONSOLE_CAPTURE") {
+                for (id, deltas) in &output.textures_delta.set {
+                    for delta in deltas {
+                        let egui::ImageData::Color(image) = &delta.image;
+                        let entry = textures.entry(format!("{id:?}")).or_insert_with(|| {
+                            (image.size, vec![[0_u8; 4]; image.size[0] * image.size[1]])
+                        });
+                        if delta.pos.is_none() {
+                            *entry = (image.size, vec![[0; 4]; image.size[0] * image.size[1]]);
+                        }
+                        let pos = delta.pos.unwrap_or([0, 0]);
+                        for y in 0..image.size[1] {
+                            for x in 0..image.size[0] {
+                                entry.1[(pos[1] + y) * entry.0[0] + pos[0] + x] =
+                                    image.pixels[y * image.size[0] + x].to_array();
+                            }
+                        }
+                    }
+                }
+                if frame == 3 {
+                    let primitives =
+                        ctx.tessellate(std::mem::take(&mut output.shapes), output.pixels_per_point);
+                    let meshes: Vec<_> = primitives
+                        .into_iter()
+                        .filter_map(|primitive| {
+                            let egui::epaint::Primitive::Mesh(mesh) = primitive.primitive else {
+                                return None;
+                            };
+                            let vertices: Vec<_> = mesh
+                                .vertices
+                                .iter()
+                                .map(|v| ([v.pos.x, v.pos.y], [v.uv.x, v.uv.y], v.color.to_array()))
+                                .collect();
+                            let clip = primitive.clip_rect;
+                            Some(serde_json::json!({
+                                "clip": [clip.min.x, clip.min.y, clip.max.x, clip.max.y],
+                                "texture": format!("{:?}", mesh.texture_id),
+                                "indices": mesh.indices,
+                                "vertices": vertices,
+                            }))
+                        })
+                        .collect();
+                    let capture = serde_json::json!({
+                        "size": [size.x, size.y],
+                        "textures": textures,
+                        "meshes": meshes,
+                    });
+                    std::fs::write(
+                        format!("{directory}/console-{name}.json"),
+                        serde_json::to_vec(&capture).unwrap(),
+                    )
+                    .unwrap();
+                }
+            }
+            output.textures_delta.clear();
+        }
+    }
+}

@@ -106,12 +106,6 @@ pub struct Transit {
     pub next_attempt: u64,
 }
 
-#[derive(Component)]
-struct GatePending {
-    entry: Entity,
-    due: u64,
-}
-
 #[derive(Resource, Default)]
 pub struct TravelEvents(pub Vec<(Entity, &'static str, Option<GalacticPosition>)>);
 
@@ -119,7 +113,6 @@ pub fn cancel_pending(world: &mut World, ship: Entity) {
     if let Some(mut drive) = world.get_mut::<SlipDrive>(ship) {
         drive.preparation = None;
     }
-    world.entity_mut(ship).remove::<GatePending>();
 }
 
 fn tick(world: &World) -> u64 {
@@ -189,6 +182,7 @@ fn emit(world: &mut World, entity: Entity, kind: &'static str, position: Option<
 fn blocked(world: &mut World, entity: Entity, reason: String) {
     if let Some(mut travel) = world.get_mut::<Travel>(entity) {
         travel.0.status = Status::Blocked(reason);
+        travel.0.estimated_arrival_tick = None;
     }
 }
 
@@ -314,23 +308,17 @@ pub fn reserve_bay(world: &mut World, ship: Entity, host: Entity, bay_id: u32) -
 }
 
 pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<()> {
-    let target = reserve_bay(world, ship, host, bay)?;
+    reserve_bay(world, ship, host, bay)?;
+    let target = ship_pose(world, host)?;
     let current = ship_pose(world, ship)?;
-    let bay_radius = world.get::<DockingBays>(host).unwrap().0[bay as usize].radius_m;
+    let surface_gap = current.position.relative_to(target.position).length()
+        - radius(world, host)?
+        - radius(world, ship)?;
+    ensure!(surface_gap <= DOCKING_CLEARANCE_M, "outside docking range");
     ensure!(
-        current.position.relative_to(target.position).length() + radius(world, ship)? <= bay_radius,
-        "outside docking volume"
-    );
-    ensure!(
-        (DVec3::from_array(current.velocity) - DVec3::from_array(target.velocity)).length() <= 0.5,
+        (DVec3::from_array(current.velocity) - DVec3::from_array(target.velocity)).length()
+            <= DOCKING_SPEED_M_S,
         "docking velocity too high"
-    );
-    ensure!(
-        DQuat::from_array(current.rotation)
-            .angle_between(DQuat::from_array(target.rotation))
-            .abs()
-            <= 5_f64.to_radians(),
-        "docking alignment outside tolerance"
     );
     let mass = world.get::<MassProps>(ship).unwrap().mass;
     let host_id = id(world, host)?;
@@ -340,7 +328,14 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
     bays.0[bay as usize].reservation = None;
     world.entity_mut(ship).insert(DockedIn(host));
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        if matches!(travel.0.legs.get(travel.0.leg), Some(Leg::Dock(_))) {
+        if matches!(
+            travel
+                .0
+                .orders
+                .get(travel.0.order)
+                .map(|stage| &stage.action),
+            Some(Order::Dock(_))
+        ) {
             complete_order(&mut travel.0);
         }
     }
@@ -386,7 +381,9 @@ pub fn undock(world: &mut World, ship: Entity) -> Result<()> {
             || docking_bay.allowed.contains(&account),
         "departure denied"
     );
-    let mut target = bay_pose(&ship_pose(world, host)?, docking_bay);
+    let mut target = ship_pose(world, host)?;
+    target.rotation =
+        (DQuat::from_array(target.rotation) * DQuat::from_array(docking_bay.rotation)).to_array();
     let displacement = DQuat::from_array(target.rotation)
         * DVec3::NEG_Z
         * (radius(world, host)? + radius(world, ship)? + 10.);
@@ -505,10 +502,7 @@ pub fn slip_admissible(
 pub fn prepare_slip(world: &mut World, ship: Entity, destination: GalacticPosition) -> Result<()> {
     let pose = ship_pose(world, ship)?;
     let radius = radius(world, ship)?;
-    ensure!(
-        active(world, ship) && DVec3::from_array(pose.velocity).length() <= 1.,
-        "slip requires rest in galactic frame"
-    );
+    ensure!(active(world, ship), "slip requires a ship in space");
     ensure!(
         slip_admissible(world, ship, pose.position, radius)
             && slip_admissible(world, ship, destination, radius),
@@ -535,90 +529,60 @@ pub fn prepare_slip(world: &mut World, ship: Entity, destination: GalacticPositi
     Ok(())
 }
 
-pub fn submit_route(world: &mut World, ship: Entity, revision: u64, legs: Vec<Leg>) -> Result<()> {
-    ensure!(legs.len() <= 256, "route too long");
+pub fn submit_route(
+    world: &mut World,
+    ship: Entity,
+    revision: u64,
+    orders: Vec<QueuedOrder>,
+) -> Result<()> {
+    ensure!(orders.len() <= 256, "invalid route length");
+    ensure!(
+        orders.iter().all(|stage| stage
+            .estimated_propellant_kg
+            .is_none_or(|kg| kg.is_finite() && kg >= 0.)),
+        "invalid fuel estimate"
+    );
+    let now = tick(world);
     let mut travel = world
         .get_mut::<Travel>(ship)
         .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?;
     ensure!(
-        travel.0.revision == revision && travel.0.status != Status::Paused,
-        "stale or paused route"
+        travel.0.revision == revision
+            && travel.0.autopilot_enabled
+            && matches!(travel.0.status, Status::Planning | Status::Blocked(_)),
+        "stale or inactive route"
     );
-    travel.0.legs = legs;
-    travel.0.leg = 0;
+    let index = travel.0.order;
+    if index == travel.0.orders.len() && orders.is_empty() {
+        travel.0.status = Status::Completed;
+        return Ok(());
+    }
+    ensure!(!orders.is_empty(), "empty expansion");
+    ensure!(index < travel.0.orders.len(), "no order to expand");
+    ensure!(
+        travel.0.orders.len() - 1 + orders.len() <= 256,
+        "queue too long"
+    );
+    travel.0.orders.splice(index..=index, orders);
+    travel.0.revision = travel.0.revision.wrapping_add(1);
+    travel.0.estimated_arrival_tick = travel.0.orders[index]
+        .estimated_duration_ticks
+        .map(|duration| now.saturating_add(duration));
     travel.0.status = Status::Active;
     Ok(())
 }
 
-pub fn enter_gate(world: &mut World, ship: Entity, entry: Entity) -> Result<()> {
-    gate_destination(world, ship, entry)?;
-    if let Some(pending) = world.get::<GatePending>(ship) {
-        ensure!(pending.entry == entry, "another transfer pending");
-        return Ok(());
+pub fn gate_transferred(world: &mut World, ship: Entity, entry: Entity) {
+    identity::renew_spatial_instance(world, ship);
+    geometry::update(world, ship);
+    let entry_id = world.get::<Identity>(entry).map(|identity| identity.0);
+    if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+        if matches!(travel.0.orders.get(travel.0.order).map(|stage| &stage.action), Some(Order::Jump(entry)) if Some(*entry) == entry_id)
+        {
+            complete_order(&mut travel.0);
+        }
     }
-    let due = tick(world) + 1;
-    world.entity_mut(ship).insert(GatePending { entry, due });
-    Ok(())
-}
-
-fn gate_destination(world: &mut World, ship: Entity, entry: Entity) -> Result<Pose> {
-    ensure!(active(world, ship) && active(world, entry), "gate inactive");
-    let gate = world
-        .get::<Gate>(entry)
-        .ok_or_else(|| anyhow::anyhow!("not a gate"))?
-        .clone();
-    let account = owner(world, ship)?;
-    ensure!(
-        gate.enabled
-            && (gate.public || gate.allowed.contains(&account) || owner(world, entry)? == account),
-        "gate access denied"
-    );
-    let current = ship_pose(world, ship)?;
-    let mouth = ship_pose(world, entry)?;
-    let radius = radius(world, ship)?;
-    let offset = current.position.relative_to(mouth.position);
-    ensure!(
-        offset.length() + radius <= gate.radius_m,
-        "outside gate aperture"
-    );
-    ensure!(
-        (DVec3::from_array(current.velocity) - DVec3::from_array(mouth.velocity)).length() <= 10.,
-        "gate speed exceeded"
-    );
-    let exit = entity(world, gate.paired)?;
-    let exit_gate = world
-        .get::<Gate>(exit)
-        .ok_or_else(|| anyhow::anyhow!("exit unavailable"))?
-        .clone();
-    ensure!(
-        active(world, exit) && exit_gate.enabled && exit_gate.paired == id(world, entry)?,
-        "exit inactive"
-    );
-    ensure!(
-        exit_gate.public || exit_gate.allowed.contains(&account) || owner(world, exit)? == account,
-        "exit access denied"
-    );
-    ensure!(
-        offset.length() + radius <= exit_gate.radius_m,
-        "exit aperture too small"
-    );
-    let end = ship_pose(world, exit)?;
-    let rotation = DQuat::from_array(end.rotation) * DQuat::from_array(mouth.rotation).inverse();
-    let position = end.position.offset_by(rotation * offset);
-    ensure!(
-        low_curvature(world, current.position)
-            && low_curvature(world, position)
-            && clear_at(world, ship, Some(exit), position, radius),
-        "gate exit obstructed or curvature exceeded"
-    );
-    Ok(Pose {
-        position,
-        rotation: (rotation * DQuat::from_array(current.rotation)).to_array(),
-        velocity: (DVec3::from_array(end.velocity)
-            + rotation * (DVec3::from_array(current.velocity) - DVec3::from_array(mouth.velocity)))
-        .to_array(),
-        angular_velocity: (rotation * DVec3::from_array(current.angular_velocity)).to_array(),
-    })
+    emit(world, ship, "gate-transferred", None);
 }
 
 pub fn bay_pose(host: &Pose, bay: &Bay) -> Pose {
@@ -722,7 +686,38 @@ pub fn dispatch(
 ) -> Result<()> {
     use toy_sim_model::ProgramAction;
     match action {
-        ProgramAction::Route { revision, legs } => submit_route(world, ship, revision, legs),
+        ProgramAction::Route {
+            revision,
+            orders,
+            fuel_budget,
+        } => {
+            ensure!(fuel_budget.valid(), "invalid fuel budget");
+            submit_route(world, ship, revision, orders)?;
+            world.get_mut::<Travel>(ship).unwrap().0.fuel_budget = Some(fuel_budget);
+            Ok(())
+        }
+        ProgramAction::Estimate {
+            revision,
+            order,
+            remaining_ticks,
+            fuel_budget,
+        } => {
+            ensure!(fuel_budget.valid(), "invalid fuel budget");
+            let now = tick(world);
+            let mut travel = world
+                .get_mut::<Travel>(ship)
+                .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?;
+            ensure!(
+                travel.0.revision == revision
+                    && travel.0.order == order
+                    && travel.0.status == Status::Active,
+                "stale estimate"
+            );
+            travel.0.estimated_arrival_tick =
+                remaining_ticks.map(|remaining| now.saturating_add(remaining));
+            travel.0.fuel_budget = Some(fuel_budget);
+            Ok(())
+        }
         ProgramAction::Block { revision, reason } => {
             ensure!(
                 world
@@ -733,27 +728,21 @@ pub fn dispatch(
             blocked(world, ship, reason.chars().take(256).collect());
             Ok(())
         }
-        ProgramAction::CompleteLeg { revision, leg } => {
+        ProgramAction::CompleteOrder { revision, order } => {
             let mut travel = world
                 .get_mut::<Travel>(ship)
                 .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?;
             ensure!(
                 travel.0.revision == revision
-                    && travel.0.leg == leg
+                    && travel.0.order == order
                     && travel.0.status == Status::Active,
-                "stale leg"
+                "stale order"
             );
-            travel.0.leg += 1;
-            if travel.0.leg >= travel.0.legs.len() {
-                complete_order(&mut travel.0);
-            }
+            complete_order(&mut travel.0);
             Ok(())
         }
         ProgramAction::Slip(destination) => prepare_slip(world, ship, destination),
-        ProgramAction::Gate(uuid) => {
-            let entry = entity(world, uuid)?;
-            enter_gate(world, ship, entry)
-        }
+
         ProgramAction::ReserveBay { station, bay } => {
             let host = entity(world, station)?;
             reserve_bay(world, ship, host, bay).map(|_| ())
@@ -765,7 +754,16 @@ pub fn dispatch(
         ProgramAction::Undock => {
             undock(world, ship)?;
             if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-                complete_order(&mut travel.0);
+                if matches!(
+                    travel
+                        .0
+                        .orders
+                        .get(travel.0.order)
+                        .map(|stage| &stage.action),
+                    Some(Order::Undock)
+                ) {
+                    complete_order(&mut travel.0);
+                }
             }
             Ok(())
         }
@@ -774,9 +772,8 @@ pub fn dispatch(
 
 fn complete_order(travel: &mut TravelState) {
     travel.order += 1;
-    travel.legs.clear();
-    travel.leg = 0;
     travel.estimated_arrival_tick = None;
+    travel.fuel_budget = None;
     travel.status = if travel.order >= travel.orders.len() {
         Status::Completed
     } else {
@@ -793,7 +790,17 @@ pub fn advance(world: &mut World) {
             matches!(presence.0, Presence::Docked { .. })
                 && matches!(travel.0.status, Status::Planning | Status::Active)
         })
-        .map(|(entity, _, travel)| (entity, travel.0.orders.get(travel.0.order).cloned()))
+        .map(|(entity, _, travel)| {
+            (
+                entity,
+                travel
+                    .0
+                    .orders
+                    .get(travel.0.order)
+                    .map(|stage| &stage.action)
+                    .cloned(),
+            )
+        })
         .collect();
     for (ship, order) in dormant_orders {
         let already_docked = match (&order, &world.get::<PresenceState>(ship).unwrap().0) {
@@ -822,27 +829,6 @@ pub fn advance(world: &mut World) {
         }
     }
 
-    let gates: Vec<_> = world
-        .query::<(Entity, &GatePending)>()
-        .iter(world)
-        .filter(|(_, pending)| pending.due <= now)
-        .map(|(ship, pending)| (ship, pending.entry))
-        .collect();
-    for (ship, entry) in gates {
-        let result = gate_destination(world, ship, entry);
-        world.entity_mut(ship).remove::<GatePending>();
-        match result {
-            Ok(pose) => {
-                write_pose(world, ship, pose);
-                if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-                    travel.0.leg += 1;
-                }
-                emit(world, ship, "gate-transferred", None);
-            }
-            Err(error) => blocked(world, ship, error.to_string()),
-        }
-    }
-
     let arriving: Vec<_> = world
         .query::<(Entity, &Transit)>()
         .iter(world)
@@ -866,8 +852,16 @@ pub fn advance(world: &mut World) {
             world.entity_mut(ship).remove::<Transit>();
             set_active(world, ship);
             if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-                travel.0.leg += 1;
-                travel.0.status = Status::Active;
+                if matches!(
+                    travel
+                        .0
+                        .orders
+                        .get(travel.0.order)
+                        .map(|stage| &stage.action),
+                    Some(Order::Slip { .. })
+                ) {
+                    complete_order(&mut travel.0);
+                }
             }
             emit(world, ship, "slip-arrived", Some(transit.destination));
         } else {
@@ -895,7 +889,6 @@ pub fn advance(world: &mut World) {
             .get::<MassProps>(ship)
             .map_or(f64::INFINITY, |m| m.mass);
         let valid = active(world, ship)
-            && DVec3::from_array(pose.velocity).length() <= 1.
             && mass <= preparation.mass * 1.001
             && slip_admissible(world, ship, pose.position, ship_radius)
             && slip_admissible(world, ship, preparation.destination, ship_radius);
@@ -909,6 +902,25 @@ pub fn advance(world: &mut World) {
             .max(0.);
         let work = super::hardware::spend_travel_energy(world, ship, requested);
         super::hardware::add_travel_heat(world, ship, work * 0.2, 0.1);
+        let remaining_j = (preparation.required_j - preparation.work_j - work).max(0.);
+        let charging_s = if remaining_j == 0. {
+            0.
+        } else if work > 0. {
+            remaining_j / (work * 10.)
+        } else {
+            f64::INFINITY
+        };
+        let distance_ly =
+            pose.position.relative_to(preparation.destination).length() / LIGHT_YEAR_M;
+        let remaining_s = charging_s
+            .max((preparation.started + 100).saturating_sub(now) as f64 * 0.1)
+            + 30.
+            + 8.64 * distance_ly;
+        if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+            travel.0.estimated_arrival_tick = remaining_s
+                .is_finite()
+                .then(|| now.saturating_add((remaining_s * 10.).ceil() as u64));
+        }
         let mut drive = world.get_mut::<SlipDrive>(ship).unwrap();
         drive.preparation.as_mut().unwrap().work_j += work;
         if drive.preparation.as_ref().unwrap().work_j >= preparation.required_j
@@ -1064,6 +1076,83 @@ mod tests {
     }
 
     #[test]
+    fn docking_accepts_any_side_and_attitude_at_surface_range_and_speed_limits() {
+        for direction in [DVec3::X, DVec3::NEG_X, DVec3::Y, DVec3::NEG_Z] {
+            let mut world = world();
+            let account = Id::new();
+            let host = ship(&mut world, DVec3::ZERO, account);
+            world.entity_mut(host).insert(DockingBays(vec![bay()]));
+            let child = ship(&mut world, DVec3::ZERO, account);
+            let capture_distance = radius(&world, host).unwrap()
+                + radius(&world, child).unwrap()
+                + DOCKING_CLEARANCE_M;
+            world
+                .get_mut::<PreciseTransform>(child)
+                .unwrap()
+                .translation_um =
+                GalacticPosition::ZERO.offset_by(direction * (capture_distance + 0.01));
+            assert!(
+                dock(&mut world, child, host, 0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("range")
+            );
+            world
+                .get_mut::<PreciseTransform>(child)
+                .unwrap()
+                .translation_um =
+                GalacticPosition::ZERO.offset_by(direction * (capture_distance - 0.00001));
+            world.get_mut::<PreciseTransform>(child).unwrap().rotation = DQuat::from_rotation_y(2.);
+            world.get_mut::<Velocity>(host).unwrap().0 = DVec3::Y * 100.;
+            world.get_mut::<Velocity>(child).unwrap().0 = DVec3::Y * 110.01;
+            assert!(
+                dock(&mut world, child, host, 0)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("velocity")
+            );
+            world.get_mut::<Velocity>(child).unwrap().0 = DVec3::Y * 110.;
+            dock(&mut world, child, host, 0).unwrap();
+            assert!(world.get::<Velocity>(child).is_none());
+        }
+    }
+
+    #[test]
+    fn proximity_docking_still_checks_access_capacity_and_reservations() {
+        let mut world = world();
+        let account = Id::new();
+        let host = ship(&mut world, DVec3::ZERO, account);
+        let child = ship(&mut world, DVec3::Z * 100., Id::new());
+        let mut restricted = bay();
+        restricted.public = false;
+        world.entity_mut(host).insert(DockingBays(vec![restricted]));
+        assert!(
+            dock(&mut world, child, host, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("denied")
+        );
+        world.get_mut::<DockingBays>(host).unwrap().0[0].public = true;
+        world.get_mut::<DockingBays>(host).unwrap().0[0].mass_capacity_kg = 999.;
+        assert!(
+            dock(&mut world, child, host, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("capacity")
+        );
+        world.get_mut::<DockingBays>(host).unwrap().0[0].mass_capacity_kg = 1000.;
+        world.get_mut::<DockingBays>(host).unwrap().0[0].reservation = Some((Id::new(), 600));
+        assert!(
+            dock(&mut world, child, host, 0)
+                .unwrap_err()
+                .to_string()
+                .contains("reserved")
+        );
+        world.get_mut::<DockingBays>(host).unwrap().0[0].reservation = None;
+        dock(&mut world, child, host, 0).unwrap();
+    }
+
+    #[test]
     fn docking_removes_active_motion_and_undocking_inherits_host_rotation() {
         let mut world = world();
         let account = Id::new();
@@ -1113,44 +1202,6 @@ mod tests {
     }
 
     #[test]
-    fn gate_has_dwell_and_checks_exit_access_again() {
-        let mut world = world();
-        let account = Id::new();
-        let entry = ship(&mut world, DVec3::ZERO, account);
-        let exit = ship(&mut world, DVec3::X * 10000., account);
-        let entry_id = id(&world, entry).unwrap();
-        let exit_id = id(&world, exit).unwrap();
-        for (mouth, paired) in [(entry, exit_id), (exit, entry_id)] {
-            world.entity_mut(mouth).insert(Gate {
-                paired,
-                radius_m: 100.,
-                exclusion_m: 1e7,
-                enabled: true,
-                public: true,
-                allowed: Default::default(),
-            });
-        }
-        let child = ship(&mut world, DVec3::ZERO, account);
-        enter_gate(&mut world, child, entry).unwrap();
-        advance(&mut world);
-        assert_eq!(
-            world.get::<PreciseTransform>(child).unwrap().translation_um,
-            GalacticPosition::default()
-        );
-        world.get_mut::<Gate>(exit).unwrap().enabled = false;
-        world.resource_mut::<SimulationCounters>().ticks = 1;
-        advance(&mut world);
-        assert!(matches!(
-            world.get::<Travel>(child).unwrap().0.status,
-            Status::Blocked(_)
-        ));
-        assert_eq!(
-            world.get::<PreciseTransform>(child).unwrap().translation_um,
-            GalacticPosition::default()
-        );
-    }
-
-    #[test]
     fn blocked_slip_arrival_keeps_destination_and_retries_after_one_second() {
         let mut world = world();
         let account = Id::new();
@@ -1178,6 +1229,58 @@ mod tests {
     }
 
     #[test]
+    fn moving_slip_charges_departs_and_preserves_arrival_velocity() {
+        let mut world = world();
+        let child = ship(&mut world, DVec3::ZERO, Id::new());
+        let velocity = DVec3::Y * 30_000.;
+        world.get_mut::<Velocity>(child).unwrap().0 = velocity;
+        world.entity_mut(child).insert((
+            SlipDrive::default(),
+            super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                tank_capacities_m3: vec![0.; 2],
+                quantities: vec![0; 2],
+                cargo: vec![0; 2],
+                energy_j: 1_000_000_000_000,
+            }),
+        ));
+        let destination = GalacticPosition::ZERO.offset_by(DVec3::X * 1e9);
+        prepare_slip(&mut world, child, destination).unwrap();
+        {
+            let mut drive = world.get_mut::<SlipDrive>(child).unwrap();
+            let preparation = drive.preparation.as_mut().unwrap();
+            preparation.required_j = preparation.required_j.ceil();
+        }
+        for tick in 0..=100 {
+            world.resource_mut::<SimulationCounters>().ticks = tick;
+            world
+                .get_mut::<PreciseTransform>(child)
+                .unwrap()
+                .translation_um = GalacticPosition::ZERO.offset_by(velocity * (tick as f64 * 0.1));
+            advance(&mut world);
+            if tick < 100 {
+                assert!(world.get::<Transit>(child).is_none());
+                assert!(world.get::<SlipDrive>(child).unwrap().preparation.is_some());
+            }
+        }
+        let transit = world.get::<Transit>(child).unwrap();
+        assert_eq!(
+            transit.origin,
+            GalacticPosition::ZERO.offset_by(velocity * 10.)
+        );
+        let arrival = transit.next_attempt;
+        assert!(world.get::<Velocity>(child).is_none());
+        world.resource_mut::<SimulationCounters>().ticks = arrival;
+        advance(&mut world);
+        assert!(world.get::<Transit>(child).is_none());
+        assert!(world.get::<Dormant>(child).is_none());
+        assert_eq!(world.get::<Velocity>(child).unwrap().0, velocity);
+        assert_eq!(
+            world.get::<PreciseTransform>(child).unwrap().translation_um,
+            destination
+        );
+    }
+
+    #[test]
     fn slip_spends_available_energy_waits_for_preparation_and_can_be_cancelled() {
         let mut world = world();
         let account = Id::new();
@@ -1188,7 +1291,7 @@ mod tests {
                 tank_capacities_m3: vec![0.; 2],
                 quantities: vec![0; 2],
                 cargo: vec![0; 2],
-                energy_j: 5.,
+                energy_j: 5,
             }),
         ));
         let destination = GalacticPosition::default().offset_by(DVec3::X * 10000.);
@@ -1200,7 +1303,7 @@ mod tests {
                 .unwrap()
                 .0
                 .energy_j,
-            0.
+            0
         );
         assert_eq!(
             world

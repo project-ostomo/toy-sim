@@ -15,9 +15,9 @@ This directory contains optional 3D models of ship parts. The fuselage section a
 
 All fuselage variants are structural parts. Their mass and hull ratings are provisional gameplay values; the 8m parts provide 500 m³ of tank space for the section and 40 m³ for the end. Tank capacity scales with volume, while shell mass and hull ratings scale with area. The section repeats every 16 m along local Z. The end has its mounting face at +Z and its closed face at −Z; rotate it 180 degrees around X or Y for the opposite end.
 
-`fuselage-08m-16m.blend` contains the editable section, end, and assembly preview scenes. The outer Whipple sheets use a repeating 256 × 256 tangent normal map with constant base colour, metalness and roughness. It represents subtle surface grain, while the spacing between shield layers is actual geometry. Each GLB embeds the normal map and contains one mesh with three material primitives.
+`fuselage-08m-16m.blend` contains the editable section, end, and assembly preview scenes. The outer Whipple sheets use constant base colour, metalness and roughness, with no surface texture. The spacing between shield layers is actual geometry. Each GLB contains one mesh with three material primitives.
 
-To regenerate the texture and end geometry and export both parts from the saved Blender source:
+To regenerate the end geometry and export both parts from the saved Blender source:
 
 ```sh
 blender --background assets/models/parts/fuselage-08m-16m.blend --python tools/art/fuselage.py

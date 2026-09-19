@@ -50,8 +50,6 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .send(InputFrame {
             world: first.world,
             sequence: 1,
-            acknowledged_event: first.event_watermark,
-            acknowledged_frame: first.sequence,
             actions: vec![
                 (
                     Id::new(),
@@ -85,10 +83,15 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         })
         .await
         .unwrap();
-    let observed = tokio::time::timeout(Duration::from_secs(15), async {
+    let (observed, result) = tokio::time::timeout(Duration::from_secs(15), async {
+        let mut result = None;
         loop {
             let frame = client.state.recv().await.unwrap();
-            if frame.results.iter().any(|result| result.id == action)
+            if let Some(received) = frame.results.iter().find(|result| result.id == action) {
+                assert!(result.is_none(), "command result delivered more than once");
+                result = Some(received.clone());
+            }
+            if result.is_some()
                 && frame.screens.iter().any(|screen| {
                     screen
                         .frame
@@ -96,21 +99,13 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                         .is_some_and(|frame| frame.draws.len() >= 5)
                 })
             {
-                break frame;
+                break (frame, result.unwrap());
             }
         }
     })
     .await
     .unwrap();
-    assert!(
-        observed
-            .results
-            .iter()
-            .find(|result| result.id == action)
-            .unwrap()
-            .error
-            .is_none()
-    );
+    assert!(result.error.is_none());
     assert_eq!(observed.views.len(), 1);
     assert_eq!(observed.screens.len(), 1);
     assert!(observed.screens[0].frame.as_ref().unwrap().draws.len() >= 5);
@@ -147,8 +142,6 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .send(InputFrame {
             world: first.world,
             sequence: 1,
-            acknowledged_event: other_first.event_watermark,
-            acknowledged_frame: other_first.sequence,
             actions: vec![
                 (join, Action::JoinGroup(first.ships[0].info_group)),
                 (
@@ -170,10 +163,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                     Action::Ship {
                         ship: first.ships[0].ship,
                         authority_revision: first.ships[0].authority_revision,
-                        command: ShipCommand::Manual {
-                            throttle: 1.,
-                            steering: [0.; 3],
-                        },
+                        command: ShipCommand::StartFiring,
                     },
                 ),
             ],
@@ -233,17 +223,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                     client.status.borrow()
                 )
             });
-            client
-                .input
-                .send(InputFrame {
-                    world: frame.world,
-                    sequence: frame.sequence + 2,
-                    acknowledged_event: frame.event_watermark,
-                    acknowledged_frame: frame.sequence,
-                    actions: Vec::new(),
-                })
-                .await
-                .unwrap();
+            assert!(frame.results.iter().all(|result| result.id != action));
             if frame.tick >= start_tick + 100 {
                 break;
             }
@@ -273,8 +253,6 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
             .send(InputFrame {
                 world: first.world,
                 sequence: 1,
-                acknowledged_event: first.event_watermark,
-                acknowledged_frame: first.sequence,
                 actions: vec![(Id::new(), Action::Debug(DebugCommand::Reset))],
             })
             .await
@@ -294,8 +272,6 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
             .send(InputFrame {
                 world: first.world,
                 sequence: 2,
-                acknowledged_event: first.event_watermark,
-                acknowledged_frame: first.sequence,
                 actions: vec![(stale_action, Action::Debug(DebugCommand::SetRate(0.)))],
             })
             .await
@@ -306,8 +282,6 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
             .send(InputFrame {
                 world: reset.world,
                 sequence: 3,
-                acknowledged_event: reset.event_watermark,
-                acknowledged_frame: reset.sequence,
                 actions: vec![(
                     subscribe,
                     Action::Subscribe(ViewSubscription {

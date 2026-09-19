@@ -23,17 +23,74 @@ use toy_sim_protocol::Message;
 pub struct Connection {
     pub account: AccountId,
     pub input: mpsc::Receiver<InputFrame>,
-    pub state: watch::Sender<Option<Arc<Frame>>>,
+    pub state: SnapshotSender,
 }
 
 struct Endpoint {
     pub input: mpsc::Sender<InputFrame>,
-    pub state: watch::Receiver<Option<Arc<Frame>>>,
+    pub state: SnapshotReceiver,
+}
+
+pub struct SnapshotSender {
+    frames: mpsc::UnboundedSender<QueuedSnapshot>,
+    budget: Arc<tokio::sync::Semaphore>,
+    failed: watch::Sender<bool>,
+}
+
+struct SnapshotReceiver {
+    frames: mpsc::UnboundedReceiver<QueuedSnapshot>,
+    failed: watch::Receiver<bool>,
+}
+
+struct QueuedSnapshot {
+    bytes: Vec<u8>,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+fn snapshot_queue(byte_limit: usize) -> (SnapshotSender, SnapshotReceiver) {
+    let (frames, receiver) = mpsc::unbounded_channel();
+    let (failed, failure) = watch::channel(false);
+    (
+        SnapshotSender {
+            frames,
+            budget: Arc::new(tokio::sync::Semaphore::new(byte_limit)),
+            failed,
+        },
+        SnapshotReceiver {
+            frames: receiver,
+            failed: failure,
+        },
+    )
+}
+
+impl SnapshotSender {
+    fn is_closed(&self) -> bool {
+        self.frames.is_closed() || *self.failed.borrow()
+    }
+
+    fn send(&self, frame: Frame) -> Result<()> {
+        ensure!(!self.is_closed(), "connection closed");
+        let bytes = encode_snapshot(frame);
+        let permit = self
+            .budget
+            .clone()
+            .try_acquire_many_owned(bytes.len().try_into()?);
+        let Ok(permit) = permit else {
+            self.failed.send_replace(true);
+            anyhow::bail!("client too slow: outbound snapshot buffer full");
+        };
+        self.frames
+            .send(QueuedSnapshot {
+                bytes,
+                _permit: permit,
+            })
+            .map_err(|_| anyhow::anyhow!("connection closed"))
+    }
 }
 
 fn channels(account: AccountId) -> (Connection, Endpoint) {
     let (input, receive) = mpsc::channel(16);
-    let (state, frames) = watch::channel(None);
+    let (state, frames) = snapshot_queue(64 * 1024 * 1024);
     (
         Connection {
             account,
@@ -74,6 +131,7 @@ pub fn run(
             .query_filtered::<Entity, With<Connection>>()
             .iter(app.world())
             .collect::<Vec<_>>();
+        let session_count = sessions.len();
         for entity in sessions {
             let mut connection = app
                 .world_mut()
@@ -144,24 +202,34 @@ pub fn run(
         for _ in 0..ticks {
             let started = Instant::now();
             app.update();
+            let duration_ms = started.elapsed().as_secs_f64() * 1000.0;
             app.world_mut()
                 .resource_mut::<sim::simulation::TickMetrics>()
-                .last_duration_ms = started.elapsed().as_secs_f64() * 1000.0;
+                .last_duration_ms = duration_ms;
+            sim::diagnostics::tick(app.world_mut(), duration_ms);
         }
+        let publication_started = Instant::now();
         sim::displays::update(app.world_mut());
+        let display_ms = publication_started.elapsed().as_secs_f64() * 1000.0;
         let sessions = app
             .world_mut()
             .query_filtered::<Entity, With<Connection>>()
             .iter(app.world())
             .collect::<Vec<_>>();
+        let session_count = sessions.len();
         for entity in sessions {
             match sim::session::frame(app.world_mut(), entity) {
                 Ok(frame) => {
-                    app.world()
+                    let result = app
+                        .world()
                         .get::<Connection>(entity)
                         .unwrap()
                         .state
-                        .send_replace(Some(Arc::new(frame)));
+                        .send(frame);
+                    if let Err(error) = result {
+                        eprintln!("Session publication failed: {error:#}");
+                        sim::session::disconnect(app.world_mut(), entity);
+                    }
                 }
                 Err(error) => {
                     eprintln!("Session publication failed: {error:#}");
@@ -169,6 +237,15 @@ pub fn run(
                 }
             }
         }
+        sim::session::prune_events(app.world_mut());
+        sim::diagnostics::publication(
+            app.world()
+                .resource::<sim::simulation::SimulationCounters>()
+                .ticks,
+            publication_started.elapsed().as_secs_f64() * 1000.0,
+            display_ms,
+            session_count,
+        );
         if incoming.is_closed()
             && app
                 .world_mut()
@@ -230,6 +307,20 @@ pub async fn listen(
     }
 }
 
+fn encode_snapshot(frame: Frame) -> Vec<u8> {
+    toy_sim_protocol::encode(&Message::State(frame))
+        .expect("internal server bug: invalid outgoing snapshot")
+}
+
+async fn send_snapshot<W: tokio::io::AsyncWrite + Unpin>(
+    write: &mut W,
+    bytes: &[u8],
+) -> Result<()> {
+    write.write_all(bytes).await?;
+    write.flush().await?;
+    Ok(())
+}
+
 async fn main_stream(stream: toy_sim_net::picomux::Stream, mut endpoint: Endpoint) -> Result<()> {
     let (mut read, mut write) = tokio::io::split(stream);
     let incoming = async {
@@ -246,21 +337,18 @@ async fn main_stream(stream: toy_sim_net::picomux::Stream, mut endpoint: Endpoin
         Ok::<(), anyhow::Error>(())
     };
     let outgoing = async {
-        loop {
-            endpoint.state.changed().await?;
-            let frame = endpoint.state.borrow_and_update().clone();
-            if let Some(frame) = frame {
-                tokio::time::timeout(
-                    Duration::from_secs(10),
-                    toy_sim_net::write_message(&mut write, &Message::State((*frame).clone())),
-                )
-                .await??;
-            }
+        while let Some(frame) = endpoint.state.frames.recv().await {
+            send_snapshot(&mut write, &frame.bytes).await?;
         }
-        #[allow(unreachable_code)]
-        Ok::<(), anyhow::Error>(())
+        anyhow::bail!("session closed")
     };
-    tokio::select! { result = incoming => result, result = outgoing => result }
+    let failed = async {
+        if !*endpoint.state.failed.borrow() {
+            let _ = endpoint.state.failed.changed().await;
+        }
+        anyhow::bail!("session closed or outbound snapshot buffer full")
+    };
+    tokio::select! { result = incoming => result, result = outgoing => result, result = failed => result }
 }
 
 async fn asset_streams(
@@ -327,6 +415,94 @@ pub fn key_bytes(value: &str) -> Result<[u8; 32]> {
 #[cfg(test)]
 mod asset_tests {
     use super::*;
+
+    fn empty_snapshot() -> Frame {
+        Frame {
+            world: Id::new(),
+            sequence: 1,
+            tick: 1,
+            sim_time_ns: 100_000_000,
+            rate: 1.0,
+            views: Vec::new(),
+            tracks: BTreeMap::new(),
+            ships: Vec::new(),
+            screens: Vec::new(),
+            events: Vec::new(),
+            results: Vec::new(),
+            presentation: PresentationFrame::default(),
+        }
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "internal server bug: invalid outgoing snapshot")]
+    async fn invalid_outgoing_snapshot_panics() {
+        let mut frame = empty_snapshot();
+        frame.rate = f64::NAN;
+        encode_snapshot(frame);
+    }
+
+    #[tokio::test]
+    async fn disconnected_client_remains_an_io_error() {
+        let (mut server, client) = tokio::io::duplex(4096);
+        drop(client);
+        assert!(
+            send_snapshot(&mut server, &encode_snapshot(empty_snapshot()))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_queue_preserves_order_and_accounts_for_inflight_bytes() {
+        let first = empty_snapshot();
+        let mut second = first.clone();
+        second.sequence = 2;
+        let frame_bytes = encode_snapshot(first.clone()).len();
+        let (sender, mut receiver) = snapshot_queue(frame_bytes * 2);
+        sender.send(first.clone()).unwrap();
+        sender.send(second.clone()).unwrap();
+        assert_eq!(sender.budget.available_permits(), 0);
+
+        let queued = receiver.frames.recv().await.unwrap();
+        assert_eq!(
+            toy_sim_protocol::decode(&queued.bytes).unwrap(),
+            Message::State(first)
+        );
+        assert_eq!(sender.budget.available_permits(), 0);
+        drop(queued);
+        assert_eq!(sender.budget.available_permits(), frame_bytes);
+
+        let queued = receiver.frames.recv().await.unwrap();
+        assert_eq!(
+            toy_sim_protocol::decode(&queued.bytes).unwrap(),
+            Message::State(second)
+        );
+        drop(queued);
+        assert_eq!(sender.budget.available_permits(), frame_bytes * 2);
+    }
+
+    #[tokio::test]
+    async fn snapshot_queue_overflow_disconnects_instead_of_replacing_frames() {
+        let frame = empty_snapshot();
+        let (sender, mut receiver) = snapshot_queue(encode_snapshot(frame.clone()).len());
+        sender.send(frame.clone()).unwrap();
+        assert!(
+            sender
+                .send(frame.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("client too slow")
+        );
+        receiver.failed.changed().await.unwrap();
+        assert!(*receiver.failed.borrow());
+        assert!(sender.is_closed());
+        let queued = receiver.frames.recv().await.unwrap();
+        assert_eq!(
+            toy_sim_protocol::decode(&queued.bytes).unwrap(),
+            Message::State(frame)
+        );
+        assert!(receiver.frames.try_recv().is_err());
+    }
 
     #[tokio::test]
     async fn assets_stream_to_eof_concurrently_despite_a_stalled_request() {

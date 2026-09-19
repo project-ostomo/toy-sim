@@ -107,6 +107,7 @@ fn main() -> Result<()> {
         ("starter.ship", armed_starter()),
         ("micropulse-demo.ship", micropulse_starter()),
         ("ntr-patrol.ship", ntr_patrol()),
+        ("expedition-patrol.ship", expedition_patrol()),
     ] {
         ship.compile(&catalogue)?;
         ship.save(output.join(filename))?;

@@ -6868,6 +6868,7 @@ dependencies = [
  "glam 0.32.1",
  "hifitime",
  "serde",
+ "serde_json",
  "tokio",
  "toml",
  "toy-sim-model",
@@ -6879,6 +6880,7 @@ dependencies = [
  "toy-sim-stars",
  "toy-sim-ui",
  "toy-sim-universe",
+ "tracing",
 ]
 
 [[package]]

@@ -1,4 +1,6 @@
 mod commands;
+mod diagnostics;
+pub(super) use diagnostics::ClientDiagnostics;
 mod presentation;
 pub(crate) use commands::Outgoing;
 mod replication;
@@ -85,6 +87,7 @@ pub(super) struct SessionInfo {
     pub universe: Option<UniverseStatus>,
     pub navigation: NavigationCatalogue,
     pub results: Vec<CommandResult>,
+    pub events: Vec<toy_sim_model::Event>,
     pub target_frames: usize,
     pub underruns: u64,
     pub status: String,
@@ -133,6 +136,8 @@ pub(super) fn install(app: &mut App, endpoint: Endpoint, local: bool) {
             input_sequence: 0,
         })
         .insert_resource(BufferedPlayback(Playback::new(local)))
+        .init_resource::<ClientDiagnostics>()
+        .add_systems(Update, diagnostics::update)
         .init_resource::<Replication>()
         .init_resource::<RenderTime>()
         .init_resource::<SessionInfo>()

@@ -1,0 +1,9 @@
+name = "Terminus system"
+position_um = ["141910950000000000000000", "9460730000000000000000", "0"]
+[[bodies]]
+name = "Terminus"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = "696000 km"
+rotation_period = "25 d"

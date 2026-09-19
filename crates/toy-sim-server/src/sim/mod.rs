@@ -1,5 +1,6 @@
 pub mod bootstrap;
 pub mod combat;
+pub mod diagnostics;
 pub mod displays;
 #[cfg(test)]
 mod firmware_tests;
@@ -78,6 +79,7 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
         (
             intelligence::collect_unused_groups,
             travel::geometry::refresh,
+            infrastructure::enforce_exclusion,
             identity::identify_celestials,
             identity::clean_indexes,
             intelligence::acquire,

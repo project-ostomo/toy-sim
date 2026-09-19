@@ -27,17 +27,55 @@ pub(super) fn draw(
         ui.selectable_value(&mut state.consumables, false, "Cargo hold");
         ui.selectable_value(&mut state.consumables, true, "Consumables");
     });
+    let mut iff = ship.iff.enabled;
+    if ui
+        .checkbox(&mut iff, "Broadcast IFF / transponder")
+        .changed()
+    {
+        intents.push(Intent::Command(
+            ShipCommand::SetTransponderEnabled(iff),
+            "Transponder",
+        ));
+    }
+    ui.small(format!(
+        "Flight computer: {}",
+        computer_status(&details.computer)
+    ));
     ui.separator();
     if state.consumables {
+        for (name, amount, capacity, unit) in [
+            (
+                "Battery",
+                ship.battery_j as f64,
+                details.battery_capacity_j as f64,
+                "J",
+            ),
+            (
+                "Shield reserve",
+                ship.coolant_reserve_kg,
+                details
+                    .health
+                    .as_ref()
+                    .map_or(0., |h| h.shield_reserve_capacity_kg),
+                "kg",
+            ),
+        ] {
+            if capacity > 0. {
+                meter(
+                    ui,
+                    name,
+                    amount,
+                    capacity,
+                    &format!("{amount:.0} / {capacity:.0} {unit}"),
+                    toy_sim_ui::gauges::Tone::Reserve.color(amount / capacity),
+                );
+            }
+        }
         ui.weak("Installed tanks · unavailable for cargo transfer");
         egui::ScrollArea::vertical()
             .id_salt("consumables")
             .show(ui, |ui| {
-                for resource in details
-                    .inventory
-                    .iter()
-                    .filter(|r| r.capacity_kg > 0.0 || r.quantity > 0)
-                {
+                for resource in details.inventory.iter().filter(|r| r.capacity_kg > 0.0) {
                     meter(
                         ui,
                         &resource.name,
@@ -47,7 +85,15 @@ pub(super) fn draw(
                             "{} units · {:.1} / {:.1} kg",
                             resource.quantity, resource.amount_kg, resource.capacity_kg
                         ),
-                        ACCENT,
+                        if details.propulsion.propellants.contains(&resource.resource)
+                            || details.propulsion.fuels.contains(&resource.resource)
+                            || details.propulsion.charges.contains(&resource.resource)
+                        {
+                            toy_sim_ui::gauges::Tone::Reserve
+                        } else {
+                            toy_sim_ui::gauges::Tone::Normal
+                        }
+                        .color(resource.amount_kg / resource.capacity_kg.max(1.)),
                     );
                 }
             });

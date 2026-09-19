@@ -262,7 +262,7 @@ fn update(
                         PointLight {
                             color: Color::srgb(0.25, 0.55, 1.),
                             intensity: 2e10,
-                            range: 3000.,
+                            range: gate.radius_m as f32 * 2.,
                             radius: 80.,
                             shadow_maps_enabled: true,
                             ..default()

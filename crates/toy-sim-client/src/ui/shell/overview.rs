@@ -4,6 +4,8 @@ pub(super) fn selected_item(
     ui: &mut egui::Ui,
     row: Option<&Row>,
     can_control: bool,
+    weapons: Option<&WeaponsInstrument>,
+    rows: &[Row],
     stand_off: &mut f64,
     intents: &mut Vec<Intent>,
 ) {
@@ -29,7 +31,10 @@ pub(super) fn selected_item(
         SelectedTarget::Contact(reference) => Some(reference),
         _ => None,
     });
+    let marked = weapons.and_then(|weapons| weapons.target);
+    let firing = weapons.is_some_and(|weapons| weapons.firing);
     ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 4.;
         if action_button(
             ui,
             Icon::Align,
@@ -74,16 +79,59 @@ pub(super) fn selected_item(
         {
             intents.push(Intent::Look(target));
         }
-        if action_button(
+        if contact.is_some() && contact == marked {
+            if action_button(
+                ui,
+                Icon::Target,
+                "Unmark",
+                can_control,
+                "Clear the marked target and stop firing",
+            )
+            .clicked()
+            {
+                intents.push(Intent::Command(ShipCommand::UnmarkTarget, "Unmark target"));
+            }
+        } else if action_button(
             ui,
             Icon::Target,
-            "Engage",
+            "Mark",
             can_control && contact.is_some(),
-            "Order the ship's weapons to engage this contact",
+            "Mark the selected contact for weapons tracking; firing starts separately",
         )
         .clicked()
         {
-            intents.push(Intent::Engage(contact.unwrap()));
+            let reference = contact.unwrap();
+            intents.push(Intent::Command(
+                ShipCommand::MarkTarget {
+                    group: reference.group,
+                    track: reference.track,
+                    maximum_flight_time_s: 30.,
+                },
+                "Mark target",
+            ));
+        }
+        if firing {
+            if action_button(
+                ui,
+                Icon::Stop,
+                "Hold fire",
+                can_control,
+                "Stop firing while retaining the marked target",
+            )
+            .clicked()
+            {
+                intents.push(Intent::Command(ShipCommand::StopFiring, "Stop firing"));
+            }
+        } else if action_button(
+            ui,
+            Icon::Play,
+            "Fire",
+            can_control && marked.is_some(),
+            "Enable automatic fire at the marked target",
+        )
+        .clicked()
+        {
+            intents.push(Intent::Command(ShipCommand::StartFiring, "Start firing"));
         }
     });
     if let Some(SelectedTarget::Beacon(id)) = target {
@@ -127,18 +175,50 @@ pub(super) fn selected_item(
                 .suffix(" m"),
         );
         if ui
-            .add_enabled(can_control, egui::Button::new("Hold fire").small())
-            .clicked()
-        {
-            intents.push(Intent::Command(ShipCommand::HoldFire, "Hold fire"));
-        }
-        if ui
             .add_enabled(can_control, egui::Button::new("Stop").small())
             .on_hover_text("Stop automatic guidance; the ship retains its velocity")
             .clicked()
         {
-            intents.push(Intent::Command(ShipCommand::PauseTravel, "Stop guidance"));
+            intents.push(Intent::Command(
+                ShipCommand::SetAutopilot(false),
+                "Stop guidance",
+            ));
         }
+    });
+    ui.separator();
+    let marked_name = marked.map(|target| {
+        rows.iter()
+            .find(|row| row.target == SelectedTarget::Contact(target))
+            .map_or("Contact outside this view", |row| row.name.as_str())
+    });
+    ui.horizontal(|ui| {
+        ui.label(
+            Icon::Target
+                .text(16.)
+                .color(if marked.is_some() { THREAT } else { ACCENT }),
+        );
+        ui.label(
+            egui::RichText::new(if weapons.is_none() {
+                "AWAITING TELEMETRY"
+            } else if firing {
+                "FIRING ENABLED"
+            } else {
+                "FIRE STOPPED"
+            })
+            .size(11.)
+            .color(if firing { ACCENT } else { MUTED }),
+        );
+        ui.add(
+            egui::Label::new(egui::RichText::new(marked_name.unwrap_or(
+                if weapons.is_some() {
+                    "No marked target"
+                } else {
+                    "Weapons status unavailable"
+                },
+            )))
+            .truncate(),
+        )
+        .on_hover_text(weapons.map_or("", |weapons| weapons.reason.as_str()));
     });
 }
 
@@ -189,6 +269,7 @@ pub(super) fn overview_row(
     ui: &mut egui::Ui,
     row: &Row,
     selected: bool,
+    targeted: bool,
     index: usize,
 ) -> egui::Response {
     let (rect, _) =
@@ -216,7 +297,7 @@ pub(super) fn overview_row(
         egui::Align2::CENTER_CENTER,
         row.icon().glyph(),
         Icon::font(14.),
-        ACCENT,
+        if targeted { THREAT } else { ACCENT },
     );
     for (start, end, text) in [
         (0.07, 0.43, row.name.clone()),

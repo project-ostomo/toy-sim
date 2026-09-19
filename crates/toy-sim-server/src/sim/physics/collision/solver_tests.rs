@@ -117,14 +117,56 @@ fn head_on_contact_conserves_momentum_and_accounts_for_heat_once() {
         .map(|b| b.members[0].thermal.hull_energy_j)
         .sum();
     let report = simulate(&mut bodies, 0.1);
-    assert!((bodies[0].velocity.x - 25.0).abs() < 1e-7);
-    assert!((bodies[1].velocity.x - 25.0).abs() < 1e-7);
-    assert!((report.dissipated_j - 7500.0).abs() < 1e-5);
+    assert!((bodies[0].velocity.x - 2.5).abs() < 1e-7);
+    assert!((bodies[1].velocity.x - 32.5).abs() < 1e-7);
+    assert!((report.dissipated_j - 6825.0).abs() < 1e-5);
     let after: f64 = bodies
         .iter()
         .map(|b| b.members[0].thermal.hull_energy_j)
         .sum();
     assert!((after - before - report.dissipated_j).abs() < 1e-5);
+}
+
+#[test]
+fn shield_contact_uses_the_same_restitution_for_every_body_and_settles_slowly() {
+    for (speed, restitution) in [(0.05, 0.0), (100.0, 0.3)] {
+        for projectile in [false, true] {
+            let mut world = World::new();
+            let mut moving = object(
+                &mut world,
+                SharedShape::ball(1.0),
+                1.0,
+                2.0,
+                DVec3::ZERO,
+                DVec3::X * speed,
+                10.0,
+            );
+            moving.projectile = projectile;
+            let mut target = object(
+                &mut world,
+                SharedShape::ball(1.0),
+                1.0,
+                2.0,
+                DVec3::X * 2.001,
+                DVec3::ZERO,
+                10.0,
+            );
+            target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
+            target.members[0].thermal.shield_deployed_kg = 1.0;
+            target.members[0].model.shield_deployed_kg = 1.0;
+            let mut bodies = vec![moving, target];
+            let report = simulate(&mut bodies, 0.1);
+            assert_eq!(report.impacts, 1);
+            assert!((bodies[0].velocity.x - speed * (1.0 - restitution) * 0.5).abs() < 1e-8);
+            assert!((bodies[1].velocity.x - speed * (1.0 + restitution) * 0.5).abs() < 1e-8);
+            let lost_energy = 2.5 * speed * speed * (1.0 - restitution * restitution);
+            assert!((report.dissipated_j - lost_energy).abs() < 1e-8);
+            assert!((bodies[0].members[0].thermal.hull_energy_j - lost_energy * 0.5).abs() < 1e-8);
+            assert!(
+                (bodies[1].members[0].thermal.shield_energy_j - lost_energy * 0.5).abs() < 1e-8
+            );
+        }
+    }
 }
 
 #[test]
@@ -275,7 +317,7 @@ fn partial_shield_interception_preserves_projectile_and_residual_energy() {
     );
     target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
     target.members[0].model.shield_deployed_kg = 5.0;
-    target.members[0].thermal.shield_deployed_kg = 0.0001;
+    target.members[0].thermal.shield_deployed_kg = 0.00001;
     let absorption = target.members[0].thermal.headroom(target.members[0].model);
     let slug = weapons::projectile_body(
         world.spawn_empty().id(),
@@ -287,17 +329,22 @@ fn partial_shield_interception_preserves_projectile_and_residual_energy() {
     );
     let initial_hp = slug.members[0].hull;
     let initial_energy = 0.5 * slug.mass * slug.velocity.length_squared();
-    assert!(absorption > initial_hp * toy_sim_ships::thermal::JOULES_PER_HP);
+    assert!(absorption < initial_hp * toy_sim_ships::thermal::JOULES_PER_HP);
     assert!(absorption < initial_energy);
     let mut bodies = vec![slug, target];
     let report = simulate(&mut bodies, 0.01);
     assert_eq!(report.impacts, 1);
     assert!(report.destroyed.is_empty());
-    assert_eq!(bodies[0].members[0].hull, initial_hp);
-    assert_eq!(bodies[0].members[0].thermal.hull_energy_j, 0.0);
+    assert!(
+        (bodies[0].members[0].hull
+            - (initial_hp - absorption / toy_sim_ships::thermal::JOULES_PER_HP))
+            .abs()
+            < 1e-10
+    );
+    assert!(bodies[0].members[0].thermal.hull_energy_j > 0.0);
     assert_eq!(bodies[1].members[0].thermal.shield_deployed_kg, 0.0);
     assert_eq!(bodies[1].members[0].thermal.hull_energy_j, 0.0);
-    assert!((report.dissipated_j - absorption).abs() < 1e-8);
+    assert!((report.dissipated_j - 2.0 * absorption).abs() < 1e-8);
     let remaining_energy: f64 = bodies
         .iter()
         .map(|body| {
@@ -810,7 +857,7 @@ fn spinning_spheres_keep_the_same_linear_cast_contact_normal() {
 }
 
 #[test]
-fn shield_vaporizes_even_slow_glancing_slugs_at_contact_without_terminal_motion() {
+fn ordinary_impact_damage_destroys_fast_slugs_but_slow_glancing_slugs_bounce() {
     for velocity in [DVec3::new(20.0, 0.0, 0.0), DVec3::new(5000.0, 50.0, 0.0)] {
         let mut world = World::new();
         let mut target = object(
@@ -837,6 +884,17 @@ fn shield_vaporizes_even_slow_glancing_slugs_at_contact_without_terminal_motion(
         let id = slug.entity;
         let mut bodies = vec![target, slug];
         let report = simulate(&mut bodies, 1.0);
+        assert_eq!(report.impact_events.len(), 1);
+        if velocity.length() < 100.0 {
+            assert!(bodies[1].alive());
+            assert!(report.destroyed.is_empty());
+            let damage = 0.01 - bodies[1].members[0].hull;
+            assert!(
+                (damage * toy_sim_ships::thermal::JOULES_PER_HP - report.dissipated_j * 0.5).abs()
+                    < 1e-8
+            );
+            continue;
+        }
         let death = report
             .destroyed
             .iter()
@@ -860,7 +918,12 @@ fn shield_vaporizes_even_slow_glancing_slugs_at_contact_without_terminal_motion(
                 .all(|s| s.end <= death.time)
         );
         assert!(!bodies[1].alive());
-        assert!((bodies[0].members[0].thermal.shield_energy_j - report.dissipated_j).abs() < 1e-6);
+        assert!(
+            (bodies[1].members[0].thermal.hull_energy_j - report.dissipated_j * 0.5).abs() < 1e-6
+        );
+        assert!(
+            (bodies[0].members[0].thermal.shield_energy_j - report.dissipated_j * 0.5).abs() < 1e-6
+        );
     }
 }
 
@@ -921,7 +984,7 @@ fn ablating_material_reduces_mass_and_inertia_without_accelerating_ship() {
     member.model.shield_feed_kg_s = 100.0;
     member.model.shield_area = 100.0;
     member.thermal.shield_deployed_kg = 5.0;
-    member.thermal.shield_reserve_kg = 100.0;
+    member.thermal.shield_reserve_mg = 100_000_000;
     member.thermal.shield_state = abi::SHIELD_ACTIVE;
     member.thermal.shield_powered = true;
     member.thermal.shield_enabled = true;

@@ -123,8 +123,6 @@ async fn acknowledge(
         .send(InputFrame {
             world: frame.world,
             sequence: *sequence,
-            acknowledged_frame: frame.sequence,
-            acknowledged_event: frame.event_watermark,
             actions: actions
                 .into_iter()
                 .map(|action| (Id::new(), action))

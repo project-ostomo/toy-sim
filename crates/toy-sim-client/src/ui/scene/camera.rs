@@ -31,6 +31,24 @@ pub(in crate::ui) struct ViewCamera {
     pub(super) private: bool,
     pub(super) followed: Option<Id>,
     pub(super) aligned_to_sun: bool,
+    smoothed_angles: Option<Vec2>,
+}
+
+impl ViewCamera {
+    fn smooth_angles(&mut self, dt: f32) -> Vec2 {
+        smooth_angles(
+            &mut self.smoothed_angles,
+            Vec2::new(self.yaw, self.pitch),
+            dt,
+        )
+    }
+}
+
+fn smooth_angles(current: &mut Option<Vec2>, target: Vec2, dt: f32) -> Vec2 {
+    let current = current.get_or_insert(target);
+    let blend = -(-dt / 0.04).exp_m1();
+    *current = current.lerp(target, blend);
+    *current
 }
 
 pub(super) fn setup_views(
@@ -60,7 +78,6 @@ pub(super) fn setup_views(
             Msaa::Off,
             bevy::anti_alias::fxaa::Fxaa::default(),
             bevy::pbr::ContactShadows::default(),
-            bevy::pbr::ScreenSpaceAmbientOcclusion::default(),
             bevy::camera::Exposure::SUNLIGHT,
             Hdr,
             Camera::default(),
@@ -83,6 +100,7 @@ pub(super) fn setup_views(
                 private: false,
                 followed: None,
                 aligned_to_sun,
+                smoothed_angles: None,
             },
             Transform::from_translation(direction * 100.).looking_at(Vec3::ZERO, Vec3::Y),
         ));
@@ -163,6 +181,7 @@ pub(super) fn update_views(
             state.yaw = direction.x.atan2(direction.z);
             state.pitch = direction.y.asin();
             state.aligned_to_sun = true;
+            state.smoothed_angles = None;
         }
         state.private = private;
         let mut followed = view.focused_ship;
@@ -254,6 +273,7 @@ pub(super) fn camera_controls(
     mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
     mut selection: ResMut<Selection>,
     mut gui_drag: Local<bool>,
+    time: Res<Time<Real>>,
 ) {
     let cursor = windows
         .iter()
@@ -274,10 +294,10 @@ pub(super) fn camera_controls(
         !ctx.egui_wants_keyboard_input()
             && ctx.input(|input| input.key_pressed(toy_sim_ui::egui::Key::Escape))
     });
-    if buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right) {
+    if buttons.just_pressed(MouseButton::Right) {
         *gui_drag = captured;
     }
-    let dragging = buttons.pressed(MouseButton::Left) || buttons.pressed(MouseButton::Right);
+    let dragging = buttons.pressed(MouseButton::Right);
     if !dragging {
         *gui_drag = false;
     }
@@ -312,8 +332,97 @@ pub(super) fn camera_controls(
                 1e15
             },
         );
-        let rotation = Quat::from_rotation_y(state.yaw) * Quat::from_rotation_x(-state.pitch);
+        let angles = state.smooth_angles(time.delta_secs());
+        let rotation = Quat::from_rotation_y(angles.x) * Quat::from_rotation_x(-angles.y);
         *transform = Transform::from_translation(rotation * Vec3::Z * state.distance)
             .looking_at(Vec3::ZERO, Vec3::Y);
+    }
+}
+
+pub(super) fn align_on_double_click(
+    mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,
+    ships: Query<&OwnedShip>,
+    mut outgoing: ResMut<crate::state::Outgoing>,
+    mut selection: ResMut<Selection>,
+) -> Result {
+    use toy_sim_model::{FlightCommand, ShipCommand, travel};
+    use toy_sim_ui::egui;
+
+    let ctx = contexts.ctx_mut()?;
+    let pointer = ctx.input(|input| {
+        (input
+            .pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+            && !input.pointer.secondary_down())
+        .then(|| input.pointer.interact_pos())
+        .flatten()
+    });
+    let Some(pointer) = pointer else {
+        return Ok(());
+    };
+    if ctx
+        .layer_id_at(pointer)
+        .is_some_and(|layer| layer.order != egui::Order::Background)
+    {
+        return Ok(());
+    }
+    let Ok(window) = windows.single() else {
+        return Ok(());
+    };
+    let cursor = Vec2::new(pointer.x, pointer.y) * ctx.pixels_per_point() / window.scale_factor();
+    for (camera, transform, view_camera, observation) in &cameras {
+        if view_camera.private
+            || !camera
+                .logical_viewport_rect()
+                .is_some_and(|rect| rect.contains(cursor))
+        {
+            continue;
+        }
+        let Some(ship) = ships
+            .iter()
+            .find(|ship| Some(ship.0.ship) == observation.0.focused_ship)
+        else {
+            continue;
+        };
+        if ship.0.travel.autopilot_enabled || ship.0.presence != travel::Presence::Space {
+            continue;
+        }
+        let Ok(ray) = camera.viewport_to_world(transform, cursor) else {
+            continue;
+        };
+        outgoing.ship(
+            &ship.0,
+            ShipCommand::Flight(FlightCommand::AimDirection(
+                ray.direction.as_dvec3().to_array(),
+            )),
+        );
+        selection.view = Some(view_camera.view);
+        selection.ship = Some(ship.0.ship);
+        break;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn smoothing_preserves_initial_view_and_is_frame_rate_independent() {
+        let initial = Vec2::new(0.7, 0.2);
+        let target = Vec2::new(1.7, -0.3);
+        let mut slow = None;
+        assert_eq!(smooth_angles(&mut slow, initial, 0.), initial);
+        let mut fast = slow;
+        for _ in 0..3 {
+            smooth_angles(&mut slow, target, 1. / 30.);
+        }
+        for _ in 0..12 {
+            smooth_angles(&mut fast, target, 1. / 120.);
+        }
+        assert!(slow.unwrap().abs_diff_eq(fast.unwrap(), 1e-6));
+        assert!(smooth_angles(&mut slow, target, 1.).abs_diff_eq(target, 1e-6));
     }
 }

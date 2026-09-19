@@ -378,23 +378,36 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
                 },
                 Request {
                     id: 2,
-                    command: Command::EngageWeapons {
+                    command: Command::MarkTarget {
                         contact: 7,
                         maximum_flight_time_s: 2.0,
                     },
                 },
             ];
+        } else if tick == 10 {
+            observation.commands.push(Request {
+                id: 4,
+                command: Command::StartFiring,
+            });
         } else if tick == 40 {
             observation.commands.push(Request {
                 id: 3,
-                command: Command::HoldFire,
+                command: Command::StopFiring,
+            });
+        } else if tick == 50 {
+            observation.commands.push(Request {
+                id: 5,
+                command: Command::UnmarkTarget,
             });
         }
         let mut manual_observation = observation.clone();
         manual_observation.commands.retain(|request| {
             !matches!(
                 request.command,
-                Command::EngageWeapons { .. } | Command::HoldFire
+                Command::MarkTarget { .. }
+                    | Command::StopFiring
+                    | Command::StartFiring
+                    | Command::UnmarkTarget
             )
         });
         manual_only.advance(0.1);
@@ -423,12 +436,13 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
         };
         assert_eq!(
             weapons.mode,
-            if tick < 40 {
-                abi::WEAPONS_ENGAGE
+            if (10..40).contains(&tick) {
+                abi::WEAPONS_FIRING
             } else {
                 abi::WEAPONS_HOLD
             }
         );
+        assert_eq!(weapons.target_contact, if tick < 50 { 7 } else { 0 });
         let flight_commands = |commands: &[toy_sim_ships::DeviceCommand]| {
             commands
                 .iter()
@@ -456,7 +470,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
                 .any(|command| matches!(command.setting, DeviceSetting::ShieldEnabled(_)))
         );
         if trigger {
-            assert!(tick < 40);
+            assert!((10..40).contains(&tick));
             fired = true;
         }
         fixture.command(&output.devices);

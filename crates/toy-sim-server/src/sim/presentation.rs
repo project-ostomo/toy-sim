@@ -112,10 +112,12 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 Reading::Battery => {
                     let capacity_j = match descriptor.kind {
                         DeviceKind::Battery { capacity_j } => capacity_j,
-                        _ => 0.0,
+                        _ => 0,
                     };
                     DeviceReading::Battery {
-                        energy_j: state.inventory.energy_j * capacity_j / design.battery_j.max(1.0),
+                        energy_j: ((state.inventory.energy_j as u128 * capacity_j as u128)
+                            / design.battery_j.max(1) as u128)
+                            as u64,
                         capacity_j,
                     }
                 }
@@ -189,20 +191,29 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             }
         })
         .collect();
+    let reboot_remaining_s = toy_sim_ship_wasm::BOOT_GAS
+        .saturating_sub(software.controller.gas_remaining()) as f64
+        / toy_sim_ship_wasm::GAS_PER_SECOND as f64;
     let computer = if world.get::<super::travel::Dormant>(entity).is_some() {
         ComputerStatus::Paused
+    } else if let Some(fault) = &software.controller.fault {
+        ComputerStatus::Fault {
+            message: bounded(fault, 4096),
+            reboot_remaining_s: state.computer_running(design).then_some(reboot_remaining_s),
+        }
     } else if !state.computer_running(design) {
         ComputerStatus::Unpowered
-    } else if let Some(fault) = &software.controller.fault {
-        ComputerStatus::Fault(bounded(fault, 4096))
     } else if software.controller.is_booting() {
         ComputerStatus::Booting {
             progress: software.controller.boot_progress(),
+            remaining_s: reboot_remaining_s,
         }
     } else {
         ComputerStatus::Running {
             gas_used: software.last_gas_used,
             gas_limit: software.last_gas_limit,
+            gas_reserve: software.controller.gas_remaining(),
+            gas_capacity: toy_sim_ship_wasm::RESERVE_CAPACITY,
         }
     };
     let mut screens = super::displays::definitions(world, entity);
@@ -225,6 +236,18 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
     Some(ShipPresentation {
         cargo_capacity_m3: design.capacity_m3,
         cargo_used_m3: state.inventory.cargo_volume(catalogue),
+        propulsion: {
+            let mut reading = world
+                .get::<hardware::propulsion::InstalledRatings>(entity)?
+                .0
+                .clone();
+            if world.get::<super::travel::Dormant>(entity).is_none() && state.hull > 0. {
+                let output = world.get::<hardware::propulsion::ActuatorOutput>(entity)?;
+                reading.force_n = output.force.to_array();
+                reading.torque_nm = output.torque.to_array();
+            }
+            reading
+        },
         ship: id,
         revision: world.get::<Control>(entity)?.revision,
         sim_time_ns: tick.saturating_mul(100_000_000),
@@ -402,7 +425,7 @@ fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instrume
             reason: instrument.reason.as_str().unwrap_or_default().to_owned(),
         }),
         weapons_state: weapons.map(|instrument| WeaponsInstrument {
-            mode: instrument.mode,
+            firing: instrument.mode == abi::WEAPONS_FIRING,
             target: contact(instrument.target_contact),
             reason: instrument.reason.as_str().unwrap_or_default().to_owned(),
         }),
@@ -490,6 +513,58 @@ pub fn visual(world: &World, entity: Entity, contact: ContactRef) -> Option<Trac
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manual_flight_keeps_device_telemetry_valid_after_sustained_power_use() {
+        let account = toy_sim_model::Id::new();
+        let mut app = super::super::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let entity = world
+            .query_filtered::<Entity, With<super::super::vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let session = super::super::session::connect(world, account).unwrap();
+        let ship_id = world.get::<Identity>(entity).unwrap().0;
+        world
+            .get_mut::<super::super::session::Session>(session)
+            .unwrap()
+            .instruments
+            .insert(ship_id);
+        for step in 0..6000 {
+            if step % 10 == 0 {
+                let phase = (step / 100) % 4;
+                let steering = match phase {
+                    0 => [0.2, 0.7, 0.0],
+                    1 => [-0.6, 0.3, 0.1],
+                    2 => [0.0, 0.0, 0.0],
+                    _ => [0.4, -0.5, -0.2],
+                };
+                app.world_mut()
+                    .get_mut::<ShipSoftware>(entity)
+                    .unwrap()
+                    .command(toy_sim_ship_wasm::Command::Manual {
+                        throttle: if phase == 2 { 0.0 } else { 0.8 },
+                        steering,
+                    });
+            }
+            app.update();
+            let frame = super::super::session::frame(app.world_mut(), session).unwrap();
+            assert_eq!(frame.presentation.ships.len(), 1);
+            super::super::session::prune_events(app.world_mut());
+            toy_sim_protocol::validate_frame(&frame)
+                .unwrap_or_else(|error| panic!("tick {step}: {error:#}"));
+            super::super::session::input(
+                app.world_mut(),
+                session,
+                toy_sim_model::InputFrame {
+                    world: frame.world,
+                    sequence: step + 1,
+                    actions: Vec::new(),
+                },
+            )
+            .unwrap();
+        }
+    }
+
     #[test]
     fn manual_attitude_does_not_publish_an_absent_zero_quaternion() {
         let mut state = toy_sim_ship_api::abi::AttitudeState::default();

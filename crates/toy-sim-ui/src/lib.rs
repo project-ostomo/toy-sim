@@ -2,12 +2,14 @@ pub use bevy_egui;
 pub use bevy_egui::egui;
 
 pub mod desktop;
+pub mod gauges;
 pub mod icons;
 pub mod instruments;
 pub mod mfd;
 pub mod parts;
 pub mod screens;
 pub mod theme;
+pub mod units;
 
 pub use mfd::MfdRenderer;
 

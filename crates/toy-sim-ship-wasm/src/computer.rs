@@ -6,15 +6,18 @@ use toy_sim_ships::{DeviceCommand, DeviceStatus};
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    SetThrottle(f64),
     Manual {
         throttle: f64,
         steering: [f64; 3],
     },
-    EngageWeapons {
+    MarkTarget {
         contact: u64,
         maximum_flight_time_s: f64,
     },
-    HoldFire,
+    StopFiring,
+    UnmarkTarget,
+    StartFiring,
     HoldAttitude,
     StopGuidance,
     AimDirection([f64; 3]),
@@ -31,19 +34,22 @@ impl Command {
         use abi::Record;
 
         match *self {
-            Self::EngageWeapons {
+            Self::SetThrottle(throttle) => (abi::REQUEST_THROTTLE, throttle.to_le_bytes().to_vec()),
+            Self::MarkTarget {
                 contact,
                 maximum_flight_time_s,
             } => (
-                abi::REQUEST_ENGAGE_WEAPONS,
-                abi::EngageWeaponsRequest {
+                abi::REQUEST_MARK_TARGET,
+                abi::MarkTargetRequest {
                     contact,
                     maximum_flight_time_s,
                 }
                 .bytes()
                 .to_vec(),
             ),
-            Self::HoldFire => (abi::REQUEST_HOLD_FIRE, Vec::new()),
+            Self::UnmarkTarget => (abi::REQUEST_UNMARK_TARGET, Vec::new()),
+            Self::StartFiring => (abi::REQUEST_START_FIRING, Vec::new()),
+            Self::StopFiring => (abi::REQUEST_STOP_FIRING, Vec::new()),
             Self::Manual { throttle, steering } => (
                 abi::REQUEST_MANUAL,
                 abi::ManualRequest { throttle, steering }.bytes().to_vec(),
@@ -515,7 +521,7 @@ mod tests {
         assert_eq!(computer.pending_requests[0].id, 1);
         assert_eq!(computer.pending_requests[1].id, 299);
         computer.reboot();
-        assert_eq!(computer.pending_requests.len(), 2);
-        assert!(computer.has_pending_input());
+        assert!(computer.pending_requests.is_empty());
+        assert!(!computer.has_pending_input());
     }
 }

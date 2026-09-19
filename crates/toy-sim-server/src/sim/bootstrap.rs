@@ -31,9 +31,6 @@ pub fn provision(
     let hostile_account = Id::new();
     let owner = accounts.first().copied().unwrap_or_else(Id::new);
     identity::attach_ship(world, player, owner)?;
-    world
-        .entity_mut(player)
-        .insert(travel::SlipDrive::default());
     let design = world.get::<vessel::ShipDesign>(player).unwrap().0.clone();
     let pose = *world.get::<precision::PreciseTransform>(player).unwrap();
     let velocity = world.get::<physics::Velocity>(player).unwrap().0;
@@ -50,7 +47,6 @@ pub fn provision(
             format!("Explorer {}", index + 1),
         )?;
         identity::attach_ship(world, ship, account)?;
-        world.entity_mut(ship).insert(travel::SlipDrive::default());
     }
     let unowned = world
         .query_filtered::<Entity, (With<vessel::Vessel>, Without<identity::Identity>)>()
@@ -70,6 +66,7 @@ pub fn provision(
     }
     super::infrastructure::spawn(world, player)?;
     travel::geometry::refresh(world);
+    super::infrastructure::enforce_exclusion(world);
     let mut publish = Schedule::default();
     publish.add_systems(
         (
@@ -86,10 +83,11 @@ pub fn provision(
         let contact = super::services::handle_for_entity(world, hostile, player)?;
         let mut software = world.get_mut::<vessel::ShipSoftware>(hostile).unwrap();
         software.command(toy_sim_ship_wasm::Command::AimContact(contact));
-        software.command(toy_sim_ship_wasm::Command::EngageWeapons {
+        software.command(toy_sim_ship_wasm::Command::MarkTarget {
             contact,
             maximum_flight_time_s: 2.0,
         });
+        software.command(toy_sim_ship_wasm::Command::StartFiring);
     }
     Ok(app)
 }
@@ -259,7 +257,7 @@ mod tests {
                     .blueprint
                     .parts
                     .iter()
-                    .any(|part| part.prototype == "ntr_water_2m")
+                    .any(|part| part.prototype == "micropulse_engine_4m")
             );
         }
         let mut own_projectiles = std::collections::HashSet::new();

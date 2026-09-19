@@ -4,6 +4,7 @@ use toy_sim_ships::{
     Inventory,
     weapons::{WeaponState, shot_energy},
 };
+use toy_sim_ships::{StochasticBalance, StochasticRound};
 
 #[derive(Clone)]
 pub struct WeaponShip {
@@ -175,7 +176,7 @@ pub fn fire(
     if !ship.operational[index] {
         flags |= abi::WEAPON_UNAVAILABLE;
     }
-    if ship.inventory.energy_j < shot_energy(&spec) {
+    if (ship.inventory.energy_j as f64) < shot_energy(&spec) {
         flags |= abi::WEAPON_ENERGY;
     }
     let resource = spec.ammunition_resource.saturating_sub(1) as usize;
@@ -265,8 +266,10 @@ pub fn fire(
     if spec.beam_power_w > 0.0 {
         let optical = spec.beam_power_w * spec.cycle_interval_s;
         let input = shot_energy(&spec);
-        ship.inventory.energy_j -= input;
-        body.members[member].thermal.add_hull_heat(input - optical);
+        let paid = ship.inventory.energy_j.withdraw(input);
+        body.members[member]
+            .thermal
+            .add_hull_heat((paid as f64 - optical).max(0.0));
         state.next_fire_s = now + spec.cycle_interval_s;
         state.shots_fired += 1;
         report.beams.push(BeamEvent {
@@ -294,7 +297,7 @@ pub fn fire(
     let sine = (1.0 - cosine * cosine).sqrt();
     let direction = barrel * DVec3::new(sine * angle.cos(), sine * angle.sin(), -cosine);
     let mass = spec.projectile_mass_kg;
-    let propellant = toy_sim_ships::stochastic_units(propellant) as f64;
+    let propellant = propellant.stochastic_round() as f64;
     let removed_mass = mass + propellant;
     let remaining = body.mass - removed_mass;
     if remaining <= 0.0 {
@@ -316,11 +319,15 @@ pub fn fire(
         state.inhibit_flags = abi::WEAPON_ENERGY;
         return None;
     }
-    let heat = supplied - kinetic;
     let projectile = allocate();
     let position = body.position.offset_by(muzzle);
     let velocity = body.velocity + relative;
-    ship.inventory.energy_j -= energy;
+    let paid = ship.inventory.energy_j.withdraw(energy);
+    let heat = if spec.chemical != 0 {
+        supplied - kinetic
+    } else {
+        (paid as f64 - kinetic).max(0.0)
+    };
     state.next_fire_s = now + spec.cycle_interval_s;
     state.shots_fired += 1;
     ship.inventory.quantities[resource] -= 1;
@@ -561,7 +568,7 @@ mod tests {
         };
         let spec = weapon.spec(&Catalogue::builtin()).unwrap();
         Arc::make_mut(&mut ship.design).weapon_specs[0] = spec;
-        ship.inventory.energy_j = 0.0;
+        ship.inventory.energy_j = 0;
         ship.inventory.quantities.fill(0);
         let ammo = spec.ammunition_resource as usize - 1;
         ship.inventory.quantities[ammo] = 10;
@@ -585,7 +592,7 @@ mod tests {
         assert_eq!(ship.weapons[0].shots_fired, 4);
         assert_eq!(ship.inventory.quantities[ammo], 6);
         assert_eq!(ship.inventory.quantities[0], 0);
-        assert_eq!(ship.inventory.energy_j, 0.0);
+        assert_eq!(ship.inventory.energy_j, 0);
         assert!(body.members[0].thermal.hull_energy_j > heat);
     }
 
@@ -600,7 +607,7 @@ mod tests {
         spec.efficiency = 0.5;
         spec.cycle_interval_s = 0.1;
         ship.inventory.quantities.fill(0);
-        ship.inventory.energy_j = 1000.0;
+        ship.inventory.energy_j = 1000;
         let mass = body.mass;
         let heat = body.members[0].thermal.hull_energy_j;
         let mut report = Report::default();
@@ -617,7 +624,7 @@ mod tests {
         assert!(projectile.is_none());
         assert_eq!(report.beams.len(), 1);
         assert_eq!(ship.weapons[0].shots_fired, 1);
-        assert_eq!(ship.inventory.energy_j, 800.0);
+        assert_eq!(ship.inventory.energy_j, 800);
         assert_eq!(body.mass, mass);
         assert_eq!(body.members[0].thermal.hull_energy_j - heat, 100.0);
     }
@@ -637,7 +644,7 @@ mod tests {
         ship.weapons.push(ship.weapons[0].clone());
         ship.operational.push(true);
         let energy = shot_energy(&ship.design.weapon_specs[0]);
-        ship.inventory.energy_j = energy;
+        ship.inventory.energy_j = energy.ceil() as u64;
         let owner = body.entity;
         let mut bodies = vec![body];
         let mut workspace = SolverWorkspace::default();
@@ -649,7 +656,7 @@ mod tests {
         assert_eq!(report.shots.len(), 1);
         assert_eq!(ship.weapons[0].shots_fired, 1);
         assert_eq!(ship.weapons[1].shots_fired, 0);
-        assert_eq!(ship.inventory.energy_j, 0.0);
+        assert!(ship.inventory.energy_j <= 1);
         assert_ne!(ship.weapons[1].inhibit_flags & abi::WEAPON_ENERGY, 0);
     }
 
@@ -694,7 +701,7 @@ mod tests {
                 - before.members[0].thermal.hull_energy_j
                 - before.members[0].thermal.shield_energy_j;
             let spent = before_energy - ship.inventory.energy_j;
-            assert!((kinetic + heat - spent).abs() < 0.01);
+            assert!((kinetic + heat - spent as f64).abs() < 0.01);
             let actual_propellant = (before_ammo[0] - ship.inventory.quantities[0]) as f64;
             assert!((body.mass + projectile.mass + actual_propellant - before.mass).abs() < 1e-8);
             assert!(
@@ -716,7 +723,7 @@ mod tests {
             let mut world = World::new();
             let (mut body, mut ship) = armed(&mut world);
             match expected {
-                abi::WEAPON_ENERGY => ship.inventory.energy_j = 0.0,
+                abi::WEAPON_ENERGY => ship.inventory.energy_j = 0,
                 abi::WEAPON_PROPELLANT => ship.inventory.quantities[0] = 0,
                 abi::WEAPON_AMMO => {
                     let resource = ship.design.weapon_specs[0].ammunition_resource as usize - 1;

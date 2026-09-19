@@ -68,6 +68,8 @@ struct Machine {
     tick: TypedFunc<(), ()>,
 }
 pub struct Controller {
+    pub restart_revision: u64,
+    pub last_gas_used: u64,
     display_only: bool,
     pub state: Session,
     pub observer_origin: spatial::Position,
@@ -130,12 +132,12 @@ impl Controller {
         self.gas = self.gas.saturating_add(gain.floor() as u64).min(cap);
     }
     pub fn revoke_authority(&mut self) {
-        self.pending_requests.clear();
-        self.pending_events.clear();
         self.reboot();
     }
 
     pub fn reboot(&mut self) {
+        self.restart_revision = self.restart_revision.wrapping_add(1);
+        self.pending_requests.clear();
         self.machine = None;
         self.gas = 0;
         self.fractional_gas = 0.;
@@ -165,6 +167,7 @@ impl Controller {
         source: Option<Arc<dyn ScanSource>>,
     ) -> Result<Option<Output>> {
         self.last_scan_seconds = 0.;
+        self.last_gas_used = 0;
         self.state.expire(input.observation.time_s);
         self.queue_input(
             std::mem::take(&mut input.commands),
@@ -221,6 +224,7 @@ impl Controller {
             host.gas = host
                 .gas
                 .saturating_sub(host.last_fuel.saturating_sub(remaining));
+            self.last_gas_used = self.gas.saturating_sub(host.gas);
             self.gas = host.gas;
             self.last_scan_seconds = host.scan_seconds;
             let observation = host.input.take().map(|i| i.observation);
@@ -331,6 +335,8 @@ impl ControllerRuntime {
     /// Compiles/validates the program, but leaves the computer in its initial 50-tick boot.
     pub fn instantiate(&mut self, bytes: &[u8]) -> Result<Controller> {
         Ok(Controller {
+            restart_revision: 0,
+            last_gas_used: 0,
             display_only: false,
             state: Session::default(),
             observer_origin: [0; 3],

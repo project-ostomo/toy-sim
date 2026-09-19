@@ -42,6 +42,45 @@ pub fn move_gates(
     }
 }
 
+pub fn enforce_exclusion(world: &mut World) {
+    let mouths: Vec<_> = world
+        .query::<(Entity, &precision::PreciseTransform, &travel::Gate)>()
+        .iter(world)
+        .filter(|(_, _, gate)| gate.enabled)
+        .map(|(entity, pose, gate)| (entity, pose.translation_um, gate.exclusion_m))
+        .collect();
+    let mut unstable = Vec::new();
+    for (entity, position, exclusion) in mouths {
+        let candidates = travel::geometry::mouth_candidates(world, position, exclusion);
+        if candidates.into_iter().any(|other| {
+            if entity == other {
+                return false;
+            }
+            match (
+                world.get::<travel::Gate>(other),
+                world.get::<precision::PreciseTransform>(other),
+            ) {
+                (Some(gate), Some(pose)) => {
+                    gate.enabled
+                        && pose.translation_um.relative_to(position).length()
+                            < exclusion + gate.exclusion_m
+                }
+                _ => false,
+            }
+        }) {
+            unstable.push(entity);
+        }
+    }
+    for entity in unstable {
+        world.get_mut::<travel::Gate>(entity).unwrap().enabled = false;
+        travel::geometry::update(world, entity);
+        warn!(
+            ?entity,
+            "Wormhole mouth lost stability: exclusion volumes overlap"
+        );
+    }
+}
+
 pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
     let owner = Id::new();
     let player_pose = *world.get::<precision::PreciseTransform>(player).unwrap();
@@ -127,8 +166,8 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
             .cargo[resource] = 100;
     }
 
-    let links = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 2)];
-    for (link, (a, b)) in links.into_iter().enumerate() {
+    let links = (0..universe.systems.len().saturating_sub(1)).map(|a| (a, a + 1));
+    for (link, (a, b)) in links.enumerate() {
         if a >= universe.systems.len() || b >= universe.systems.len() {
             continue;
         }
@@ -145,10 +184,11 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
                     -10000.,
                 ))
             } else {
-                system
-                    .solver
-                    .anchor
-                    .offset_by(DVec3::new(1.5e11, link as f64 * 20000., 0.))
+                system.solver.anchor.offset_by(DVec3::new(
+                    1.5e11,
+                    if side == 0 { 3e7 } else { -3e7 },
+                    0.,
+                ))
             };
             let epoch = physics::sim_time(world.resource::<Time<Fixed>>());
             let reference = if index == 0 {
@@ -294,21 +334,235 @@ mod tests {
     use super::*;
 
     #[test]
+    fn moving_slip_makes_terminus_affordable_and_respects_fuel_preference() {
+        use toy_sim_model::travel::{Destination, Order, PlanningPreferences, Status, TravelState};
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        for _ in 0..100 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let terminus = registry::system_identity("Terminus system");
+        let destination = world
+            .query::<(&identity::Identity, &Landmark)>()
+            .iter(world)
+            .find(|(_, landmark)| landmark.system == terminus)
+            .unwrap()
+            .0
+            .0;
+        let mut budgets = Vec::new();
+        for fuel_priority in [1., 10., 100.] {
+            let revision = app
+                .world()
+                .get::<travel::Travel>(player)
+                .unwrap()
+                .0
+                .revision
+                + 1;
+            app.world_mut()
+                .entity_mut(player)
+                .insert(travel::Travel(TravelState {
+                    autopilot_enabled: true,
+                    revision,
+                    preferences: PlanningPreferences { fuel_priority },
+                    orders: vec![Order::TravelTo(Destination::Beacon(destination)).into()],
+                    status: Status::Planning,
+                    ..Default::default()
+                }));
+            let mut planned = None;
+            for _ in 0..150 {
+                app.update();
+                let state = &app.world().get::<travel::Travel>(player).unwrap().0;
+                assert!(
+                    app.world()
+                        .get::<vessel::ShipSoftware>(player)
+                        .unwrap()
+                        .controller
+                        .fault
+                        .is_none()
+                );
+                if state.status == Status::Active {
+                    let budget = state.fuel_budget.clone().unwrap();
+                    assert!(
+                        budget.complete && !budget.resources.is_empty(),
+                        "{budget:?}"
+                    );
+                    eprintln!("fuel priority {fuel_priority}: {budget:?}");
+                    planned = Some(budget);
+                    break;
+                }
+            }
+            budgets.push(planned.expect("route planning must finish"));
+        }
+        assert!(budgets.iter().all(|budget| !budget.exhausted()));
+        let required = |budget: &toy_sim_model::travel::FuelBudget| {
+            budget.resources.iter().map(|r| r.required_kg).sum::<f64>()
+        };
+        assert!(required(&budgets[2]) < required(&budgets[1]));
+        assert!(required(&budgets[1]) < required(&budgets[0]));
+    }
+
+    #[test]
+    fn stock_computer_plans_terminus_from_default_spawn() {
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        for _ in 0..100 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let player = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let terminus = registry::system_identity("Terminus system");
+        let destination = world
+            .query::<(&identity::Identity, &Landmark)>()
+            .iter(world)
+            .find(|(_, landmark)| landmark.system == terminus)
+            .unwrap()
+            .0
+            .0;
+        world
+            .entity_mut(player)
+            .insert(travel::Travel(toy_sim_model::travel::TravelState {
+                autopilot_enabled: true,
+                revision: 1,
+                orders: vec![
+                    toy_sim_model::travel::Order::TravelTo(
+                        toy_sim_model::travel::Destination::Beacon(destination),
+                    ),
+                    toy_sim_model::travel::Order::WaitUntil(999_999),
+                ]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+                status: toy_sim_model::travel::Status::Planning,
+                ..default()
+            }));
+        for _ in 0..100 {
+            app.update();
+            let world = app.world();
+            let software = world.get::<vessel::ShipSoftware>(player).unwrap();
+            assert!(
+                software.controller.fault.is_none(),
+                "routing fault {:?}, gas used {} / {}",
+                software.controller.fault,
+                software.last_gas_used,
+                software.last_gas_limit
+            );
+            let state = &world.get::<travel::Travel>(player).unwrap().0;
+            if state.status == toy_sim_model::travel::Status::Active {
+                assert!(!state.orders.is_empty());
+                assert!(state.orders.iter().any(|order| matches!(
+                    &order.action,
+                    toy_sim_model::travel::Order::Slip { .. }
+                )));
+                let slip_index = state
+                    .orders
+                    .iter()
+                    .position(|order| {
+                        matches!(order.action, toy_sim_model::travel::Order::Slip { .. })
+                    })
+                    .unwrap();
+                assert!(slip_index > 0);
+                assert!(matches!(
+                    state.orders[slip_index - 1].action,
+                    toy_sim_model::travel::Order::Sublight(
+                        toy_sim_model::travel::Destination::Relative {
+                            reference: toy_sim_model::travel::Reference::Beacon(_),
+                            axes: toy_sim_model::travel::Axes::Galactic,
+                            ..
+                        }
+                    )
+                ));
+                assert!(!state.orders.windows(2).any(|pair| pair[0] == pair[1]));
+                assert_eq!(
+                    state.orders.last().map(|stage| &stage.action),
+                    Some(&toy_sim_model::travel::Order::WaitUntil(999_999))
+                );
+                assert!(!state.orders.iter().any(|order| matches!(
+                    &order.action,
+                    toy_sim_model::travel::Order::TravelTo(_)
+                )));
+                assert!(
+                    state.orders[..state.orders.len() - 1]
+                        .iter()
+                        .all(|stage| stage.estimated_duration_ticks.is_some())
+                );
+                let arrivals: Vec<_> = state
+                    .stage_arrivals(0)
+                    .into_iter()
+                    .collect::<Option<_>>()
+                    .unwrap();
+                assert!(arrivals.windows(2).all(|pair| pair[0] <= pair[1]));
+                assert!(state.revision > 1);
+                return;
+            }
+        }
+        panic!(
+            "Terminus route did not complete planning: {:?}",
+            app.world().get::<travel::Travel>(player).unwrap().0
+        );
+    }
+
+    #[test]
+    fn overlapping_macromouths_cannot_remain_stable() {
+        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        let world = app.world_mut();
+        let mouths: Vec<_> = world
+            .query_filtered::<Entity, With<travel::Gate>>()
+            .iter(world)
+            .take(2)
+            .collect();
+        let position = world
+            .get::<precision::PreciseTransform>(mouths[0])
+            .unwrap()
+            .translation_um;
+        world
+            .get_mut::<precision::PreciseTransform>(mouths[1])
+            .unwrap()
+            .translation_um = position.offset_by(DVec3::X * 1e6);
+        travel::geometry::refresh(world);
+        enforce_exclusion(world);
+        for mouth in mouths {
+            assert!(!world.get::<travel::Gate>(mouth).unwrap().enabled);
+        }
+    }
+
+    #[test]
     fn default_network_is_connected_and_fixed_gates_have_no_physics_bodies() {
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         app.update();
         let world = app.world_mut();
         let catalogue = catalogue(world);
-        assert_eq!(catalogue.systems.len(), 4);
+        assert_eq!(catalogue.systems.len(), 10);
         assert_eq!(
             catalogue
                 .beacons
                 .iter()
                 .filter(|b| b.gate_exit.is_some())
                 .count(),
-            10
+            18
         );
-        for system in &catalogue.systems {
+        for (index, system) in catalogue.systems.iter().enumerate() {
+            let mouths: Vec<_> = catalogue
+                .beacons
+                .iter()
+                .filter(|b| b.system == system.id && b.gate_exit.is_some())
+                .collect();
+            assert_eq!(mouths.len(), if index == 0 || index == 9 { 1 } else { 2 });
+            if mouths.len() == 2 {
+                assert!(
+                    mouths[0]
+                        .pose
+                        .position
+                        .relative_to(mouths[1].pose.position)
+                        .length()
+                        > 2e7
+                );
+            }
             assert!(
                 toy_sim_model::navigation::gate_route(
                     &catalogue,
@@ -370,10 +624,14 @@ mod tests {
         travel::geometry::refresh(world);
         let destination = private.position.offset_by(DVec3::Z * 1000.);
         world.get_mut::<travel::Travel>(player).unwrap().0 = toy_sim_model::travel::TravelState {
+            autopilot_enabled: true,
             revision: 1,
             orders: vec![toy_sim_model::travel::Order::TravelTo(
                 toy_sim_model::travel::Destination::Galactic(destination),
-            )],
+            )]
+            .into_iter()
+            .map(Into::into)
+            .collect(),
             status: toy_sim_model::travel::Status::Planning,
             ..default()
         };
@@ -383,7 +641,7 @@ mod tests {
         assert!(world.get::<travel::DockedIn>(player).is_none());
     }
     #[test]
-    fn stock_computer_executes_a_queued_gate_jump() {
+    fn stock_computer_flies_from_the_starting_scenario_through_the_sol_gate() {
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         app.update();
         let world = app.world_mut();
@@ -395,27 +653,36 @@ mod tests {
             .query_filtered::<Entity, With<travel::Gate>>()
             .iter(world)
             .find(|entity| {
-                world.get::<Landmark>(*entity).unwrap().system
-                    == registry::system_identity("Helion system")
+                world
+                    .get::<Landmark>(*entity)
+                    .is_some_and(|landmark| landmark.name == "Sol gate")
             })
             .unwrap();
         let exit =
             identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
         let entry_id = world.get::<identity::Identity>(entry).unwrap().0;
-        let pose = *world.get::<precision::PreciseTransform>(entry).unwrap();
-        let velocity = world.get::<physics::Velocity>(entry).unwrap().0;
-        world.entity_mut(player).insert((
-            pose,
-            physics::Velocity(velocity),
-            physics::AngularVelocity(DVec3::ZERO),
-            travel::Travel(toy_sim_model::travel::TravelState {
+        world
+            .entity_mut(player)
+            .insert(travel::Travel(toy_sim_model::travel::TravelState {
+                autopilot_enabled: true,
                 revision: 1,
-                orders: vec![toy_sim_model::travel::Order::Jump(entry_id)],
+                orders: vec![toy_sim_model::travel::Order::Jump(entry_id)]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
                 status: toy_sim_model::travel::Status::Planning,
                 ..default()
-            }),
-        ));
-        for _ in 0..1500 {
+            }));
+        let departure = world
+            .get::<precision::PreciseTransform>(player)
+            .unwrap()
+            .translation_um;
+        let entry_position = world
+            .get::<precision::PreciseTransform>(entry)
+            .unwrap()
+            .translation_um;
+        assert!(departure.relative_to(entry_position).length() > 20_000.);
+        for _ in 0..6000 {
             app.update();
             if app.world().get::<travel::Travel>(player).unwrap().0.status
                 == toy_sim_model::travel::Status::Completed
@@ -429,18 +696,50 @@ mod tests {
                     .get::<precision::PreciseTransform>(exit)
                     .unwrap()
                     .translation_um;
-                assert!(position.relative_to(mouth).length() < 220.);
+                let gate = world.get::<travel::Gate>(exit).unwrap();
+                let radius = world.get::<vessel::ShipDesign>(player).unwrap().0.radius;
+                assert!(position.relative_to(mouth).length() > gate.radius_m + radius);
+                let relative_velocity = world.get::<physics::Velocity>(player).unwrap().0
+                    - world.get::<physics::Velocity>(exit).unwrap().0;
+                assert!(relative_velocity.length() <= toy_sim_model::travel::GATE_ENTRY_SPEED_M_S);
+                assert!(position.relative_to(mouth).dot(relative_velocity) > 0.);
+                let fuel = world
+                    .resource::<vessel::ShipCatalogue>()
+                    .0
+                    .resources
+                    .iter()
+                    .position(|resource| resource.id == "micropulse_charge")
+                    .unwrap();
+                assert!(
+                    world
+                        .get::<hardware::ShipInventory>(player)
+                        .unwrap()
+                        .0
+                        .quantities[fuel]
+                        > 0
+                );
                 return;
             }
         }
         panic!(
-            "gate jump did not complete: {:?}",
-            app.world().get::<travel::Travel>(player).unwrap().0
+            "gate jump did not complete: {:?}, nav {:?}, hull {:?}, inventory {:?}",
+            app.world().get::<travel::Travel>(player).unwrap().0,
+            app.world()
+                .get::<vessel::ShipSoftware>(player)
+                .unwrap()
+                .controller
+                .state
+                .navigation,
+            app.world().get::<hardware::Hull>(player).unwrap().0,
+            app.world()
+                .get::<hardware::ShipInventory>(player)
+                .unwrap()
+                .0
         );
     }
 
     #[test]
-    fn stock_computer_guides_through_the_hangar_mouth_and_docks() {
+    fn stock_computer_docks_from_default_spawn_without_entering_station() {
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         app.update();
         let world = app.world_mut();
@@ -464,28 +763,20 @@ mod tests {
             world.despawn(ship);
         }
         let station_id = world.get::<identity::Identity>(station).unwrap().0;
-        let berth = travel::reserve_bay(world, player, station, 0).unwrap();
-        let rotation = bevy::math::DQuat::from_array(berth.rotation);
-        let clearance = world.get::<vessel::ShipDesign>(station).unwrap().0.radius
-            + world.get::<vessel::ShipDesign>(player).unwrap().0.radius
-            + 35.;
-        let position = berth
-            .position
-            .offset_by(rotation * DVec3::NEG_Z * clearance);
-        world.entity_mut(player).insert((
-            precision::PreciseTransform {
-                translation_um: position,
-                rotation,
-            },
-            physics::Velocity(DVec3::from_array(berth.velocity)),
-            physics::AngularVelocity(DVec3::ZERO),
-            travel::Travel(toy_sim_model::travel::TravelState {
+        world
+            .entity_mut(player)
+            .insert((travel::Travel(toy_sim_model::travel::TravelState {
+                autopilot_enabled: true,
                 revision: 1,
-                orders: vec![toy_sim_model::travel::Order::Dock(station_id)],
+                orders: vec![toy_sim_model::travel::Order::Dock(station_id)]
+                    .into_iter()
+                    .map(Into::into)
+                    .collect(),
                 status: toy_sim_model::travel::Status::Planning,
                 ..default()
-            }),
-        ));
+            }),));
+        let minimum_distance = world.get::<vessel::ShipDesign>(station).unwrap().0.radius
+            + world.get::<vessel::ShipDesign>(player).unwrap().0.radius;
         for _ in 0..3000 {
             app.update();
             if matches!(
@@ -494,6 +785,24 @@ mod tests {
             ) {
                 return;
             }
+            let world = app.world();
+            let player_pose = super::super::session::ship_pose(world, player).unwrap();
+            let station_pose = super::super::session::ship_pose(world, station).unwrap();
+            assert!(
+                player_pose
+                    .position
+                    .relative_to(station_pose.position)
+                    .length()
+                    >= minimum_distance,
+                "autopilot entered station collision envelope: player {player_pose:?}, station {station_pose:?}, travel {:?}, navigation {:?}",
+                world.get::<travel::Travel>(player).unwrap().0,
+                world
+                    .get::<vessel::ShipSoftware>(player)
+                    .unwrap()
+                    .controller
+                    .state
+                    .navigation,
+            );
         }
         let world = app.world();
         let software = world.get::<vessel::ShipSoftware>(player).unwrap();

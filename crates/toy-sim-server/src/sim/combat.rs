@@ -14,8 +14,6 @@ use toy_sim_model::{
     Pose, Track, TrackId,
 };
 
-const HISTORY_LIMIT: usize = 8192;
-
 #[derive(Component, Clone, Copy)]
 struct TraceId(u64);
 
@@ -151,7 +149,7 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         };
         let electrical = world
             .get::<ShipInventory>(death.entity)
-            .map_or(0.0, |inventory| inventory.0.energy_j);
+            .map_or(0.0, |inventory| inventory.0.energy_j as f64);
         pending.push((
             nanoseconds(epoch + death.time),
             RecordedKind::Destroyed {
@@ -203,18 +201,6 @@ fn append(
                 kind,
             });
         }
-        while events.0.len() > HISTORY_LIMIT {
-            events.0.pop_front();
-        }
-        if let Some(first) = events.0.front() {
-            while history
-                .0
-                .front()
-                .is_some_and(|event| event.sequence < first.sequence)
-            {
-                history.0.pop_front();
-            }
-        }
     });
 }
 
@@ -238,24 +224,17 @@ pub fn flush_travel(world: &mut World) {
             kind: kind.into(),
             position: None,
         });
-        while events.0.len() > HISTORY_LIMIT {
-            events.0.pop_front();
-        }
     }
-    let first = world
-        .resource::<Events>()
-        .0
-        .front()
-        .map(|event| event.sequence);
-    if let Some(first) = first {
-        if let Some(mut history) = world.get_resource_mut::<CombatHistory>() {
-            while history
-                .0
-                .front()
-                .is_some_and(|event| event.sequence < first)
-            {
-                history.0.pop_front();
-            }
+}
+
+pub fn prune(world: &mut World, published: u64) {
+    if let Some(mut history) = world.get_resource_mut::<CombatHistory>() {
+        while history
+            .0
+            .front()
+            .is_some_and(|event| event.sequence <= published)
+        {
+            history.0.pop_front();
         }
     }
 }
@@ -409,7 +388,7 @@ mod tests {
                     tank_capacities_m3: Vec::new(),
                     quantities: Vec::new(),
                     cargo: Vec::new(),
-                    energy_j: 80.0,
+                    energy_j: 80,
                 }),
             ))
             .id();
@@ -489,12 +468,12 @@ mod tests {
     }
 
     #[test]
-    fn combat_and_event_history_expire_together() {
+    fn combat_events_survive_large_batches_until_published() {
         let mut world = World::new();
         let ship = world.spawn(Identity(Id::new())).id();
         let projectile = world.spawn_empty().id();
         let mut report = Report::default();
-        report.shots = (0..HISTORY_LIMIT + 5)
+        report.shots = (0..8197)
             .map(|_| super::super::physics::collision::weapons::ShotEvent {
                 projectile,
                 owner: ship,
@@ -509,8 +488,8 @@ mod tests {
         ingest(&mut world, &report, 0.0);
         let history = world.resource::<CombatHistory>();
         let markers = world.resource::<Events>();
-        assert_eq!(history.0.len(), HISTORY_LIMIT);
-        assert_eq!(markers.0.len(), HISTORY_LIMIT);
+        assert_eq!(history.0.len(), 8197);
+        assert_eq!(markers.0.len(), 8197);
         assert_eq!(
             history.0.front().unwrap().sequence,
             markers.0.front().unwrap().sequence
@@ -519,5 +498,18 @@ mod tests {
             history.0.back().unwrap().sequence,
             markers.0.back().unwrap().sequence
         );
+        prune(&mut world, 8196);
+        assert_eq!(world.resource::<CombatHistory>().0.len(), 1);
+        assert_eq!(
+            world
+                .resource::<CombatHistory>()
+                .0
+                .front()
+                .unwrap()
+                .sequence,
+            8197
+        );
+        prune(&mut world, 8197);
+        assert!(world.resource::<CombatHistory>().0.is_empty());
     }
 }

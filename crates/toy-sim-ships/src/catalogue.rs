@@ -160,7 +160,7 @@ pub enum Equipment {
         capacity_m3: f64,
     },
     Battery {
-        capacity_j: f64,
+        capacity_j: u64,
     },
     Engine {
         propellant_resource: String,
@@ -327,7 +327,7 @@ impl Equipment {
             Self::HeatSink { capacity_j } => vec![capacity_j],
             Self::Weapon { ref weapon } => return weapon.valid(),
             Self::Storage { capacity_m3 } => vec![capacity_m3],
-            Self::Battery { capacity_j } => vec![capacity_j],
+            Self::Battery { capacity_j } => vec![capacity_j as f64],
             Self::Engine {
                 thrust_n,
                 propellant_kg_s,

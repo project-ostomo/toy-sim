@@ -1,6 +1,6 @@
 # Ship editor
 
-The editor uses the shared [toy-sim-ui](../crates/toy-sim-ui/README.md) theme: roomier controls, dark blue-gray surfaces and an embedded Sarasa UI SC font.
+The editor uses the shared [toy-sim-ui](../crates/toy-sim-ui/README.md) theme: roomier controls, dark blue-gray surfaces and embedded Iosevka Aile and Iosevka fonts.
 
 `toy-ship-editor` ([apps/toy-ship-editor](../apps/toy-ship-editor)) builds and edits `.ship` blueprints, installs custom firmware, configures avionics, and launches the simulator with the current design. The data model it edits is described in [ships.md](ships.md).
 

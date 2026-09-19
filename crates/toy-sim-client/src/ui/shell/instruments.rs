@@ -1,97 +1,5 @@
 use super::*;
 
-pub(super) fn ship_status(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Vec<Intent>) {
-    let Some(ship) = model.ship else {
-        ui.weak("Waiting for ship telemetry…");
-        return;
-    };
-    ui.heading(ship_name(ship));
-    ui.label(
-        egui::RichText::new(presence_name(&ship.presence))
-            .size(12.)
-            .color(MUTED),
-    );
-    egui::ScrollArea::vertical().show(ui, |ui| {
-        let Some(details) = model.details else {
-            ui.weak("Waiting for instruments…");
-            return;
-        };
-        if let Some(health) = &details.health {
-            meter(
-                ui,
-                "Hull integrity",
-                health.hull_hp,
-                health.hull_max_hp,
-                &format!("{:.0} / {:.0}", health.hull_hp, health.hull_max_hp),
-                ACCENT,
-            );
-            meter(
-                ui,
-                "Shield reserve",
-                ship.coolant_reserve_kg,
-                health.shield_reserve_capacity_kg,
-                &format!("{:.0} kg", ship.coolant_reserve_kg),
-                ACCENT,
-            );
-        }
-        meter(
-            ui,
-            "Battery",
-            ship.battery_j,
-            details.battery_capacity_j,
-            &format!("{:.1} MJ", ship.battery_j / 1e6),
-            ACCENT,
-        );
-        meter(
-            ui,
-            "Hull heat",
-            ship.hull_heat_j,
-            details.hull_heat_capacity_j,
-            &format!("{:.1} MJ", ship.hull_heat_j / 1e6),
-            egui::Color32::from_rgb(226, 178, 109),
-        );
-        ui.label(format!(
-            "Shield temperature   {:.0} K",
-            ship.shield_temperature_k
-        ));
-        ui.label(format!(
-            "Power   +{:.2} / −{:.2} MW",
-            details.power_generated_w / 1e6,
-            details.power_consumed_w / 1e6
-        ));
-        ui.separator();
-        for resource in &details.inventory {
-            meter(
-                ui,
-                &resource.name,
-                resource.amount_kg,
-                resource.capacity_kg,
-                &format!("{:.0} kg", resource.amount_kg),
-                MUTED,
-            );
-        }
-        ui.separator();
-        let mut iff = ship.iff.enabled;
-        if ui
-            .checkbox(&mut iff, "Broadcast IFF / transponder")
-            .changed()
-        {
-            intents.push(Intent::Command(
-                ShipCommand::SetTransponderEnabled(iff),
-                "Transponder",
-            ));
-        }
-        ui.label(
-            egui::RichText::new(format!(
-                "Flight computer: {}",
-                computer_status(&details.computer)
-            ))
-            .size(11.)
-            .color(MUTED),
-        );
-    });
-}
-
 pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Vec<Intent>) {
     let Some(ship) = model.ship else {
         ui.weak("No controlled ship");
@@ -117,28 +25,34 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
         model.connected && ship.presence == travel::Presence::Space,
         |ui| {
             ui.horizontal(|ui| {
-                if ui.button("Hold attitude").clicked() {
-                    intents.push(Intent::Command(
-                        ShipCommand::Flight(FlightCommand::HoldAttitude),
-                        "Hold attitude",
-                    ));
-                }
                 if ui
                     .button("Stop guidance")
                     .on_hover_text("Cancel automatic guidance; the ship retains its velocity")
                     .clicked()
                 {
-                    intents.push(Intent::Command(ShipCommand::PauseTravel, "Stop guidance"));
+                    intents.push(Intent::Command(
+                        ShipCommand::SetAutopilot(false),
+                        "Stop guidance",
+                    ));
                 }
             });
         },
     );
+    ui.separator();
+    ui.label(format!(
+        "Fuel priority: {:.1}×",
+        ship.travel.preferences.fuel_priority
+    ));
+    ui.small("Change the preference in Gate Network and set the destination to replan.");
+    fuel_budget(ui, model);
     ui.separator();
     ui.label(egui::RichText::new("Travel orders").color(ACCENT).strong());
     ui.label(travel_status(&ship.travel.status));
     if ship.travel.orders.is_empty() {
         ui.weak("No route programmed by the flight computer.");
     }
+    let now = model.time_ns / 100_000_000;
+    let arrivals = ship.travel.stage_arrivals(now);
     egui::ScrollArea::vertical()
         .max_height(180.)
         .show(ui, |ui| {
@@ -154,7 +68,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                         egui::RichText::new(format!(
                             "{}  {}",
                             index + 1,
-                            order_label(order, model.navigation)
+                            order_label(&order.action, model.navigation)
                         ))
                         .color(if index == ship.travel.order {
                             ACCENT
@@ -162,6 +76,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                             MUTED
                         }),
                     );
+                    ui.monospace(eta_label(order, arrivals[index - ship.travel.order], now));
                     if ui
                         .small_button("×")
                         .on_hover_text("Remove command")
@@ -172,10 +87,10 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                             .orders
                             .iter()
                             .skip(ship.travel.order)
-                            .cloned()
+                            .map(|stage| stage.action.clone())
                             .collect();
                         orders.remove(index - ship.travel.order);
-                        intents.push(Intent::Queue(orders, false));
+                        intents.push(Intent::EditQueue(orders));
                     }
                     if index > ship.travel.order
                         && ui.small_button("↑").on_hover_text("Move earlier").clicked()
@@ -185,17 +100,17 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                             .orders
                             .iter()
                             .skip(ship.travel.order)
-                            .cloned()
+                            .map(|stage| stage.action.clone())
                             .collect();
                         orders.swap(index - ship.travel.order, index - ship.travel.order - 1);
-                        intents.push(Intent::Queue(orders, false));
+                        intents.push(Intent::EditQueue(orders));
                     }
                 });
             }
         });
     if !ship.travel.orders.is_empty() {
         if ui.button("Clear queue").clicked() {
-            intents.push(Intent::Queue(Vec::new(), false));
+            intents.push(Intent::EditQueue(Vec::new()));
         }
         let paused = ship.travel.status == travel::Status::Paused;
         if ui
@@ -211,9 +126,9 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
         {
             intents.push(Intent::Command(
                 if paused {
-                    ShipCommand::ResumeTravel
+                    ShipCommand::SetAutopilot(true)
                 } else {
-                    ShipCommand::PauseTravel
+                    ShipCommand::SetAutopilot(false)
                 },
                 "Travel route",
             ));
@@ -236,27 +151,235 @@ pub(super) fn order_name(order: &travel::Order) -> String {
         travel::Order::TravelTo(travel::Destination::Relative { .. }) => {
             "Travel to relative coordinates".into()
         }
+        travel::Order::Sublight(_) => "Sublight transfer".into(),
+        travel::Order::Slip { .. } => "Slip transit".into(),
         travel::Order::Dock(id) => format!("Dock at {}", short_id(*id)),
         travel::Order::Undock => "Undock".into(),
         travel::Order::WaitUntil(time) => format!("Wait until tick {time}"),
     }
 }
 
-pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
+pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalogue) -> Option<Id> {
+    use travel::{Destination, Order, Reference};
+
     let reference = match order {
-        travel::Order::Jump(id)
-        | travel::Order::Dock(id)
-        | travel::Order::TravelTo(travel::Destination::Beacon(id)) => Some(*id),
+        Order::Jump(id) => {
+            let entry = navigation.beacons.iter().find(|b| b.id == *id)?;
+            return navigation
+                .beacons
+                .iter()
+                .find(|b| Some(b.id) == entry.gate_exit)
+                .map(|b| b.system);
+        }
+        Order::Dock(id)
+        | Order::TravelTo(Destination::Beacon(id))
+        | Order::Sublight(Destination::Beacon(id))
+        | Order::TravelTo(Destination::Relative {
+            reference: Reference::Beacon(id),
+            ..
+        })
+        | Order::Sublight(Destination::Relative {
+            reference: Reference::Beacon(id),
+            ..
+        }) => Some(*id),
+        _ => None,
+    };
+    if let Some(id) = reference {
+        return navigation
+            .beacons
+            .iter()
+            .find(|b| b.id == id)
+            .map(|b| b.system);
+    }
+    let position = match order {
+        Order::Slip { destination }
+        | Order::TravelTo(Destination::Galactic(destination))
+        | Order::Sublight(Destination::Galactic(destination)) => *destination,
+        _ => return None,
+    };
+    navigation
+        .systems
+        .iter()
+        .min_by(|a, b| {
+            a.position
+                .relative_to(position)
+                .length_squared()
+                .total_cmp(&b.position.relative_to(position).length_squared())
+        })
+        .map(|system| system.id)
+}
+
+pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
+    use travel::{Destination, Order};
+
+    let system = order_system(order, navigation)
+        .and_then(|id| navigation.systems.iter().find(|s| s.id == id));
+    let action = match order {
+        Order::Jump(_) => "Gate",
+        Order::Slip { .. } => "Slip",
+        Order::Sublight(_) => "Transfer",
+        Order::TravelTo(_) => "Travel",
+        _ => "",
+    };
+    if let Some(system) = system.filter(|_| !action.is_empty()) {
+        return format!("{action} · {}", system.name);
+    }
+    let reference = match order {
+        Order::Jump(id) | Order::Dock(id) | Order::TravelTo(Destination::Beacon(id)) => Some(*id),
         _ => None,
     };
     if let Some(beacon) = reference.and_then(|id| navigation.beacons.iter().find(|b| b.id == id)) {
-        let action = match order {
-            travel::Order::Jump(_) => "Jump",
-            travel::Order::Dock(_) => "Dock",
-            _ => "Travel",
-        };
-        format!("{action} · {}", beacon.name)
-    } else {
-        order_name(order)
+        return format!(
+            "{} · {}",
+            if matches!(order, Order::Dock(_)) {
+                "Dock"
+            } else {
+                action
+            },
+            beacon.name
+        );
     }
+    order_name(order)
+}
+
+fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: u64) -> String {
+    let Some(arrival) = arrival else {
+        return if matches!(&stage.action, travel::Order::Guidance(g) if g.mode == travel::GuidanceMode::KeepRange)
+        {
+            "Continuous".into()
+        } else {
+            "ETA —".into()
+        };
+    };
+    let seconds = arrival.saturating_sub(now).div_ceil(10);
+    if seconds >= 3600 {
+        format!(
+            "ETA ~{}:{:02}:{:02}",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60
+        )
+    } else {
+        format!("ETA ~{:02}:{:02}", seconds / 60, seconds % 60)
+    }
+}
+
+pub(super) fn itinerary(
+    ui: &mut egui::Ui,
+    state: &travel::TravelState,
+    navigation: &NavigationCatalogue,
+    now: u64,
+) {
+    let remaining = &state.orders[state.order.min(state.orders.len())..];
+    if remaining.is_empty() {
+        return;
+    }
+    let arrivals = state.stage_arrivals(now);
+    ui.add_space(6.);
+    ui.label(
+        egui::RichText::new(format!("ROUTE · {} orders remaining", remaining.len()))
+            .size(11.)
+            .color(MUTED),
+    );
+    for (index, order) in remaining.iter().enumerate() {
+        let current = index == 0;
+        let color = match &order.action {
+            travel::Order::Jump(_) => egui::Color32::from_rgb(255, 199, 98),
+            travel::Order::Slip { .. } => ACCENT,
+            _ if current => TEXT,
+            _ => MUTED,
+        };
+        ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(16., 24.), egui::Sense::hover());
+            let centre = rect.center();
+            let stroke = egui::Stroke::new(1., MUTED);
+            if index > 0 {
+                ui.painter().line_segment([rect.center_top(), centre], stroke);
+            }
+            if index + 1 < remaining.len() {
+                ui.painter().line_segment([centre, rect.center_bottom()], stroke);
+            }
+
+            let marker = egui::Rect::from_center_size(centre, egui::vec2(8., 8.));
+            let fill = if current { color } else { egui::Color32::TRANSPARENT };
+            ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
+
+            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation));
+            ui.label(egui::RichText::new(name).size(12.).color(color));
+            ui.label(
+                egui::RichText::new(eta_label(order, arrivals[index], now))
+                    .monospace()
+                    .size(11.)
+                    .color(MUTED),
+            )
+            .on_hover_text("Estimated stage completion from now. Updated during flight; later stages include the time for earlier stages.");
+        });
+    }
+}
+
+pub(super) fn fuel_budget(ui: &mut egui::Ui, model: &FrameModel) {
+    let Some(ship) = model.ship else {
+        return;
+    };
+    if ship.travel.order >= ship.travel.orders.len() {
+        return;
+    }
+    ui.label(
+        egui::RichText::new("CURRENT ROUTE · PROPULSION FUEL")
+            .strong()
+            .color(ACCENT),
+    );
+    let Some(budget) = &ship.travel.fuel_budget else {
+        ui.weak("Propulsion fuel estimate pending…");
+        return;
+    };
+    for requirement in &budget.resources {
+        let inventory = model.details.and_then(|details| {
+            details
+                .inventory
+                .iter()
+                .find(|resource| resource.resource == requirement.resource)
+        });
+        let available = inventory.map_or(requirement.available_kg, |resource| resource.amount_kg);
+        let name = inventory.map_or(requirement.resource.as_str(), |resource| {
+            resource.name.as_str()
+        });
+        let insufficient = requirement.required_kg > 0. && requirement.required_kg >= available;
+        let fraction = requirement.required_kg / available.max(1e-9);
+        let color = if insufficient {
+            THREAT
+        } else if fraction > 0.8 {
+            egui::Color32::from_rgb(255, 199, 98)
+        } else {
+            ACCENT
+        };
+        ui.colored_label(
+            color,
+            format!(
+                "{name}: ~{} needed / {} aboard",
+                toy_sim_ui::units::mass(requirement.required_kg),
+                toy_sim_ui::units::mass(available)
+            ),
+        );
+        if insufficient {
+            ui.colored_label(
+                THREAT,
+                format!(
+                    "FUEL EXHAUSTION · {} · estimated shortfall {}",
+                    name,
+                    toy_sim_ui::units::mass((requirement.required_kg - available).max(0.))
+                ),
+            );
+        }
+    }
+    if !budget.complete {
+        ui.colored_label(
+            egui::Color32::from_rgb(255, 199, 98),
+            "Partial estimate · unplanned or continuous stages excluded",
+        );
+    }
+    ui.small(
+        "Slip preserves velocity; estimates include matching destination motion after arrival.",
+    );
+    ui.small("Allow reserves for steering, gravity and changing mass. Reactor fuel is additional.");
 }

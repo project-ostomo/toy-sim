@@ -7,14 +7,7 @@ pub struct Inventory {
     pub quantities: Vec<u64>,
     pub cargo: Vec<u64>,
     pub tank_capacities_m3: Vec<f64>,
-    pub energy_j: f64,
-}
-
-pub fn stochastic_units(amount: f64) -> u64 {
-    use rand::RngExt;
-    assert!(amount.is_finite() && amount >= 0.0);
-    let whole = amount.floor() as u64;
-    whole.saturating_add(u64::from(rand::rng().random_bool(amount.fract())))
+    pub energy_j: u64,
 }
 
 impl Inventory {
@@ -23,7 +16,7 @@ impl Inventory {
             quantities: vec![0; cat.resources.len()],
             cargo: vec![0; cat.resources.len()],
             tank_capacities_m3: vec![0.; cat.resources.len()],
-            energy_j: 0.,
+            energy_j: 0,
         }
     }
 
@@ -50,10 +43,8 @@ impl Inventory {
         self.quantities[resource] as f64
     }
 
-    pub fn consume(&mut self, resource: usize, requested: f64) -> f64 {
-        let supplied = requested.max(0.0).min(self.available(resource));
-        self.quantities[resource] -= stochastic_units(supplied).min(self.quantities[resource]);
-        supplied
+    pub fn consume(&mut self, resource: usize, requested: f64) -> u64 {
+        self.quantities[resource].withdraw(requested)
     }
 
     pub fn tank_room(&self, resource: usize, cat: &Catalogue) -> u64 {
@@ -283,7 +274,8 @@ impl ShipState {
                                 abi::WEAPON_PROPELLANT,
                             ),
                             (
-                                self.inventory.energy_j < crate::weapons::shot_energy(spec),
+                                (self.inventory.energy_j as f64)
+                                    < crate::weapons::shot_energy(spec),
                                 abi::WEAPON_ENERGY,
                             ),
                             (
@@ -315,7 +307,7 @@ impl ShipState {
                     DeviceKind::Shield { .. } => DeviceReading::Shield {
                         state: self.thermal.shield_state,
                         temperature_k: self.shield_temperature(d),
-                        reserve_kg: self.thermal.shield_reserve_kg,
+                        reserve_kg: self.thermal.shield_reserve_kg(),
                         reserve_capacity_kg: d.shield_reserve_capacity_kg,
                         strength: self.thermal.shield_strength(d.into()),
                         ablation_kg_s: self.thermal.ablation_kg_s,
@@ -348,7 +340,7 @@ impl ShipState {
     pub fn mass_properties(&self, d: &CompiledShipDesign, cat: &Catalogue) -> (f64, DMat3) {
         let m = d.dry_mass
             + self.inventory.mass(cat)
-            + self.thermal.shield_reserve_kg
+            + self.thermal.shield_reserve_kg()
             + self.thermal.shield_deployed_kg;
         (m, d.inertia * (m / d.dry_mass))
     }

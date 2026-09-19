@@ -1,0 +1,9 @@
+name = "Lyra system"
+position_um = ["94607300000000000000000", "0", "0"]
+[[bodies]]
+name = "Lyra"
+class = "star"
+lumens = 3.6e28
+mass = "1 massSol"
+radius = "696000 km"
+rotation_period = "25 d"

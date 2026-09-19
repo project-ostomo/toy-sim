@@ -14,7 +14,6 @@ use std::collections::BTreeMap;
 use toy_sim_model::{CombatEvent, CombatEventKind, GalacticPosition, Id};
 use toy_sim_ship_view::tracer::{TracerMaterial, TracerPlugin};
 
-const EXPOSURE_NS: u64 = 2_000_000;
 const MAX_TRACERS: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -81,6 +80,8 @@ fn prepare(mut commands: Commands, views: Query<Entity, (With<ViewCamera>, Witho
 fn render(
     mut commands: Commands,
     clock: Res<RenderTime>,
+    time: Res<Time<Real>>,
+    fixed: Res<Time<Fixed>>,
     session: Res<SessionInfo>,
     publications: Query<&CombatPublication>,
     contacts: Query<(&Contact, Option<&SpatialInstance>)>,
@@ -99,13 +100,15 @@ fn render(
     mut materials: ResMut<Assets<TracerMaterial>>,
 ) {
     let now = clock.display_ns;
+    let exposure_ns = (time.delta_secs_f64() / fixed.timestep().as_secs_f64()
+        * clock.current_ns.saturating_sub(clock.previous_ns) as f64) as u64;
     let mut segments = BTreeMap::<u64, Vec<&CombatEvent>>::new();
     for publication in &publications {
         if let CombatEventKind::Projectile {
             id, end_time_ns, ..
         } = &publication.0.kind
         {
-            if publication.0.sim_time_ns <= now && *end_time_ns >= now.saturating_sub(EXPOSURE_NS) {
+            if publication.0.sim_time_ns <= now && *end_time_ns >= now.saturating_sub(exposure_ns) {
                 segments.entry(*id).or_default().push(&publication.0);
             }
         }
@@ -145,7 +148,8 @@ fn render(
         let mut uv = Vec::new();
         if let Some(velocity) = velocity {
             for events in segments.values().take(MAX_TRACERS) {
-                let Some((mut tail, head)) = exposure(events, now, position, velocity) else {
+                let Some((mut tail, head)) = exposure(events, now, exposure_ns, position, velocity)
+                else {
                     continue;
                 };
                 if head.length() > 1e7 {
@@ -249,11 +253,12 @@ fn sample(events: &[&CombatEvent], time: u64) -> Option<GalacticPosition> {
 fn exposure(
     events: &[&CombatEvent],
     now: u64,
+    exposure_ns: u64,
     camera: GalacticPosition,
     velocity: DVec3,
 ) -> Option<(DVec3, DVec3)> {
     let birth = events.iter().map(|event| event.sim_time_ns).min()?;
-    let begin = now.saturating_sub(EXPOSURE_NS).max(birth);
+    let begin = now.saturating_sub(exposure_ns).max(birth);
     let head = sample(events, now)?.relative_to(camera);
     let tail = sample(events, begin)?.relative_to(camera) + velocity * (now - begin) as f64 * 1e-9;
     Some((tail, head))
@@ -297,14 +302,22 @@ mod tests {
             let second = make(100_000_000, 200_000_000);
             let camera =
                 anchor.offset_by(DVec3::Z * 100. + (camera_velocity + boost) * (now as f64 * 1e-9));
-            exposure(&[&first, &second], now, camera, camera_velocity + boost).unwrap()
+            exposure(
+                &[&first, &second],
+                now,
+                8_333_333,
+                camera,
+                camera_velocity + boost,
+            )
+            .unwrap()
         };
         let stationary = render(DVec3::ZERO);
         let boosted = render(DVec3::new(200_000., -50_000., 10_000.));
         assert!(stationary.0.distance(boosted.0) < 1e-5);
         assert!(stationary.1.distance(boosted.1) < 1e-5);
         assert!(
-            (stationary.1 - stationary.0).distance((projectile_velocity - camera_velocity) * 0.002)
+            (stationary.1 - stationary.0)
+                .distance((projectile_velocity - camera_velocity) * 0.008333333)
                 < 1e-5
         );
     }

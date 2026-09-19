@@ -10,16 +10,24 @@ impl Outgoing {
     pub(crate) fn push(&mut self, action: Action) -> Id {
         if let Action::Ship {
             ship,
-            command: ShipCommand::Manual { .. },
-            ..
+            authority_revision,
+            command: ShipCommand::SetThrottle(value),
         } = &action
         {
-            self.actions.retain(|(_, pending)| {
-                !matches!(pending,
-                    Action::Ship { ship: previous, command: ShipCommand::Manual { .. }, .. }
-                        if previous == ship
-                )
-            });
+            if let Some((
+                id,
+                Action::Ship {
+                    ship: last_ship,
+                    authority_revision: last_revision,
+                    command: ShipCommand::SetThrottle(last),
+                },
+            )) = self.actions.last_mut()
+            {
+                if ship == last_ship && authority_revision == last_revision {
+                    *last = *value;
+                    return *id;
+                }
+            }
         }
         let id = Id::new();
         self.actions.push((id, action));
@@ -57,42 +65,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn backpressure_keeps_command_ids_and_coalesces_only_manual_inputs_for_the_same_ship() {
+    fn throttle_coalesces_without_crossing_control_transitions() {
         let mut queue = Outgoing::default();
-        let first = Id([1; 16]);
-        let second = Id([2; 16]);
-        let manual = |ship, throttle| Action::Ship {
+        let action = |command| Action::Ship {
+            ship: Id([1; 16]),
+            authority_revision: 1,
+            command,
+        };
+        let first = queue.push(action(ShipCommand::SetThrottle(0.2)));
+        assert_eq!(queue.push(action(ShipCommand::SetThrottle(0.5))), first);
+        queue.push(action(ShipCommand::SetAutopilot(true)));
+        queue.push(action(ShipCommand::SetThrottle(0.8)));
+        assert_eq!(queue.pending().len(), 3);
+        assert!(matches!(
+            queue.pending()[0].1,
+            Action::Ship {
+                command: ShipCommand::SetThrottle(0.5),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn backpressure_preserves_command_order_and_ids() {
+        let mut queue = Outgoing::default();
+        let ship = Id([1; 16]);
+        let action = |command| Action::Ship {
             ship,
             authority_revision: 7,
-            command: ShipCommand::Manual {
-                throttle,
-                steering: [0.; 3],
-            },
+            command,
         };
-        queue.push(manual(first, 0.1));
-        let other = queue.push(manual(second, 0.2));
-        let discrete = queue.push(Action::Ship {
-            ship: first,
-            authority_revision: 7,
-            command: ShipCommand::HoldFire,
-        });
-        queue.push(manual(first, 0.3));
+        let first = queue.push(action(ShipCommand::StartFiring));
+        let second = queue.push(action(ShipCommand::StopFiring));
         let pending = queue.take();
+        let third = queue.push(action(ShipCommand::UnmarkTarget));
         queue.restore(pending);
-        let latest = queue.push(manual(first, 0.4));
+
         assert_eq!(
             queue
                 .pending()
                 .iter()
                 .map(|(id, _)| *id)
                 .collect::<Vec<_>>(),
-            vec![other, discrete, latest]
+            vec![first, second, third]
         );
+        assert!(matches!(
+            queue.pending()[0].1,
+            Action::Ship {
+                command: ShipCommand::StartFiring,
+                ..
+            }
+        ));
+        assert!(matches!(
+            queue.pending()[1].1,
+            Action::Ship {
+                command: ShipCommand::StopFiring,
+                ..
+            }
+        ));
         assert!(matches!(
             queue.pending()[2].1,
             Action::Ship {
-                authority_revision: 7,
-                command: ShipCommand::Manual { throttle: 0.4, .. },
+                command: ShipCommand::UnmarkTarget,
                 ..
             }
         ));

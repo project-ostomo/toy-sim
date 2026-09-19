@@ -1,4 +1,3 @@
-use super::input;
 use crate::state::{Celestial, Contact, Outgoing, OwnedShip, SessionInfo, ViewObservation};
 use bevy::prelude::*;
 use toy_sim_model::*;
@@ -42,7 +41,6 @@ impl Selection {
 pub(super) fn synchronize(
     session: Res<SessionInfo>,
     mut subscriptions: ResMut<Subscriptions>,
-    mut flight: ResMut<input::FlightControls>,
     mut selection: ResMut<Selection>,
     mut outgoing: ResMut<Outgoing>,
     ships: Query<&OwnedShip>,
@@ -76,12 +74,8 @@ pub(super) fn synchronize(
     }
     if subscriptions.focused != selection.ship {
         if let Some(previous) = subscriptions.focused {
-            if let Some(ship) = ships.iter().find(|ship| ship.0.ship == previous) {
-                input::release_manual(&mut flight, &mut outgoing, &ship.0);
-            }
             outgoing.push(Action::InstrumentUnsubscribe { ship: previous });
         }
-        *flight = input::FlightControls::default();
         subscriptions.focused = selection.ship;
         if let Some(ship) = selection.ship {
             outgoing.push(Action::InstrumentSubscribe { ship });

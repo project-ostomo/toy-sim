@@ -6,6 +6,7 @@ pub(super) struct State {
     selected: Option<Id>,
     pan: egui::Vec2,
     zoom: f32,
+    preference: Option<travel::PlanningPreferences>,
 }
 
 pub(super) fn draw(
@@ -15,6 +16,35 @@ pub(super) fn draw(
     intents: &mut Vec<Intent>,
 ) {
     let catalogue = model.navigation;
+    let mut preference = state.preference.unwrap_or_else(|| {
+        model
+            .ship
+            .map_or_else(Default::default, |ship| ship.travel.preferences)
+    });
+    ui.horizontal(|ui| {
+        ui.label("Fuel priority");
+        let response = ui.add(egui::Slider::new(&mut preference.fuel_priority, 0.1..=1000.)
+            .logarithmic(true).suffix("×"));
+        if response.changed() {
+            state.preference = Some(preference);
+        }
+        response.on_hover_text("Higher priority spends longer coasting to save propulsion fuel. Used when you set a destination or add a waypoint.");
+    });
+    if let (Some(ship), Some(details)) = (model.ship, model.details) {
+        let seconds = preference.cost(details.mass_kg).seconds_per_kg * 1000.;
+        ui.small(format!(
+            "Saving 1 t of propellant is worth {:.1} minutes of travel time",
+            seconds / 60.
+        ));
+        if preference != ship.travel.preferences && !ship.travel.orders.is_empty() {
+            ui.weak("Set destination again to replan with this preference.");
+        }
+    }
+    instruments::fuel_budget(ui, model);
+    ui.separator();
+    let orders = model.ship.map_or(&[][..], |ship| {
+        &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
+    });
     let connected: Vec<_> = catalogue
         .systems
         .iter()
@@ -126,7 +156,10 @@ pub(super) fn draw(
         else {
             continue;
         };
-        let active = route
+        let active = orders.iter().any(|order| {
+            matches!(&order.action, travel::Order::Jump(entry) if *entry == gate.id || *entry == exit.id)
+        });
+        let preview = route
             .as_ref()
             .is_some_and(|route| route.contains(&gate.id) || route.contains(&exit.id));
         let delta = b - a;
@@ -134,6 +167,8 @@ pub(super) fn draw(
         let bend = a + egui::vec2(delta.x.signum(), delta.y.signum()) * diagonal;
         let color = if active {
             egui::Color32::from_rgb(255, 199, 98)
+        } else if preview {
+            egui::Color32::from_rgb(91, 142, 166)
         } else {
             egui::Color32::from_rgb(51, 101, 131)
         };
@@ -161,6 +196,57 @@ pub(super) fn draw(
             points,
             egui::Stroke::new(if active { 3. } else { 2. }, color),
         ));
+    }
+    let nearest_system = |position: GalacticPosition| {
+        catalogue
+            .systems
+            .iter()
+            .min_by(|a, b| {
+                a.position
+                    .relative_to(position)
+                    .length_squared()
+                    .total_cmp(&b.position.relative_to(position).length_squared())
+            })
+            .map(|system| system.id)
+    };
+    let mut cursor = origin;
+    for order in orders {
+        match &order.action {
+            travel::Order::Jump(entry) => {
+                cursor = catalogue
+                    .beacons
+                    .iter()
+                    .find(|b| b.id == *entry)
+                    .and_then(|b| b.gate_exit)
+                    .and_then(|exit| catalogue.beacons.iter().find(|b| b.id == exit))
+                    .map(|b| b.system);
+            }
+            travel::Order::Slip { destination } => {
+                let next = nearest_system(*destination);
+                if let Some((a, b)) = cursor
+                    .zip(next)
+                    .and_then(|(a, b)| Some((*positions.get(&a)?, *positions.get(&b)?)))
+                {
+                    if a.distance(b) > 1. {
+                        painter.add(egui::Shape::dashed_line(
+                            &[a, b],
+                            egui::Stroke::new(2., ACCENT),
+                            7.,
+                            5.,
+                        ));
+                        painter.text(
+                            a.lerp(b, 0.5),
+                            egui::Align2::CENTER_BOTTOM,
+                            "SLIP",
+                            egui::FontId::monospace(10.),
+                            ACCENT,
+                        );
+                    }
+                }
+                cursor = next;
+            }
+            _ => {}
+        }
     }
     for system in connected {
         let p = positions[&system.id];
@@ -212,16 +298,21 @@ pub(super) fn draw(
             ui.label(egui::RichText::new(&system.name).strong().size(16.));
             ui.weak(route.as_ref().map_or_else(
                 || "No connected route".into(),
-                |r| format!("{} jumps", r.len()),
+                |r| {
+                    format!(
+                        "{} gate hops · flight computer compares slip routes",
+                        r.len()
+                    )
+                },
             ));
         });
         ui.horizontal(|ui| {
-            let orders: Vec<_> = route
-                .clone()
-                .unwrap_or_default()
-                .into_iter()
-                .map(travel::Order::Jump)
-                .collect();
+            let destination = catalogue
+                .beacons
+                .iter()
+                .find(|b| b.system == system.id)
+                .map(|b| travel::Order::TravelTo(travel::Destination::Beacon(b.id)));
+            let orders: Vec<_> = destination.into_iter().collect();
             if ui
                 .add_enabled(
                     model.connected && route.as_ref().is_some_and(|r| !r.is_empty()),
@@ -229,7 +320,7 @@ pub(super) fn draw(
                 )
                 .clicked()
             {
-                intents.push(Intent::Queue(orders.clone(), false));
+                intents.push(Intent::PlanRoute(orders.clone(), false, preference));
             }
             let endpoint = model
                 .ship
@@ -239,26 +330,7 @@ pub(super) fn draw(
                         .iter()
                         .skip(ship.travel.order)
                         .rev()
-                        .find_map(|order| {
-                            let (id, jump) = match order {
-                                travel::Order::Jump(id) => (*id, true),
-                                travel::Order::Dock(id)
-                                | travel::Order::TravelTo(travel::Destination::Beacon(id)) => {
-                                    (*id, false)
-                                }
-                                _ => return None,
-                            };
-                            let beacon = catalogue.beacons.iter().find(|b| b.id == id)?;
-                            if jump {
-                                catalogue
-                                    .beacons
-                                    .iter()
-                                    .find(|b| Some(b.id) == beacon.gate_exit)
-                                    .map(|b| b.system)
-                            } else {
-                                Some(beacon.system)
-                            }
-                        })
+                        .find_map(|order| instruments::order_system(&order.action, catalogue))
                 })
                 .or(origin);
             let appended_route = endpoint.and_then(|start| {
@@ -271,12 +343,7 @@ pub(super) fn draw(
                 )
                 .clicked()
             {
-                if let Some(route) = &appended_route {
-                    intents.push(Intent::Queue(
-                        route.iter().copied().map(travel::Order::Jump).collect(),
-                        true,
-                    ));
-                }
+                intents.push(Intent::PlanRoute(orders.clone(), true, preference));
             }
             for station in catalogue
                 .beacons
@@ -292,11 +359,12 @@ pub(super) fn draw(
                 {
                     let append = ui.input(|i| i.modifiers.shift);
                     let planned = if append { &appended_route } else { &route };
-                    if let Some(planned) = planned {
-                        let mut orders: Vec<_> =
-                            planned.iter().copied().map(travel::Order::Jump).collect();
-                        orders.push(travel::Order::Dock(station.id));
-                        intents.push(Intent::Queue(orders, append));
+                    if planned.is_some() {
+                        intents.push(Intent::PlanRoute(
+                            vec![travel::Order::Dock(station.id)],
+                            append,
+                            preference,
+                        ));
                     }
                 }
             }
@@ -313,7 +381,7 @@ pub(super) fn draw(
                 })
                 .collect();
             ui.label(
-                egui::RichText::new(names.join("  →  "))
+                egui::RichText::new(format!("Gate alternative: {}", names.join("  →  ")))
                     .size(11.)
                     .color(ACCENT),
             );

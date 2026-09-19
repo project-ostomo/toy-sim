@@ -86,7 +86,7 @@ fn tanks_never_overflow_into_cargo_and_cargo_never_fuels_engines() {
     assert_eq!(inventory.quantities[0], 300_000);
     assert_eq!(inventory.cargo[0], 100);
     inventory.quantities[0] = 0;
-    assert_eq!(inventory.consume(0, 20.0), 0.0);
+    assert_eq!(inventory.consume(0, 20.0), 0);
     assert_eq!(inventory.cargo[0], 100);
 }
 

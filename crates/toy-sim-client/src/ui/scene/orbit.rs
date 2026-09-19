@@ -2,7 +2,7 @@ mod conic;
 mod curves;
 mod geometry;
 mod paint;
-mod projection;
+use super::projection;
 
 use super::{ViewCamera, camera::CameraOptions};
 use crate::state::{

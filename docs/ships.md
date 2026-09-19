@@ -252,16 +252,7 @@ The six states are absent, off, active, depleted, unpowered and blocked. Activat
 
 The simulator spawns ships from the fixed startup scenario (see the [README](../README.md#what-happens-at-startup)). Once per 10 Hz tick, each ship's computer receives an observation, its commands are applied, and typed hardware ECS systems apply resource allocation and actuation before gravity and integration. The full sequence is in [server-client.md](server-client.md).
 
-GUI windows for the controlled ship:
-
-- **Ship:** altitude, airspeed, density, pressure and manual control bars.
-- **Hardware diagnostics:** hull, internal heat budget, shield temperature, coolant reserve and strength, test buttons (Hull +25 MJ, Shield +250 MJ, Reset encounter), faults, boot progress, step timings, per-part status and rejected request messages.
-- **Flight computer:** boot state, Hold attitude, Manual / abort, the attitude instrument or HUD, and Reset encounter.
-- **Contacts**, **Weapons** and **Navigation:** fixed instruments driven by firmware publications.
-- **Ship systems:** mass, hull, shield state, energy and resources.
-- **Inventory:** raw resource quantities.
-
-The two "Reset encounter" buttons behave differently. In Hardware diagnostics, it resets the controlled ship's hardware state and reboots its computer. In Flight computer (and in the "Ship destroyed" window), it despawns all ships, projectiles and explosions and respawns the scenario.
+The client provides Ship status, Navigation and Inventory windows, plus Overview and Selected Item controls. Ship status shows the current hardware, energy, thermal and firmware readings. Navigation shows queued orders; Inventory separates cargo stacks from consumable capacity bars. Selected Item separates flight guidance from target marking and firing controls. See [the client UI](server-client.md#the-client-ui).
 
 ## The standard firmware
 
@@ -278,6 +269,8 @@ The two "Reset encounter" buttons behave differently. In Hardware diagnostics, i
 
 The firmware also exports `ship_display`, which draws a "Ship status" text screen when a client subscribes ([mfds.md](mfds.md#over-the-network)). Remote and debug clients use the same display path.
 
+The following are host-to-firmware requests. Direct manual input is not exposed by the client protocol; the host retains the internal manual request for control allocation and tests.
+
 Requests and their effect:
 
 | Request | Effect | Rejected when |
@@ -289,8 +282,10 @@ Requests and their effect:
 | Aim contact | Points at a sensor contact. | Contact not visible |
 | Select target | Chooses a navigation target. | Guidance active, or target not a visible ship |
 | Engage navigation | Starts pursuit ([rendezvous.md](rendezvous.md)). | Missing hardware or IMU sample, invalid limit, no visible target |
-| Engage weapons | Starts automatic weapons control ([weapons.md](weapons.md)). | No control-enabled weapon, invalid flight time, target not visible |
-| Hold fire | Stops weapons control. | |
+| Mark target | Replaces the weapons target and stops firing ([weapons.md](weapons.md)). | No control-enabled weapon, invalid flight time or target not visible |
+| Unmark target | Clears the weapons target and stops firing. | |
+| Start firing | Enables fire against the marked target. | No marked target |
+| Stop firing | Retains the marked target while disabling fire. | |
 | Anything else | | Always ("Unsupported request") |
 
 Discovery binds the first control-enabled sensor, accelerometer and computer. Thrust authority, torque authority and propellant flow are computed from control-enabled engines, RCS blocks and torquers along the computer's forward axis (−Z rotated by the control orientation).

@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v15" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v15" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v15" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v15" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v15" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v23" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v23" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v23" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v23" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v23" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -76,7 +76,10 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
     crate::sim::hardware::install(&mut app);
     app.add_systems(
         FixedUpdate,
-        (prepare_resets.before(HardwareSystems::Initialize), run),
+        (
+            prepare_resets.before(HardwareSystems::Initialize),
+            (run, clear_computer_resets).chain(),
+        ),
     );
     (app, entities)
 }
@@ -189,10 +192,68 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
         .0
         .quantities
         .clone();
+    use crate::sim::{identity::Identity, travel};
+    use toy_sim_model::{
+        Id,
+        travel::{Order, Status, TravelState},
+    };
+    let id = Id::new();
     app.world_mut()
-        .get_mut::<ShipSoftware>(entity)
-        .unwrap()
-        .command(Command::HoldAttitude);
+        .init_resource::<crate::sim::simulation::SimulationCounters>();
+    app.world_mut().entity_mut(entity).insert((
+        Identity(id),
+        crate::sim::identity::Control {
+            account: id,
+            revision: 1,
+        },
+        travel::Travel(TravelState {
+            autopilot_enabled: true,
+            revision: 9,
+            orders: vec![Order::WaitUntil(9999)]
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+            status: Status::Active,
+            estimated_arrival_tick: Some(9999),
+            ..default()
+        }),
+        travel::SlipDrive {
+            preparation: Some(travel::Preparation {
+                destination: Default::default(),
+                started: 0,
+                mass: 100.,
+                work_j: 100.,
+                required_j: 200.,
+            }),
+            ..default()
+        },
+    ));
+    let station = app
+        .world_mut()
+        .spawn(travel::DockingBays(vec![travel::Bay {
+            centre_m: [0.; 3],
+            rotation: [0., 0., 0., 1.],
+            radius_m: 100.,
+            mass_capacity_kg: 1e9,
+            public: true,
+            allowed: default(),
+            reservation: Some((id, 9999)),
+        }]))
+        .id();
+    {
+        let mut software = app.world_mut().get_mut::<ShipSoftware>(entity).unwrap();
+        software.controller.state.weapons = Some(abi::WeaponsState {
+            valid_until_s: 1000.,
+            mode: abi::WEAPONS_FIRING,
+            target_contact: 42,
+            ..default()
+        });
+        software.controller.state.navigation = Some(abi::NavigationState {
+            valid_until_s: 1000.,
+            ..default()
+        });
+        software.command(Command::HoldAttitude);
+    }
     step(&mut app);
     assert!(
         app.world()
@@ -210,6 +271,44 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
             .is_some()
     );
     assert_eq!(throttle(app.world(), entity), 0.);
+    {
+        let world = app.world();
+        let software = world.get::<ShipSoftware>(entity).unwrap();
+        assert!(software.last_gas_used >= toy_sim_ship_wasm::FUEL_PER_TICK);
+        assert!(software.last_gas_used < toy_sim_ship_wasm::RESERVE_CAPACITY);
+        assert_eq!(software.last_gas_limit, toy_sim_ship_wasm::FUEL_PER_TICK);
+        assert!(software.controller.state.weapons.is_none());
+        assert!(software.controller.state.navigation.is_none());
+        assert!(!software.controller.has_pending_input());
+        assert!(software.inbox.is_empty() && software.world_actions.is_empty());
+        assert_eq!(
+            world.get::<travel::Travel>(entity).unwrap().0,
+            TravelState {
+                revision: 10,
+                ..default()
+            }
+        );
+        assert!(
+            world
+                .get::<travel::SlipDrive>(entity)
+                .unwrap()
+                .preparation
+                .is_none()
+        );
+        assert!(
+            world.get::<travel::DockingBays>(station).unwrap().0[0]
+                .reservation
+                .is_none()
+        );
+        let presentation = crate::sim::presentation::ship(world, entity, false).unwrap();
+        assert!(matches!(
+            presentation.computer,
+            toy_sim_model::ComputerStatus::Fault {
+                reboot_remaining_s: Some(5.),
+                ..
+            }
+        ));
+    }
     for _ in 0..49 {
         step(&mut app);
         assert!(
@@ -239,6 +338,13 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
             .is_none()
     );
     assert_eq!(throttle(app.world(), entity), 0.4);
+    assert_eq!(
+        app.world().get::<travel::Travel>(entity).unwrap().0,
+        TravelState {
+            revision: 10,
+            ..default()
+        }
+    );
     assert!(app.world().get::<HardwareClock>(entity).unwrap().0 >= 100);
     for (before, after) in fuel_before.iter().zip(
         &app.world()
@@ -281,6 +387,13 @@ fn sleeping_computers_keep_hardware_running_and_commands_wake_them() {
                 .is_booting()
         );
         assert_eq!(throttle(app.world(), entity), 0.4);
+        assert_eq!(
+            app.world()
+                .get::<ShipSoftware>(entity)
+                .unwrap()
+                .last_gas_used,
+            0
+        );
     }
     app.world_mut()
         .get_mut::<ShipSoftware>(entity)
@@ -358,5 +471,63 @@ fn profile_default_fleet() {
         samples[samples.len() / 2] * 1000.0,
         samples[samples.len() * 95 / 100] * 1000.0,
         samples.last().unwrap() * 1000.0,
+    );
+}
+
+#[test]
+fn fault_reboot_budget_pauses_without_power() {
+    let (mut app, ships) = fleet(1);
+    let ship = ships[0];
+    boot(&mut app, ship);
+    app.world_mut()
+        .init_resource::<crate::sim::simulation::SimulationCounters>();
+    let id = toy_sim_model::Id::new();
+    app.world_mut().entity_mut(ship).insert((
+        crate::sim::identity::Identity(id),
+        crate::sim::identity::Control {
+            account: id,
+            revision: 1,
+        },
+    ));
+    app.world_mut()
+        .get_mut::<ShipSoftware>(ship)
+        .unwrap()
+        .controller
+        .fail("Test fault".into());
+    app.world_mut()
+        .get_mut::<crate::sim::hardware::Avionics>(ship)
+        .unwrap()
+        .0
+        .operational = false;
+    for _ in 0..20 {
+        step(&mut app);
+    }
+    assert_eq!(
+        app.world()
+            .get::<ShipSoftware>(ship)
+            .unwrap()
+            .controller
+            .gas_remaining(),
+        0
+    );
+    let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
+    assert!(matches!(
+        state.computer,
+        toy_sim_model::ComputerStatus::Fault {
+            reboot_remaining_s: None,
+            ..
+        }
+    ));
+    app.world_mut()
+        .get_mut::<crate::sim::hardware::Avionics>(ship)
+        .unwrap()
+        .0
+        .operational = true;
+    for _ in 0..5 {
+        step(&mut app);
+    }
+    let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
+    assert!(
+        matches!(state.computer, toy_sim_model::ComputerStatus::Fault { reboot_remaining_s: Some(seconds), .. } if seconds > 0. && seconds < 5.)
     );
 }

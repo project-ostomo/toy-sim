@@ -1,128 +1,355 @@
-use super::ViewCamera;
+use super::{ViewCamera, projection};
 use crate::{
-    state::{OwnedShip, ViewObservation},
+    state::{Celestial, DisplayPose, NavigationObject, OwnedShip, ViewObservation},
     ui::{SelectedTarget, Selection},
 };
-use bevy::{prelude::*, window::PrimaryWindow};
-use toy_sim_model::{Id, travel};
+use bevy::{math::DQuat, prelude::*};
+use toy_sim_model::{GalacticPosition, Id, Pose, travel};
 use toy_sim_ui::{
     bevy_egui::{EguiContexts, EguiPrimaryContextPass},
     egui,
+    units::distance,
 };
+
+const ROUTE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 202, 110);
+const BEACON_COLOR: egui::Color32 = egui::Color32::from_rgb(113, 206, 229);
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(EguiPrimaryContextPass, draw);
 }
+
+struct Waypoint {
+    position: GalacticPosition,
+    name: String,
+    target: Option<SelectedTarget>,
+}
+
+fn waypoint(
+    order: &travel::Order,
+    beacon: impl Fn(Id) -> Option<(String, Pose)>,
+    celestial: impl Fn(Id) -> Option<(String, Pose)>,
+) -> Option<Waypoint> {
+    use travel::{Axes, Destination, Order, Reference, Target};
+
+    let destination = match order {
+        Order::Jump(id) | Order::Dock(id) => Destination::Beacon(*id),
+        Order::TravelTo(destination) | Order::Sublight(destination) => destination.clone(),
+        Order::Slip { destination } => Destination::Galactic(*destination),
+        Order::Guidance(travel::Guidance {
+            target: Target::Destination(destination),
+            ..
+        }) => destination.clone(),
+        _ => return None,
+    };
+    let (position, name, target) = match destination {
+        Destination::Beacon(id) => {
+            let (name, pose) = beacon(id)?;
+            (pose.position, name, Some(SelectedTarget::Beacon(id)))
+        }
+        Destination::Galactic(position) => (position, "Coordinates".into(), None),
+        Destination::Relative {
+            reference,
+            offset,
+            axes,
+        } => {
+            let ((name, pose), target) = match reference {
+                Reference::Beacon(id) => (beacon(id)?, SelectedTarget::Beacon(id)),
+                Reference::Celestial(id) => (celestial(id)?, SelectedTarget::Celestial(id)),
+            };
+            let offset = offset.relative_to(GalacticPosition::ZERO);
+            let offset = match axes {
+                Axes::Galactic => offset,
+                Axes::BodyFixed => DQuat::from_array(pose.rotation) * offset,
+            };
+            (
+                pose.position.offset_by(offset),
+                format!("Near {name}"),
+                Some(target),
+            )
+        }
+    };
+    let action = match order {
+        Order::Jump(_) => "Gate",
+        Order::Dock(_) => "Dock",
+        Order::Slip { .. } => "Slip arrival",
+        _ => "Waypoint",
+    };
+    Some(Waypoint {
+        position,
+        name: format!("{action}: {name}"),
+        target,
+    })
+}
+
 fn draw(
     mut contexts: EguiContexts,
     mut selected: ResMut<Selection>,
-    beacons: Query<(&crate::state::NavigationObject, &crate::state::DisplayPose)>,
-    cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,
-    ships: Query<(&OwnedShip, &crate::state::DisplayPose)>,
-    windows: Query<&Window, With<PrimaryWindow>>,
+    beacons: Query<(&NavigationObject, &DisplayPose)>,
+    celestials: Query<(&Celestial, &DisplayPose)>,
+    cameras: Query<(
+        &Camera,
+        &GlobalTransform,
+        &Projection,
+        &ViewCamera,
+        &ViewObservation,
+    )>,
+    ships: Query<(&OwnedShip, &DisplayPose)>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    let scale = windows.iter().next().map_or(1., |w| w.scale_factor()) / ctx.pixels_per_point();
-    for (camera, transform, view, observation) in &cameras {
+    for (camera, transform, lens, view, observation) in &cameras {
         if view.private {
             continue;
         }
-        let Some(viewport) = camera.logical_viewport_rect() else {
+        let (Some(viewport), Projection::Perspective(lens)) =
+            (camera.physical_viewport_rect(), lens)
+        else {
             continue;
         };
+        let ppp = ctx.pixels_per_point();
         let rect = egui::Rect::from_min_max(
-            egui::pos2(viewport.min.x * scale + 75., viewport.min.y * scale + 150.),
-            egui::pos2(viewport.max.x * scale - 25., viewport.max.y * scale - 45.),
+            egui::pos2(viewport.min.x as f32 / ppp, viewport.min.y as f32 / ppp),
+            egui::pos2(viewport.max.x as f32 / ppp, viewport.max.y as f32 / ppp),
         );
+        let sy = 1. / (lens.fov as f64 * 0.5).tan();
+        let projection = projection::View {
+            rect,
+            eye: transform.translation().as_dvec3(),
+            rotation: transform.rotation().as_dquat().inverse(),
+            sx: sy / rect.aspect_ratio() as f64,
+            sy,
+        };
         let ship = ships
             .iter()
             .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship);
-        let queue: Vec<Id> = ship
+        let origin = ship.map_or(view.origin, |(_, pose)| pose.0.position);
+        let queue: Vec<_> = ship
             .into_iter()
-            .flat_map(|(ship, _)| ship.0.travel.orders.iter().skip(ship.0.travel.order))
-            .filter_map(|order| match order {
-                travel::Order::Jump(id)
-                | travel::Order::Dock(id)
-                | travel::Order::TravelTo(travel::Destination::Beacon(id)) => Some(*id),
-                _ => None,
+            .flat_map(|(ship, _)| {
+                ship.0
+                    .travel
+                    .orders
+                    .iter()
+                    .enumerate()
+                    .skip(ship.0.travel.order)
+            })
+            .map(|(index, order)| {
+                (
+                    index,
+                    waypoint(
+                        &order.action,
+                        |id| {
+                            beacons
+                                .iter()
+                                .find(|(b, _)| b.0.id == id)
+                                .map(|(b, p)| (b.0.name.clone(), p.0.clone()))
+                        },
+                        |id| {
+                            celestials
+                                .iter()
+                                .find(|(c, _)| c.0.entity == id)
+                                .map(|(c, p)| (c.0.name.clone(), p.0.clone()))
+                        },
+                    ),
+                )
             })
             .collect();
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new(("navigation_hud", view.view)),
-        ));
-        for (beacon, pose) in &beacons {
-            let beacon = &beacon.0;
-            let waypoint = queue.iter().position(|id| *id == beacon.id);
-            let offset = pose.0.position.relative_to(view.origin);
-            if offset.length() > 1e12 && waypoint.is_none() {
-                continue;
-            }
-            let Some(ndc) = camera.world_to_ndc(transform, offset.as_vec3()) else {
-                continue;
-            };
-            let projected = egui::pos2(
-                (viewport.min.x + (ndc.x + 1.) * viewport.width() * 0.5) * scale,
-                (viewport.min.y + (1. - ndc.y) * viewport.height() * 0.5) * scale,
-            );
-            let on_screen = rect.contains(projected) && ndc.z >= 0.;
-            if !on_screen && waypoint.is_none() {
-                continue;
-            }
-            let point = if on_screen {
-                projected
-            } else {
-                let direction = (projected - rect.center()) * if ndc.z < 0. { -1. } else { 1. };
-                let direction = direction.normalized();
-                let extent = rect.size() * 0.5;
-                let reach = (extent.x / direction.x.abs().max(0.001))
-                    .min(extent.y / direction.y.abs().max(0.001));
-                rect.center() + direction * reach
-            };
-            let color = if waypoint.is_some() {
-                egui::Color32::from_rgb(255, 202, 110)
-            } else {
-                egui::Color32::from_rgb(113, 206, 229)
-            };
-            painter.add(egui::Shape::closed_line(
-                vec![
-                    point + egui::vec2(0., -9.),
-                    point + egui::vec2(9., 0.),
-                    point + egui::vec2(0., 9.),
-                    point + egui::vec2(-9., 0.),
-                ],
-                egui::Stroke::new(1.5, color),
-            ));
-            let label = format!(
-                "{}{} · {}",
-                waypoint.map_or(String::new(), |i| format!("{}. ", i + 1)),
-                beacon.name,
-                super::sensor_hud::distance(
-                    pose.0
-                        .position
-                        .relative_to(ship.map_or(view.origin, |(_, pose)| pose.0.position))
-                        .length()
-                )
-            );
-            painter.text(
-                point + egui::vec2(13., 0.),
-                egui::Align2::LEFT_CENTER,
-                label,
-                egui::FontId::proportional(11.),
-                color,
-            );
-            if let Some(pointer) = ctx.input(|i| i.pointer.interact_pos()) {
-                if ctx.input(|i| i.pointer.primary_clicked())
-                    && pointer.distance(point) < 13.
-                    && ctx
-                        .layer_id_at(pointer)
-                        .is_none_or(|l| l.order == egui::Order::Background)
-                {
-                    selected.target = Some(SelectedTarget::Beacon(beacon.id));
-                    selected.view = Some(view.view);
+        let painter = ctx
+            .layer_painter(egui::LayerId::new(
+                egui::Order::Background,
+                egui::Id::new(("navigation_hud", view.view)),
+            ))
+            .with_clip_rect(rect);
+
+        let mut previous = Some(origin);
+        for (_, waypoint) in &queue {
+            if let Some(waypoint) = waypoint {
+                if let Some(line) = previous.and_then(|previous| {
+                    projection.segment(
+                        previous.relative_to(view.origin),
+                        waypoint.position.relative_to(view.origin),
+                    )
+                }) {
+                    painter.extend(egui::Shape::dotted_line(
+                        &line,
+                        ROUTE_COLOR.gamma_multiply(0.65),
+                        8.,
+                        1.2,
+                    ));
                 }
+                previous = Some(waypoint.position);
             }
+        }
+
+        for (beacon, pose) in &beacons {
+            if queue.iter().filter_map(|(_, w)| w.as_ref()).any(|w| {
+                w.position == pose.0.position
+                    && w.target == Some(SelectedTarget::Beacon(beacon.0.id))
+            }) {
+                continue;
+            }
+            let offset = pose.0.position.relative_to(view.origin);
+            if offset.length() > 1e12 {
+                continue;
+            }
+            let (point, offscreen) = projection.marker(offset);
+            if offscreen {
+                continue;
+            }
+            marker(&painter, point, BEACON_COLOR);
+            label(
+                &painter,
+                point,
+                &format!(
+                    "{} · {}",
+                    beacon.0.name,
+                    distance(pose.0.position.relative_to(origin).length())
+                ),
+                BEACON_COLOR,
+            );
+            select(
+                ctx,
+                &mut selected,
+                point,
+                Some(SelectedTarget::Beacon(beacon.0.id)),
+                view.view,
+            );
+        }
+
+        let mut labels: Vec<egui::Pos2> = Vec::new();
+        for (index, waypoint) in queue.into_iter().filter_map(|(i, w)| w.map(|w| (i, w))) {
+            let (point, offscreen) = projection.marker(waypoint.position.relative_to(view.origin));
+            marker(&painter, point, ROUTE_COLOR);
+            let mut text_point = point;
+            while labels
+                .iter()
+                .any(|p| (p.x - text_point.x).abs() < 220. && (p.y - text_point.y).abs() < 15.)
+            {
+                text_point.y += if point.y > rect.center().y { -16. } else { 16. };
+            }
+            labels.push(text_point);
+            if text_point != point {
+                painter.line_segment(
+                    [point, text_point],
+                    egui::Stroke::new(0.5, ROUTE_COLOR.gamma_multiply(0.5)),
+                );
+            }
+            label(
+                &painter,
+                text_point,
+                &format!(
+                    "{}. {}{} · {}",
+                    index + 1,
+                    if offscreen { "Offscreen · " } else { "" },
+                    waypoint.name,
+                    distance(waypoint.position.relative_to(origin).length())
+                ),
+                ROUTE_COLOR,
+            );
+            select(ctx, &mut selected, point, waypoint.target, view.view);
         }
     }
     Ok(())
+}
+
+fn marker(painter: &egui::Painter, point: egui::Pos2, color: egui::Color32) {
+    painter.add(egui::Shape::closed_line(
+        vec![
+            point + egui::vec2(0., -7.),
+            point + egui::vec2(7., 0.),
+            point + egui::vec2(0., 7.),
+            point + egui::vec2(-7., 0.),
+        ],
+        egui::Stroke::new(1.5, color),
+    ));
+}
+
+fn label(painter: &egui::Painter, point: egui::Pos2, text: &str, color: egui::Color32) {
+    let right = point.x < painter.clip_rect().center().x;
+    painter.text(
+        point + egui::vec2(if right { 12. } else { -12. }, 0.),
+        if right {
+            egui::Align2::LEFT_CENTER
+        } else {
+            egui::Align2::RIGHT_CENTER
+        },
+        text,
+        egui::FontId::proportional(11.),
+        color,
+    );
+}
+
+fn select(
+    ctx: &egui::Context,
+    selected: &mut Selection,
+    point: egui::Pos2,
+    target: Option<SelectedTarget>,
+    view: u64,
+) {
+    if let Some(pointer) = ctx.input(|i| i.pointer.interact_pos()) {
+        if target.is_some()
+            && ctx.input(|i| i.pointer.primary_clicked())
+            && pointer.distance(point) < 13.
+            && ctx
+                .layer_id_at(pointer)
+                .is_none_or(|l| l.order == egui::Order::Background)
+        {
+            selected.target = target;
+            selected.view = Some(view);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::math::DVec3;
+
+    #[test]
+    fn resolves_each_spatial_order_including_rotated_relative_waypoints() {
+        let id = Id([1; 16]);
+        let anchor = GalacticPosition::new(1_i128 << 100, 0, 0);
+        let pose = Pose {
+            position: anchor,
+            rotation: DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array(),
+            ..Default::default()
+        };
+        let lookup = |key| (key == id).then(|| ("Beacon".into(), pose.clone()));
+        for action in [
+            travel::Order::Jump(id),
+            travel::Order::Dock(id),
+            travel::Order::TravelTo(travel::Destination::Beacon(id)),
+        ] {
+            let point = waypoint(&action, lookup, lookup).unwrap();
+            assert_eq!(point.position, anchor);
+            assert_eq!(point.target, Some(SelectedTarget::Beacon(id)));
+        }
+        let far = anchor.offset_by(DVec3::Z * 9_460_730_472_580_800.);
+        for action in [
+            travel::Order::Slip { destination: far },
+            travel::Order::Sublight(travel::Destination::Galactic(far)),
+        ] {
+            let point = waypoint(&action, lookup, lookup).unwrap();
+            assert_eq!(point.position, far);
+            assert!(point.target.is_none());
+            assert_eq!(
+                distance(point.position.relative_to(anchor).length()),
+                "1.00 ly"
+            );
+        }
+        for (axes, expected) in [
+            (travel::Axes::Galactic, DVec3::X * 10.),
+            (travel::Axes::BodyFixed, DVec3::Y * 10.),
+        ] {
+            let action = travel::Order::Sublight(travel::Destination::Relative {
+                reference: travel::Reference::Celestial(id),
+                offset: GalacticPosition::ZERO.offset_by(DVec3::X * 10.),
+                axes,
+            });
+            let point = waypoint(&action, lookup, lookup).unwrap();
+            assert!(point.position.relative_to(anchor).distance(expected) < 1e-5);
+            assert_eq!(point.target, Some(SelectedTarget::Celestial(id)));
+        }
+        assert!(waypoint(&travel::Order::WaitUntil(100), lookup, lookup).is_none());
+        assert!(waypoint(&travel::Order::Jump(Id([2; 16])), lookup, lookup).is_none());
+    }
 }

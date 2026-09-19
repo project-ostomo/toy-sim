@@ -225,7 +225,7 @@ impl PartDescription {
                 )
             }
             Equipment::Battery { capacity_j } => {
-                performance.quantity("Stored energy", *capacity_j, Energy);
+                performance.quantity("Stored energy", *capacity_j as f64, Energy);
                 (
                     "Battery",
                     Category::Power,
@@ -427,6 +427,13 @@ impl PartDescription {
             Equipment::Utility { utility } => {
                 use toy_sim_ships::utilities::UtilityDef;
                 let (kind, summary) = match *utility {
+                    UtilityDef::SlipDrive { power_w } => {
+                        requirements.quantity("Preparation power", power_w, Power);
+                        (
+                            "Slipdrive",
+                            "Prepares a slip aperture outside gate exclusion zones.",
+                        )
+                    }
                     UtilityDef::Command { power_w } => {
                         requirements.quantity("Electrical input", power_w, Power);
                         ("Command module", "Provides powered backup avionics.")

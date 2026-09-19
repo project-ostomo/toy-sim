@@ -1,6 +1,6 @@
 # Collisions
 
-Ships in space and projectiles are integrated by a time-ordered continuous collision solver ([crates/toy-sim-server/src/sim/physics/collision](../crates/toy-sim-server/src/sim/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves every contact as an energy-absorbing impact. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
+Ships in space and projectiles are integrated by a time-ordered continuous collision solver ([crates/toy-sim-server/src/sim/physics/collision](../crates/toy-sim-server/src/sim/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves contacts with partial restitution and impact heat. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
 
 Geometry queries, broad-phase trees and contact manifolds come from Parry (`parry3d-f64`). Trajectory sampling, heat accounting and event scheduling are implemented in this module.
 
@@ -69,7 +69,7 @@ After the queue empties, weapons advance to the end of the tick and every body d
 
 Each member picks its shape against the other body: the shield sphere when its shield is active, unless the other body is a projectile this member launched; otherwise the hull.
 
-### Ordinary impacts
+### Shared impact response
 
 For contact normal `n`, lever arms `ra` and `rb`, and world inverse inertia tensors, the effective inverse mass is:
 
@@ -79,21 +79,19 @@ k = 1/ma + 1/mb + (ra×n)·Ia⁻¹(ra×n) + (rb×n)·Ib⁻¹(rb×n)
 
 When the bodies are closing at speed `c`:
 
-- The maximum absorbable energy is `q = c² / (2k)`. It corresponds to removing all normal closing velocity, so there is no restitution and no friction.
-- If either member is shielded, `q` is limited to twice that shield's remaining interception energy. The impulse is then reduced so the absorbed energy equals `q`, and the bodies keep part of their closing speed.
+- The restitution coefficient is `e = 0.3` for normal closing speeds of at least 0.1 m/s, and zero below that threshold. Tangential velocity is unaffected: contacts have no friction.
+- The rebound impulse is `J = (1 + e)c/k`, and the dissipated energy is `q = (1 − e²)c²/(2k)`. A 10 m/s normal approach therefore produces 3 m/s normal separation when neither shield limits the response.
+- If either member is shielded, `q` is limited to twice that shield's remaining interception energy. When this cap prevents the full response, the solver uses the smaller impulse that dissipates exactly the available energy. The bodies retain some closing velocity instead of receiving a rebound that the shield cannot support.
 - The impulse changes linear and angular momentum and is recorded for the accelerometer.
 - Half of `q` goes to each member: into its shield when shielded, otherwise into its hull as heat and damage at 1 hit point per 100 kJ.
 
 After resolution, if the shapes still overlap, the bodies are pushed apart along the current contact normal by the penetration depth plus 10 µm. The push is split in inverse proportion to mass.
 
-### Slugs against shields
+### Projectiles
 
-A projectile meeting another ship's active shield exchanges an impulse along its full relative contact velocity. The energy absorbed is bounded by the available reserve and deployed material. If enough material remains, the projectile is stopped and removed. If the reserve and screen are exhausted first, the projectile keeps the residual velocity and continues into the hull collision path. A trace of newly deployed coolant therefore provides only a finite amount of protection.
+Projectiles use the same contact response, energy split and hull damage as ships. There is no separate shield interception impulse or automatic deletion on contact. A projectile's hit points equal its mass in kilograms: a 1 g round is destroyed by 100 J deposited into its hull. Ordinary fast impacts usually exceed that threshold. A slow or grazing impact can leave a projectile alive and deflected; a depleted shield can leave enough residual motion for a later hull impact.
 
-All energy dissipated by a shield interception enters the shield coolant. Partial interceptions preserve the projectile’s structural state so its remaining kinetic energy can reach the hull. Interception vaporizes coolant and carries its stored heat away; the solver limits the impulse to the energy the shield can absorb.
-### Slugs against hulls
-
-A slug hitting a hull is an ordinary impact. A projectile's hit points equal its mass in kilograms, so a 10 g bearing is destroyed by 1 kJ of impact heat. The ship takes damage from its half of the energy.
+The launching ship's shield remains transparent to its own projectiles. Its hull still participates in collision detection.
 
 ### Shield depletion
 
@@ -119,7 +117,7 @@ The solver records motion segments for bodies whose motion changed within the ti
 ## Tests and benchmarks
 
 ```sh
-cargo test -p toy-sim collision
+cargo test -p toy-sim-server collision
 ```
 
 [tests.rs](../crates/toy-sim-server/src/sim/physics/collision/solver_tests.rs) covers:
@@ -140,7 +138,7 @@ cargo test -p toy-sim collision
 - the rotation speed bound
 - rotational energy in off-centre impacts
 - spinning spheres keeping their cast normal
-- shields absorbing slow glancing slugs
+- shared impact damage destroying fast slugs while slow glancing slugs survive
 - projectile expiry at 2 s
 
 [ecs.rs](../crates/toy-sim-server/src/sim/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
@@ -149,17 +147,17 @@ Two benchmarks are ignored by default. Run them in release mode:
 
 ```sh
 # 10,000 and 100,000 bodies in sparse, dense, battles, mixed and slugs scenarios
-cargo test -p toy-sim --release physics::collision::tests::scale_benchmark -- --ignored --exact --nocapture
+cargo test -p toy-sim-server --release physics::collision::tests::scale_benchmark -- --ignored --exact --nocapture
 
 # Nearest-32 sensor queries with occlusion over 10,000 and 100,000 objects
-cargo test -p toy-sim --release physics::collision::tests::sensor_scale_benchmark -- --ignored --exact --nocapture
+cargo test -p toy-sim-server --release physics::collision::tests::sensor_scale_benchmark -- --ignored --exact --nocapture
 ```
 
 `scale_benchmark` prints the thread count, cold, median and p95 milliseconds, the index, query and solve times, and pair, query and impact counts. On Linux it also prints peak RSS. See [ship-step-profile.md](ship-step-profile.md) for other profiling commands.
 
 ## Limitations
 
-- Contacts are perfectly inelastic along the normal, with no friction or restitution.
+- Contacts use a fixed normal restitution coefficient and no friction.
 - Forces are applied as one kick per tick, so gravity and thrust do not curve paths within a tick.
 - Shields are spheres, and hulls are unions of part boxes. Part models do not affect collisions.
 - Projectiles are not in the sensor index.

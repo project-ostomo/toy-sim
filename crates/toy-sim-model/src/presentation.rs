@@ -21,6 +21,7 @@ pub struct PresentationFrame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipPresentation {
+    pub propulsion: PropulsionTelemetry,
     pub ship: EntityId,
     pub revision: u64,
     pub sim_time_ns: u64,
@@ -31,7 +32,7 @@ pub struct ShipPresentation {
     pub inertia_kg_m2: [f64; 9],
     pub control_rotation: [f64; 4],
     pub hull_heat_capacity_j: f64,
-    pub battery_capacity_j: f64,
+    pub battery_capacity_j: u64,
     pub power_generated_w: f64,
     pub power_consumed_w: f64,
     pub inventory: Vec<ResourceAmount>,
@@ -41,6 +42,18 @@ pub struct ShipPresentation {
     pub computer: ComputerStatus,
     pub instruments: Option<Instruments>,
     pub screens: Vec<ScreenDefinition>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct PropulsionTelemetry {
+    pub force_n: [f64; 3],
+    pub torque_nm: [f64; 3],
+    pub rated_forward_n: f64,
+    pub positive_torque_nm: [f64; 3],
+    pub negative_torque_nm: [f64; 3],
+    pub propellants: Vec<String>,
+    pub fuels: Vec<String>,
+    pub charges: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -84,8 +97,8 @@ pub enum DeviceReading {
         output_w: f64,
     },
     Battery {
-        energy_j: f64,
-        capacity_j: f64,
+        energy_j: u64,
+        capacity_j: u64,
     },
     Shield {
         temperature_k: f64,
@@ -114,10 +127,21 @@ pub enum DeviceReading {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ComputerStatus {
     Unpowered,
-    Booting { progress: f64 },
-    Running { gas_used: u64, gas_limit: u64 },
+    Booting {
+        progress: f64,
+        remaining_s: f64,
+    },
+    Running {
+        gas_used: u64,
+        gas_limit: u64,
+        gas_reserve: u64,
+        gas_capacity: u64,
+    },
     Paused,
-    Fault(String),
+    Fault {
+        message: String,
+        reboot_remaining_s: Option<f64>,
+    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -158,7 +182,7 @@ pub struct NavigationInstrument {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WeaponInstrument {
     pub ammunition_units: f64,
-    pub battery_energy_j: f64,
+    pub battery_energy_j: u64,
     pub shot_energy_j: f64,
     pub pointing_error_rad: f64,
     pub inhibit_flags: u64,
@@ -423,7 +447,7 @@ pub struct ExecutionMetrics {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct WeaponsInstrument {
-    pub mode: u64,
+    pub firing: bool,
     pub target: Option<ContactRef>,
     pub reason: String,
 }

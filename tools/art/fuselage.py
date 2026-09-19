@@ -2,7 +2,6 @@ import math
 from pathlib import Path
 
 import bpy
-import numpy as np
 from mathutils import Vector
 
 
@@ -13,32 +12,6 @@ END = "Fuselage end 8m"
 
 
 def shield_material():
-    size = 256
-    rng = np.random.default_rng(80416)
-    noise = rng.normal(size=(size, size))
-    frequency = np.fft.fftfreq(size)
-    squared = frequency[:, None] ** 2 + frequency[None, :] ** 2
-    height = np.fft.ifft2(np.fft.fft2(noise) * np.exp(-squared * 65)).real
-    height /= height.std()
-    dx = (np.roll(height, -1, axis=1) - np.roll(height, 1, axis=1)) * 0.16
-    dy = (np.roll(height, -1, axis=0) - np.roll(height, 1, axis=0)) * 0.16
-    normals = np.stack((-dx, -dy, np.ones_like(height)), axis=-1)
-    normals /= np.linalg.norm(normals, axis=-1, keepdims=True)
-    rgba = np.ones((size, size, 4), dtype=np.float32)
-    rgba[:, :, :3] = normals * 0.5 + 0.5
-
-    image = bpy.data.images.get("Whipple sheet normal")
-    if image is None:
-        image = bpy.data.images.new("Whipple sheet normal", width=size, height=size)
-    image.colorspace_settings.name = "Non-Color"
-    image.pixels.foreach_set(rgba.ravel())
-    path = ROOT / "assets/textures/parts/whipple-normal.png"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image.filepath_raw = str(path)
-    image.file_format = "PNG"
-    image.save()
-    image.pack()
-
     material = bpy.data.materials.get("Whipple outer sheet")
     if material is None:
         material = bpy.data.materials.new("Whipple outer sheet")
@@ -52,14 +25,6 @@ def shield_material():
     for node in list(nodes):
         if node.type in ("TEX_IMAGE", "NORMAL_MAP"):
             nodes.remove(node)
-    texture = nodes.new("ShaderNodeTexImage")
-    texture.image = image
-    texture.extension = "REPEAT"
-    normal = nodes.new("ShaderNodeNormalMap")
-    normal.space = "TANGENT"
-    normal.inputs["Strength"].default_value = 0.15
-    material.node_tree.links.new(texture.outputs["Color"], normal.inputs["Color"])
-    material.node_tree.links.new(normal.outputs["Normal"], shader.inputs["Normal"])
     return material
 
 

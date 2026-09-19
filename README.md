@@ -6,7 +6,7 @@ The simulation runs only in an authoritative server process. Every window, inclu
 
 The project is in early prototyping. Interfaces change without compatibility layers (see [AGENTS.md](AGENTS.md)).
 
-The default encounter has two small water-NTR patrol ships 1 km apart, one hostile, near Neris Anchorage. Four systems are linked by wormholes. The client includes a gate map, navigation/combat queue, cargo and consumable inventory, slip-transit effects, and a docked hangar view. See [stations and navigation](docs/stations-navigation.md) for controls and implementation details.
+The default encounter has two small water-NTR patrol ships 1 km apart, one hostile, near Neris Anchorage. Four systems are linked by wormholes. The client includes a gate map, navigation queue and separate weapon controls, cargo and consumable inventory, slip-transit effects, and a docked hangar view. See [stations and navigation](docs/stations-navigation.md) for controls and implementation details.
 
 ## Workspace map
 
@@ -28,14 +28,14 @@ The server binary `toy-sim-server` and the remote client binary `toy-sim-client`
 | --- | --- | --- |
 | `toy-sim-space` | [crates/toy-sim-space](crates/toy-sim-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
 | `toy-sim-stars` | [crates/toy-sim-stars](crates/toy-sim-stars) | Star records, the flat `.stars` file format, luminosity-bucketed KD-tree queries and the embedded Gaia catalogue. |
-| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI version 15: fixed C records, constants, raw imports (including the postcard-based `world_query`/`world_command`) and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI version 20: fixed C records, constants, raw imports (including the postcard-based `world_query`/`world_command`) and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
 | `toy-sim-ships` | [crates/toy-sim-ships](crates/toy-sim-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
 | `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
 | `toy-sim-ui` | [crates/toy-sim-ui](crates/toy-sim-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
 | `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and a travel planner with a multi-gate route search. |
 | `toy-sim-model` | [crates/toy-sim-model](crates/toy-sim-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
-| `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing (protocol version 7), sections and validation limits. |
+| `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing (protocol version 16), sections and validation limits. |
 | `toy-sim-net` | [crates/toy-sim-net](crates/toy-sim-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
 | `toy-sim-intel` | [crates/toy-sim-intel](crates/toy-sim-intel) | Measurements, immutable track snapshots and metered track queries. |
 | `toy-sim-universe` | [crates/toy-sim-universe](crates/toy-sim-universe) | Celestial definitions, Keplerian solver, system index, atmosphere tables and replicated system assets; independent of Bevy. |
@@ -130,7 +130,7 @@ The server builds its world in [bootstrap.rs](crates/toy-sim-server/src/sim/boot
 - Every ship receives a test loadout: a full battery, generator fuel, ammunition and propellant filling the remaining storage.
 - Each flight computer spends its first 5 simulated seconds booting (a 50-tick startup reserve) before it runs.
 
-When the explorer engages another ship with its weapons, the server orders that ship to engage the explorer in return, using the same engagement request a client sends.
+Target marking, unmarking, starting fire and stopping fire are separate controls. Navigation commands never start weapons automatically.
 
 ## Controls
 
@@ -138,17 +138,14 @@ When the explorer engages another ship with its weapons, the server orders that 
 
 | Input | Effect |
 | --- | --- |
-| Left Shift / Left Ctrl (hold) | Raise / lower manual throttle at 50% per second of real time |
-| W / S | Pitch (S is the positive X steering axis) |
-| A / D | Yaw (A is the positive Y steering axis) |
-| Q / E | Roll (Q is the positive Z steering axis) |
-| Left or right mouse drag | Orbit the camera around its focus |
+| Double-click empty space | Align the controlled ship with the clicked direction |
+| Right mouse drag | Orbit the camera around its focus, with smooth angular motion |
 | Mouse wheel | Zoom |
 | O | Toggle trajectories in the orbit overlay |
 | Escape | Return the active camera to the controlled ship |
 | `+` or `=` / `-` | Exposure up / down by half a stop |
 
-Keyboard input is ignored while an egui widget has keyboard focus. Mouse drags that start over a window do not move the camera. Flight keys act on the automatically selected controlled ship. Manual throttle and steering are sent to the server as `Manual` commands, which pause travel and reach the flight computer as requests ([docs/rendezvous.md](docs/rendezvous.md)).
+Camera gestures that start over an egui window do not affect the scene. Double-click alignment changes the flight computer’s attitude command; navigation and weapon commands are issued through the selected-item controls and command queue.
 
 The client combines the 3D scene and orbit HUD with a desktop interface: a left launcher, simulation clock, location indicator, sortable Overview, selected-item flight and weapon controls, and ship/navigation panels. The windows can be moved, resized and closed; Interface settings provide layout locking and reset. It automatically opens a view of the first controlled ship. See [the client UI guide](docs/server-client.md#the-client-ui).
 
@@ -163,9 +160,9 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, intelligence model, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
 | [docs/ships.md](docs/ships.md) | Parts, the catalogue, blueprints, compiled designs, hardware simulation, avionics and the standard firmware |
 | [docs/ship-editor.md](docs/ship-editor.md) | Using the editor, its command-line modes and launching the debug client |
-| [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware against ABI version 15, including world services and the `ship_display` entry point |
+| [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware against ABI version 20, including world services and the `ship_display` entry point |
 | [docs/mfds.md](docs/mfds.md) | Programmable screens, input events, display subscriptions and the MFD renderer |
-| [docs/weapons.md](docs/weapons.md) | Weapon parts, charging, firing, interlocks and the engagement request |
+| [docs/weapons.md](docs/weapons.md) | Weapon parts, target marking, firing, interlocks and control requests |
 | [docs/collisions.md](docs/collisions.md) | Continuous collision detection, impacts, shields and destruction |
 | [docs/rendezvous.md](docs/rendezvous.md) | The navigation request contract, the braking guidance law, states and tests |
 | [docs/pursuit-trajectory-design.md](docs/pursuit-trajectory-design.md) | Historical proposal for trajectory presentation, written for the earlier pursuit law |

@@ -42,11 +42,9 @@ pub struct Session {
     pub instruments: BTreeSet<EntityId>,
     sequence: u64,
     input_sequence: Option<u64>,
-    acknowledged_event: u64,
     sent_event: u64,
     results: VecDeque<CommandResult>,
     seen: BTreeSet<Id>,
-    result_frames: BTreeMap<Id, u64>,
 }
 
 pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
@@ -56,7 +54,7 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
         .ok_or_else(|| anyhow::anyhow!("account unavailable"))?
         .group;
     let group = world.get::<Group>(group).unwrap().id;
-    let watermark = world
+    let sent_event = world
         .resource::<Events>()
         .0
         .back()
@@ -70,17 +68,40 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
             instruments: BTreeSet::new(),
             sequence: 0,
             input_sequence: None,
-            acknowledged_event: watermark,
-            sent_event: watermark,
+            sent_event,
             results: VecDeque::new(),
             seen: BTreeSet::new(),
-            result_frames: BTreeMap::new(),
         })
         .id())
 }
 
 pub fn disconnect(world: &mut World, session: Entity) {
     world.despawn(session);
+}
+
+pub fn prune_events(world: &mut World) {
+    let published = world
+        .query::<&Session>()
+        .iter(world)
+        .map(|session| session.sent_event)
+        .min()
+        .unwrap_or_else(|| {
+            world
+                .resource::<Events>()
+                .0
+                .back()
+                .map_or(0, |event| event.sequence)
+        });
+    let mut events = world.resource_mut::<Events>();
+    while events.0.len() > 1
+        && events
+            .0
+            .front()
+            .is_some_and(|event| event.sequence <= published)
+    {
+        events.0.pop_front();
+    }
+    super::combat::prune(world, published);
 }
 
 pub fn control(world: &World, account: Id, ship: Id, revision: Option<u64>) -> Result<Entity> {
@@ -143,25 +164,7 @@ impl Session {
                 .is_none_or(|previous| input.sequence > previous),
             "replayed input frame"
         );
-        ensure!(
-            input.acknowledged_event >= self.acknowledged_event
-                && input.acknowledged_event <= self.sent_event,
-            "invalid event acknowledgement"
-        );
-        ensure!(
-            input.acknowledged_frame <= self.sequence,
-            "invalid state acknowledgement"
-        );
-        self.results.retain(|result| {
-            !self
-                .result_frames
-                .get(&result.id)
-                .is_some_and(|sequence| *sequence <= input.acknowledged_frame)
-        });
-        self.result_frames
-            .retain(|_, sequence| *sequence > input.acknowledged_frame);
         self.input_sequence = Some(input.sequence);
-        self.acknowledged_event = input.acknowledged_event;
         for (id, action) in input.actions {
             if self.seen.contains(&id) {
                 continue;
@@ -328,6 +331,8 @@ impl Session {
                         world.entity_mut(entity).insert(Transponder(iff));
                     }
                     ShipCommand::SetTravel {
+                        preferences,
+                        engage,
                         expected_revision,
                         orders,
                     } => {
@@ -346,22 +351,42 @@ impl Session {
                                 .is_some_and(|state| state.0.revision == expected_revision),
                             "stale travel revision"
                         );
+                        ensure!(preferences.valid(), "invalid planning preference");
                         super::travel::cancel_pending(world, entity);
+                        if engage {
+                            self.command(
+                                world,
+                                entity,
+                                Command::Manual {
+                                    throttle: 0.,
+                                    steering: [0.; 3],
+                                },
+                            )?;
+                            self.command(world, entity, Command::HoldAttitude)?;
+                        }
                         let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
+                        let enabled = engage || state.0.autopilot_enabled;
                         state.0 = travel::TravelState {
+                            autopilot_enabled: enabled,
+                            preferences,
                             revision: state.0.revision + 1,
-                            orders,
-                            status: travel::Status::Planning,
+                            orders: orders.into_iter().map(Into::into).collect(),
+                            status: if enabled {
+                                travel::Status::Planning
+                            } else {
+                                travel::Status::Paused
+                            },
                             ..Default::default()
                         };
                     }
-                    ShipCommand::PauseTravel => {
+                    ShipCommand::SetAutopilot(enabled) => {
+                        ensure!(
+                            world
+                                .get::<super::travel::PresenceState>(entity)
+                                .is_some_and(|p| p.0 == travel::Presence::Space),
+                            "ship is not in space"
+                        );
                         super::travel::cancel_pending(world, entity);
-                        world
-                            .get_mut::<super::travel::Travel>(entity)
-                            .unwrap()
-                            .0
-                            .status = travel::Status::Paused;
                         self.command(
                             world,
                             entity,
@@ -370,13 +395,19 @@ impl Session {
                                 steering: [0.; 3],
                             },
                         )?;
+                        self.command(world, entity, Command::HoldAttitude)?;
+                        let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
+                        state.0.revision += 1;
+                        state.0.autopilot_enabled = enabled;
+                        state.0.status = if enabled {
+                            travel::Status::Planning
+                        } else {
+                            travel::Status::Paused
+                        };
                     }
-                    ShipCommand::ResumeTravel => {
-                        world
-                            .get_mut::<super::travel::Travel>(entity)
-                            .unwrap()
-                            .0
-                            .status = travel::Status::Planning
+                    ShipCommand::SetThrottle(throttle) => {
+                        ensure_manual_control(world, entity)?;
+                        self.command(world, entity, Command::SetThrottle(throttle))?;
                     }
                     ShipCommand::Dock { station, bay } => {
                         let station = identity::lookup(world, station)?;
@@ -411,24 +442,18 @@ impl Session {
                         );
                     }
                     ShipCommand::Undock => super::travel::undock(world, entity)?,
-                    ShipCommand::Manual { throttle, steering } => {
-                        ensure!(
-                            world
-                                .get::<super::travel::PresenceState>(entity)
-                                .is_none_or(|presence| presence.0 == travel::Presence::Space),
-                            "ship inactive"
-                        );
-                        if let Some(mut travel) = world.get_mut::<super::travel::Travel>(entity) {
-                            travel.0.status = travel::Status::Paused;
-                        }
-                        self.command(world, entity, Command::Manual { throttle, steering })?;
+                    ShipCommand::UnmarkTarget => {
+                        self.command(world, entity, Command::UnmarkTarget)?
                     }
-                    ShipCommand::HoldFire => self.command(world, entity, Command::HoldFire)?,
+                    ShipCommand::StartFiring => {
+                        self.command(world, entity, Command::StartFiring)?
+                    }
+                    ShipCommand::StopFiring => self.command(world, entity, Command::StopFiring)?,
                     ShipCommand::Aim { group, track } => {
                         let handle = self.target(world, entity, group, track)?;
                         self.command(world, entity, Command::AimContact(handle))?;
                     }
-                    ShipCommand::EngageWeapons {
+                    ShipCommand::MarkTarget {
                         group,
                         track,
                         maximum_flight_time_s,
@@ -437,13 +462,14 @@ impl Session {
                         self.command(
                             world,
                             entity,
-                            Command::EngageWeapons {
+                            Command::MarkTarget {
                                 contact: handle,
                                 maximum_flight_time_s,
                             },
                         )?;
                     }
                     ShipCommand::Flight(command) => {
+                        ensure_manual_control(world, entity)?;
                         let command = match command {
                             FlightCommand::HoldAttitude => Command::HoldAttitude,
                             FlightCommand::StopGuidance => Command::StopGuidance,
@@ -545,15 +571,9 @@ impl Session {
             .flat_map(|tracks| tracks.values().filter_map(|track| track.entity))
             .collect();
         let history = &world.resource::<Events>().0;
-        ensure!(
-            history
-                .front()
-                .is_none_or(|event| event.sequence <= self.acknowledged_event + 1),
-            "event history expired; reconnect"
-        );
         let events = history
             .iter()
-            .filter(|event| event.sequence > self.acknowledged_event)
+            .filter(|event| event.sequence > self.sent_event)
             .filter(|event| {
                 event.subject.is_some_and(|id| {
                     visible.contains(&id) || control(world, self.account, id, None).is_ok()
@@ -561,13 +581,10 @@ impl Session {
             })
             .cloned()
             .collect();
-        self.sent_event = history
+        let published_event = history
             .back()
             .map_or(self.sent_event, |event| event.sequence);
         self.sequence += 1;
-        for result in &self.results {
-            self.result_frames.entry(result.id).or_insert(self.sequence);
-        }
         let owner = identity::lookup(world, self.account)?;
         let mut owned: Vec<_> = world
             .get::<identity::OwnedShips>(owner)
@@ -622,7 +639,7 @@ impl Session {
             }
         }
         presentation.combat =
-            super::combat::for_session(world, self.account, &tracks, self.acknowledged_event);
+            super::combat::for_session(world, self.account, &tracks, self.sent_event);
         let owner = identity::lookup(world, self.account)?;
         let debug = world
             .get::<Account>(owner)
@@ -756,6 +773,7 @@ impl Session {
                 })
             })
             .collect();
+        self.sent_event = published_event;
         Ok(Frame {
             presentation,
             world: world.resource::<WorldEpoch>().0,
@@ -766,7 +784,6 @@ impl Session {
                 .elapsed()
                 .as_nanos()
                 .min(u64::MAX as u128) as u64,
-            event_watermark: self.sent_event,
             rate: world.resource::<Clock>().rate,
             views,
             tracks: tracks
@@ -776,7 +793,7 @@ impl Session {
             ships,
             screens,
             events,
-            results: self.results.iter().cloned().collect(),
+            results: self.results.drain(..).collect(),
         })
     }
 }
@@ -858,7 +875,7 @@ fn telemetry(world: &World, entity: Entity) -> Option<ShipTelemetry> {
         battery_j: inventory.energy_j,
         hull_heat_j: thermal.hull_energy_j,
         shield_temperature_k: thermal.shield_temperature(design.as_ref().into()),
-        coolant_reserve_kg: thermal.shield_reserve_kg,
+        coolant_reserve_kg: thermal.shield_reserve_kg(),
         travel: world
             .get::<super::travel::Travel>(entity)
             .map(|travel| travel.0.clone())
@@ -902,10 +919,58 @@ mod tests {
         InputFrame {
             world: world.resource::<WorldEpoch>().0,
             sequence,
-            acknowledged_event: 0,
-            acknowledged_frame: 0,
             actions: vec![(id, action)],
         }
+    }
+
+    #[test]
+    fn publications_deliver_events_and_results_once_without_client_acknowledgements() {
+        let account = Id::new();
+        let mut app = super::super::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let first = connect(world, account).unwrap();
+        let second = connect(world, account).unwrap();
+        let ship = world
+            .query::<(&Identity, &Control)>()
+            .iter(world)
+            .find(|(_, control)| control.account == account)
+            .unwrap()
+            .0
+            .0;
+        let command = Id::new();
+        input(
+            world,
+            first,
+            batch(world, 1, command, Action::Debug(DebugCommand::Step)),
+        )
+        .unwrap();
+        world
+            .resource_mut::<Events>()
+            .0
+            .extend((1..=9000).map(|sequence| toy_sim_model::Event {
+                sequence,
+                tick: 0,
+                subject: Some(ship),
+                kind: "test".into(),
+                position: None,
+            }));
+        let one = frame(world, first).unwrap();
+        assert_eq!(one.events.len(), 9000);
+        assert_eq!(one.results.len(), 1);
+        assert_eq!(one.results[0].id, command);
+        prune_events(world);
+        assert_eq!(world.resource::<Events>().0.len(), 9000);
+        let two = frame(world, second).unwrap();
+        assert_eq!(two.events.len(), 9000);
+        assert!(two.results.is_empty());
+        prune_events(world);
+        assert_eq!(world.resource::<Events>().0.len(), 1);
+        let next = frame(world, first).unwrap();
+        assert!(next.events.is_empty());
+        assert!(next.results.is_empty());
+        let input_frame = batch(world, 2, Id::new(), Action::Debug(DebugCommand::Step));
+        input(world, first, input_frame).unwrap();
+        assert_eq!(frame(world, first).unwrap().results.len(), 1);
     }
 
     #[test]
@@ -1021,4 +1086,34 @@ mod tests {
         assert_eq!(world.resource::<Clock>().steps, 1);
         assert_eq!(world.get::<Session>(session).unwrap().results.len(), 1);
     }
+}
+
+fn ensure_manual_control(world: &World, entity: Entity) -> anyhow::Result<()> {
+    ensure!(
+        world
+            .get::<ShipSoftware>(entity)
+            .is_some_and(|s| !s.controller.is_booting() && s.controller.fault.is_none())
+            && world
+                .get::<super::hardware::Avionics>(entity)
+                .is_some_and(|a| a.0.operational && a.0.powered)
+            && world
+                .get::<super::hardware::Hull>(entity)
+                .is_some_and(|h| h.0 > 0.),
+        "flight computer unavailable"
+    );
+    ensure!(
+        !world
+            .get::<super::travel::Travel>(entity)
+            .unwrap()
+            .0
+            .autopilot_enabled,
+        "manual controls locked by autopilot"
+    );
+    ensure!(
+        world
+            .get::<super::travel::PresenceState>(entity)
+            .is_some_and(|p| p.0 == travel::Presence::Space),
+        "ship is not in space"
+    );
+    Ok(())
 }

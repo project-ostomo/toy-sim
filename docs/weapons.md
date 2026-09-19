@@ -69,7 +69,7 @@ A successful shot subtracts `½ m v² / efficiency` from the battery, consumes o
 
 Direction is sampled uniformly within the dispersion cone using the ship entity, part ID and shot count as a deterministic seed. Launch velocity is `ship velocity + ω × muzzle offset + direction × muzzle speed`. Projectile mass and propellant leave the ship. Angular momentum scales with the reduced mass, preserving ship spin and velocity under the prototype recoilless launch model.
 
-Each launch creates a physical spherical projectile with a 2 s lifetime and hit points equal to its mass in kilograms. It passes through its owner's shield and collides with other ships through the ordinary collision pipeline.
+Each launch creates a physical spherical projectile with a 2 s lifetime and hit points equal to its mass in kilograms. It passes through its owner's shield and collides with other ships through the ordinary collision pipeline. Shields and hulls use the same partially elastic contact response and split dissipated energy equally. A 1 g round has 0.001 hit points and is destroyed after receiving 100 J of impact heat; surviving low-energy or grazing rounds can deflect. Contact itself does not delete a projectile. See [collisions.md](collisions.md#shared-impact-response).
 
 ## Interlocks and readings
 
@@ -91,36 +91,40 @@ The reading reports current resource availability and relevant conditions from t
 
 ## Standard firmware engagement
 
-The bundled firmware adds two requests (see [ship-abi.md](ship-abi.md#requests)):
+The bundled firmware separates target marking from the firing latch (see [ship-abi.md](ship-abi.md#requests)):
 
-- `REQUEST_ENGAGE_WEAPONS { contact, maximum_flight_time_s }`. Rejected unless a control-enabled weapon exists, the flight time is in [0.01, 60] s, and the contact is a visible ship.
-- `REQUEST_HOLD_FIRE`. Clears the target.
+- `REQUEST_MARK_TARGET { contact, maximum_flight_time_s }` replaces the marked target and stops firing. A control-enabled weapon must exist, the contact must be a visible ship, and the maximum flight time must be in [0.01, 60] s.
+- `REQUEST_UNMARK_TARGET` clears the mark and stops firing.
+- `REQUEST_START_FIRING` enables fire against the marked target. It is rejected when no target is marked.
+- `REQUEST_STOP_FIRING` disables fire while retaining the target and its aiming solutions.
 
-While engaged, for each control-enabled weapon every tick, the firmware:
+The standard controller has one marked weapons target. Overview selection and navigation targets are independent. Align, Approach and Keep range never start firing; navigation orders cannot override Stop firing.
+
+While a target is marked, for each control-enabled weapon every tick, the firmware:
 
 - Computes the muzzle position from the device mount, the current yaw and pitch, and the spec offsets.
 - Solves the earliest constant-velocity intercept for a projectile at muzzle speed. It corrects the target's relative velocity for the muzzle's rotational motion, and accepts only solutions within the maximum flight time.
 - Solves again for the target one physics step later, and uses the change as the aim angular velocity.
 - Sets the pointing tolerance to `clamp(0.5·target radius / range − dispersion, 0, 0.005)` rad.
-- Pulls the trigger when a solution exists and the tolerance is above zero. Beyond that, the weapon must be available, have ammunition and enough battery energy, and carry no `PROPELLANT` flag. The hardware then refuses shots that exceed the pointing tolerance.
+- Pulls the trigger only when firing is enabled and a solution exists and the tolerance is above zero. Beyond that, the weapon must be available, have ammunition and enough battery energy, and carry no `PROPELLANT` flag. The hardware then refuses shots that exceed the pointing tolerance.
 - Publishes an aim marker (IDs 16 to 23, when the client requests markers) at the predicted intercept point in the ship frame.
 
-The weapons instrument has a 2 s lease. Its reason text is "Tracking", "Firing" or "Reacquiring target". When the target has been unseen for more than 2 s, the firmware holds fire with the reason "Target lost".
+The weapons instrument has a 2 s lease. Its reason text is "Target marked", "Tracking", "Firing" or "Reacquiring target". The firing latch reports the requested policy; interlocks can still inhibit individual weapons. When the target has been unseen for more than 2 s, the firmware clears the mark and firing latch with the reason "Target lost".
 
 ## In the simulator
 
-Weapon commands and instrument records remain available through the session protocol. The current client renders combat effects but has no Weapons or Contacts window; its interface is the scene HUD and one "Hello world" window while the UI is rebuilt.
+Select a ship in Overview or the HUD, then use Mark target in Selected Item. Start firing and Stop firing operate on the authoritative marked target, even when a different row is selected. Unmark target clears that target. The panel displays the marked ship and firing policy separately from the current selection.
 
-When the player engages an uncontrolled ship, that ship is ordered to engage the player in return ([vessel README](server-client.md#server-tick)).
+The hostile patrol is marked and ordered to fire as part of scenario setup. Player target marking does not itself fire or provoke an automatic retaliatory command. When a controlled ship enables firing against an uncontrolled ship, the demo retaliation policy marks the player and enables fire in return.
 
-Presentation: barrel meshes interpolate yaw and pitch between ticks. Slugs draw as camera-facing tracer ribbons over a 2 ms exposure while their published trajectory is active. Each view compensates for its own camera motion; focus changes and discontinuities reset that history. Impacts produce short flashes, with debris chips when no shield was involved.
+Presentation: barrel meshes interpolate yaw and pitch between ticks. Slugs draw as camera-facing tracer ribbons spanning one display frame, adjusted for simulation playback speed and compensated for camera motion. Impacts produce short flashes and debris sprites. Shield hits add a brief temperature flash that fades exponentially.
 
 ## Tests
 
 ```sh
 cargo test -p toy-sim-ships weapons
-cargo test -p toy-sim collision::weapons
-cargo test -p toy-sim collision::ecs
+cargo test -p toy-sim-server collision::weapons
+cargo test -p toy-sim-server collision::ecs
 cargo test -p toy-sim-ship-wasm weapon
 cargo test -p toy-sim-example-controller intercept
 ```

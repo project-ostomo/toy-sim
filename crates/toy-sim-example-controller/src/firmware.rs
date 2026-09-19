@@ -18,7 +18,6 @@ pub struct Computer {
     hardware: Hardware,
     weapons: crate::weapons::WeaponsController,
     scan_window: crate::budget::ScanWindow,
-    queue_engagement: bool,
 }
 
 impl Computer {
@@ -30,10 +29,10 @@ impl Computer {
         }
 
         self.hardware.measure()?;
-        let propellant_kg = match self.hardware.propellant {
-            Some(resource) => sdk::resource(resource.id)?.units as f64 * resource.unit_mass_kg,
-            None => 0.,
-        };
+        let mut propellant_kg = 0.;
+        for resource in &self.hardware.propellants {
+            propellant_kg += sdk::resource(resource.id)?.units as f64 * resource.unit_mass_kg;
+        }
         let sample = Sample {
             tick,
             flight: sdk::flight()?,
@@ -49,7 +48,11 @@ impl Computer {
             .and_then(|sensor| sdk::scan(sensor.info.id, &mut contacts[..scan_limit]).ok())
             .unwrap_or(0);
         self.scan_window.observed(scan_limit, count);
-        let travel_contact = self.planner.update(tick.tick).ok().flatten();
+        let travel_contact = self
+            .planner
+            .update(tick.tick, &sample, &self.hardware)
+            .ok()
+            .flatten();
         if let Some(contact) = travel_contact {
             count = count.min(contacts.len() - 1);
             contacts[count] = contact;
@@ -77,9 +80,7 @@ impl Computer {
         {
             self.pilot.navigation.abort();
         }
-        if let Some(rotation) = self.planner.docking_attitude {
-            self.pilot.hold = Some(glam::DQuat::from_array(rotation));
-        }
+        self.pilot.navigation.preferences = self.planner.preferences;
         if let Some(direction) = self.planner.aim_direction {
             let request = abi::DirectionRequest { direction };
             let _ = self.pilot.request(
@@ -89,25 +90,7 @@ impl Computer {
                 &self.hardware,
             );
         }
-        if let Some(enemy) = self.planner.engagement {
-            count = count.min(contacts.len() - 1);
-            contacts[count] = enemy;
-            count += 1;
-        }
         self.weapons.observe(&sample, &contacts[..count]);
-        if let Some(enemy) = self.planner.engagement {
-            let _ = self.weapons.engage(
-                abi::EngageWeaponsRequest {
-                    contact: enemy.id,
-                    maximum_flight_time_s: 30.,
-                },
-                sample.tick.time_s,
-            );
-            self.queue_engagement = true;
-        } else if self.queue_engagement {
-            self.weapons.hold_fire();
-            self.queue_engagement = false;
-        }
         self.pilot
             .observe(&sample, &self.hardware, &contacts[..count]);
 
@@ -147,18 +130,28 @@ impl Computer {
 
         let failed = |_| "Could not read request payload".to_owned();
         match kind {
-            abi::REQUEST_ENGAGE_WEAPONS => {
+            abi::REQUEST_MARK_TARGET => {
                 if !self.hardware.devices.iter().any(|d| {
                     d.info.kind == abi::DEVICE_WEAPON && d.info.flags & abi::CONTROL_ENABLED != 0
                 }) {
                     return Err("No weapons available for automatic control".into());
                 }
                 let value = sdk::request_read(index, kind).map_err(failed)?;
-                self.weapons.engage(value, sample.tick.time_s)
+                self.weapons.mark_target(value, sample.tick.time_s)
             }
-            abi::REQUEST_HOLD_FIRE => {
-                self.weapons.hold_fire();
+            abi::REQUEST_START_FIRING => self.weapons.start_firing(),
+            abi::REQUEST_UNMARK_TARGET => {
+                self.weapons.unmark_target();
                 Ok(())
+            }
+            abi::REQUEST_STOP_FIRING => {
+                self.weapons.stop_firing();
+                Ok(())
+            }
+            abi::REQUEST_THROTTLE => {
+                let value: abi::ThrottleRequest = sdk::request_read(index, kind).map_err(failed)?;
+                self.pilot
+                    .request(kind, value.bytes(), sample, &self.hardware)
             }
             abi::REQUEST_MANUAL => {
                 let value: abi::ManualRequest = sdk::request_read(index, kind).map_err(failed)?;
@@ -418,7 +411,7 @@ fn draw_display() -> Result<(), i32> {
                 glam::DVec3::from_array(flight.velocity).length()
             ),
             format!("MASS {:.0} KG", flight.mass_kg),
-            format!("ENERGY {:.2} MJ", resources.energy_j / 1e6),
+            format!("ENERGY {:.2} MJ", resources.energy_j as f64 / 1e6),
         ];
         for (index, line) in lines.iter().enumerate() {
             sdk::screen_draw(

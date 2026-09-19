@@ -93,6 +93,9 @@ pub(super) fn apply(
     info.diagnostics = frame.presentation.diagnostics.clone();
     info.universe = frame.presentation.universe.clone();
     info.navigation = frame.presentation.navigation.clone();
+    info.events.extend(publications.events);
+    let excess = info.events.len().saturating_sub(128);
+    info.events.drain(..excess);
     info.results.extend(publications.results);
     let excess = info.results.len().saturating_sub(128);
     info.results.drain(..excess);
@@ -279,7 +282,6 @@ mod tests {
             sequence,
             tick: sequence,
             sim_time_ns: sequence * 100_000_000,
-            event_watermark: 0,
             rate: 1.,
             views: Vec::new(),
             tracks: BTreeMap::new(),
@@ -473,7 +475,7 @@ mod tests {
             spatial_instance: Id([5; 16]),
             presence: travel::Presence::Space,
             pose: Some(Pose::default()),
-            battery_j: 0.,
+            battery_j: 0,
             hull_heat_j: 0.,
             shield_temperature_k: 0.,
             coolant_reserve_kg: 0.,
@@ -602,7 +604,6 @@ mod tests {
         let group = Id([2; 16]);
         let track = Id([3; 16]);
         let mut first = snapshot(1, group, track, 0.);
-        first.event_watermark = 1;
         first.presentation.combat.push(CombatEvent {
             sequence: 1,
             sim_time_ns: first.sim_time_ns,
@@ -646,24 +647,30 @@ mod tests {
         );
     }
     #[test]
-    fn trimming_acknowledged_snapshots_preserves_publications_and_the_original_death_instance() {
+    fn catchup_preserves_both_publications_and_interpolates_to_the_final_sample() {
         let mut app = app();
         let group = Id([2; 16]);
         let track = Id([3; 16]);
-        let command = Id([4; 16]);
-        for sequence in 1..=13 {
-            let mut frame = snapshot(sequence, group, track, sequence as f64);
-            frame.event_watermark = 1;
-            if sequence <= 2 {
+        step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
+        for sequence in 2..=14 {
+            let mut frame = snapshot(sequence, group, track, (sequence - 1) as f64 * 100.);
+            if sequence <= 3 {
                 frame.results.push(CommandResult {
-                    id: command,
-                    effective_tick: 1,
+                    id: Id((sequence as u128).to_le_bytes()),
+                    effective_tick: sequence,
                     reply: None,
                     error: Some("test result".into()),
                 });
+                frame.events.push(toy_sim_model::Event {
+                    sequence,
+                    tick: sequence,
+                    subject: None,
+                    kind: format!("event {sequence}"),
+                    position: None,
+                });
                 frame.presentation.combat.push(CombatEvent {
-                    sequence: 1,
-                    sim_time_ns: 100_000_000,
+                    sequence,
+                    sim_time_ns: frame.sim_time_ns,
                     kind: CombatEventKind::Destroyed {
                         target: ContactRef { group, track },
                         pose: Pose::default(),
@@ -673,7 +680,6 @@ mod tests {
                         radius_m: 1.,
                     },
                 });
-            } else {
                 frame.tracks.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
             }
             app.world_mut()
@@ -682,17 +688,42 @@ mod tests {
                 .receive(frame)
                 .unwrap();
         }
-        step(&mut app, 0.1, None);
-        assert_eq!(app.world().resource::<SessionInfo>().sequence, 13);
-        assert_eq!(app.world().resource::<SessionInfo>().results.len(), 1);
-        assert_eq!(app.world().resource::<SessionInfo>().results[0].id, command);
+        step(&mut app, 0.2, None);
+        assert_eq!(app.world().resource::<SessionInfo>().sequence, 3);
+        let session = app.world().resource::<SessionInfo>();
+        assert_eq!(
+            session
+                .results
+                .iter()
+                .map(|r| r.effective_tick)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
+        assert_eq!(
+            session
+                .events
+                .iter()
+                .map(|e| e.sequence)
+                .collect::<Vec<_>>(),
+            [2, 3]
+        );
         assert_eq!(
             app.world_mut()
                 .query::<&CombatPublication>()
                 .iter(app.world())
                 .count(),
+            2
+        );
+        assert_eq!(
+            app.world_mut()
+                .query::<&DestroyedAt>()
+                .iter(app.world())
+                .count(),
             1
         );
+
+        step(&mut app, 0.3, None);
+        assert_eq!(app.world().resource::<SessionInfo>().sequence, 5);
         assert_eq!(
             app.world_mut()
                 .query::<&DestroyedAt>()
@@ -700,14 +731,16 @@ mod tests {
                 .count(),
             0
         );
-        step(&mut app, 0.2, Some(snapshot(14, group, track, 14.)));
-        assert_eq!(app.world().resource::<SessionInfo>().results.len(), 1);
-        assert_eq!(
-            app.world_mut()
-                .query::<&CombatPublication>()
-                .iter(app.world())
-                .count(),
-            1
-        );
+        step(&mut app, 0.4, None);
+        step(&mut app, 0.45, None);
+        assert_eq!(app.world().resource::<SessionInfo>().sequence, 7);
+        let pose = app
+            .world_mut()
+            .query_filtered::<&DisplayPose, With<Contact>>()
+            .single(app.world())
+            .unwrap();
+        assert!((pose.0.position.relative_to(GalacticPosition::ZERO).x - 500.).abs() < 1e-6);
+        assert_eq!(app.world().resource::<RenderTime>().display_ns, 600_000_000);
+        assert_eq!(app.world().resource::<SessionInfo>().results.len(), 2);
     }
 }

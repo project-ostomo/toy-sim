@@ -1,6 +1,7 @@
 //! Time-ordered, dissipative contacts. Broad phase and geometry belong to Parry;
 //! trajectory sampling, thermal accounting and impact scheduling belong here.
 mod ecs;
+mod gates;
 #[cfg(test)]
 mod solver_tests;
 pub mod weapons;
@@ -112,7 +113,7 @@ impl Member {
     }
 
     fn coolant_mass(&self) -> f64 {
-        self.thermal.shield_deployed_kg + self.thermal.shield_reserve_kg
+        self.thermal.shield_deployed_kg + self.thermal.shield_reserve_kg()
     }
 
     fn remove_coolant_mass(&mut self, previous: f64) {
@@ -304,6 +305,7 @@ enum Kind {
     Contact(Hit),
     Review,
     Thermal(usize),
+    Gate(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -795,6 +797,7 @@ fn record_motion(body: &Body, t: f64, report: &mut Report) {
 
 #[derive(Default)]
 pub struct Report {
+    pub gate_transfers: Vec<(Entity, Entity)>,
     pub shots: Vec<weapons::ShotEvent>,
     pub beams: Vec<weapons::BeamEvent>,
     pub impact_events: Vec<ImpactEvent>,
@@ -888,6 +891,7 @@ struct ContactCache {
 pub struct SolverWorkspace {
     pub weapons: std::collections::BTreeMap<Entity, weapons::WeaponShip>,
     pub time_s: f64,
+    gates: Vec<gates::Mouth>,
     index: RegionIndex,
     contacts: ahash::AHashMap<(Entity, Entity, usize, usize), ContactCache>,
     epoch: u64,
@@ -944,98 +948,6 @@ fn manifold_hits(a: &Body, b: &Body, hit: Hit, t: f64, cache: &mut ContactCache)
     result
 }
 
-/// Shield interception slows the slug until either its relative motion or the
-/// deployed material is exhausted. A partial interception leaves the slug intact.
-fn absorb_slug(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
-    let ra = if a.projectile {
-        DVec3::ZERO
-    } else {
-        dvec(hit.contact.point1) - a.position.relative_to(hit.anchor)
-    };
-    let rb = if b.projectile {
-        DVec3::ZERO
-    } else {
-        dvec(hit.contact.point2) - b.position.relative_to(hit.anchor)
-    };
-    let ia = a.world_inverse();
-    let ib = b.world_inverse();
-    let wa = ia * a.momentum;
-    let wb = ib * b.momentum;
-    let relative = b.velocity - a.velocity + wb.cross(rb) - wa.cross(ra);
-    let cross =
-        |r: DVec3| DMat3::from_cols(r.cross(DVec3::X), r.cross(DVec3::Y), r.cross(DVec3::Z));
-    let effective = DMat3::IDENTITY * (1.0 / a.mass + 1.0 / b.mass)
-        - cross(ra) * ia * cross(ra)
-        - cross(rb) * ib * cross(rb);
-    let full_impulse = -effective.inverse() * relative;
-    let maximum_energy = (-0.5 * full_impulse.dot(relative)).max(0.0);
-    let shields = [
-        a.members[hit.ma].shielded_against(b),
-        b.members[hit.mb].shielded_against(a),
-    ];
-    let mut energy = maximum_energy;
-    for (member, shield) in [
-        (&a.members[hit.ma], shields[0]),
-        (&b.members[hit.mb], shields[1]),
-    ] {
-        if shield {
-            energy = energy.min(member.thermal.headroom(member.model));
-        }
-    }
-    let fraction = if maximum_energy > 0.0 {
-        let ratio = (energy / maximum_energy).clamp(0.0, 1.0);
-        ratio / (1.0 + (1.0 - ratio).sqrt())
-    } else {
-        1.0
-    };
-    let impulse = full_impulse * fraction;
-    a.velocity -= impulse / a.mass;
-    b.velocity += impulse / b.mass;
-    a.momentum -= ra.cross(impulse);
-    b.momentum += rb.cross(impulse);
-    a.impulse_dv -= impulse / a.mass;
-    b.impulse_dv += impulse / b.mass;
-    a.impulse_dw += ia * a.momentum - wa;
-    b.impulse_dw += ib * b.momentum - wb;
-    let shields = [
-        a.members[hit.ma].shielded_against(b),
-        b.members[hit.mb].shielded_against(a),
-    ];
-    for (member, shield) in [
-        (&mut a.members[hit.ma], shields[0]),
-        (&mut b.members[hit.mb], shields[1]),
-    ] {
-        if shield {
-            member.deposit(true, energy);
-        }
-    }
-    if energy >= maximum_energy {
-        if a.projectile {
-            a.members[hit.ma].hull = 0.0;
-        }
-        if b.projectile {
-            b.members[hit.mb].hull = 0.0;
-        }
-    }
-    a.sync_mass();
-    b.sync_mass();
-    report.impact_events.push(ImpactEvent {
-        entities: [a.members[hit.ma].entity, b.members[hit.mb].entity],
-        time: t,
-        position: hit.anchor.offset_by(dvec(hit.contact.point1)),
-        velocity: (a.velocity * a.mass + b.velocity * b.mass) / (a.mass + b.mass),
-        normal: dvec(hit.contact.normal1),
-        shields,
-        energy_j: energy,
-    });
-    report.dissipated_j += energy;
-    report.impacts += 1;
-    record_deaths(a, t, report);
-    record_deaths(b, t, report);
-    a.generation += 1;
-    b.generation += 1;
-}
-
 fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
     record_motion(a, t, report);
     record_motion(b, t, report);
@@ -1047,12 +959,6 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
     if previous_shields != (a.members[hit.ma].shielded(), b.members[hit.mb].shielded()) {
         a.generation += 1;
         b.generation += 1;
-        return;
-    }
-    if (a.projectile && b.members[hit.mb].shielded_against(a))
-        || (b.projectile && a.members[hit.ma].shielded_against(b))
-    {
-        absorb_slug(a, b, hit, t, report);
         return;
     }
     let n = dvec(hit.contact.normal1);
@@ -1069,7 +975,9 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
             + ra.cross(n).dot(ia * ra.cross(n))
             + rb.cross(n).dot(ib * rb.cross(n));
         let maximum_q = closing * closing / (2.0 * k);
-        let mut q = maximum_q;
+        let restitution = if closing >= 0.1 { 0.3 } else { 0.0 };
+        let rebound_q = maximum_q * (1.0 - restitution * restitution);
+        let mut q = rebound_q;
         for (m, shield) in [
             (&a.members[hit.ma], a.members[hit.ma].shielded_against(b)),
             (&b.members[hit.mb], b.members[hit.mb].shielded_against(a)),
@@ -1078,8 +986,8 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
                 q = q.min(2.0 * m.thermal.headroom(m.model));
             }
         }
-        let impulse = if q >= maximum_q {
-            closing / k
+        let impulse = if q >= rebound_q {
+            (1.0 + restitution) * closing / k
         } else {
             2.0 * q / (closing + (closing * closing - 2.0 * k * q).max(0.0).sqrt())
         };
@@ -1222,6 +1130,9 @@ pub fn simulate_with_workspace(
         );
     report.detailed = detailed;
     for (id, body) in bodies.iter().enumerate() {
+        if let Some(event) = gates::predict(id, body, &workspace.gates, end) {
+            events.push(event);
+        }
         if let Some(event) = thermal_event(id, body, end) {
             events.push(event);
         }
@@ -1352,6 +1263,15 @@ pub fn simulate_with_workspace(
                     resolve(a, b, contact, event.t, &mut report);
                 }
             }
+            Kind::Gate(mouth) => {
+                gates::cross(
+                    bodies,
+                    event.a,
+                    &workspace.gates[mouth],
+                    event.t,
+                    &mut report,
+                );
+            }
             Kind::Thermal(member) => {
                 let b = &mut bodies[event.a];
                 record_motion(b, event.t, &mut report);
@@ -1376,6 +1296,9 @@ pub fn simulate_with_workspace(
         for &id in &changed {
             if !bodies[id].alive() {
                 continue;
+            }
+            if let Some(event) = gates::predict(id, &bodies[id], &workspace.gates, end) {
+                events.push(event);
             }
             if let Some(event) = thermal_event(id, &bodies[id], end) {
                 events.push(event);

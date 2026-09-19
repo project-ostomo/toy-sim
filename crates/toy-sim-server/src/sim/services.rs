@@ -144,6 +144,7 @@ struct FusedScan {
     pose: Pose,
     travel: TravelState,
     slip_ready: bool,
+    slip_power_w: f64,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
     celestial: Arc<BTreeMap<EntityId, Pose>>,
     queries: Arc<Mutex<toy_sim_intel::query::Queries>>,
@@ -161,10 +162,17 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             &self.queries
         };
         Ok(match query {
-            ProgramQuery::SlipEligibility { destination } => ProgramReply::SlipEligibility {
-                ready: self.slip_ready
-                    && self.admissible(self.origin)
-                    && self.admissible(destination),
+            ProgramQuery::SlipEligibility {
+                origin,
+                destination,
+            } => ProgramReply::SlipEligibility {
+                ready: self.slip_ready && self.admissible(origin) && self.admissible(destination),
+                duration_s: {
+                    let ly = destination.relative_to(origin).length() / 9.4607304725808e15;
+                    (1e5 * self.mass * (1. + ly / 1000.) / self.slip_power_w.max(1.)).max(10.)
+                        + 30.
+                        + 8.64 * ly
+                },
             },
             ProgramQuery::Contact(reference) => {
                 let snapshot = if reference.group == self.group {
@@ -486,6 +494,7 @@ pub fn publish_indexes(
                                 .collect(),
                             pose,
                             gate_exit: gate.filter(|gate| gate.enabled).map(|gate| gate.paired),
+                            exclusion_m: gate.map_or(0., |gate| gate.exclusion_m),
                         },
                         owner: control.account,
                         gate_access: gate.map(|gate| (gate.public, gate.allowed.clone())),
@@ -569,6 +578,7 @@ pub fn prepare_sources(
             slip_ready: slip.is_some_and(|drive| {
                 drive.ready_tick <= clock.ticks && drive.preparation.is_none()
             }),
+            slip_power_w: slip.map_or(0., |drive| drive.power_w),
             beacons: publication.beacons.clone(),
             celestial: publication.celestial.clone(),
             apertures: publication.apertures.clone(),
@@ -869,6 +879,7 @@ mod tests {
             pose: Pose::default(),
             travel: TravelState::default(),
             slip_ready: true,
+            slip_power_w: 100e6,
             beacons: Arc::default(),
             celestial: Arc::default(),
             queries: Arc::default(),
@@ -1006,6 +1017,7 @@ mod tests {
                 },
                 bays: (0..4).map(|id| (id, Pose::default())).collect(),
                 gate_exit: None,
+                exclusion_m: 0.,
             },
             owner: Id::new(),
             gate_access: None,

@@ -5,27 +5,32 @@ use crate::egui::{
     vec2,
 };
 
-const FONT: &[u8] = include_bytes!("../data/fonts/SarasaUiSC-Regular.ttf");
+const PROPORTIONAL_FONT: &[u8] = include_bytes!("../data/fonts/IosevkaAile-Regular.ttf");
+const MONOSPACE_FONT: &[u8] = include_bytes!("../data/fonts/Iosevka-Regular.ttf");
 
 pub fn install(ctx: &egui::Context) {
     crate::icons::install(ctx);
     ctx.add_font(FontInsert::new(
-        "Sarasa UI SC",
-        egui::FontData::from_static(FONT),
+        "Iosevka Aile",
+        egui::FontData::from_static(PROPORTIONAL_FONT),
         vec![
-            InsertFontFamily {
-                family: FontFamily::Name("Phosphor".into()),
-                priority: FontPriority::Lowest,
-            },
             InsertFontFamily {
                 family: FontFamily::Proportional,
                 priority: FontPriority::Highest,
             },
             InsertFontFamily {
-                family: FontFamily::Monospace,
+                family: FontFamily::Name("Phosphor".into()),
                 priority: FontPriority::Lowest,
             },
         ],
+    ));
+    ctx.add_font(FontInsert::new(
+        "Iosevka",
+        egui::FontData::from_static(MONOSPACE_FONT),
+        vec![InsertFontFamily {
+            family: FontFamily::Monospace,
+            priority: FontPriority::Highest,
+        }],
     ));
 
     ctx.set_theme(egui::Theme::Dark);

@@ -1,5 +1,5 @@
-//! Continuous-thrust pursuit: spend lateral authority correcting the intercept,
-//! and all remaining authority accelerating toward the target.
+//! Weighted time and propellant guidance with coasting, lateral correction,
+//! and a braking envelope that includes attitude response.
 use crate::hardware::Sample;
 use crate::{Bindings, attitude};
 use glam::{DMat3, DVec3};
@@ -23,6 +23,7 @@ impl Phase {
 #[derive(Clone, Debug)]
 pub struct Pursuit {
     pub target: Option<Contact>,
+    pub preferences: toy_sim_model::travel::PlanningPreferences,
     pub visible: bool,
     pub phase: Phase,
     pub reason: String,
@@ -51,6 +52,7 @@ impl Default for Pursuit {
     fn default() -> Self {
         Self {
             target: None,
+            preferences: Default::default(),
             visible: false,
             phase: Phase::Ready,
             reason: String::new(),
@@ -78,19 +80,29 @@ impl Default for Pursuit {
 
 pub fn arrival_speed(distance: f64, acceleration: f64, response: f64) -> f64 {
     let delayed = acceleration * response;
-    ((delayed * delayed + acceleration * distance).sqrt() - delayed).min(distance / response)
+    ((delayed * delayed + acceleration * distance).sqrt() - delayed).min(distance / (4. * response))
 }
 
-pub fn rendezvous(
+pub fn economical_rendezvous(
     error: DVec3,
     velocity: DVec3,
     disturbance: DVec3,
     acceleration: f64,
     response: f64,
-) -> DVec3 {
-    let speed = arrival_speed(error.length(), acceleration, response);
-    let desired = error.normalize_or_zero() * speed;
-    ((desired - velocity) / response - disturbance).clamp_length_max(acceleration)
+    flow_kg_s: f64,
+    cost: toy_sim_model::transfer::TransferCost,
+) -> (DVec3, f64) {
+    let direction = error.normalize_or_zero();
+    let speed = cost
+        .cruise_speed(
+            error.length(),
+            velocity.dot(direction),
+            acceleration,
+            flow_kg_s,
+        )
+        .min(arrival_speed(error.length(), acceleration, response));
+    let requested = (direction * speed - velocity) / response - disturbance;
+    (requested.clamp_length_max(acceleration), speed)
 }
 
 impl Pursuit {
@@ -282,9 +294,18 @@ impl Pursuit {
         self.turn_allowance = attitude::turn_allowance(inertia, b);
         let error = self.error();
         let response = (2. * self.turn_allowance + 2.).max(2.);
-        self.allowed_speed = arrival_speed(error.length(), a, response);
+        let (command, speed) = economical_rendezvous(
+            error,
+            self.u,
+            self.disturbance,
+            a,
+            response,
+            b.propellant_rate * self.throttle_ceiling,
+            self.preferences.cost(obs.mass_kg),
+        );
+        self.allowed_speed = speed;
         self.stopping_distance = self.u.length_squared() / (2. * a) + self.u.length() * response;
-        self.acceleration = rendezvous(error, self.u, self.disturbance, a, response);
+        self.acceleration = command;
         if error.length() <= 2. && self.u.length() <= 0.5 {
             self.phase = Phase::Ready;
             self.acceleration = DVec3::ZERO;
@@ -337,7 +358,16 @@ mod tests {
     }
     #[test]
     fn rendezvous_brakes_and_matches_terminal_velocity() {
-        let braking = rendezvous(DVec3::X * 100., DVec3::X * 100., DVec3::ZERO, 10., 2.);
+        let braking = economical_rendezvous(
+            DVec3::X * 100.,
+            DVec3::X * 100.,
+            DVec3::ZERO,
+            10.,
+            2.,
+            1.,
+            toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+        )
+        .0;
         assert!(braking.x < 0.);
         let mut position = DVec3::ZERO;
         let mut velocity = DVec3::ZERO;
@@ -347,7 +377,16 @@ mod tests {
             if error.length() <= 2. && velocity.length() <= 0.5 {
                 break;
             }
-            velocity += rendezvous(error, velocity, DVec3::ZERO, 10., 2.) * 0.1;
+            velocity += economical_rendezvous(
+                error,
+                velocity,
+                DVec3::ZERO,
+                10.,
+                2.,
+                1.,
+                toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+            )
+            .0 * 0.1;
             position += velocity * 0.1;
         }
         assert!((target - position).length() <= 2.);
@@ -387,5 +426,29 @@ mod tests {
         nav.observe(&[contact(10.)], &obs, Some(DVec3::ZERO));
         assert!(nav.visible);
         assert_eq!(nav.phase, Phase::Paused);
+    }
+    #[test]
+    fn economic_guidance_coasts_then_brakes_without_discarding_momentum() {
+        let velocity = DVec3::X * 200.;
+        let (coast, _) = economical_rendezvous(
+            DVec3::X * 1e5,
+            velocity,
+            DVec3::ZERO,
+            10.,
+            2.,
+            5.,
+            toy_sim_model::transfer::TransferCost::default(),
+        );
+        assert!(coast.length() < 1e-9);
+        let (brake, _) = economical_rendezvous(
+            DVec3::X * 100.,
+            velocity,
+            DVec3::ZERO,
+            10.,
+            2.,
+            5.,
+            toy_sim_model::transfer::TransferCost::default(),
+        );
+        assert!(brake.x < 0.);
     }
 }

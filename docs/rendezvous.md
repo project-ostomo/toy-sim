@@ -63,13 +63,16 @@ Guidance uses these quantities each callback:
 | `τ` | Response time: `max(2 × turn allowance + 2, 2)` seconds, where the turn allowance comes from the ship's inertia and torque authority |
 
 1. **Arrival speed.** The allowed closing speed at distance `d` is
-   `arrival_speed(d) = min(√((aτ)² + a·d) − aτ, d / τ)`.
+   `arrival_speed(d) = min(√((aτ)² + a·d) − aτ, d / (4τ))`.
    It shrinks to zero at the aim point, and it leaves room for the time needed to turn and respond.
-2. **Commanded acceleration.** `rendezvous(e, u, disturbance, a, τ) = clamp((ê × arrival_speed(|e|) − u) / τ − disturbance, a)`.
+2. **Economical speed.** Let `λ = 3600 / current_mass_kg` seconds/kg, `q` be propellant flow at the throttle ceiling, and `v₀` be nonnegative closing speed. The cruise target is `max(v₀, √((d + v₀²/(2a)) / (1/a + 2λq/a)))`. Clamp it to the arrival-speed envelope. Keeping the `v₀` floor avoids braking merely to discard momentum that has already been paid for.
+3. **Commanded acceleration.** `command = clamp((ê × speed − u) / τ − disturbance, a)`.
    This is velocity feedback toward the desired closing velocity, corrected for the estimated relative disturbance (differences in gravity and target acceleration). It brakes when `u` is faster than the allowed speed.
-3. **Throttle.** The throttle is the throttle ceiling × `|command| / a`. It is further scaled by the engine's alignment with the commanded direction when their cosine exceeds 0.995. Otherwise the throttle is zero, so the ship coasts while it turns.
-4. **Stopping distance.** `u² / (2a) + |u| × τ` is computed internally.
-5. **Arrival.** When `|e| ≤ 2 m` and `|u| ≤ 0.5 m/s`, guidance zeroes throttle and returns to `Ready`.
+4. **Throttle.** The throttle is the throttle ceiling × `|command| / a`. It is further scaled by the engine's alignment with the commanded direction when their cosine exceeds 0.995. Otherwise the throttle is zero, so the ship coasts while it turns.
+5. **Stopping distance.** `u² / (2a) + |u| × τ` is computed internally.
+6. **Arrival.** When `|e| ≤ 2 m` and `|u| ≤ 0.5 m/s`, guidance zeroes throttle and returns to `Ready`.
+
+For a collinear transfer from rest, the constant-acceleration objective is `d/v + v/a + λ × 2qv/a`. Its stationary point gives the cruise-speed formula above, bounded by the no-coast speed `√(ad)`. This trades longer coasts for less fuel. The close-range `d/(4τ)` bound gives a critically damped velocity response when thrust can track the command. Actual control still accounts for finite turns and disturbances. It does not solve a global orbital boundary-value problem.
 
 The throttle ceiling is the smaller of the engaged limit and the power limit. It is lowered further, where needed, so that an off-centre engine's moment uses at most 80% of torque capacity.
 
@@ -77,7 +80,7 @@ The forecast rolls the same law forward with the same response time and alignmen
 
 ### Travel legs
 
-In the authoritative world, the travel planner turns the current order into legs through `world_query`. For a sublight leg, it builds a contact with ID `u64::MAX` from the resolved destination's relative position and velocity. It appends this contact to the scan results, selects it, and engages with throttle limit 1 and stand-off 0. The contact is rebuilt every callback, so the aim point follows the destination. When the leg reports arrival within 2 m and 0.5 m/s, the planner sends `CompleteLeg`. It aborts guidance when there is no travel contact but the synthetic target is still selected. During a docking approach, the planner also holds the bay's attitude. See [server-client.md](server-client.md#travel-orders-and-firmware-planning).
+In the authoritative world, the travel planner expands a destination into queued orders through `world_query`. For a sublight leg, it builds a contact with ID `u64::MAX` from the resolved destination's relative position and velocity. It appends this contact to the scan results, selects it, and engages with throttle limit 1 and stand-off 0. The contact is rebuilt every callback, so the aim point follows the destination. When the order reports arrival within 2 m and 0.5 m/s, the planner sends `CompleteOrder`. It aborts guidance when there is no travel contact but the synthetic target is still selected. During a docking approach, the planner also holds the bay's attitude. See [server-client.md](server-client.md#travel-orders-and-firmware-planning).
 
 The debug launcher uses the same server world services and planner as a remote client.
 

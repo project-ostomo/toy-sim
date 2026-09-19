@@ -10,13 +10,14 @@ use crate::state::*;
 use bevy::prelude::*;
 use model::*;
 use toy_sim_model::*;
+use toy_sim_ui::units::distance;
 use toy_sim_ui::{bevy_egui::EguiContexts, desktop::*, egui, icons::Icon};
 
 const SELECTED: WindowSpec = WindowSpec {
     id: "selected",
     title: "SELECTED ITEM",
-    size: egui::vec2(390., 244.),
-    min_size: egui::vec2(350., 140.),
+    size: egui::vec2(390., 288.),
+    min_size: egui::vec2(380., 140.),
     anchor: egui::Align2::RIGHT_TOP,
     offset: egui::Vec2::ZERO,
     open: true,
@@ -25,19 +26,10 @@ const OVERVIEW: WindowSpec = WindowSpec {
     id: "overview",
     title: "OVERVIEW",
     size: egui::vec2(390., 380.),
-    min_size: egui::vec2(350., 230.),
+    min_size: egui::vec2(350., 150.),
     anchor: egui::Align2::RIGHT_TOP,
-    offset: egui::vec2(0., 258.),
+    offset: egui::vec2(0., 302.),
     open: true,
-};
-const SHIP: WindowSpec = WindowSpec {
-    id: "ship",
-    title: "SHIP STATUS",
-    size: egui::vec2(320., 390.),
-    min_size: egui::vec2(280., 260.),
-    anchor: egui::Align2::LEFT_TOP,
-    offset: egui::vec2(0., 145.),
-    open: false,
 };
 const NAVIGATION: WindowSpec = WindowSpec {
     id: "navigation",
@@ -151,15 +143,22 @@ enum Intent {
     Approach(ContactRef, f64),
     KeepRange(ContactRef, f64),
     Queue(Vec<travel::Order>, bool),
-    Engage(ContactRef),
+    PlanRoute(Vec<travel::Order>, bool, travel::PlanningPreferences),
+    EditQueue(Vec<travel::Order>),
     Command(ShipCommand, &'static str),
     Orbits(bool),
 }
 
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct ShellDraw;
+
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Shell>()
         .add_observer(reset_session)
-        .add_systems(toy_sim_ui::bevy_egui::EguiPrimaryContextPass, draw);
+        .add_systems(
+            toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
+            draw.in_set(ShellDraw).after(super::console::ConsoleDraw),
+        );
 }
 
 fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
@@ -173,6 +172,7 @@ fn draw(
     mut outgoing: ResMut<Outgoing>,
     session: Res<SessionInfo>,
     clock: Res<RenderTime>,
+    diagnostics: Res<ClientDiagnostics>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
     beacons: Query<(&NavigationObject, &DisplayPose)>,
@@ -328,6 +328,7 @@ fn draw(
         connected: session.world.is_some() && session.status.is_empty(),
         status: &session.status,
         time_ns: clock.display_ns,
+        diagnostics: *diagnostics,
         orbits: view.is_some_and(|(_, _, _, options)| options.enabled),
     };
     let mut intents = Vec::new();
@@ -340,15 +341,32 @@ fn draw(
         &mut intents,
     );
     for intent in intents {
+        let preferences = match &intent {
+            Intent::PlanRoute(_, _, preferences) => *preferences,
+            _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
+        };
         match intent {
-            Intent::Queue(orders, append) => {
+            Intent::EditQueue(orders) => {
+                if let Some(ship) = telemetry.filter(|_| model.connected) {
+                    outgoing.ship(
+                        ship,
+                        ShipCommand::SetTravel {
+                            preferences: ship.travel.preferences,
+                            engage: false,
+                            expected_revision: ship.travel.revision,
+                            orders,
+                        },
+                    );
+                }
+            }
+            Intent::Queue(orders, append) | Intent::PlanRoute(orders, append, _) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     let mut queue = if append {
                         ship.travel
                             .orders
                             .iter()
                             .skip(ship.travel.order)
-                            .cloned()
+                            .map(|stage| stage.action.clone())
                             .collect::<Vec<_>>()
                     } else {
                         Vec::new()
@@ -360,6 +378,8 @@ fn draw(
                     let id = outgoing.ship(
                         ship,
                         ShipCommand::SetTravel {
+                            preferences,
+                            engage: true,
                             expected_revision: ship.travel.revision,
                             orders: queue,
                         },
@@ -476,23 +496,6 @@ fn commands_for(
                 "Approach / keep range",
             )
         }
-        Intent::Engage(reference) => {
-            let row = rows
-                .iter()
-                .find(|row| row.target == SelectedTarget::Contact(reference))?;
-            if row.own {
-                return None;
-            }
-            (
-                vec![queue_command(
-                    ship,
-                    travel::GuidanceMode::Engage,
-                    travel::Target::Contact(reference),
-                    1000_f64.max(row.radius + 100.),
-                )],
-                "Engage",
-            )
-        }
         Intent::Command(command, label) => (vec![command], label),
         _ => return None,
     };
@@ -509,6 +512,8 @@ fn queue_command(
     range_m: f64,
 ) -> ShipCommand {
     ShipCommand::SetTravel {
+        preferences: ship.travel.preferences,
+        engage: true,
         expected_revision: ship.travel.revision,
         orders: vec![travel::Order::Guidance(travel::Guidance {
             mode,

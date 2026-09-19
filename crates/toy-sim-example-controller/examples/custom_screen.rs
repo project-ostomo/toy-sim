@@ -63,7 +63,7 @@ mod firmware {
                 text(
                     24,
                     55,
-                    &format!("ENERGY {:.2} MJ", resources.energy_j / 1e6),
+                    &format!("ENERGY {:.2} MJ", resources.energy_j as f64 / 1e6),
                 )?;
                 sdk::screen_draw(
                     0,

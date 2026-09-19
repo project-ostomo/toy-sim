@@ -44,6 +44,30 @@ pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
             "stars/aurora.star.toml",
             include_str!("../../../assets/stars/aurora.star.toml"),
         ),
+        (
+            "stars/lyra.star.toml",
+            include_str!("../../../assets/stars/lyra.star.toml"),
+        ),
+        (
+            "stars/cinder.star.toml",
+            include_str!("../../../assets/stars/cinder.star.toml"),
+        ),
+        (
+            "stars/meridian.star.toml",
+            include_str!("../../../assets/stars/meridian.star.toml"),
+        ),
+        (
+            "stars/havoc.star.toml",
+            include_str!("../../../assets/stars/havoc.star.toml"),
+        ),
+        (
+            "stars/elysium.star.toml",
+            include_str!("../../../assets/stars/elysium.star.toml"),
+        ),
+        (
+            "stars/terminus.star.toml",
+            include_str!("../../../assets/stars/terminus.star.toml"),
+        ),
     ];
     manifest
         .systems

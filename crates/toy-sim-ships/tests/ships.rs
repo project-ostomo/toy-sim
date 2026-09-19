@@ -106,15 +106,16 @@ fn fractional_consumption_is_unbiased_and_bounded() {
     let before = inventory.quantities[0];
     for _ in 0..100_000 {
         let previous = inventory.quantities[0];
-        assert_eq!(inventory.consume(0, 2.4), 2.4);
+        let used = inventory.consume(0, 2.4);
+        assert_eq!(used, previous - inventory.quantities[0]);
         assert!((2..=3).contains(&(previous - inventory.quantities[0])));
     }
     let used = before - inventory.quantities[0];
     assert!((used as f64 - 240_000.0).abs() < 1500.0);
     inventory.quantities[0] = 1;
-    assert_eq!(inventory.consume(0, 2.4), 1.0);
+    assert_eq!(inventory.consume(0, 2.4), 1);
     assert_eq!(inventory.quantities[0], 0);
-    assert_eq!(inventory.consume(0, 2.4), 0.0);
+    assert_eq!(inventory.consume(0, 2.4), 0);
 }
 
 #[test]
@@ -206,7 +207,7 @@ fn weapon_energy_reading_recovers_when_the_shared_battery_recharges() {
     state.weapons[0].inhibit_flags = abi::WEAPON_ENERGY;
 
     let device = design.part_devices[design.weapon_parts[0]].unwrap();
-    for (battery, expected) in [(0.0, abi::WEAPON_ENERGY), (design.battery_j, 0)] {
+    for (battery, expected) in [(0, abi::WEAPON_ENERGY), (design.battery_j, 0)] {
         state.inventory.energy_j = battery;
         let DeviceReading::Weapon(reading) = state.snapshot(&design)[device].reading else {
             panic!("expected weapon reading");

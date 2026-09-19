@@ -3,6 +3,9 @@ name = "toy-sim-server"
 version.workspace = true
 edition.workspace = true
 
+[features]
+profile = ["bevy/trace_chrome"]
+
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["std", "multi_threaded", "bevy_state", "bevy_asset", "bevy_log", "serialize"] }
 parry3d-f64.workspace = true

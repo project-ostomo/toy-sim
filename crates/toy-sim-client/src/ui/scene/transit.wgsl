@@ -39,13 +39,25 @@ fn fragment(input: Output, @builtin(front_facing) front: bool) -> @location(0) v
         let color = vec3(0.008, 0.019, 0.06) + vec3(0.025, 0.10, 0.22) * cloud + vec3(0.7, 0.85, 1.0) * streak * 4.0;
         return vec4(color * parameters.z, 1.0);
     }
-    let ray = normalize(input.local - input.camera);
-    let limb = pow(1.0 - abs(dot(n, ray)), 2.5);
-    let warped = n + sin(n.yzx * 14.0 + vec3(t * 0.3)) * 0.045;
-    let latitude = asin(clamp(warped.z, -1.0, 1.0));
-    let phase = azimuth * 50.0 + latitude * 9.0 + sin(latitude * 17.0 - t * 0.7) * 1.5;
-    let filaments = pow(0.5 + 0.5 * sin(phase), 16.0);
-    let stars = pow(hash(floor(warped.xy * 450.0)), 180.0);
-    let emission = (vec3(0.12, 0.4, 1.0) * (limb * 2.0 + filaments * 0.13) + vec3(0.6, 0.8, 1.0) * stars * 0.08) * parameters.z;
-    return vec4(emission, 0.06 + limb * 0.65);
+    let axis = normalize(input.camera + vec3(0.0, 0.0, 0.00001));
+    let reference = select(vec3(0.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), abs(axis.y) > 0.95);
+    let right = normalize(cross(reference, axis));
+    let up = cross(axis, right);
+    let disc = vec2(dot(n, right), dot(n, up));
+    let radius = length(disc);
+    let angle = atan2(disc.y, disc.x);
+    let turbulence = sin(radius * 27.0 - t * 0.65) * 0.4;
+    let phase = angle * 5.0 - radius * 19.0 + turbulence - t * 1.3;
+    let curl = 0.5 + 0.5 * sin(phase);
+    let width = max(fwidth(curl), 0.025);
+    let filaments = smoothstep(0.76 - width, 0.90 + width, curl);
+    let veil = 0.5 + 0.5 * sin(angle * 3.0 + radius * 31.0 + t * 0.8);
+    let core = pow(max(0.0, 1.0 - radius), 6.0);
+    let edge = smoothstep(0.7, 0.99, radius);
+    let spiral = filaments * smoothstep(0.06, 0.3, radius) * (1.0 - edge * 0.7);
+    let emission = vec3(0.015, 0.08, 0.24) * (1.0 + veil)
+        + vec3(0.10, 0.75, 1.7) * spiral * 2.0
+        + vec3(0.3, 0.7, 1.0) * edge * 0.65
+        + vec3(1.4, 1.8, 2.0) * core * 7.0;
+    return vec4(emission * parameters.z, 0.80 + core * 0.19);
 }

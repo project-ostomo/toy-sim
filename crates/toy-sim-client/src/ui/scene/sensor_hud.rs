@@ -3,12 +3,15 @@ use crate::ui::SelectedTarget;
 use crate::ui::{
     Selection,
     state::{
-        Celestial, CelestialSystem, Contact, DisplayPose, SystemSubscription, ViewObservation,
+        Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, ShipDetails,
+        SystemSubscription, ViewObservation,
     },
 };
 use bevy::{prelude::*, window::PrimaryWindow};
 use toy_sim_model::Tag;
 use toy_sim_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use toy_sim_ui::desktop::THREAT;
+use toy_sim_ui::units::distance;
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(EguiPrimaryContextPass, overlay);
@@ -27,6 +30,7 @@ fn overlay(
         &SystemSubscription,
     )>,
     contacts: Query<(&Contact, &DisplayPose)>,
+    owned: Query<(&OwnedShip, Option<&ShipDetails>)>,
     beacons: Query<&crate::state::NavigationObject>,
     celestials: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -39,6 +43,13 @@ fn overlay(
         / ctx.pixels_per_point();
     let pointer = ctx.input(|input| input.pointer.interact_pos());
     let clicked = ctx.input(|input| input.pointer.primary_clicked());
+    let marked = owned
+        .iter()
+        .find(|(ship, _)| Some(ship.0.ship) == active.ship)
+        .and_then(|(_, details)| details)
+        .and_then(|details| details.0.instruments.as_ref())
+        .and_then(|instruments| instruments.weapons_state.as_ref())
+        .and_then(|weapons| weapons.target);
     let mut selection = None;
     let mut selection_distance = f32::INFINITY;
 
@@ -142,7 +153,10 @@ fn overlay(
                 continue;
             }
             let selected = active.contact() == Some(contact.1);
-            let color = if selected {
+            let targeted = marked == Some(contact.1);
+            let color = if targeted {
+                THREAT
+            } else if selected {
                 egui::Color32::WHITE
             } else if track
                 .tags
@@ -157,9 +171,17 @@ fn overlay(
             painter.rect_stroke(
                 square,
                 0.0,
-                egui::Stroke::new(if selected { 2.0 } else { 1.0 }, color),
+                egui::Stroke::new(if selected || targeted { 2.0 } else { 1.0 }, color),
                 egui::StrokeKind::Inside,
             );
+            if selected && targeted {
+                painter.rect_stroke(
+                    egui::Rect::from_center_size(center, egui::vec2(8.0, 8.0)),
+                    0.0,
+                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                    egui::StrokeKind::Inside,
+                );
+            }
             let name = track
                 .tags
                 .iter()
@@ -193,7 +215,7 @@ fn overlay(
             }
         }
     }
-    if let Some((entity, view, target)) = selection {
+    if let Some((_, view, target)) = selection {
         active.view = Some(view);
         match target {
             SelectedTarget::Beacon(id) => {
@@ -204,23 +226,8 @@ fn overlay(
             }
             SelectedTarget::Celestial(id) => {
                 active.target = Some(SelectedTarget::Celestial(id));
-                if let Ok((_, _, _, _, _, mut framing, _)) = cameras.get_mut(entity) {
-                    framing.focus = Some(SelectedTarget::Celestial(id));
-                }
             }
         }
     }
     Ok(())
-}
-
-pub(super) fn distance(metres: f64) -> String {
-    if metres >= 1.0e12 {
-        format!("{:.2} AU", metres / 149_597_870_700.0)
-    } else if metres >= 1.0e6 {
-        format!("{:.2} Mm", metres / 1.0e6)
-    } else if metres >= 1000.0 {
-        format!("{:.1} km", metres / 1000.0)
-    } else {
-        format!("{metres:.0} m")
-    }
 }

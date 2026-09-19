@@ -1,4 +1,4 @@
-use super::instruments::{navigation, ship_status};
+use super::instruments::navigation;
 use super::overview::{overview_header, overview_row, selected_item};
 use super::*;
 
@@ -18,7 +18,6 @@ pub(super) fn draw(
         for (spec, icon, label) in [
             (OVERVIEW, Icon::Overview, "Overview"),
             (SELECTED, Icon::Target, "Selected item"),
-            (SHIP, Icon::Ship, "Ship status"),
             (INVENTORY, Icon::Cargo, "Inventory"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
             (MAP, Icon::Planet, "Gate network map"),
@@ -78,7 +77,29 @@ pub(super) fn draw(
                 model.status
             },
         );
-        if screen.width() > 850. {
+        ui.separator();
+        let diagnostics = &model.diagnostics;
+        ui.label(
+            egui::RichText::new(format!(
+                "Jitter {} ticks / Display {:.0} FPS{}",
+                diagnostics.queued_frames,
+                diagnostics.fps,
+                if diagnostics.catching_up {
+                    " / Catch-up"
+                } else if diagnostics.buffering {
+                    " / Buffering"
+                } else {
+                    ""
+                },
+            ))
+            .monospace()
+            .size(11.),
+        )
+        .on_hover_text(format!(
+            "{:.0} ms buffered simulation time, {} underruns. FPS measures client frames.",
+            diagnostics.buffered_ms, diagnostics.underruns,
+        ));
+        if screen.width() > 1250. {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     egui::RichText::new(
@@ -111,6 +132,23 @@ pub(super) fn draw(
                     });
                     ui.label(egui::RichText::new(&model.vicinity).size(12.).color(MUTED));
                     if let Some(ship) = model.ship {
+                        let ap = ship.travel.autopilot_enabled;
+                        if ui
+                            .add_enabled(
+                                model.connected && ship.presence == travel::Presence::Space,
+                                egui::Button::new(
+                                    egui::RichText::new(if ap { "AP ON" } else { "AP OFF" })
+                                        .strong()
+                                        .monospace(),
+                                )
+                                .selected(ap)
+                                .min_size(egui::vec2(96., 30.)),
+                            )
+                            .clicked()
+                        {
+                            intents
+                                .push(Intent::Command(ShipCommand::SetAutopilot(!ap), "Autopilot"));
+                        }
                         ui.horizontal(|ui| {
                             ui.label(Icon::Ship.text(14.).color(ACCENT));
                             ui.label(egui::RichText::new(ship_name(ship)).size(12.).color(TEXT));
@@ -125,18 +163,28 @@ pub(super) fn draw(
                                 );
                             }
                         });
-                        if let Some(order) = ship.travel.orders.get(ship.travel.order) {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{} / {}   {}",
-                                    ship.travel.order + 1,
-                                    ship.travel.orders.len(),
-                                    instruments::order_label(order, model.navigation)
-                                ))
-                                .color(ACCENT),
+                        if ship
+                            .travel
+                            .fuel_budget
+                            .as_ref()
+                            .is_some_and(|budget| budget.exhausted())
+                        {
+                            ui.colored_label(
+                                THREAT,
+                                "FUEL EXHAUSTION RISK · replan in Gate Network",
                             );
                         }
-                        if let Some(arrival) = ship.travel.estimated_arrival_tick {
+                        instruments::itinerary(
+                            ui,
+                            &ship.travel,
+                            model.navigation,
+                            model.time_ns / 100_000_000,
+                        );
+                        if let Some(arrival) = ship
+                            .travel
+                            .estimated_arrival_tick
+                            .filter(|_| matches!(ship.presence, travel::Presence::SlipTransit(_)))
+                        {
                             let seconds =
                                 (arrival as f64 * 0.1 - model.time_ns as f64 * 1e-9).max(0.);
                             ui.label(
@@ -169,16 +217,42 @@ pub(super) fn draw(
             .is_some_and(|ship| ship.presence == travel::Presence::Space);
     let mut stand_off = shell.stand_off;
     shell.desktop.show(ctx, SELECTED, |ui| {
-        selected_item(ui, selected, can_control, &mut stand_off, intents);
+        let weapons = model
+            .details
+            .and_then(|details| details.instruments.as_ref())
+            .and_then(|instruments| instruments.weapons_state.as_ref());
+        egui::ScrollArea::vertical()
+            .max_height(SELECTED.size.y)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                selected_item(
+                    ui,
+                    selected,
+                    can_control,
+                    weapons,
+                    &model.rows,
+                    &mut stand_off,
+                    intents,
+                );
+            });
     });
     shell.stand_off = stand_off;
 
+    let marked = model
+        .details
+        .and_then(|details| details.instruments.as_ref())
+        .and_then(|instruments| instruments.weapons_state.as_ref())
+        .and_then(|weapons| weapons.target);
     let rows = sorted_rows(&model.rows, shell);
     let mut filter = shell.filter;
     let mut sort = shell.sort;
     let mut descending = shell.descending;
     let mut search = shell.search.clone();
-    shell.desktop.show(ctx, OVERVIEW, |ui| {
+    let mut overview_spec = OVERVIEW;
+    if let Some(selected_rect) = shell.desktop.rect(SELECTED) {
+        overview_spec.offset.y = selected_rect.height() + 14.;
+    }
+    shell.desktop.show(ctx, overview_spec, |ui| {
         ui.horizontal(|ui| {
             for (value, label) in [
                 (Filter::All, "All"),
@@ -195,7 +269,7 @@ pub(super) fn draw(
         );
         ui.add_space(2.);
         overview_header(ui, &mut sort, &mut descending);
-        let height = (ui.available_height() - 44.).max(60.);
+        let height = (ui.available_height() - 44.).max(27.);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .max_height(height)
@@ -203,8 +277,15 @@ pub(super) fn draw(
                 ui.spacing_mut().item_spacing.y = 0.;
                 for index in range {
                     let row = rows[index];
-                    let response =
-                        overview_row(ui, row, Some(row.target) == selection.target, index);
+                    let targeted =
+                        marked.is_some_and(|target| row.target == SelectedTarget::Contact(target));
+                    let response = overview_row(
+                        ui,
+                        row,
+                        Some(row.target) == selection.target,
+                        targeted,
+                        index,
+                    );
                     if response.clicked() {
                         intents.push(Intent::Select(row.target));
                     }
@@ -254,9 +335,6 @@ pub(super) fn draw(
     shell.descending = descending;
     shell.search = search;
 
-    shell
-        .desktop
-        .show(ctx, SHIP, |ui| ship_status(ui, model, intents));
     shell
         .desktop
         .show(ctx, NAVIGATION, |ui| navigation(ui, model, intents));

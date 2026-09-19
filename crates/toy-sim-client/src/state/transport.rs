@@ -43,8 +43,6 @@ pub(super) fn send(
     let frame = InputFrame {
         world,
         sequence: transport.input_sequence,
-        acknowledged_event: playback.0.event_watermark,
-        acknowledged_frame: playback.0.latest_sequence(),
         actions: outgoing.take(),
     };
     match transport.endpoint.input.try_send(frame) {

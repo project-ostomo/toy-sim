@@ -36,3 +36,13 @@ user is exempt.
 Do not write tests for reversible, low-impact changes that mirror the implementation. If you do choose to verify your work with tests, make sure that the tests are meaningful and necessary to verify implementation.
 
 Run tests appropriate to the change and complete required checks. Once those pass, broaden or repeat testing only when new changes, failures, or unresolved concerns justify it; otherwise, continue toward completing the task.
+
+# UI verification and refinement
+
+Default to headless, software-rendered screenshots and targeted checks for UI
+verification. Do not drive the live desktop with mouse or keyboard input,
+including clicks and drags, unless the user explicitly requests it.
+
+Limit UI refinement to the requested requirements and concrete failures. Stop
+once the relevant checks pass; do not continue cosmetic tweaking or repeated
+visual refinement unless the user specifically asks for it.

@@ -127,6 +127,17 @@ pub fn candidates(
     Some(candidates)
 }
 
+pub fn mouth_candidates(world: &World, position: GalacticPosition, radius: f64) -> Vec<Entity> {
+    let geometry = world.resource::<TravelGeometry>();
+    let bounds = aabb(geometry.anchor, position, radius);
+    geometry
+        .tree
+        .intersect_aabb(&bounds)
+        .map(|slot| geometry.entities[slot as usize])
+        .filter(|&entity| world.get::<Gate>(entity).is_some_and(|gate| gate.enabled))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

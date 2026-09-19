@@ -41,21 +41,8 @@ pub(super) struct FrameModel<'a> {
     pub connected: bool,
     pub status: &'a str,
     pub time_ns: u64,
+    pub diagnostics: ClientDiagnostics,
     pub orbits: bool,
-}
-
-pub(super) fn distance(meters: f64) -> String {
-    if meters.abs() >= 1e12 {
-        format!("{:.2} Tm", meters / 1e12)
-    } else if meters.abs() >= 1e9 {
-        format!("{:.2} Gm", meters / 1e9)
-    } else if meters.abs() >= 1e6 {
-        format!("{:.2} Mm", meters / 1e6)
-    } else if meters.abs() >= 1e3 {
-        format!("{:.2} km", meters / 1e3)
-    } else {
-        format!("{meters:.0} m")
-    }
 }
 
 pub(super) fn ship_name(ship: &ShipTelemetry) -> String {
@@ -111,22 +98,12 @@ pub(super) fn travel_status(status: &travel::Status) -> String {
     }
 }
 
-pub(super) fn presence_name(presence: &travel::Presence) -> String {
-    match presence {
-        travel::Presence::Space => "In space".into(),
-        travel::Presence::Docked { bay, .. } => format!("Docked · bay {bay}"),
-        travel::Presence::SlipTransit(_) => "In slip transit".into(),
-        travel::Presence::StoredInWreck(_) => "Stored in wreck".into(),
-        travel::Presence::Destroyed => "Destroyed".into(),
-    }
-}
-
 pub(super) fn computer_status(status: &ComputerStatus) -> String {
     match status {
         ComputerStatus::Unpowered => "Unpowered".into(),
-        ComputerStatus::Booting { progress } => format!("Booting · {:.0}%", progress * 100.),
+        ComputerStatus::Booting { progress, .. } => format!("Booting · {:.0}%", progress * 100.),
         ComputerStatus::Running { .. } => "Running".into(),
         ComputerStatus::Paused => "Paused".into(),
-        ComputerStatus::Fault(reason) => format!("Fault: {reason}"),
+        ComputerStatus::Fault { message, .. } => format!("Fault: {message}"),
     }
 }

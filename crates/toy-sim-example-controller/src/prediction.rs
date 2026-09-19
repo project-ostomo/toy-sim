@@ -2,7 +2,7 @@
 use crate::hardware::Sample;
 use crate::{
     Bindings, attitude,
-    navigation::{Pursuit, arrival_speed, rendezvous},
+    navigation::{Pursuit, economical_rendezvous},
 };
 use glam::{DMat3, DQuat, DVec3};
 use toy_sim_ship_api::abi;
@@ -62,6 +62,7 @@ struct State {
 struct Rollout {
     state: State,
     bindings: Bindings,
+    preferences: toy_sim_model::travel::PlanningPreferences,
     inertia: DMat3,
     inverse: DMat3,
     initial_r: DVec3,
@@ -108,6 +109,7 @@ impl Rollout {
                 time: 0.,
             },
             bindings: b.clone(),
+            preferences: nav.preferences,
             inertia,
             inverse: inertia.inverse(),
             initial_r: nav.r,
@@ -143,6 +145,7 @@ impl Rollout {
         nav.target.as_ref().is_none_or(|t| t.id != self.target)
             || nav.offset != self.offset
             || nav.limit != self.limit
+            || nav.preferences != self.preferences
             || nav.visible != self.visible
             || (nav.throttle_ceiling - self.ceiling).abs() > 0.01
             || (b.thrust * nav.effectiveness * nav.throttle_ceiling - self.force).abs()
@@ -154,21 +157,17 @@ impl Rollout {
         (2. * attitude::turn_allowance(self.inertia, &self.bindings) + 2.).max(2.)
     }
     fn command(&self, s: State) -> (DVec3, f64) {
-        (
-            rendezvous(
-                s.r + self.offset,
-                s.u,
-                self.disturbance,
-                self.force / s.mass,
-                self.response(),
-            ),
-            arrival_speed(
-                (s.r + self.offset).length(),
-                self.force / s.mass,
-                self.response(),
-            ),
+        economical_rendezvous(
+            s.r + self.offset,
+            s.u,
+            self.disturbance,
+            self.force / s.mass,
+            self.response(),
+            self.bindings.propellant_rate * self.ceiling,
+            self.preferences.cost(s.mass),
         )
     }
+
     fn point(&self) -> Point {
         Point {
             r: self.initial_r - self.state.r,

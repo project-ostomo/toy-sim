@@ -9,7 +9,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 enter(&mut caller)?;
                 let value: w::WeaponsState = input(&mut caller, pointer, bytes)?;
                 lease(&caller, value.valid_until_s)?;
-                if value.mode > w::WEAPONS_ENGAGE
+                if value.mode > w::WEAPONS_FIRING
                     || value.reason.as_str().is_none()
                     || count as usize > caller.data().catalogue.len()
                 {
@@ -44,7 +44,6 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     finite(&[
                         row.time_of_flight_s,
                         row.pointing_error_rad,
-                        row.reading.battery_energy_j,
                         row.reading.shot_energy_j,
                         row.reading.yaw_rad,
                         row.reading.pitch_rad,

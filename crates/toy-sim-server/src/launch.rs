@@ -84,7 +84,7 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
         Err(_) => {
             return thread
                 .join()
-                .map_err(|_| anyhow::anyhow!("simulation initialization panicked"))?
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
                 .and_then(|()| anyhow::bail!("simulation initialization stopped"));
         }
     };
@@ -125,7 +125,7 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
     stop.store(true, Ordering::Release);
     let simulation_result = thread
         .join()
-        .map_err(|_| anyhow::anyhow!("simulation thread panicked"))?;
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     if let Some(path) = options.ready_file {
         let _ = std::fs::remove_file(path);
     }

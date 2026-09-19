@@ -205,7 +205,7 @@ fn consume(inventory: &mut Inventory, cat: &Catalogue, resource: &str, mass: f64
         return 0.;
     };
     let units = inventory.consume(index, mass / cat.resources[index].mass_kg);
-    units * cat.resources[index].mass_kg
+    units as f64 * cat.resources[index].mass_kg
 }
 
 pub fn service_docked(
@@ -232,7 +232,7 @@ pub fn service_docked(
     let dt = time.delta_secs_f64();
     for (host, services, guests, owner) in &hosts {
         let mut cargo_budget = services.cargo_kg_s * dt;
-        let mut power_budget = services.power_w * dt;
+        let mut power_budget = (services.power_w * dt).stochastic_round();
         for guest in guests.iter() {
             let Ok((design, control, request)) = ships.get(guest) else {
                 continue;
@@ -246,9 +246,9 @@ pub fn service_docked(
             let energy = if request.power {
                 power_budget
                     .min(source.0.energy_j)
-                    .min((design.0.battery_j - target.0.energy_j).max(0.))
+                    .min(design.0.battery_j.saturating_sub(target.0.energy_j))
             } else {
-                0.
+                0
             };
             source.0.energy_j -= energy;
             target.0.energy_j += energy;
@@ -382,7 +382,7 @@ mod tests {
             },
         );
         add(&mut fixture, UtilityDef::Beacon { power_w: 1000. });
-        fixture.set_inventory(|i| i.energy_j = 200.);
+        fixture.set_inventory(|i| i.energy_j = 200);
         step(&mut fixture);
         assert_eq!(
             fixture
@@ -423,7 +423,7 @@ mod tests {
                 .get::<BeaconEmitter>(fixture.ship)
                 .is_none()
         );
-        fixture.set_inventory(|i| i.energy_j = 200.);
+        fixture.set_inventory(|i| i.energy_j = 200);
         fixture
             .app
             .world_mut()
@@ -487,7 +487,7 @@ mod tests {
             .unwrap()
             .people = 2;
         fixture.set_inventory(|i| {
-            i.energy_j = 100.;
+            i.energy_j = 100;
             i.quantities[repair] = 1;
             i.quantities[supplies] = 1;
         });
@@ -514,7 +514,7 @@ mod tests {
         let cat = fixture.app.world().resource::<ShipCatalogue>().0.clone();
         let mut source = Inventory::empty(&cat);
         source.cargo[0] = 100;
-        source.energy_j = 1000.;
+        source.energy_j = 1000;
         let mut target = Inventory::empty(&cat);
         target.tank_capacities_m3[0] = 1.;
         let owner = Id::new();
@@ -609,8 +609,8 @@ mod tests {
         let dst = &fixture.app.world().get::<ShipInventory>(guest).unwrap().0;
         assert_eq!(src.cargo[0] + dst.cargo[0], 100);
         assert_eq!(dst.cargo[0] as f64 * cat.resources[0].mass_kg, 10.);
-        assert_eq!(src.energy_j + dst.energy_j, 1000.);
-        assert_eq!(dst.energy_j, 100.);
+        assert_eq!(src.energy_j + dst.energy_j, 1000);
+        assert_eq!(dst.energy_j, 100);
         assert_eq!(
             fixture
                 .app

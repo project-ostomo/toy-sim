@@ -57,7 +57,7 @@ fn generators_conserve_fuel_and_account_for_conversion_heat() {
         .unwrap();
     world.get_mut::<DeviceSettings>(ship).unwrap().0[design.part_devices[index].unwrap()] =
         Some(DeviceSetting::GeneratorDemand(0.5));
-    world.get_mut::<ShipInventory>(ship).unwrap().0.energy_j = 0.0;
+    world.get_mut::<ShipInventory>(ship).unwrap().0.energy_j = 0;
     let initial_fuel = world.get::<ShipInventory>(ship).unwrap().0.quantities[1];
     let initial_heat = world
         .get::<ShipThermal>(ship)
@@ -66,8 +66,8 @@ fn generators_conserve_fuel_and_account_for_conversion_heat() {
         .pending_waste_heat_j;
     world.run_system_once(generators).unwrap();
     let inventory = &world.get::<ShipInventory>(ship).unwrap().0;
-    let generated = (power * 0.1 * 0.5).min(design.battery_j);
-    assert!((inventory.energy_j - generated).abs() <= generated * 1e-10);
+    let generated = (power * 0.1 * 0.5).min(design.battery_j as f64);
+    assert!((inventory.energy_j as f64 - generated).abs() <= generated * 1e-10);
     assert!(
         ((initial_fuel - inventory.quantities[1]) as f64 - fuel_rate * generated / power).abs()
             < 1.0
@@ -208,7 +208,7 @@ fn micropulse_ship() -> (World, Entity, Arc<CompiledShipDesign>, usize, Entity) 
     let mut inventory = world.get_mut::<ShipInventory>(ship).unwrap();
     inventory.0.quantities.fill(0);
     inventory.0.quantities[charge_index] = 100;
-    inventory.0.energy_j = 0.0;
+    inventory.0.energy_j = 0;
     (world, ship, design, charge_index, engine)
 }
 
@@ -235,7 +235,11 @@ fn micropulse_charges_supply_thrust_heat_and_recovered_power_without_propellant_
         (inventory.mass(&world.resource::<ShipCatalogue>().0) - initial_mass + consumed_kg).abs()
             < resource_mass
     );
-    assert!((inventory.energy_j - (consumed_kg * 3e9 * 0.0005).min(design.battery_j)).abs() < 1e-6);
+    assert!(
+        (inventory.energy_j as f64 - (consumed_kg * 3e9 * 0.0005).min(design.battery_j as f64))
+            .abs()
+            <= 1.0
+    );
     assert!((world.get::<AccumulatedForce>(ship).unwrap().0.length() - 500_000.0).abs() < 1e-6);
     assert!(
         (world
@@ -326,7 +330,7 @@ fn broken_disabled_and_dormant_micropulse_engines_do_not_consume_charges() {
                 .pending_waste_heat_j,
             0.0
         );
-        assert!(design.battery_j > 0.0);
+        assert!(design.battery_j > 0);
     }
 }
 
@@ -343,7 +347,7 @@ fn idle_micropulse_engine_reports_charge_availability_without_consuming_resource
         world.get::<ShipInventory>(ship).unwrap().0.quantities[charge],
         100
     );
-    assert_eq!(world.get::<ShipInventory>(ship).unwrap().0.energy_j, 0.0);
+    assert_eq!(world.get::<ShipInventory>(ship).unwrap().0.energy_j, 0);
     assert_eq!(
         world
             .get::<ShipThermal>(ship)
@@ -357,7 +361,7 @@ fn idle_micropulse_engine_reports_charge_availability_without_consuming_resource
     world.get_mut::<ShipInventory>(ship).unwrap().0.quantities[charge] = 0;
     schedule.run(&mut world);
     assert!(!world.get::<Device>(engine).unwrap().0.powered);
-    assert_eq!(world.get::<ShipInventory>(ship).unwrap().0.energy_j, 0.0);
+    assert_eq!(world.get::<ShipInventory>(ship).unwrap().0.energy_j, 0);
     assert_eq!(
         world
             .get::<ShipThermal>(ship)
@@ -410,7 +414,7 @@ fn thermal_ship() -> (
     inventory.0.tank_capacities_m3[hydrogen] = 2.0;
     inventory.0.quantities[fuel] = 1;
     inventory.0.tank_capacities_m3[spent] = 1.0;
-    inventory.0.energy_j = 0.0;
+    inventory.0.energy_j = 0;
     (world, ship, design, hydrogen, fuel, spent, engine)
 }
 
@@ -432,7 +436,7 @@ fn thermal_engine_shortage_scales_both_inputs_and_retains_spent_fuel() {
     assert!(
         (inventory.available(hydrogen) - (100.0 - 250_000.0 / exhaust_velocity * 0.1)).abs() < 1.0
     );
-    assert_eq!(inventory.energy_j, 0.0);
+    assert_eq!(inventory.energy_j, 0);
     assert!((world.get::<Device>(engine).unwrap().0.actual - 250_000.0).abs() < 1e-8);
     let delayed = world
         .get::<devices::ThermalEngine>(engine)
@@ -500,4 +504,26 @@ fn thermal_engine_stops_when_cooling_sink_is_hot() {
         assert_eq!(inventory.quantities[fuel], before[fuel]);
         assert_eq!(world.get::<Device>(engine).unwrap().0.actual, 0.0);
     }
+}
+
+#[test]
+fn partial_device_power_cannot_overdraw_a_depleted_battery() {
+    let (mut world, ship, design) = ship();
+    let index = design.active_parts[0];
+    let part = world.get::<PartDevices>(ship).unwrap().0[index];
+    world.entity_mut(part).insert(Demand {
+        inputs: [0.0, 0.0, 300.7],
+        actual: 1.0,
+        enabled: true,
+        ..Default::default()
+    });
+    world.get_mut::<ShipInventory>(ship).unwrap().0.energy_j = 1;
+
+    world.run_system_once(actuate).unwrap();
+
+    let energy = world.get::<ShipInventory>(ship).unwrap().0.energy_j;
+    assert_eq!(energy, 0);
+    let output = &world.get::<DeviceOutputs>(ship).unwrap().0[index];
+    assert!((output.actual - 1.0 / 300.7).abs() < 1e-12);
+    assert!((output.power.supplied_w * 0.1 - 1.0).abs() < 1e-12);
 }

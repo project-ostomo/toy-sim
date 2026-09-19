@@ -491,6 +491,51 @@ mod tests {
     }
 
     #[test]
+    fn direction_alignment_preserves_throttle_and_cancels_steering() {
+        let hardware = hardware(vec![
+            engine(1, DVec3::ZERO, DQuat::IDENTITY),
+            torquer(2, 1000., DQuat::IDENTITY),
+        ]);
+        let sample = Sample {
+            flight: abi::FlightState {
+                rotation: DQuat::IDENTITY.to_array(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut pilot = Pilot::default();
+        pilot.observe(&sample, &hardware, &[]);
+        pilot
+            .request(
+                abi::REQUEST_MANUAL,
+                abi::ManualRequest {
+                    throttle: 0.7,
+                    steering: [0.2, 0.1, 0.],
+                }
+                .bytes(),
+                &sample,
+                &hardware,
+            )
+            .unwrap();
+        pilot
+            .request(
+                abi::REQUEST_AIM_DIRECTION,
+                abi::DirectionRequest {
+                    direction: DVec3::X.to_array(),
+                }
+                .bytes(),
+                &sample,
+                &hardware,
+            )
+            .unwrap();
+
+        assert_eq!(pilot.manual_throttle, 0.7);
+        assert_eq!(pilot.throttle, 0.);
+        assert_eq!(pilot.steering, DVec3::ZERO);
+        assert_eq!(pilot.aim, Some(DVec3::X));
+    }
+
+    #[test]
     fn manual_steering_uses_configured_control_orientation() {
         let rotation = DQuat::from_rotation_y(core::f64::consts::FRAC_PI_2);
         let mut computer = engine(2, DVec3::ZERO, rotation);

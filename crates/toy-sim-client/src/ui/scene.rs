@@ -3,6 +3,7 @@ use crate::state::SessionInfo;
 mod atmosphere;
 mod camera;
 mod navigation_hud;
+mod projection;
 mod transit;
 pub(super) use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
 pub(super) use orbit::ViewOptions;
@@ -81,6 +82,10 @@ pub(super) fn install(app: &mut App) {
                 .in_set(PresentationSet::Render),
         )
         .add_systems(PostUpdate, propagate_layers);
+    app.add_systems(
+        toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
+        camera::align_on_double_click,
+    );
     transit::install(app);
     navigation_hud::install(app);
     sky::install(app);

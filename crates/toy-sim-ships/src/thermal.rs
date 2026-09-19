@@ -1,4 +1,4 @@
-use crate::{CompiledShipDesign, ShipState};
+use crate::{CompiledShipDesign, ShipState, StochasticBalance, StochasticRound};
 use toy_sim_ship_api::abi;
 
 pub const BACKGROUND_K: f64 = 3.0;
@@ -18,7 +18,7 @@ pub struct ThermalState {
     pub waste_heat_remaining_s: f64,
     pub shield_energy_j: f64,
     pub shield_deployed_kg: f64,
-    pub shield_reserve_kg: f64,
+    pub shield_reserve_mg: u64,
     pub ablation_kg_s: f64,
     pub shield_state: u64,
     pub shield_powered: bool,
@@ -95,7 +95,7 @@ impl ThermalState {
     pub fn new(m: ThermalModel) -> Self {
         Self {
             shield_deployed_kg: m.shield_deployed_kg,
-            shield_reserve_kg: m.shield_reserve_capacity_kg,
+            shield_reserve_mg: (m.shield_reserve_capacity_kg * 1e6).stochastic_round(),
             ..Self::default()
         }
     }
@@ -110,6 +110,10 @@ impl ThermalState {
         assert!(duration_s.is_finite() && duration_s > 0.0);
         self.pending_waste_heat_j += energy_j;
         self.waste_heat_remaining_s = self.waste_heat_remaining_s.max(duration_s);
+    }
+
+    pub fn shield_reserve_kg(&self) -> f64 {
+        self.shield_reserve_mg as f64 / 1e6
     }
 
     pub fn shield_temperature(&self, _m: ThermalModel) -> f64 {
@@ -142,7 +146,7 @@ impl ThermalState {
 
     pub fn headroom(&self, _m: ThermalModel) -> f64 {
         let accessible_reserve = if self.shield_operating() {
-            self.shield_reserve_kg
+            self.shield_reserve_kg()
         } else {
             0.0
         };
@@ -165,8 +169,8 @@ impl ThermalState {
             if self.shield_operating() {
                 let reserve_loss = ((self.shield_energy_j - self.shield_deployed_kg * sensible)
                     / escaping_energy)
-                    .clamp(0.0, self.shield_reserve_kg);
-                self.shield_reserve_kg -= reserve_loss;
+                    .clamp(0.0, self.shield_reserve_kg());
+                let reserve_loss = self.shield_reserve_mg.withdraw(reserve_loss * 1e6) as f64 / 1e6;
                 self.shield_energy_j =
                     (self.shield_energy_j - reserve_loss * escaping_energy).max(0.0);
             }
@@ -242,8 +246,8 @@ impl ThermalState {
                 let feed = (m.shield_deployed_kg - self.shield_deployed_kg)
                     .max(0.0)
                     .min(m.shield_feed_kg_s * h)
-                    .min(self.shield_reserve_kg);
-                self.shield_reserve_kg -= feed;
+                    .min(self.shield_reserve_kg());
+                let feed = self.shield_reserve_mg.withdraw(feed * 1e6) as f64 / 1e6;
                 self.shield_deployed_kg += feed;
             }
             self.check_depleted();
@@ -306,7 +310,7 @@ impl ShipState {
             hull_heat_j: self.thermal.hull_energy_j,
             hull_heat_capacity_j: d.hull_heat_capacity_j,
             shield_temperature_k: self.shield_temperature(d),
-            shield_reserve_kg: self.thermal.shield_reserve_kg,
+            shield_reserve_kg: self.thermal.shield_reserve_kg(),
             shield_reserve_capacity_kg: d.shield_reserve_capacity_kg,
             shield_strength: self.shield_strength(d),
             energy_j: self.inventory.energy_j,
@@ -350,8 +354,11 @@ mod tests {
         let initial = s.shield_energy_j;
         let mut hp = m.hull_hp;
         s.advance(&mut hp, m, 0.01);
-        assert_eq!(s.shield_deployed_kg, m.shield_deployed_kg);
-        assert!(s.shield_reserve_kg < m.shield_reserve_capacity_kg);
+        assert!((s.shield_deployed_kg - m.shield_deployed_kg).abs() < 1e-6);
+        let remaining_mass = s.shield_deployed_kg + s.shield_reserve_kg();
+        let initial_mass = m.shield_deployed_kg + m.shield_reserve_capacity_kg;
+        assert!((remaining_mass + s.ablation_kg_s * 0.01 - initial_mass).abs() < 1e-10);
+        assert!(s.shield_reserve_kg() < m.shield_reserve_capacity_kg);
         assert!(s.shield_energy_j < initial);
         assert_eq!(hp, m.hull_hp);
     }
@@ -360,7 +367,7 @@ mod tests {
     fn impact_capacity_is_finite_and_empty_reserve_cannot_rebuild() {
         let m = model();
         let mut s = ThermalState::new(m);
-        s.shield_reserve_kg = 0.0;
+        s.shield_reserve_mg = 0;
         s.shield_enabled = true;
         s.shield_powered = true;
         s.shield_state = abi::SHIELD_ACTIVE;
@@ -388,12 +395,12 @@ mod tests {
         let first_energy = m.shield_deployed_kg * sensible + 20.0 * escaping_energy;
         s.deposit(&mut hp, m, true, first_energy);
         assert_eq!(s.shield_strength(m), 1.0);
-        assert_eq!(s.shield_reserve_kg, 80.0);
+        assert_eq!(s.shield_reserve_kg(), 80.0);
         assert_eq!(s.shield_energy_j + 20.0 * escaping_energy, first_energy);
         assert_eq!(hp, m.hull_hp);
 
         s.deposit(&mut hp, m, true, 80.0 * escaping_energy);
-        assert_eq!(s.shield_reserve_kg, 0.0);
+        assert_eq!(s.shield_reserve_kg(), 0.0);
         assert_eq!(s.shield_strength(m), 1.0);
         assert_eq!(s.headroom(m), m.shield_deployed_kg * LATENT_HEAT_J_KG);
 
@@ -439,7 +446,7 @@ mod tests {
             }
             let t = s.shield_temperature(m);
             assert!((3400.0..3600.0).contains(&t), "dt={dt}, T={t}");
-            assert_eq!(s.shield_strength(m), 1.0);
+            assert!((1.0 - s.shield_strength(m)) * m.shield_deployed_kg < 1e-6);
             assert_eq!(hp, m.hull_hp);
             temperatures.push(t);
         }
@@ -461,7 +468,7 @@ mod tests {
         let mut hp = m.hull_hp;
         s.deposit(&mut hp, m, true, capacity + 1e6);
         assert_eq!(s.shield_deployed_kg, 0.0);
-        assert_eq!(s.shield_reserve_kg, m.shield_reserve_capacity_kg);
+        assert_eq!(s.shield_reserve_kg(), m.shield_reserve_capacity_kg);
         assert_eq!(s.hull_energy_j, 1e6);
         assert_eq!(hp, m.hull_hp - 10.0);
     }

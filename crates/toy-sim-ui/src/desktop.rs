@@ -4,6 +4,7 @@ use std::collections::HashMap;
 pub const RAIL_WIDTH: f32 = 56.;
 pub const STATUS_HEIGHT: f32 = 30.;
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(116, 207, 227);
+pub const THREAT: egui::Color32 = egui::Color32::from_rgb(242, 92, 92);
 pub const TEXT: egui::Color32 = egui::Color32::from_rgb(217, 226, 235);
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(141, 159, 177);
 pub const SURFACE: egui::Color32 = egui::Color32::from_rgb(15, 22, 31);
@@ -77,7 +78,7 @@ impl Desktop {
         spec: WindowSpec,
         contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> Option<R> {
-        let bounds = workspace(ctx.content_rect());
+        let bounds = workspace_in(ctx);
         if bounds.width() < 1. || bounds.height() < 1. {
             return None;
         }
@@ -178,6 +179,10 @@ impl Desktop {
         state.rect = Some(rect);
         output.inner
     }
+}
+
+pub fn workspace_in(ctx: &egui::Context) -> egui::Rect {
+    workspace(ctx.content_rect())
 }
 
 pub fn workspace(screen: egui::Rect) -> egui::Rect {
@@ -291,7 +296,7 @@ pub fn action_button(
     hint: &str,
 ) -> egui::Response {
     let inner = ui.add_enabled_ui(enabled, |ui| {
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(62., 52.), egui::Sense::click());
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(56., 52.), egui::Sense::click());
         response.widget_info(|| {
             egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
         });

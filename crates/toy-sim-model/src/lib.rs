@@ -1,6 +1,7 @@
 pub mod drawing;
 pub mod navigation;
 pub mod presentation;
+pub mod transfer;
 pub mod travel;
 pub use presentation::*;
 
@@ -202,7 +203,7 @@ pub struct ShipTelemetry {
     pub authority_revision: u64,
     pub presence: travel::Presence,
     pub pose: Option<Pose>,
-    pub battery_j: f64,
+    pub battery_j: u64,
     pub hull_heat_j: f64,
     pub shield_temperature_k: f64,
     pub coolant_reserve_kg: f64,
@@ -248,7 +249,6 @@ pub struct Frame {
     pub sequence: u64,
     pub tick: u64,
     pub sim_time_ns: u64,
-    pub event_watermark: u64,
     pub rate: f64,
     pub views: Vec<ViewState>,
     pub tracks: BTreeMap<GroupId, Vec<Track>>,
@@ -290,12 +290,14 @@ pub enum Action {
 pub enum ShipCommand {
     Flight(FlightCommand),
     SetTransponderEnabled(bool),
-    EngageWeapons {
+    MarkTarget {
         group: GroupId,
         track: TrackId,
         maximum_flight_time_s: f64,
     },
-    HoldFire,
+    StopFiring,
+    UnmarkTarget,
+    StartFiring,
     Aim {
         group: GroupId,
         track: TrackId,
@@ -303,11 +305,13 @@ pub enum ShipCommand {
     SetGroup(InfoGroupKey),
     SetIff(IffIdentity),
     SetTravel {
+        preferences: travel::PlanningPreferences,
+        engage: bool,
         expected_revision: u64,
         orders: Vec<travel::Order>,
     },
-    PauseTravel,
-    ResumeTravel,
+    SetAutopilot(bool),
+    SetThrottle(f64),
     TransferCargo {
         target: EntityId,
         resource: String,
@@ -321,10 +325,6 @@ pub enum ShipCommand {
     Dock {
         station: EntityId,
         bay: u32,
-    },
-    Manual {
-        throttle: f64,
-        steering: [f64; 3],
     },
     ScreenInput {
         slot: u8,
@@ -341,21 +341,28 @@ pub enum ShipCommand {
 pub struct InputFrame {
     pub world: Id,
     pub sequence: u64,
-    pub acknowledged_event: u64,
-    pub acknowledged_frame: u64,
     pub actions: Vec<(Id, Action)>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramQuery {
-    SlipEligibility { destination: GalacticPosition },
+    SlipEligibility {
+        origin: GalacticPosition,
+        destination: GalacticPosition,
+    },
     Travel,
     Contact(ContactRef),
     Beacon(EntityId),
     Resolve(travel::Destination),
     Tracks(TrackQuery),
-    Continue { cursor: Id, work: u64 },
-    Beacons { after: Option<EntityId>, limit: u16 },
+    Continue {
+        cursor: Id,
+        work: u64,
+    },
+    Beacons {
+        after: Option<EntityId>,
+        limit: u16,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -366,6 +373,7 @@ pub struct Beacon {
     pub iff: IffIdentity,
     pub bays: BTreeMap<u32, Pose>,
     pub gate_exit: Option<EntityId>,
+    pub exclusion_m: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -377,6 +385,7 @@ pub enum ProgramReply {
     },
     SlipEligibility {
         ready: bool,
+        duration_s: f64,
     },
     Travel {
         state: travel::TravelState,
@@ -396,14 +405,20 @@ pub enum ProgramAction {
     },
     Route {
         revision: u64,
-        legs: Vec<travel::Leg>,
+        orders: Vec<travel::QueuedOrder>,
+        fuel_budget: travel::FuelBudget,
     },
-    CompleteLeg {
+    Estimate {
         revision: u64,
-        leg: usize,
+        order: usize,
+        remaining_ticks: Option<u64>,
+        fuel_budget: travel::FuelBudget,
+    },
+    CompleteOrder {
+        revision: u64,
+        order: usize,
     },
     Slip(GalacticPosition),
-    Gate(EntityId),
     ReserveBay {
         station: EntityId,
         bay: u32,

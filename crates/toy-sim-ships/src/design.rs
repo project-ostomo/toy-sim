@@ -144,7 +144,7 @@ pub struct CompiledShipDesign {
     pub shield_radiator_area_m2: f64,
     pub exposed_area_m2: f64,
     pub capacity_m3: f64,
-    pub battery_j: f64,
+    pub battery_j: u64,
     pub avionics_handles: [crate::DeviceHandle; 3],
     /// Stable, precomputed priority order; passive parts never tick.
     pub active_parts: Vec<usize>,
@@ -362,7 +362,7 @@ impl ShipBlueprint {
         let mut shield_radiator_area_m2 = 0.;
         let mut extra_heat_capacity_j = 0.;
         let mut capacity_m3 = 0.0f64;
-        let mut battery_j = 0.0f64;
+        let mut battery_j = 0u64;
 
         for p in &parts {
             let m = part_mass(p);
@@ -384,7 +384,11 @@ impl ShipBlueprint {
             hull += p.definition.hull;
             match p.definition.equipment {
                 Equipment::Storage { capacity_m3: c } => capacity_m3 = capacity_m3 + c,
-                Equipment::Battery { capacity_j: c } => battery_j = battery_j + c,
+                Equipment::Battery { capacity_j: c } => {
+                    battery_j = battery_j
+                        .checked_add(c)
+                        .context("battery capacity overflow")?
+                }
                 Equipment::CoolantTank { capacity_kg } => shield_reserve_capacity_kg += capacity_kg,
                 Equipment::HeatSink { capacity_j } => extra_heat_capacity_j += capacity_j,
                 Equipment::Shield {
@@ -717,10 +721,48 @@ pub fn ntr_patrol() -> ShipBlueprint {
     ship.attach("autocannon_compact", 1, "bottom", "top", 0);
     ship.attach("storage", 6, "right", "left", 0);
     for (resource, volume_m3, initial_fill) in [
-        ("water", 4.0, 0.75),
+        ("water", 7.5625, 1.0),
         ("reactor_fuel", 0.05, 0.5),
         ("spent_fuel", 0.05, 0.0),
         ("autocannon_round", 0.15, 1.0),
+    ] {
+        ship.parts[0].tanks.push(Tank {
+            resource: resource.into(),
+            volume_m3,
+            initial_fill,
+        });
+    }
+    ship.parts[1].tanks.push(Tank {
+        resource: "water".into(),
+        volume_m3: 0.625,
+        initial_fill: 1.0,
+    });
+    ship
+}
+
+pub fn expedition_patrol() -> ShipBlueprint {
+    let mut ship = ShipBlueprint {
+        name: "Peregrine expedition patrol".into(),
+        ..Default::default()
+    };
+    ship.attach("fuselage_4m", 0, "", "", 0);
+    ship.attach("fuselage_end_4m", 1, "fore", "aft", 0);
+    ship.attach("micropulse_engine_4m", 1, "aft", "fore", 0);
+    ship.attach("reactor_hot_4m", 2, "front", "back", 0);
+    ship.attach("command_2m", 4, "front", "back", 0);
+    ship.attach("laser_2m", 1, "left", "right", 0);
+    ship.attach("laser_2m", 1, "right", "left", 0);
+    ship.attach("shield_emitter_2m", 1, "top", "bottom", 0);
+    ship.attach("coolant_tank", 8, "top", "bottom", 0);
+    ship.attach("battery_2m", 4, "left", "right", 0);
+    ship.attach("storage", 4, "right", "left", 0);
+    ship.attach("torquer_agile", 5, "top", "bottom", 0);
+    ship.attach("torquer_agile", 5, "bottom", "top", 0);
+    ship.attach("slipdrive_2m", 1, "bottom", "top", 0);
+    for (resource, volume_m3, initial_fill) in [
+        ("micropulse_charge", 60., 0.5),
+        ("reactor_fuel", 1., 1.),
+        ("spent_fuel", 1., 0.),
     ] {
         ship.parts[0].tanks.push(Tank {
             resource: resource.into(),

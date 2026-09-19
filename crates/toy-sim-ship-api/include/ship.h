@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v15"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v23"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (15)
+#define SHIP_API_VERSION (23)
 #define SHIP_ERR_GAS (-1)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
@@ -60,6 +60,7 @@ extern "C" {
 #define SHIP_SET_GENERATOR_DEMAND (2)
 #define SHIP_SET_SHIELD_ENABLED (3)
 #define SHIP_SET_SENSOR_ENABLED (4)
+#define SHIP_REQUEST_THROTTLE (11)
 #define SHIP_REQUEST_MANUAL (0)
 #define SHIP_REQUEST_HOLD_ATTITUDE (1)
 #define SHIP_REQUEST_STOP_GUIDANCE (2)
@@ -123,12 +124,14 @@ extern "C" {
 #define SHIP_SET_RCS (6)
 #define SHIP_WEAPON_PROPELLANT (4096)
 #define SHIP_SET_WEAPON (5)
-#define SHIP_REQUEST_ENGAGE_WEAPONS (7)
-#define SHIP_REQUEST_HOLD_FIRE (8)
+#define SHIP_REQUEST_MARK_TARGET (7)
+#define SHIP_REQUEST_STOP_FIRING (8)
+#define SHIP_REQUEST_UNMARK_TARGET (9)
+#define SHIP_REQUEST_START_FIRING (10)
 #define SHIP_INSTRUMENT_WEAPONS (3)
 #define SHIP_CONTACT_PROJECTILE (3)
 #define SHIP_WEAPONS_HOLD (0)
-#define SHIP_WEAPONS_ENGAGE (1)
+#define SHIP_WEAPONS_FIRING (1)
 #define SHIP_WEAPON_UNAVAILABLE (1)
 #define SHIP_WEAPON_AMMO (4)
 #define SHIP_WEAPON_COOLDOWN (16)
@@ -151,6 +154,12 @@ SHIP_ASSERT(SHIP_ALIGNOF(ship_text64) == 8, "text alignment");
 typedef struct { uint64_t len; uint8_t bytes[256]; } ship_text256;
 SHIP_ASSERT(sizeof(ship_text256) == 264, "text layout");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_text256) == 8, "text alignment");
+typedef struct {
+    double throttle;
+} ship_throttle_request_record;
+SHIP_ASSERT(offsetof(ship_throttle_request_record, throttle) == 0, "ThrottleRequest.throttle");
+SHIP_ASSERT(sizeof(ship_throttle_request_record) == 8, "ThrottleRequest size");
+SHIP_ASSERT(SHIP_ALIGNOF(ship_throttle_request_record) == 8, "ThrottleRequest alignment");
 typedef struct {
     uint64_t tick;
     uint64_t snapshot;
@@ -218,7 +227,7 @@ typedef struct {
     double shield_reserve_kg;
     double shield_reserve_capacity_kg;
     double shield_strength;
-    double energy_j;
+    uint64_t energy_j;
     uint64_t shield_state;
 } ship_ship_resources_record;
 SHIP_ASSERT(offsetof(ship_ship_resources_record, hull_hp) == 0, "ShipResources.hull_hp");
@@ -278,7 +287,7 @@ SHIP_ASSERT(offsetof(ship_storage_spec_record, capacity_m3) == 0, "StorageSpec.c
 SHIP_ASSERT(sizeof(ship_storage_spec_record) == 8, "StorageSpec size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_storage_spec_record) == 8, "StorageSpec alignment");
 typedef struct {
-    double capacity_j;
+    uint64_t capacity_j;
 } ship_battery_spec_record;
 SHIP_ASSERT(offsetof(ship_battery_spec_record, capacity_j) == 0, "BatterySpec.capacity_j");
 SHIP_ASSERT(sizeof(ship_battery_spec_record) == 8, "BatterySpec size");
@@ -434,7 +443,7 @@ typedef struct {
     uint64_t inhibit_flags;
     uint64_t ammunition_units;
     uint64_t shots_fired;
-    double battery_energy_j;
+    uint64_t battery_energy_j;
     double shot_energy_j;
     double yaw_rad;
     double pitch_rad;
@@ -454,11 +463,11 @@ SHIP_ASSERT(SHIP_ALIGNOF(ship_weapon_reading_record) == 8, "WeaponReading alignm
 typedef struct {
     uint64_t contact;
     double maximum_flight_time_s;
-} ship_engage_weapons_request_record;
-SHIP_ASSERT(offsetof(ship_engage_weapons_request_record, contact) == 0, "EngageWeaponsRequest.contact");
-SHIP_ASSERT(offsetof(ship_engage_weapons_request_record, maximum_flight_time_s) == 8, "EngageWeaponsRequest.maximum_flight_time_s");
-SHIP_ASSERT(sizeof(ship_engage_weapons_request_record) == 16, "EngageWeaponsRequest size");
-SHIP_ASSERT(SHIP_ALIGNOF(ship_engage_weapons_request_record) == 8, "EngageWeaponsRequest alignment");
+} ship_mark_target_request_record;
+SHIP_ASSERT(offsetof(ship_mark_target_request_record, contact) == 0, "MarkTargetRequest.contact");
+SHIP_ASSERT(offsetof(ship_mark_target_request_record, maximum_flight_time_s) == 8, "MarkTargetRequest.maximum_flight_time_s");
+SHIP_ASSERT(sizeof(ship_mark_target_request_record) == 16, "MarkTargetRequest size");
+SHIP_ASSERT(SHIP_ALIGNOF(ship_mark_target_request_record) == 8, "MarkTargetRequest alignment");
 typedef struct {
     double valid_until_s;
     uint64_t mode;

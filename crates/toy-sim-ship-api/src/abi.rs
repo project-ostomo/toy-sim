@@ -1,9 +1,9 @@
-//! Ship ABI 15: fixed little-endian records and Postcard world services.
+//! Ship ABI 17: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v15";
-pub const VERSION: u32 = 15;
+pub const IMPORT_MODULE: &str = "ship_v23";
+pub const VERSION: u32 = 23;
 pub const ERR_GAS: i32 = -1;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
@@ -47,6 +47,7 @@ pub const SET_TORQUE: u64 = 1;
 pub const SET_GENERATOR_DEMAND: u64 = 2;
 pub const SET_SHIELD_ENABLED: u64 = 3;
 pub const SET_SENSOR_ENABLED: u64 = 4;
+pub const REQUEST_THROTTLE: u64 = 11;
 pub const REQUEST_MANUAL: u64 = 0;
 pub const REQUEST_HOLD_ATTITUDE: u64 = 1;
 pub const REQUEST_STOP_GUIDANCE: u64 = 2;
@@ -111,12 +112,14 @@ pub const DEVICE_RCS: u64 = 10;
 pub const SET_RCS: u64 = 6;
 pub const WEAPON_PROPELLANT: u64 = 4096;
 pub const SET_WEAPON: u64 = 5;
-pub const REQUEST_ENGAGE_WEAPONS: u64 = 7;
-pub const REQUEST_HOLD_FIRE: u64 = 8;
+pub const REQUEST_MARK_TARGET: u64 = 7;
+pub const REQUEST_STOP_FIRING: u64 = 8;
+pub const REQUEST_UNMARK_TARGET: u64 = 9;
+pub const REQUEST_START_FIRING: u64 = 10;
 pub const INSTRUMENT_WEAPONS: u64 = 3;
 pub const CONTACT_PROJECTILE: u64 = 3;
 pub const WEAPONS_HOLD: u64 = 0;
-pub const WEAPONS_ENGAGE: u64 = 1;
+pub const WEAPONS_FIRING: u64 = 1;
 pub const WEAPON_UNAVAILABLE: u64 = 1;
 pub const WEAPON_AMMO: u64 = 4;
 pub const WEAPON_COOLDOWN: u64 = 16;
@@ -152,6 +155,14 @@ pub trait Record: private::Sealed + Copy + Default {
         Some(value)
     }
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ThrottleRequest {
+    pub throttle: f64,
+}
+impl private::Sealed for ThrottleRequest {}
+impl Record for ThrottleRequest {}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -284,7 +295,7 @@ pub struct ShipResources {
     pub shield_reserve_kg: f64,
     pub shield_reserve_capacity_kg: f64,
     pub shield_strength: f64,
-    pub energy_j: f64,
+    pub energy_j: u64,
     pub shield_state: u64,
 }
 
@@ -374,7 +385,7 @@ const _: () = assert!(core::mem::offset_of!(StorageSpec, capacity_m3) == 0);
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct BatterySpec {
-    pub capacity_j: f64,
+    pub capacity_j: u64,
 }
 
 impl private::Sealed for BatterySpec {}
@@ -591,7 +602,7 @@ pub struct WeaponReading {
     pub inhibit_flags: u64,
     pub ammunition_units: u64,
     pub shots_fired: u64,
-    pub battery_energy_j: f64,
+    pub battery_energy_j: u64,
     pub shot_energy_j: f64,
     pub yaw_rad: f64,
     pub pitch_rad: f64,
@@ -613,17 +624,16 @@ const _: () = assert!(size_of::<WeaponReading>() == 72 && align_of::<WeaponReadi
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
-pub struct EngageWeaponsRequest {
+pub struct MarkTargetRequest {
     pub contact: u64,
     pub maximum_flight_time_s: f64,
 }
 
-impl private::Sealed for EngageWeaponsRequest {}
-impl Record for EngageWeaponsRequest {}
-const _: () = assert!(core::mem::offset_of!(EngageWeaponsRequest, contact) == 0);
-const _: () = assert!(core::mem::offset_of!(EngageWeaponsRequest, maximum_flight_time_s) == 8);
-const _: () =
-    assert!(size_of::<EngageWeaponsRequest>() == 16 && align_of::<EngageWeaponsRequest>() == 8);
+impl private::Sealed for MarkTargetRequest {}
+impl Record for MarkTargetRequest {}
+const _: () = assert!(core::mem::offset_of!(MarkTargetRequest, contact) == 0);
+const _: () = assert!(core::mem::offset_of!(MarkTargetRequest, maximum_flight_time_s) == 8);
+const _: () = assert!(size_of::<MarkTargetRequest>() == 16 && align_of::<MarkTargetRequest>() == 8);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -1237,7 +1247,7 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v15")]
+    #[link(wasm_import_module = "ship_v23")]
     unsafe extern "C" {
         pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
         pub fn world_command(input: *const u8, bytes: u32) -> i32;

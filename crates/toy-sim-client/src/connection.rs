@@ -29,7 +29,7 @@ impl AssetClient {
 pub struct Endpoint {
     pub assets: AssetClient,
     pub input: tokio::sync::mpsc::Sender<InputFrame>,
-    pub state: tokio::sync::mpsc::Receiver<std::sync::Arc<Frame>>,
+    pub state: tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<Frame>>,
     pub status: tokio::sync::watch::Receiver<Option<String>>,
 }
 
@@ -43,19 +43,43 @@ pub async fn connect(
     let stream = mux.open(b"main").await?;
     let (mut read, mut write) = tokio::io::split(stream);
     let (send, mut input) = tokio::sync::mpsc::channel(16);
-    let (state, receive) = tokio::sync::mpsc::channel(12);
+    let (state, receive) = tokio::sync::mpsc::unbounded_channel();
     let (requests, requested) = tokio::sync::mpsc::channel(8);
     let (status, connection_status) = tokio::sync::watch::channel(None);
     tokio::spawn(async move {
         let loading = load_assets(mux.clone(), requested);
         let reader = async {
+            let mut last_arrival = None;
+            let mut summary_at = std::time::Instant::now();
+            let mut received = 0_u64;
+            let mut max_gap_ms = 0_f64;
             loop {
                 let toy_sim_protocol::Message::State(frame) =
                     toy_sim_net::read_message(&mut read).await?
                 else {
                     anyhow::bail!("expected state")
                 };
-                state.send(std::sync::Arc::new(frame)).await?;
+                let now = std::time::Instant::now();
+                if let Some(previous) = last_arrival {
+                    let gap_ms = now.duration_since(previous).as_secs_f64() * 1000.;
+                    max_gap_ms = max_gap_ms.max(gap_ms);
+                    if gap_ms >= 500. {
+                        tracing::warn!(target: "toy_sim_client::diagnostics", gap_ms,
+                            tick = frame.tick, sequence = frame.sequence,
+                            sim_time_ns = frame.sim_time_ns, "snapshot arrival gap (network task)");
+                    }
+                }
+                last_arrival = Some(now);
+                received += 1;
+                if now.duration_since(summary_at).as_secs() >= 5 {
+                    tracing::debug!(target: "toy_sim_client::diagnostics", received, max_gap_ms,
+                        tick = frame.tick, sequence = frame.sequence,
+                        sim_time_ns = frame.sim_time_ns, "snapshot reception (network task)");
+                    summary_at = now;
+                    received = 0;
+                    max_gap_ms = 0.;
+                }
+                state.send(std::sync::Arc::new(frame))?;
             }
             #[allow(unreachable_code)]
             Ok::<(), anyhow::Error>(())

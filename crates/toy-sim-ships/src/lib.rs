@@ -22,3 +22,6 @@ pub mod utilities;
 pub mod attachments;
 pub use attachments::*;
 pub mod collision;
+
+pub mod quantities;
+pub use quantities::{StochasticBalance, StochasticRound};

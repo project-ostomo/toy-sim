@@ -6,9 +6,13 @@ use bevy::{
     pbr::{
         AtmosphereMode, AtmosphereSettings, ExtractedAtmosphere, GpuAtmosphereSettings,
         extract_atmosphere,
+        resources::{AtmosphereTextures, AtmosphereTransformsOffset, GpuAtmosphere},
     },
     prelude::*,
-    render::{Extract, ExtractSchedule, RenderApp, sync_world::RenderEntity},
+    render::{
+        Extract, ExtractSchedule, RenderApp, extract_component::DynamicUniformIndex,
+        sync_world::RenderEntity,
+    },
 };
 
 #[derive(Component)]
@@ -128,9 +132,15 @@ fn extract(
 ) {
     for (entity, atmosphere, settings) in &cameras {
         let (Some(atmosphere), Some(settings)) = (atmosphere, settings) else {
-            commands
-                .entity(entity)
-                .remove::<(ExtractedAtmosphere, GpuAtmosphereSettings)>();
+            commands.entity(entity).remove::<(
+                ExtractedAtmosphere,
+                GpuAtmosphereSettings,
+                GpuAtmosphere,
+                DynamicUniformIndex<GpuAtmosphere>,
+                DynamicUniformIndex<GpuAtmosphereSettings>,
+                AtmosphereTransformsOffset,
+                AtmosphereTextures,
+            )>();
             continue;
         };
         commands.entity(entity).insert((
@@ -143,5 +153,77 @@ fn extract(
             },
             GpuAtmosphereSettings::from(settings.clone()),
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::ViewObservation;
+    use bevy::{ecs::system::RunSystemOnce, render::MainWorld};
+    use toy_sim_model::{Completion, GalacticPosition, Id, ViewState};
+
+    fn atmosphere(body: u8) -> ViewAtmosphere {
+        ViewAtmosphere {
+            inner_radius: 6e6,
+            outer_radius: 6.1e6,
+            position: Vec3::new(0., -4.6e7, 0.),
+            ground_albedo: Vec3::splat(0.3),
+            medium: Handle::default(),
+            body: Id([body; 16]),
+        }
+    }
+
+    #[test]
+    fn leaving_an_atmospheric_system_clears_gpu_state_and_allows_reentry() {
+        let mut render = World::new();
+        let view = render.spawn_empty().id();
+        let mut main = MainWorld::default();
+        let camera = main
+            .spawn((
+                RenderEntity::from(view),
+                ViewObservation(ViewState {
+                    focused_ship: None,
+                    origin: GalacticPosition::ZERO,
+                    id: 1,
+                    revision: 1,
+                    group: Id([1; 16]),
+                    tracks: Vec::new(),
+                    completion: Completion::Complete,
+                }),
+                atmosphere(1),
+                AtmosphereSettings::default(),
+            ))
+            .id();
+        main.run_system_once(super::super::camera::setup_views)
+            .unwrap();
+        render.insert_resource(main);
+        render.run_system_once(extract).unwrap();
+        render
+            .run_system_once::<_, Result, _>(bevy::pbr::resources::prepare_atmosphere_uniforms)
+            .unwrap()
+            .unwrap();
+        assert!(render.get::<GpuAtmosphere>(view).is_some());
+
+        render
+            .resource_mut::<MainWorld>()
+            .entity_mut(camera)
+            .remove::<(ViewAtmosphere, AtmosphereSettings)>();
+        render.run_system_once(extract).unwrap();
+        assert!(render.get::<ExtractedAtmosphere>(view).is_none());
+        assert!(render.get::<GpuAtmosphereSettings>(view).is_none());
+        assert!(render.get::<GpuAtmosphere>(view).is_none());
+
+        render
+            .resource_mut::<MainWorld>()
+            .entity_mut(camera)
+            .insert((atmosphere(2), AtmosphereSettings::default()));
+        render.run_system_once(extract).unwrap();
+        render
+            .run_system_once::<_, Result, _>(bevy::pbr::resources::prepare_atmosphere_uniforms)
+            .unwrap()
+            .unwrap();
+        assert!(render.get::<GpuAtmosphere>(view).is_some());
+        assert!(render.get::<GpuAtmosphereSettings>(view).is_some());
     }
 }

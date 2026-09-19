@@ -6,6 +6,7 @@ use toy_sim_ship_api::abi;
 #[derive(Default)]
 pub struct WeaponsController {
     target: u64,
+    firing: bool,
     maximum_flight_time: f64,
     contacts: Vec<abi::Contact>,
     last_seen: f64,
@@ -63,7 +64,7 @@ impl WeaponsController {
         }
     }
 
-    pub fn engage(&mut self, request: abi::EngageWeaponsRequest, now: f64) -> Result<(), String> {
+    pub fn mark_target(&mut self, request: abi::MarkTargetRequest, now: f64) -> Result<(), String> {
         if !request.maximum_flight_time_s.is_finite()
             || !(0.01..=60.0).contains(&request.maximum_flight_time_s)
         {
@@ -76,6 +77,7 @@ impl WeaponsController {
         {
             return Err("Target ship is not sensor-visible".into());
         }
+        self.firing = false;
         self.target = request.contact;
         self.maximum_flight_time = request.maximum_flight_time_s;
         self.last_seen = now;
@@ -83,7 +85,20 @@ impl WeaponsController {
         Ok(())
     }
 
-    pub fn hold_fire(&mut self) {
+    pub fn start_firing(&mut self) -> Result<(), String> {
+        if self.target == 0 {
+            return Err("No marked target".into());
+        }
+        self.firing = true;
+        Ok(())
+    }
+
+    pub fn stop_firing(&mut self) {
+        self.firing = false;
+    }
+
+    pub fn unmark_target(&mut self) {
+        self.firing = false;
         self.target = 0;
         self.reason.clear();
     }
@@ -92,7 +107,7 @@ impl WeaponsController {
         let now = sample.tick.time_s;
         let dt = sample.tick.physics_dt_s;
         if self.target != 0 && now - self.last_seen > 2.0 {
-            self.hold_fire();
+            self.unmark_target();
             self.reason = "Target lost".into();
         }
         let contact = self.contacts.iter().find(|c| c.id == self.target);
@@ -165,7 +180,7 @@ impl WeaponsController {
                 && tolerance > 0.0
                 && device.available()
                 && reading.ammunition_units > 0
-                && reading.battery_energy_j >= reading.shot_energy_j
+                && reading.battery_energy_j as f64 >= reading.shot_energy_j
                 && reading.inhibit_flags & abi::WEAPON_PROPELLANT == 0;
             ready |= available && error <= tolerance;
             settings.push((
@@ -175,7 +190,7 @@ impl WeaponsController {
                     aim_angular_velocity_rad_s: rate.to_array(),
                     maximum_pointing_error_rad: tolerance,
                     valid_until_s: now + dt,
-                    trigger: u64::from(available),
+                    trigger: u64::from(available && self.firing),
                 },
             ));
             let mut marker_id = 0;
@@ -214,6 +229,8 @@ impl WeaponsController {
             self.reason.as_str()
         } else if contact.is_none() {
             "Reacquiring target"
+        } else if !self.firing {
+            "Target marked"
         } else if ready {
             "Firing"
         } else {
@@ -225,10 +242,10 @@ impl WeaponsController {
             markers,
             state: abi::WeaponsState {
                 valid_until_s: now + 2.0,
-                mode: if self.target == 0 {
+                mode: if !self.firing {
                     abi::WEAPONS_HOLD
                 } else {
-                    abi::WEAPONS_ENGAGE
+                    abi::WEAPONS_FIRING
                 },
                 target_contact: self.target,
                 reason: abi::Text256::new(reason),
@@ -240,6 +257,60 @@ impl WeaponsController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn marking_and_firing_are_independent_and_unmark_is_safe() {
+        let mut controller = WeaponsController::default();
+        let sample = Sample {
+            tick: abi::TickContext {
+                physics_dt_s: 0.1,
+                ..Default::default()
+            },
+            flight: abi::FlightState {
+                rotation: [0., 0., 0., 1.],
+                ..Default::default()
+            },
+            propellant_kg: 0.,
+        };
+        let hardware = Hardware::default();
+        let contacts = [abi::Contact {
+            id: 7,
+            kind: abi::CONTACT_SHIP,
+            ..Default::default()
+        }];
+        controller.observe(&sample, &contacts);
+        assert!(controller.start_firing().is_err());
+        controller
+            .mark_target(
+                abi::MarkTargetRequest {
+                    contact: 7,
+                    maximum_flight_time_s: 30.,
+                },
+                0.,
+            )
+            .unwrap();
+        let marked = controller.update(&sample, &hardware).state;
+        assert_eq!(marked.target_contact, 7);
+        assert_eq!(marked.mode, abi::WEAPONS_HOLD);
+        controller.start_firing().unwrap();
+        assert_eq!(
+            controller.update(&sample, &hardware).state.mode,
+            abi::WEAPONS_FIRING
+        );
+        controller.stop_firing();
+        for _ in 0..10 {
+            controller.observe(&sample, &contacts);
+            let stopped = controller.update(&sample, &hardware).state;
+            assert_eq!(stopped.target_contact, 7);
+            assert_eq!(stopped.mode, abi::WEAPONS_HOLD);
+        }
+        controller.start_firing().unwrap();
+        controller.unmark_target();
+        let unmarked = controller.update(&sample, &hardware).state;
+        assert_eq!(unmarked.target_contact, 0);
+        assert_eq!(unmarked.mode, abi::WEAPONS_HOLD);
+        assert!(controller.start_firing().is_err());
+    }
 
     #[test]
     fn intercept_tracks_crossing_target_and_rejects_escape() {

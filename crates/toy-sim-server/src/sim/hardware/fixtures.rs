@@ -124,7 +124,7 @@ fn command_module_powers_standard_avionics_and_logical_devices() {
     fixture.set_inventory(|inventory| inventory.quantities[1] = 0);
     let before = fixture.state().inventory.energy_j;
     fixture.advance();
-    assert!((before - fixture.state().inventory.energy_j - 100_300.0).abs() < 1e-6);
+    assert!(before - fixture.state().inventory.energy_j == 100_300);
     fixture
         .commands(&[DeviceCommand {
             device: design.avionics_handles[2],
@@ -134,7 +134,7 @@ fn command_module_powers_standard_avionics_and_logical_devices() {
     let before = fixture.state().inventory.energy_j;
     fixture.advance();
     let state = fixture.state();
-    assert!((before - state.inventory.energy_j - 100_200.0).abs() < 1e-6);
+    assert!(before - state.inventory.energy_j == 100_200);
     assert_eq!(state.sensor_range, 0.0);
     fixture.set_operational(design.avionics_handles[0], false);
     fixture.advance();
@@ -200,7 +200,11 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
     assert!(wrench.torque.length() < 1e-8);
     let state = fixture.state();
     assert_eq!(state.inventory.quantities[0], 0);
-    assert!((energy - state.inventory.energy_j - auxiliary_energy - expected_energy).abs() < 1e-6);
+    assert!(
+        ((energy - state.inventory.energy_j) as f64 - auxiliary_energy as f64 - expected_energy)
+            .abs()
+            <= 2.0
+    );
     assert_eq!(state.sensor_range, 100_000_000.0);
     let mass = fixture.app.world().get::<MassProps>(fixture.ship).unwrap();
     assert!(mass.inertia.abs_diff_eq(
@@ -239,7 +243,7 @@ fn computer_power_loss_and_failure_neutralize_outputs() {
         let mut fixture = HardwareFixture::standard();
         let capacity = fixture.design.battery_j;
         fixture.set_inventory(|inventory| {
-            inventory.energy_j = if failed { capacity } else { 5.0 };
+            inventory.energy_j = if failed { capacity } else { 5 };
             inventory.quantities[1] = 0;
         });
         fixture.set_operational(fixture.design.avionics_handles[0], !failed);

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 7;
+pub const VERSION: u16 = 16;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -22,7 +22,6 @@ struct Clock {
     sequence: u64,
     tick: u64,
     sim_time_ns: u64,
-    event_watermark: u64,
     rate: f64,
 }
 
@@ -68,7 +67,6 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
                     sequence: frame.sequence,
                     tick: frame.tick,
                     sim_time_ns: frame.sim_time_ns,
-                    event_watermark: frame.event_watermark,
                     rate: frame.rate,
                 },
             )?;
@@ -137,7 +135,6 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
                 sequence: clock.sequence,
                 tick: clock.tick,
                 sim_time_ns: clock.sim_time_ns,
-                event_watermark: clock.event_watermark,
                 rate: clock.rate,
                 views: read(&sections, 2)?,
                 tracks: read(&sections, 3)?,
@@ -212,7 +209,7 @@ fn pose_valid(pose: &Pose) -> bool {
 }
 
 pub fn validate_frame(frame: &Frame) -> Result<()> {
-    presentation::validate(&frame.presentation, frame.event_watermark)?;
+    presentation::validate(&frame.presentation)?;
     for system in &frame.presentation.celestial_systems {
         ensure!(
             frame.views.iter().any(|view| view.id == system.view),
@@ -304,7 +301,6 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
         );
         ensure!(
             [
-                ship.battery_j,
                 ship.hull_heat_j,
                 ship.shield_temperature_k,
                 ship.coolant_reserve_kg,
@@ -315,8 +311,20 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
             "invalid ship resources"
         );
         ensure!(
-            ship.travel.orders.len() <= 256 && ship.travel.legs.len() <= 256,
+            ship.travel.orders.len() <= 256 && ship.travel.order <= ship.travel.orders.len(),
             "travel state exceeds limit"
+        );
+        ensure!(
+            ship.travel.preferences.valid()
+                && ship
+                    .travel
+                    .fuel_budget
+                    .as_ref()
+                    .is_none_or(|budget| budget.valid())
+                && ship.travel.orders.iter().all(|stage| stage
+                    .estimated_propellant_kg
+                    .is_none_or(|kg| kg.is_finite() && kg >= 0.)),
+            "invalid travel estimates"
         );
         if let travel::Status::Blocked(reason) = &ship.travel.status {
             ensure!(reason.len() <= 1024, "travel error exceeds limit");
@@ -324,9 +332,7 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
     }
     for event in &frame.events {
         ensure!(
-            event.kind.len() <= 64
-                && event.position.is_none_or(position_valid)
-                && event.sequence <= frame.event_watermark,
+            event.kind.len() <= 64 && event.position.is_none_or(position_valid),
             "invalid event"
         );
     }
@@ -413,24 +419,14 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                     ),
                     _ => {}
                 },
-                ShipCommand::EngageWeapons {
+                ShipCommand::MarkTarget {
                     maximum_flight_time_s,
                     ..
                 } => {
                     ensure!(
                         maximum_flight_time_s.is_finite()
-                            && (0. ..=3600.).contains(maximum_flight_time_s),
+                            && (0.01..=60.).contains(maximum_flight_time_s),
                         "invalid weapon flight time"
-                    );
-                }
-                ShipCommand::Manual { throttle, steering } => {
-                    ensure!(
-                        throttle.is_finite()
-                            && (0. ..=1.).contains(throttle)
-                            && steering
-                                .iter()
-                                .all(|x| x.is_finite() && (-1. ..=1.).contains(x)),
-                        "invalid manual control"
                     );
                 }
                 ShipCommand::SetIff(iff) => {
@@ -447,11 +443,27 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                         "invalid transponder range"
                     );
                 }
-                ShipCommand::SetTravel { orders, .. } => {
+                ShipCommand::SetThrottle(value) => {
+                    ensure!(
+                        value.is_finite() && (0.0..=1.0).contains(value),
+                        "invalid throttle"
+                    );
+                }
+                ShipCommand::SetTravel {
+                    orders,
+                    preferences,
+                    ..
+                } => {
+                    ensure!(preferences.valid(), "invalid planning preference");
                     ensure!(orders.len() <= 256, "too many waypoints");
                     for order in orders {
                         let destination = match order {
-                            travel::Order::TravelTo(destination) => Some(destination),
+                            travel::Order::TravelTo(destination)
+                            | travel::Order::Sublight(destination) => Some(destination),
+                            travel::Order::Slip { destination } => {
+                                ensure!(position_valid(*destination), "invalid slip destination");
+                                None
+                            }
                             travel::Order::Guidance(guidance) => {
                                 ensure!(
                                     guidance.range_m.is_finite()
@@ -461,6 +473,18 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                                 match &guidance.target {
                                     travel::Target::Destination(destination) => Some(destination),
                                     travel::Target::Contact(_) => None,
+                                    travel::Target::Direction(direction) => {
+                                        let length_squared =
+                                            direction.iter().map(|n| n * n).sum::<f64>();
+                                        ensure!(
+                                            guidance.mode == travel::GuidanceMode::Align
+                                                && direction.iter().all(|n| n.is_finite())
+                                                && length_squared.is_finite()
+                                                && length_squared > 1e-12,
+                                            "invalid alignment direction"
+                                        );
+                                        None
+                                    }
                                 }
                             }
                             _ => None,
@@ -507,8 +531,6 @@ mod tests {
         Message::Input(InputFrame {
             world: Id([1; 16]),
             sequence: 9,
-            acknowledged_event: 3,
-            acknowledged_frame: 0,
             actions: vec![],
         })
     }
@@ -543,10 +565,7 @@ mod tests {
             Action::Ship {
                 ship: Id::new(),
                 authority_revision: 0,
-                command: ShipCommand::Manual {
-                    throttle: f64::NAN,
-                    steering: [0.; 3],
-                },
+                command: ShipCommand::Flight(FlightCommand::AimDirection([f64::NAN, 0., 0.])),
             },
         ));
         assert!(encode(&Message::Input(input)).is_err());
@@ -559,7 +578,6 @@ mod tests {
             sequence: 1,
             tick: 0,
             sim_time_ns: 0,
-            event_watermark: 0,
             rate: 0.,
             views: Vec::new(),
             tracks: BTreeMap::new(),
@@ -607,7 +625,6 @@ mod tests {
     #[test]
     fn rejects_invalid_combat_payload_and_unobserved_visual() {
         let mut frame = empty_frame();
-        frame.event_watermark = 1;
         frame.presentation.combat.push(CombatEvent {
             sequence: 1,
             sim_time_ns: 20,
@@ -651,6 +668,39 @@ mod tests {
             command: ShipCommand::Flight(FlightCommand::AimDirection([0.; 3])),
         };
         assert!(encode(&Message::Input(input)).is_err());
+    }
+
+    #[test]
+    fn direction_guidance_only_accepts_finite_alignment_vectors() {
+        let Message::Input(mut input) = message() else {
+            unreachable!()
+        };
+        for (direction, mode, valid) in [
+            ([0., 1., 0.], travel::GuidanceMode::Align, true),
+            ([0.; 3], travel::GuidanceMode::Align, false),
+            ([f64::NAN, 0., 1.], travel::GuidanceMode::Align, false),
+            ([f64::MAX; 3], travel::GuidanceMode::Align, false),
+            ([0., 1., 0.], travel::GuidanceMode::KeepRange, false),
+        ] {
+            input.actions = vec![(
+                Id::new(),
+                Action::Ship {
+                    ship: Id::new(),
+                    authority_revision: 0,
+                    command: ShipCommand::SetTravel {
+                        preferences: Default::default(),
+                        engage: true,
+                        expected_revision: 0,
+                        orders: vec![travel::Order::Guidance(travel::Guidance {
+                            mode,
+                            target: travel::Target::Direction(direction),
+                            range_m: 0.,
+                        })],
+                    },
+                },
+            )];
+            assert_eq!(encode(&Message::Input(input.clone())).is_ok(), valid);
+        }
     }
 
     #[test]

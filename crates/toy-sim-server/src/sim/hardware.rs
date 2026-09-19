@@ -8,6 +8,7 @@ use toy_sim_ships::*;
 
 pub(crate) mod cooling;
 pub(crate) mod devices;
+pub mod propulsion;
 pub(crate) mod reactors;
 pub mod utilities;
 use devices::{Demand, Generator, Shield};
@@ -130,6 +131,10 @@ pub fn bundle(d: &CompiledShipDesign, state: ShipState) -> impl Bundle + use<> {
         PartDevices::default(),
         PendingHardwareReset(state),
         PowerFlow::default(),
+        (
+            propulsion::ActuatorOutput::default(),
+            propulsion::InstalledRatings(propulsion::telemetry(d, None)),
+        ),
         DeviceOutputs(vec![DeviceOutput::default(); d.parts.len()]),
         DormantThermalElapsed::default(),
     )
@@ -184,6 +189,24 @@ pub(crate) fn initialize(
             commands.entity(*part).despawn();
         }
         utilities::install_ship(&mut commands, ship, &d.0, crew, bays);
+        let slip_power: f64 =
+            d.0.parts
+                .iter()
+                .filter_map(|part| match part.definition.equipment {
+                    Equipment::Utility {
+                        utility: toy_sim_ships::utilities::UtilityDef::SlipDrive { power_w },
+                    } => Some(power_w),
+                    _ => None,
+                })
+                .sum();
+        if slip_power > 0. {
+            commands.entity(ship).insert(super::travel::SlipDrive {
+                power_w: slip_power,
+                ..Default::default()
+            });
+        } else {
+            commands.entity(ship).remove::<super::travel::SlipDrive>();
+        }
         let state = &reset.0;
         let mut parts = Vec::with_capacity(d.0.parts.len());
         for (index, device) in state.devices.iter().enumerate() {
@@ -218,6 +241,10 @@ pub(crate) fn initialize(
                 HardwareClock(state.tick),
                 SensorRange(state.sensor_range),
                 PartDevices(parts),
+                (
+                    propulsion::ActuatorOutput::default(),
+                    propulsion::InstalledRatings(propulsion::telemetry(&d.0, None)),
+                ),
                 DeviceOutputs(vec![DeviceOutput::default(); d.0.parts.len()]),
                 DormantThermalElapsed::default(),
             ))
@@ -260,7 +287,7 @@ impl HardwareWriteItem<'_, '_> {
     ) -> (f64, bevy::math::DMat3) {
         let m = d.dry_mass
             + self.inventory.0.mass(cat)
-            + self.thermal.0.shield_reserve_kg
+            + self.thermal.0.shield_reserve_kg()
             + self.thermal.0.shield_deployed_kg;
         (m, d.inertia * (m / d.dry_mass))
     }
@@ -277,7 +304,7 @@ impl HardwareWriteItem<'_, '_> {
                 tank_capacities_m3: Vec::new(),
                 quantities: Vec::new(),
                 cargo: Vec::new(),
-                energy_j: 0.0,
+                energy_j: 0,
             },
             weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
             devices: vec![DeviceState::default(); d.parts.len()],
@@ -309,7 +336,7 @@ pub fn resources(
     d: &CompiledShipDesign,
     hull: f64,
     t: &thermal::ThermalState,
-    energy: f64,
+    energy: u64,
 ) -> toy_sim_ship_api::abi::ShipResources {
     toy_sim_ship_api::abi::ShipResources {
         hull_hp: hull,
@@ -317,7 +344,7 @@ pub fn resources(
         hull_heat_j: t.hull_energy_j,
         hull_heat_capacity_j: d.hull_heat_capacity_j,
         shield_temperature_k: t.shield_temperature(d.into()),
-        shield_reserve_kg: t.shield_reserve_kg,
+        shield_reserve_kg: t.shield_reserve_kg(),
         shield_reserve_capacity_kg: d.shield_reserve_capacity_kg,
         shield_strength: t.shield_strength(d.into()),
         energy_j: energy,
@@ -332,7 +359,7 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
             tank_capacities_m3: Vec::new(),
             quantities: Vec::new(),
             cargo: Vec::new(),
-            energy_j: 0.0,
+            energy_j: 0,
         },
         weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
         devices: vec![DeviceState::default(); d.parts.len()],
@@ -496,16 +523,23 @@ pub(crate) fn generators(
                 };
                 let output = &mut outputs.0[index];
                 output.power.requested_w = generator.power_w * throttle;
-                let wanted = (output.power.requested_w * dt)
-                    .min((design.battery_j - hardware.inventory.0.energy_j).max(0.0));
+                let wanted = (output.power.requested_w * dt).min(
+                    design
+                        .battery_j
+                        .saturating_sub(hardware.inventory.0.energy_j) as f64,
+                );
                 if wanted <= 0.0 {
                     continue;
                 }
 
                 let fuel = generator.fuel_kg_s * wanted / generator.power_w;
                 let fraction = spend(&mut hardware.inventory.0, [0.0, fuel, 0.0]);
-                let generated = wanted * fraction;
-                hardware.inventory.0.energy_j += generated;
+                let generated = hardware
+                    .inventory
+                    .0
+                    .energy_j
+                    .deposit(wanted * fraction, design.battery_j)
+                    as f64;
                 hardware
                     .thermal
                     .0
@@ -548,6 +582,7 @@ pub(crate) fn actuate(
             &PreciseTransform,
             &mut AccumulatedForce,
             &mut AccumulatedTorque,
+            &mut propulsion::ActuatorOutput,
         ),
         Without<super::travel::Dormant>,
     >,
@@ -555,7 +590,8 @@ pub(crate) fn actuate(
 ) {
     let dt = time.delta_secs_f64();
     ships.par_iter_mut().for_each(
-        |(design, mut hardware, mut outputs, pose, mut force, mut torque)| {
+        |(design, mut hardware, mut outputs, pose, mut force, mut torque, mut measured)| {
+            *measured = propulsion::ActuatorOutput::default();
             if hardware.hull.0 <= 0.0 {
                 return;
             }
@@ -574,6 +610,7 @@ pub(crate) fn actuate(
                     }
                     continue;
                 }
+                let mut supplied_energy = 0;
                 let fraction = if demand.enabled {
                     let mut fraction = 1.0_f64;
                     for (resource, requested) in
@@ -591,13 +628,13 @@ pub(crate) fn actuate(
                     for (available, requested) in [
                         hardware.inventory.0.available(0),
                         hardware.inventory.0.available(1),
-                        hardware.inventory.0.energy_j,
+                        hardware.inventory.0.energy_j as f64,
                     ]
                     .into_iter()
                     .zip(demand.inputs)
                     {
                         if requested > 0.0 {
-                            fraction = fraction.min(available / requested);
+                            fraction = fraction.min((available / requested).clamp(0.0, 1.0));
                         }
                     }
                     if let Some((resource, quantity)) = demand.resource_output {
@@ -622,7 +659,11 @@ pub(crate) fn actuate(
                     }
                     hardware.inventory.0.consume(0, demand.inputs[0] * fraction);
                     hardware.inventory.0.consume(1, demand.inputs[1] * fraction);
-                    hardware.inventory.0.energy_j -= demand.inputs[2] * fraction;
+                    supplied_energy = hardware
+                        .inventory
+                        .0
+                        .energy_j
+                        .withdraw(demand.inputs[2] * fraction);
                     if let Some((resource, _)) = demand.resource_output {
                         hardware
                             .inventory
@@ -636,10 +677,13 @@ pub(crate) fn actuate(
                 };
                 let output = &mut outputs.0[index];
                 output.power.requested_w = demand.inputs[2] / dt;
-                output.power.supplied_w = output.power.requested_w * fraction;
-                let recovered = (demand.generated_energy_j * fraction)
-                    .min((design.0.battery_j - hardware.inventory.0.energy_j).max(0.0));
-                hardware.inventory.0.energy_j += recovered;
+                output.power.supplied_w = supplied_energy as f64 / dt;
+                let recovered = hardware
+                    .inventory
+                    .0
+                    .energy_j
+                    .deposit(demand.generated_energy_j * fraction, design.0.battery_j)
+                    as f64;
                 output.power.recovered_w = recovered / dt;
                 output.actual = demand.actual * fraction;
                 output.thrust_n = (demand.thrust * fraction).to_array();
@@ -665,6 +709,8 @@ pub(crate) fn actuate(
 
             hardware.thermal.0.shield_enabled = any_shield_enabled;
             hardware.thermal.0.shield_powered = any_shield_enabled && all_shields_powered;
+            measured.force = local_force;
+            measured.torque = local_torque;
             force.0 += pose.rotation * local_force;
             torque.0 += pose.rotation * local_torque;
         },
@@ -764,9 +810,7 @@ pub fn spend_travel_energy(world: &mut World, ship: Entity, requested_j: f64) ->
     let Some(mut inventory) = world.get_mut::<ShipInventory>(ship) else {
         return 0.;
     };
-    let paid = inventory.0.energy_j.min(requested_j.max(0.));
-    inventory.0.energy_j -= paid;
-    paid
+    inventory.0.energy_j.withdraw(requested_j) as f64
 }
 
 pub fn add_travel_heat(world: &mut World, ship: Entity, energy_j: f64, dt: f64) {
@@ -821,7 +865,7 @@ fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
     let available = [
         inventory.available(0),
         inventory.available(1),
-        inventory.energy_j,
+        inventory.energy_j as f64,
     ];
     let mut fraction = 1f64;
     for i in 0..3 {
@@ -831,7 +875,7 @@ fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
     }
     inventory.consume(0, demand[0] * fraction);
     inventory.consume(1, demand[1] * fraction);
-    inventory.energy_j = (inventory.energy_j - demand[2] * fraction).max(0.);
+    inventory.energy_j.withdraw(demand[2] * fraction);
     fraction
 }
 

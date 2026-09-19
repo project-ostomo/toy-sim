@@ -1,8 +1,5 @@
 use anyhow::{Result, ensure};
-use std::{
-    collections::{BTreeSet, VecDeque},
-    sync::Arc,
-};
+use std::{collections::VecDeque, sync::Arc};
 use toy_sim_model::*;
 
 pub(crate) struct Playback {
@@ -10,12 +7,11 @@ pub(crate) struct Playback {
     initial_target: usize,
     pub target_frames: usize,
     pub underruns: u64,
-    pub event_watermark: u64,
     pub(crate) world: Option<Id>,
     last_sequence: u64,
     playing: bool,
     current: Option<Arc<Frame>>,
-    seen_results: BTreeSet<Id>,
+    catching_up: bool,
     publications: VecDeque<Publications>,
 }
 
@@ -23,6 +19,7 @@ pub(crate) struct Playback {
 pub(crate) struct Publications {
     pub sequence: u64,
     pub results: Vec<CommandResult>,
+    pub events: Vec<Event>,
     pub combat: Vec<RetainedCombat>,
 }
 
@@ -39,12 +36,11 @@ impl Playback {
             initial_target,
             target_frames: initial_target,
             underruns: 0,
-            event_watermark: 0,
             world: None,
             last_sequence: 0,
             playing: false,
             current: None,
-            seen_results: BTreeSet::new(),
+            catching_up: false,
             publications: VecDeque::new(),
         }
     }
@@ -58,8 +54,7 @@ impl Playback {
             self.target_frames = self.initial_target;
             self.underruns = 0;
             self.last_sequence = 0;
-            self.event_watermark = 0;
-            self.seen_results.clear();
+            self.catching_up = false;
             self.publications.clear();
             self.world = Some(frame.world);
         }
@@ -74,22 +69,18 @@ impl Playback {
                 .is_none_or(|old| frame.sim_time_ns >= old.sim_time_ns),
             "simulation time moved backwards"
         );
-        let results: Vec<_> = frame
-            .results
-            .iter()
-            .filter(|result| !self.seen_results.contains(&result.id))
-            .cloned()
-            .collect();
-        ensure!(
-            self.seen_results.len() + results.len() <= 65536,
-            "command history exhausted"
-        );
+        self.last_sequence = frame.sequence;
+        self.frames.push_back(frame);
+        Ok(())
+    }
+
+    fn publish(&mut self, frame: &Frame) {
+        let results = frame.results.clone();
 
         let combat = frame
             .presentation
             .combat
             .iter()
-            .filter(|event| event.sequence > self.event_watermark)
             .map(|event| {
                 let destroyed_instance = match event.kind {
                     CombatEventKind::Destroyed { target, .. } => frame
@@ -105,25 +96,14 @@ impl Playback {
                 }
             })
             .collect::<Vec<_>>();
-        self.seen_results
-            .extend(results.iter().map(|result| result.id));
-        if !results.is_empty() || !combat.is_empty() {
+        if !results.is_empty() || !combat.is_empty() || !frame.events.is_empty() {
             self.publications.push_back(Publications {
                 sequence: frame.sequence,
                 results,
+                events: frame.events.clone(),
                 combat,
             });
         }
-        self.last_sequence = frame.sequence;
-        self.event_watermark = self.event_watermark.max(frame.event_watermark);
-        self.frames.push_back(frame);
-        if self.frames.len() > 12 {
-            while self.frames.len() > self.target_frames {
-                self.frames.pop_front();
-            }
-            self.playing = false;
-        }
-        Ok(())
     }
 
     pub fn tick(&mut self) -> Option<&Frame> {
@@ -133,8 +113,20 @@ impl Playback {
             }
             self.playing = true;
         }
+        if self.frames.len() > self.target_frames + 6 {
+            self.catching_up = true;
+        }
+        if self.catching_up && self.frames.len() > self.target_frames {
+            let frame = self.frames.pop_front().unwrap();
+            self.publish(&frame);
+            self.current = Some(frame);
+        }
+        if self.frames.len() <= self.target_frames {
+            self.catching_up = false;
+        }
         match self.frames.pop_front() {
             Some(frame) => {
+                self.publish(&frame);
                 self.current = Some(frame);
                 self.current.as_deref()
             }
@@ -147,12 +139,30 @@ impl Playback {
         }
     }
 
-    pub fn frame(&self) -> Option<&Frame> {
-        self.current.as_deref()
+    pub fn queued_frames(&self) -> usize {
+        self.frames.len()
     }
 
-    pub fn latest_sequence(&self) -> u64 {
-        self.last_sequence
+    pub fn buffered_ns(&self) -> u64 {
+        let Some(latest) = self.frames.back() else {
+            return 0;
+        };
+        let earliest = self.current.as_ref().or(self.frames.front()).unwrap();
+        latest.sim_time_ns.saturating_sub(earliest.sim_time_ns)
+    }
+
+    #[cfg(feature = "ui")]
+    pub fn buffering(&self) -> bool {
+        !self.playing
+    }
+
+    #[cfg(any(feature = "ui", test))]
+    pub fn catching_up(&self) -> bool {
+        self.catching_up
+    }
+
+    pub fn frame(&self) -> Option<&Frame> {
+        self.current.as_deref()
     }
 
     pub fn take_publications(&mut self, sequence: u64) -> Publications {
@@ -167,6 +177,7 @@ impl Playback {
         {
             let batch = self.publications.pop_front().unwrap();
             ready.results.extend(batch.results);
+            ready.events.extend(batch.events);
             ready.combat.extend(batch.combat);
         }
         ready
@@ -184,7 +195,6 @@ mod tests {
             sequence,
             tick: sequence,
             sim_time_ns: sequence * 100_000_000,
-            event_watermark: 0,
             rate: 1.,
             views: Vec::new(),
             tracks: BTreeMap::new(),
@@ -194,6 +204,27 @@ mod tests {
             results: Vec::new(),
             presentation: PresentationFrame::default(),
         }
+    }
+
+    #[test]
+    fn buffered_duration_uses_simulation_timestamps_including_pauses() {
+        let mut playback = Playback::new(true);
+        playback.receive(frame(1)).unwrap();
+        playback.tick().unwrap();
+        let mut next = frame(2);
+        next.sim_time_ns = 450_000_000;
+        playback.receive(next).unwrap();
+        let mut paused = frame(3);
+        paused.sim_time_ns = 450_000_000;
+        playback.receive(paused).unwrap();
+        assert_eq!(playback.queued_frames(), 2);
+        assert!(!playback.catching_up());
+        assert_eq!(playback.buffered_ns(), 350_000_000);
+        playback.tick().unwrap();
+        assert_eq!(playback.queued_frames(), 1);
+        assert_eq!(playback.buffered_ns(), 0);
+        playback.tick().unwrap();
+        assert_eq!(playback.buffered_ns(), 0);
     }
 
     #[test]
@@ -255,45 +286,45 @@ mod tests {
     }
 
     #[test]
-    fn burst_trimming_retains_recent_frames_and_deduplicated_results_and_events() {
+    fn large_backlog_is_consumed_in_order_with_catchup_hysteresis() {
         let mut playback = Playback::new(false);
-        let command = Id([7; 16]);
-        let event = CombatEvent {
-            sequence: 1,
-            sim_time_ns: 100_000_000,
-            kind: CombatEventKind::Fired {
-                source: ContactRef {
-                    group: Id([2; 16]),
-                    track: Id([3; 16]),
-                },
-                position: GalacticPosition::ZERO,
-                energy_j: 1.,
-            },
-        };
-        for sequence in 1..=13 {
+        for sequence in 1..=1000 {
             let mut snapshot = frame(sequence);
-            snapshot.event_watermark = 1;
-            if sequence <= 2 {
-                snapshot.presentation.combat.push(event.clone());
-                snapshot.results.push(CommandResult {
-                    id: command,
-                    effective_tick: 1,
-                    error: None,
-                    reply: None,
-                });
-            }
+            snapshot.results.push(CommandResult {
+                id: Id((sequence as u128).to_le_bytes()),
+                effective_tick: sequence,
+                error: None,
+                reply: None,
+            });
+            snapshot.presentation.combat.push(CombatEvent {
+                sequence,
+                sim_time_ns: snapshot.sim_time_ns,
+                kind: CombatEventKind::Fired {
+                    source: ContactRef {
+                        group: Id([2; 16]),
+                        track: Id([3; 16]),
+                    },
+                    position: GalacticPosition::ZERO,
+                    energy_j: 1.,
+                },
+            });
             playback.receive(snapshot).unwrap();
         }
-        assert_eq!(playback.frames.len(), 3);
-        assert_eq!(playback.tick().unwrap().sequence, 11);
-        let retained = playback.take_publications(11);
-        assert_eq!(retained.results.len(), 1);
-        assert_eq!(retained.combat.len(), 1);
-        assert_eq!(retained.combat[0].event, event);
-        assert_eq!(retained.combat[0].destroyed_instance, None);
-        assert!(playback.take_publications(13).results.is_empty());
-        assert_eq!(playback.latest_sequence(), 13);
-        assert_eq!(playback.event_watermark, 1);
+        assert_eq!(playback.frames.len(), 1000);
+        for sequence in (2..=998).step_by(2) {
+            assert_eq!(playback.tick().unwrap().sequence, sequence);
+            let publications = playback.take_publications(sequence);
+            assert_eq!(publications.results.len(), 2);
+            assert_eq!(publications.results[0].effective_tick, sequence - 1);
+            assert_eq!(publications.results[1].effective_tick, sequence);
+            assert_eq!(publications.combat.len(), 2);
+            assert_eq!(publications.combat[0].event.sequence, sequence - 1);
+            assert_eq!(publications.combat[1].event.sequence, sequence);
+            assert_eq!(publications.combat[0].destroyed_instance, None);
+        }
+        assert!(!playback.catching_up);
+        assert_eq!(playback.tick().unwrap().sequence, 999);
+        assert_eq!(playback.tick().unwrap().sequence, 1000);
         assert_eq!(playback.underruns, 0);
     }
 
@@ -323,7 +354,6 @@ mod tests {
         let command = Id([8; 16]);
         for sequence in 1..=3 {
             let mut snapshot = frame(sequence);
-            snapshot.event_watermark = 1;
             snapshot.events.push(Event {
                 sequence: 1,
                 tick: 1,
@@ -343,7 +373,7 @@ mod tests {
         let mut backwards = frame(4);
         backwards.sim_time_ns = 1;
         assert!(playback.receive(backwards).is_err());
-        assert_eq!(playback.latest_sequence(), 3);
+        assert_eq!(playback.last_sequence, 3);
         for _ in 0..3 {
             playback.tick().unwrap();
         }
@@ -355,9 +385,7 @@ mod tests {
         assert!(playback.frame().is_none());
         assert_eq!(playback.target_frames, 3);
         assert_eq!(playback.underruns, 0);
-        assert_eq!(playback.latest_sequence(), 1);
-        assert_eq!(playback.event_watermark, 0);
-        assert!(playback.seen_results.is_empty());
+        assert_eq!(playback.last_sequence, 1);
         assert!(playback.take_publications(1).results.is_empty());
         assert!(playback.tick().is_none());
     }

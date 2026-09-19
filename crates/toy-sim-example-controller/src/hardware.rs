@@ -33,7 +33,7 @@ pub struct Hardware {
     pub weapon_readings: std::collections::BTreeMap<u64, abi::WeaponReading>,
     pub shield_readings: std::collections::BTreeMap<u64, abi::ShieldReading>,
     pub devices: Vec<Device>,
-    pub propellant: Option<abi::ResourceInfo>,
+    pub propellants: Vec<abi::ResourceInfo>,
     #[cfg(target_arch = "wasm32")]
     next_device: u32,
     #[cfg(target_arch = "wasm32")]
@@ -53,12 +53,6 @@ impl Hardware {
         // Pending user requests remain in the host until discovery finishes.
         for _ in 0..16 {
             if self.next_resource < tick.resource_count as u32 {
-                let resource = sdk::resource_info(self.next_resource)?;
-
-                if resource.key.as_str() == Some("propellant") {
-                    self.propellant = Some(resource);
-                }
-
                 self.next_resource += 1;
             } else if self.next_device < tick.device_count as u32 {
                 let info = sdk::device(self.next_device)?;
@@ -80,6 +74,17 @@ impl Hardware {
                     Capability::Generator(spec) => spec.fuel_resource,
                     _ => 0,
                 };
+                if let Capability::Engine(spec) = capability {
+                    if spec.propellant_resource > 0
+                        && !self
+                            .propellants
+                            .iter()
+                            .any(|r| r.id == spec.propellant_resource)
+                    {
+                        self.propellants
+                            .push(sdk::resource_info((spec.propellant_resource - 1) as u32)?);
+                    }
+                }
                 let resource_mass_kg = if resource_id == 0 {
                     0.
                 } else {

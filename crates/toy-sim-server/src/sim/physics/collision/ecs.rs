@@ -235,9 +235,11 @@ pub fn step(world: &mut World) {
             },
         );
     }
+    let gates = gates::gather(world);
     let (report, mut combat) =
         world.resource_scope(|world, mut workspace: Mut<SolverWorkspace>| {
             workspace.weapons = combat;
+            workspace.gates = gates;
             workspace.time_s = epoch;
             let report = simulate_with_workspace(&mut bodies, dt, &mut workspace, &mut || {
                 world.entity_allocator().alloc()
@@ -354,6 +356,9 @@ pub fn step(world: &mut World) {
                 p.thermal = member.thermal;
             }
         }
+    }
+    for &(ship, entry) in &report.gate_transfers {
+        crate::sim::travel::gate_transferred(world, ship, entry);
     }
     crate::sim::combat::ingest(world, &report, epoch);
     for destruction in &report.destroyed {

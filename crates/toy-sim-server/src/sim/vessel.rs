@@ -32,6 +32,7 @@ pub struct Vessel {
 pub struct ShipDesign(pub Arc<CompiledShipDesign>);
 #[derive(Component)]
 pub struct ShipSoftware {
+    observed_restart: u64,
     pub controller: Controller,
     pub inbox: Vec<Request>,
     pub results: Vec<RequestReply>,
@@ -52,6 +53,7 @@ pub struct ShipSoftware {
 }
 impl ShipSoftware {
     pub fn new(controller: Controller) -> Self {
+        let observed_restart = controller.restart_revision;
         Self {
             controller,
             inbox: vec![],
@@ -67,8 +69,9 @@ impl ShipSoftware {
             world_source: None,
             world_actions: Vec::new(),
             last_input: None,
+            observed_restart,
             last_gas_used: 0,
-            last_gas_limit: 0,
+            last_gas_limit: toy_sim_ship_wasm::FUEL_PER_TICK,
         }
     }
 
@@ -106,7 +109,7 @@ impl Plugin for VesselsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (retaliation, run)
+                (retaliation, run, clear_computer_resets)
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),
@@ -121,11 +124,12 @@ fn spawn(
     mut wasm: ResMut<WasmRuntime>,
     launch: Res<ShipLaunch>,
 ) {
-    let starter =
-        ShipBlueprint::from_bytes(include_bytes!("../../../../assets/ships/ntr-patrol.ship"))
-            .expect("bundled patrol ship")
-            .compile(&cat.0)
-            .expect("starter design");
+    let starter = ShipBlueprint::from_bytes(include_bytes!(
+        "../../../../assets/ships/expedition-patrol.ship"
+    ))
+    .expect("bundled patrol ship")
+    .compile(&cat.0)
+    .expect("starter design");
     let starter = Arc::new(starter);
     let selected = if let Some(path) = &launch.0 {
         match ShipBlueprint::load(path).and_then(|s| s.compile(&cat.0)) {
@@ -254,6 +258,9 @@ pub(crate) fn run(
     // VM allocation/start is paid separately and bounded across the fleet.
     let mut boots = 0;
     for (_, design, mut hardware, mut software, ..) in &mut ships {
+        software.last_gas_used = 0;
+        software.last_gas_limit =
+            (time.delta_secs_f64() * toy_sim_ship_wasm::GAS_PER_SECOND as f64).round() as u64;
         if hardware.computer_running(&design.0) {
             software.controller.advance(time.delta_secs_f64());
             if software.controller.is_booting()
@@ -371,11 +378,8 @@ pub(crate) fn run(
                     let callback_start = std::time::Instant::now();
                     timings.prepare = callback_start.duration_since(start).as_secs_f64();
                     software.last_input = Some(input.clone());
-                    software.last_gas_limit = software.controller.gas_remaining();
                     let result = software.controller.run_with_scan(input, source);
-                    software.last_gas_used = software
-                        .last_gas_limit
-                        .saturating_sub(software.controller.gas_remaining());
+                    software.last_gas_used = software.controller.last_gas_used;
                     callback_end = std::time::Instant::now();
                     timings.callback = callback_end.duration_since(callback_start).as_secs_f64();
                     timings.scan = software.controller.last_scan_seconds;
@@ -422,6 +426,52 @@ pub(crate) fn run(
     );
 }
 
+fn clear_computer_resets(
+    mut ships: Query<(
+        &mut ShipSoftware,
+        Option<&mut super::travel::Travel>,
+        Option<&mut super::travel::SlipDrive>,
+        Option<&super::identity::Identity>,
+    )>,
+    mut stations: Query<&mut super::travel::DockingBays>,
+) {
+    let mut released = std::collections::HashSet::new();
+    for (mut software, travel, drive, identity) in &mut ships {
+        if software.observed_restart == software.controller.restart_revision {
+            continue;
+        }
+        software.observed_restart = software.controller.restart_revision;
+        software.inbox.clear();
+        software.world_actions.clear();
+        software.results.clear();
+        software.last_input = None;
+        if let Some(mut travel) = travel {
+            travel.0 = toy_sim_model::travel::TravelState {
+                revision: travel.0.revision + 1,
+                ..Default::default()
+            };
+        }
+        if let Some(mut drive) = drive {
+            drive.preparation = None;
+        }
+        if let Some(identity) = identity {
+            released.insert(identity.0);
+        }
+    }
+    if !released.is_empty() {
+        for mut station in &mut stations {
+            for bay in &mut station.0 {
+                if bay
+                    .reservation
+                    .is_some_and(|(ship, _)| released.contains(&ship))
+                {
+                    bay.reservation = None;
+                }
+            }
+        }
+    }
+}
+
 /// Demo behavior uses the public engagement contract, independent of firmware internals.
 #[derive(Resource, Default)]
 struct LastRetaliation(Option<(Entity, Entity)>);
@@ -433,7 +483,7 @@ fn retaliation(world: &mut World) {
         .find_map(|(entity, controlled, software)| {
             controlled?;
             let state = software.controller.state.weapons.as_ref()?;
-            (state.mode == abi::WEAPONS_ENGAGE).then_some((entity, state.target_contact))
+            (state.mode == abi::WEAPONS_FIRING).then_some((entity, state.target_contact))
         });
     let Some((player, handle)) = engagement else {
         return;
@@ -453,10 +503,11 @@ fn retaliation(world: &mut World) {
     let Some(mut software) = world.get_mut::<ShipSoftware>(target) else {
         return;
     };
-    software.command(Command::EngageWeapons {
+    software.command(Command::MarkTarget {
         contact,
         maximum_flight_time_s: 2.0,
     });
+    software.command(Command::StartFiring);
     world.resource_mut::<LastRetaliation>().0 = Some((player, target));
 }
 

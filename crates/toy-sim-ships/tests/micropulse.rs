@@ -129,7 +129,7 @@ fn micropulse_demonstrator_has_startup_power_cooling_and_charge_reserves() {
     let mut state = ShipState::new(&design, &catalogue);
     state.test_loadout(&design, &catalogue);
     assert_eq!(state.inventory.mass(&catalogue), 180_000.);
-    assert_eq!(state.inventory.energy_j, 300_000_000.);
+    assert_eq!(state.inventory.energy_j, 300_000_000);
     assert_eq!(state.inventory.quantities[0], 0);
     assert!(design.shield_radiator_area_m2 > 0.);
     assert!(design.shield_reserve_capacity_kg > 0.);

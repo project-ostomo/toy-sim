@@ -1,5 +1,5 @@
 mod celestials;
-mod input;
+mod console;
 mod scene;
 mod selection;
 mod shell;
@@ -16,16 +16,15 @@ pub fn run(endpoint: Endpoint, local: bool) {
         ..default()
     }))
     .add_plugins(toy_sim_ui::UiPlugin)
+    .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
     .add_plugins((
         toy_sim_ship_view::plume::PlumePlugin,
         toy_sim_ship_view::thermal::ThermalPlugin,
     ))
     .init_resource::<selection::Subscriptions>()
-    .init_resource::<input::FlightControls>()
     .init_resource::<Selection>();
     #[cfg(feature = "profile")]
     app.add_plugins((
-        bevy::diagnostic::FrameTimeDiagnosticsPlugin::default(),
         bevy::diagnostic::LogDiagnosticsPlugin::default(),
         bevy::render::diagnostic::RenderDiagnosticsPlugin,
     ));
@@ -34,15 +33,13 @@ pub fn run(endpoint: Endpoint, local: bool) {
     celestials::install(&mut app);
     app.add_observer(state::reset_resource::<Selection>);
     app.add_observer(state::reset_resource::<selection::Subscriptions>);
-    app.add_observer(state::reset_resource::<input::FlightControls>);
 
-    app.add_plugins((scene::install, shell::install))
+    app.add_plugins((scene::install, console::install, shell::install))
         .add_systems(Startup, toy_sim_ship_view::prepare_visuals)
         .add_systems(Update, toy_sim_ship_view::add_weapon_visuals)
         .add_systems(
             Update,
-            (selection::synchronize, input::manual)
-                .chain()
+            selection::synchronize
                 .after(state::PresentationSet::Interpolate)
                 .after(celestials::CelestialSystems::Evaluate)
                 .before(state::PresentationSet::Views),
@@ -81,7 +78,7 @@ mod tests {
             spatial_instance: Id([5; 16]),
             presence: travel::Presence::Space,
             pose: Some(Pose::default()),
-            battery_j: 0.,
+            battery_j: 0,
             hull_heat_j: 0.,
             shield_temperature_k: 0.,
             coolant_reserve_kg: 0.,
@@ -93,7 +90,6 @@ mod tests {
     fn focus_subscribes_once_and_recovers_when_owned_ship_disappears() {
         let mut world = World::new();
         world.init_resource::<selection::Subscriptions>();
-        world.init_resource::<input::FlightControls>();
         world.init_resource::<Selection>();
         world.init_resource::<Outgoing>();
         world.insert_resource(SessionInfo {
@@ -119,12 +115,8 @@ mod tests {
     }
 
     #[test]
-    fn world_change_resets_contact_view_and_flight_controls() {
+    fn world_change_resets_contact_and_view() {
         let mut world = World::new();
-        world.insert_resource(input::FlightControls {
-            throttle: 1.,
-            steering: [1.; 3],
-        });
         world.insert_resource(Selection {
             ship: Some(Id([2; 16])),
             target: Some(SelectedTarget::Contact(ContactRef {
@@ -134,7 +126,6 @@ mod tests {
             view: Some(7),
         });
         world.add_observer(state::reset_resource::<Selection>);
-        world.add_observer(state::reset_resource::<input::FlightControls>);
         world.init_resource::<Outgoing>();
         world.insert_resource(SessionInfo {
             world: Some(Id([5; 16])),
@@ -148,9 +139,6 @@ mod tests {
                 && selection.view.is_none()
                 && selection.celestial().is_none()
         );
-        let flight = world.resource::<input::FlightControls>();
-        assert_eq!(flight.throttle, 0.);
-        assert_eq!(flight.steering, [0.; 3]);
         assert!(world.resource::<Outgoing>().pending().is_empty());
     }
 }

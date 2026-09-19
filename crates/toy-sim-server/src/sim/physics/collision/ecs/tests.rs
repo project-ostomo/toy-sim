@@ -122,7 +122,7 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
     );
     let mut state = ShipState::new(&design, &catalogue);
     state.test_loadout(&design, &catalogue);
-    let initial_reserve = state.thermal.shield_reserve_kg;
+    let initial_reserve = state.thermal.shield_reserve_kg();
     let ship = world
         .spawn((
             RigidBody,
@@ -181,8 +181,12 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
         }
         step(&mut world);
 
-        consumed_reserve |=
-            world.get::<ShipThermal>(ship).unwrap().0.shield_reserve_kg < initial_reserve;
+        consumed_reserve |= world
+            .get::<ShipThermal>(ship)
+            .unwrap()
+            .0
+            .shield_reserve_kg()
+            < initial_reserve;
         if world.get::<Hull>(ship).unwrap().0 <= 0.0 {
             assert!(consumed_reserve);
             assert!(world.get::<Dormant>(ship).is_some());

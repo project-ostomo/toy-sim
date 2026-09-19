@@ -362,6 +362,17 @@ impl Pilot {
             .clone();
         let result: Result<(), String> = (|| {
             match kind {
+                abi::REQUEST_THROTTLE => {
+                    let bytes: [u8; 8] =
+                        payload.try_into().map_err(|_| "Invalid throttle request")?;
+                    let throttle = f64::from_le_bytes(bytes);
+                    if !throttle.is_finite() || !(0.0..=1.0).contains(&throttle) {
+                        return Err("Invalid throttle".into());
+                    }
+                    self.manual_throttle = throttle;
+                    self.manual_sample = throttle;
+                    self.steering = DVec3::ZERO;
+                }
                 abi::REQUEST_MANUAL => {
                     let abi::ManualRequest { throttle, steering } =
                         abi::ManualRequest::read(payload).ok_or("Invalid manual request")?;
@@ -413,9 +424,11 @@ impl Pilot {
                     let dir = DVec3::from_array(v)
                         .try_normalize()
                         .ok_or("Invalid direction")?;
-                    if self.navigation.phase != Phase::Ready {
-                        self.cancel(q);
-                    }
+                    let throttle = self.manual_throttle;
+                    self.cancel(q);
+                    self.manual_throttle = throttle;
+                    self.manual_sample = throttle;
+                    self.steering = DVec3::ZERO;
                     self.aim = Some(dir);
                     self.contact = None;
                     self.hold = None;

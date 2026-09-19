@@ -27,7 +27,7 @@ fn resources(values: &[ResourceAmount]) -> bool {
         })
 }
 
-pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
+pub fn validate(p: &PresentationFrame) -> Result<()> {
     ensure!(
         p.ships.len() <= 64
             && p.visuals.len() <= 8192
@@ -69,11 +69,29 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
         );
     }
     for ship in &p.ships {
+        let propulsion = &ship.propulsion;
+        ensure!(
+            finite(&propulsion.force_n)
+                && finite(&propulsion.torque_nm)
+                && nonnegative(&[propulsion.rated_forward_n])
+                && nonnegative(&propulsion.positive_torque_nm)
+                && nonnegative(&propulsion.negative_torque_nm),
+            "invalid propulsion telemetry"
+        );
+        ensure!(
+            [
+                &propulsion.propellants,
+                &propulsion.fuels,
+                &propulsion.charges
+            ]
+            .into_iter()
+            .all(|ids| ids.len() <= 4096 && ids.iter().all(|id| id.len() <= 128)),
+            "invalid propulsion resource list"
+        );
         ensure!(
             nonnegative(&[
                 ship.mass_kg,
                 ship.hull_heat_capacity_j,
-                ship.battery_capacity_j,
                 ship.power_generated_w,
                 ship.power_consumed_w,
                 ship.cargo_capacity_m3,
@@ -87,9 +105,32 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
             "hardware limit"
         );
         match &ship.computer {
-            ComputerStatus::Fault(error) => ensure!(error.len() <= 4096, "computer fault limit"),
-            ComputerStatus::Booting { progress } => ensure!(
-                progress.is_finite() && (0. ..=1.).contains(progress),
+            ComputerStatus::Fault {
+                message,
+                reboot_remaining_s,
+            } => ensure!(
+                message.len() <= 4096
+                    && reboot_remaining_s
+                        .is_none_or(|seconds| seconds.is_finite() && seconds >= 0.),
+                "invalid computer fault"
+            ),
+            ComputerStatus::Running {
+                gas_limit,
+                gas_reserve,
+                gas_capacity,
+                ..
+            } => ensure!(
+                *gas_limit > 0 && gas_reserve <= gas_capacity,
+                "invalid computer gas allowance"
+            ),
+            ComputerStatus::Booting {
+                progress,
+                remaining_s,
+            } => ensure!(
+                progress.is_finite()
+                    && (0. ..=1.).contains(progress)
+                    && remaining_s.is_finite()
+                    && *remaining_s >= 0.,
                 "invalid boot progress"
             ),
             _ => {}
@@ -154,7 +195,7 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
                 DeviceReading::Battery {
                     energy_j,
                     capacity_j,
-                } => nonnegative(&[*energy_j, *capacity_j]),
+                } => energy_j <= capacity_j,
                 DeviceReading::Shield {
                     temperature_k,
                     area_m2,
@@ -178,7 +219,14 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
                 DeviceReading::Storage { contents } => resources(contents),
                 DeviceReading::Avionics | DeviceReading::Structure => true,
             };
-            ensure!(valid, "invalid device reading");
+            ensure!(
+                valid,
+                "invalid device reading: ship {:?}, part {} ({}): {:?}",
+                ship.ship,
+                device.part,
+                device.name,
+                device.reading
+            );
         }
         if let Some(i) = &ship.instruments {
             ensure!(
@@ -208,12 +256,7 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
             }
             for w in &i.weapons {
                 ensure!(
-                    nonnegative(&[
-                        w.ammunition_units,
-                        w.battery_energy_j,
-                        w.shot_energy_j,
-                        w.pointing_error_rad
-                    ]),
+                    nonnegative(&[w.ammunition_units, w.shot_energy_j, w.pointing_error_rad]),
                     "invalid weapon resources"
                 );
                 ensure!(
@@ -267,7 +310,6 @@ pub fn validate(p: &PresentationFrame, watermark: u64) -> Result<()> {
         }
     }
     for event in &p.combat {
-        ensure!(event.sequence <= watermark, "invalid combat sequence");
         let valid = match &event.kind {
             CombatEventKind::Projectile {
                 start,

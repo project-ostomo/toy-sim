@@ -9,11 +9,11 @@ Applications use the `egui` and `bevy_egui` exports from this crate.
 The default theme uses square corners and dark blue-gray surfaces. Widget spacing
 is 12 × 8 points, button padding is 10 × 6 points, window margins are 12 points,
 and the minimum control height is 28 points. Body and button text use 14-point
-Sarasa UI SC. Change these defaults in [theme.rs](src/theme.rs).
+Iosevka Aile. Change these defaults in [theme.rs](src/theme.rs).
 
-The font is bundled in the crate and embedded with `include_bytes!`; it does not
-require a system installation or a runtime download. Sarasa is the primary
-proportional font and a fallback for missing monospace glyphs. Programmable
+The fonts are bundled in the crate and embedded with `include_bytes!`; they do not
+require a system installation or a runtime download. Iosevka Aile is the primary
+proportional font and Iosevka is the primary monospace font. Programmable
 screens retain their dedicated Iosevka Fixed family and fixed cell layout.
 Font versions, provenance and licenses are in [data/fonts](data/fonts/README.md).
 
