@@ -1581,3 +1581,90 @@ These measurements describe that view. A gate aperture filling the screen is
 still more expensive, and transit includes a brief scene-change cost. The native
 sessions saved and exited normally. All rendering replays used disabled provider
 calls. The desktop focus and cursor were restored after testing.
+
+
+## MVP completion audit and remaining gameplay work
+
+The user requested continuation after the rendering fixes. A source and test
+audit found that the major systems exist, but several parts of the playable
+loop still need completion. The next pieces will be delivered sequentially:
+
+1. Export reactor byproducts into the industrial economy. Real reactors and
+   NTRs accumulate spent material in tanks, while refinery recipes consume cargo.
+   Bred material has the same boundary. Existing seeded warehouse stocks hid
+   this missing connection.
+2. Keep NPC radio context current. Chatter currently reads only four unread
+   messages per 300–599-second broadcast interval, slower than normal populated
+   traffic. Bounded reception into recent context will preserve the existing
+   provider-call cadence.
+3. Let the Inventory window reach every authorized directory page without
+   requiring the Industry window as a workaround.
+4. Carry supported custom-firmware blueprints through shipyard submission. The
+   current 48 KiB inline design limit excludes ordinary custom WASM programs
+   that are already supported by the ship model.
+5. Verify installation defense through the full physical chain: observed threat,
+   NPC defense duty, stock ship computer, finite missiles and interception.
+6. Revisit the recorded large-fleet spatial and lighting costs. The earlier
+   100,000-moving-body measurements exceeded one simulation tick; client glint
+   improvements do not establish server capacity at that population.
+
+The existing live industry commissioning, cargo dragging, ownership, persistence,
+map, lore and procedural-surface checks remain valid. They will not be rebuilt
+as though they were absent.
+
+### Current piece: unloading industrial products
+
+Spent fuel and bred fuel will be marked as exportable industrial products. Their
+existing nuclear reservoirs, containment mass and capacity remain part of the
+ship design. An atomic unload action moves those products into a colocated cargo
+hold, using ordinary cargo permissions on both inventories. A ship without its
+own cargo hold can unload directly into a dock's warehouse. A full destination
+leaves the source untouched. Ordinary operational fuel and propellant remain
+non-transferable after loading into tanks.
+
+The Cargo tab will show these product stocks separately from loaded cargo and
+reuse the existing drag/quantity confirmation flow. Existing refinery recipes
+then recover usable fuel, which can be loaded through the existing refill action.
+Verification will exercise actual production, unloading, paid processing and
+refilling, including capacity, authority, material conservation and restart.
+
+### Product recovery completed — 2026-09-19 17:29 UTC
+
+Spent and bred fuel now have catalogue metadata identifying them as exportable
+products. The new UnloadProduct command transfers integer reservoir quantities
+into authorized colocated cargo. Both player and NPC interfaces expose it;
+private product details use the existing inventory publication permissions and
+byte budget. Protocol version is 25; the ship WASM ABI remains 30.
+
+Verification uncovered and fixed two additional failures. Starting repair cargo
+was assigned directly even when a custom ship had no cargo hold. Startup now
+limits that allocation to available capacity and uses the inventory insertion
+API. In the client, egui columns inherited the original window bounds after the
+footer reserved its space, allowing tiles to paint over the footer. The inventory
+panes now use the remaining rectangle for both layout and clipping.
+
+The final targeted checks passed: eighteen server industry tests, eight
+industry/inventory UI tests plus the replication regression, ten ships inventory
+and manufacturing tests, and five protocol industry tests. The new server cycle
+produces spent fuel through a real reactor system, unloads from a ship without a
+hold, pays refinery energy and reservations, restores midway, refills the ship,
+and restores again without replaying output. Denied authority, remote transfer,
+operational consumables and full destinations leave inventories unchanged.
+
+Native keyboard/mouse acceptance used a finite test patrol with 180 kg of stored
+spent fuel and 855/900 kg reactor fuel. Docking from the normal starting position
+completed. Unloading was disabled during approach and accepted after docking.
+All 180 kg moved to Neris Anchorage. One twenty-second, 100 MJ recovery batch
+consumed 10 kg. After restarting the server/client, the warehouse showed 170 kg
+spent fuel and 2 kg usable fuel; the ship reservoir remained empty. The normal
+Fill tank control consumed the two recovered units and raised onboard reactor
+fuel to 857 kg. Both native sessions saved and exited normally, with provider
+calls disabled and desktop focus/cursor restored.
+
+Evidence is in `/tmp/toy-sequential-playtests/`: `products-docked.png`,
+`products-recovered-stock.png`, `products-refilled.png`, and
+`products-fixed-cargo-clipping.png`; logs are `products-first-session.log` and
+`products-restart-session.log`. Test logs are `/tmp/sequential-product-server-final.log`,
+`/tmp/sequential-product-default-inventory.log`, `/tmp/sequential-product-ships.log`,
+and `/tmp/sequential-product-other-tests.log` (the last also records earlier,
+subsequently corrected fixture failures). The next piece is NPC radio intake.

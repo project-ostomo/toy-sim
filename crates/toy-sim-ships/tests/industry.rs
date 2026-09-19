@@ -15,6 +15,127 @@ fn cargo_bytes(inventory: &Inventory) -> Vec<u8> {
 }
 
 #[test]
+fn product_unloading_preserves_mass_and_existing_cargo_reservations() {
+    let cat = Catalogue::builtin();
+    let index = |id: &str| {
+        cat.resources
+            .iter()
+            .position(|resource| resource.id == id)
+            .unwrap()
+    };
+    let spent = index("spent_fuel");
+    let bred = index("bred_fuel");
+    let item = CargoItem::Resource("spent_fuel".into());
+    let mut source = Inventory::empty(&cat);
+    let mut target = Inventory::empty(&cat);
+    source.tank_capacities_m3.fill(1.);
+    source.quantities[spent] = 10;
+    source.quantities[bred] = 4;
+    source.quantities[index("reactor_fuel")] = 9;
+    target.insert_item(&item, 3, 1., &cat).unwrap();
+    target
+        .reserve_cargo(&[resource("spent_fuel", 2)], &cat)
+        .unwrap();
+    let mass = source.mass(&cat) + target.mass(&cat);
+
+    source
+        .unload_product(&mut target, spent, 7, 1., &cat)
+        .unwrap();
+    assert_eq!(source.quantities[spent], 3);
+    assert_eq!(target.cargo_quantity(&item, &cat).unwrap(), 10);
+    assert_eq!(target.cargo_available(&item, &cat).unwrap(), 8);
+    assert_eq!(source.mass(&cat) + target.mass(&cat), mass);
+
+    source.package_product(bred, 2, 1., &cat).unwrap();
+    assert_eq!(source.quantities[bred], 2);
+    assert_eq!(source.cargo[index("bred_fuel")], 2);
+    assert_eq!(source.quantities[index("reactor_fuel")], 9);
+    assert_eq!(source.mass(&cat) + target.mass(&cat), mass);
+    let products = source.product_stacks(&cat).unwrap();
+    assert_eq!(products.len(), 2);
+    assert!(products.iter().all(|stack| stack.reserved == 0));
+    assert_eq!(products.iter().map(|stack| stack.quantity).sum::<u64>(), 5);
+
+    target
+        .complete_cargo(
+            &[resource("spent_fuel", 2)],
+            &[resource("radioactive_waste", 2)],
+            1.,
+            &cat,
+        )
+        .unwrap();
+    assert_eq!(source.mass(&cat) + target.mass(&cat), mass);
+}
+
+#[test]
+fn product_unloading_rejects_operational_stocks_and_fails_atomically() {
+    let cat = Catalogue::builtin();
+    let exportable = cat
+        .resources
+        .iter()
+        .filter(|resource| resource.exportable_product)
+        .map(|resource| resource.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(exportable, ["spent_fuel", "bred_fuel"].into());
+
+    let mut source = Inventory::empty(&cat);
+    source.tank_capacities_m3.fill(1.);
+    source.quantities.fill(10);
+    let mut target = Inventory::empty(&cat);
+    let original = cargo_bytes(&source);
+    let target_original = cargo_bytes(&target);
+    for (index, definition) in cat.resources.iter().enumerate() {
+        if definition.exportable_product {
+            continue;
+        }
+        assert!(
+            source
+                .unload_product(&mut target, index, 1, 1., &cat)
+                .is_err()
+        );
+        assert!(source.package_product(index, 1, 1., &cat).is_err());
+        assert_eq!(cargo_bytes(&source), original);
+        assert_eq!(cargo_bytes(&target), target_original);
+    }
+
+    let spent = cat
+        .resources
+        .iter()
+        .position(|resource| resource.id == "spent_fuel")
+        .unwrap();
+    for (index, quantity, capacity) in [
+        (spent, 0, 1.),
+        (spent, 11, 1.),
+        (spent, 1, 0.),
+        (spent, 1, f64::NAN),
+        (usize::MAX, 1, 1.),
+    ] {
+        assert!(
+            source
+                .unload_product(&mut target, index, quantity, capacity, &cat)
+                .is_err()
+        );
+        assert!(
+            source
+                .package_product(index, quantity, capacity, &cat)
+                .is_err()
+        );
+        assert_eq!(cargo_bytes(&source), original);
+        assert_eq!(cargo_bytes(&target), target_original);
+    }
+
+    target.cargo[spent] = u64::MAX;
+    let full = cargo_bytes(&target);
+    assert!(
+        source
+            .unload_product(&mut target, spent, 1, 1e30, &cat)
+            .is_err()
+    );
+    assert_eq!(cargo_bytes(&source), original);
+    assert_eq!(cargo_bytes(&target), full);
+}
+
+#[test]
 fn catalogue_recipes_conserve_material_and_do_not_synthesize_fissiles_from_inert_stock() {
     let cat = Catalogue::builtin();
     let recipes = industry::recipes(&cat).unwrap();

@@ -177,6 +177,10 @@ pub fn snapshot(
             cargo_capacity_m3: design.0.capacity_m3,
             cargo_used_m3: inventory.0.cargo_volume(catalogue),
             items,
+            products: inventory
+                .0
+                .product_stacks(catalogue)
+                .expect("valid authoritative product reservoirs"),
             jobs: world
                 .get::<IndustryFacility>(entity)
                 .map(|queue| queue.jobs.iter().map(|job| job.view.clone()).collect())

@@ -10,6 +10,8 @@ pub struct ResourceDef {
     pub mass_kg: f64,
     pub volume_m3: f64,
     #[serde(default)]
+    pub exportable_product: bool,
+    #[serde(default)]
     pub storage: ResourceStorage,
 }
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]

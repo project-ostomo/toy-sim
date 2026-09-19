@@ -24,6 +24,9 @@ mod acceptance_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 
+#[cfg(test)]
+mod product_tests;
+
 const MAX_JOBS: usize = 128;
 
 #[derive(Component, Clone, Default, Debug, Serialize, Deserialize)]
@@ -213,6 +216,19 @@ fn colocated(world: &World, source: Entity, target: Entity) -> Result<()> {
 pub fn execute(world: &mut World, account: AccountId, command: IndustryCommand) -> Result<()> {
     initialize(world)?;
     match command {
+        IndustryCommand::UnloadProduct {
+            source,
+            target,
+            resource,
+            quantity,
+        } => unload_product(
+            world,
+            account,
+            identity::lookup(world, source)?,
+            identity::lookup(world, target)?,
+            &resource,
+            quantity,
+        ),
         IndustryCommand::Transfer {
             source,
             target,
@@ -375,6 +391,55 @@ pub fn transfer(
     from.transfer_item(&mut to, &item, quantity, capacity, &catalogue)?;
     world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
     world.get_mut::<hardware::ShipInventory>(target).unwrap().0 = to;
+    synchronize_mass(world, &[source, target]);
+    Ok(())
+}
+
+fn unload_product(
+    world: &mut World,
+    account: AccountId,
+    source: Entity,
+    target: Entity,
+    resource: &str,
+    quantity: u64,
+) -> Result<()> {
+    ensure!(quantity > 0, "invalid product quantity");
+    ownership::authorize(world, account, source, Permission::TransferCargo)?;
+    ownership::authorize(world, account, target, Permission::TransferCargo)?;
+    colocated(world, source, target)?;
+
+    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
+    let index = catalogue
+        .resources
+        .iter()
+        .position(|value| value.id == resource)
+        .context("unknown resource")?;
+    let capacity = world
+        .get::<vessel::ShipDesign>(target)
+        .context("target design missing")?
+        .0
+        .capacity_m3;
+    let mut from = world
+        .get::<hardware::ShipInventory>(source)
+        .context("source inventory missing")?
+        .0
+        .clone();
+
+    if source == target {
+        from.package_product(index, quantity, capacity, catalogue)?;
+        world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
+    } else {
+        let mut to = world
+            .get::<hardware::ShipInventory>(target)
+            .context("target inventory missing")?
+            .0
+            .clone();
+        from.unload_product(&mut to, index, quantity, capacity, catalogue)?;
+
+        world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
+        world.get_mut::<hardware::ShipInventory>(target).unwrap().0 = to;
+    }
+
     synchronize_mass(world, &[source, target]);
     Ok(())
 }

@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 24;
+pub const VERSION: u16 = 25;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -753,6 +753,15 @@ mod tests {
                         quantity: 2,
                     }),
                 ),
+                (
+                    Id([6; 16]),
+                    Action::Industry(IndustryCommand::UnloadProduct {
+                        source: Id([2; 16]),
+                        target: Id([2; 16]),
+                        resource: "spent_fuel".into(),
+                        quantity: 10,
+                    }),
+                ),
             ],
         });
         assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
@@ -766,7 +775,7 @@ mod tests {
         let message = Message::State(frame);
         let mut encoded = encode(&message).unwrap();
         assert_eq!(decode(&encoded).unwrap(), message);
-        encoded[4..6].copy_from_slice(&21_u16.to_le_bytes());
+        encoded[4..6].copy_from_slice(&(VERSION - 1).to_le_bytes());
         assert!(decode(&encoded).is_err());
     }
 

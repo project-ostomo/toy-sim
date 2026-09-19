@@ -159,6 +159,7 @@ dock_services {ship,authority_revision,cargo:boolean,power:boolean}.
 weapons {ship,authority_revision,group?:UUID,track?:UUID,fire:boolean}. Firing requires a current contact group and track. Prefer observing contacts before hostile action.
 transfer {source:UUID,target:UUID,kind:"resource"|"part",item:string,quantity:integer}.
 refill {source:UUID,ship:UUID,resource:string,quantity:integer}. Converts colocated packaged cargo to fitted tank consumables.
+unload_product {source:UUID,target:UUID,resource:string,quantity:integer}. Moves an observed exportable product reservoir stock into colocated cargo. Source and target may be the same ship if its hold has room. Operational fuel and propellant cannot be unloaded. Inventory queries list product reservoirs separately from cargo.
 recipe {facility:UUID,recipe:string,batches:integer}.
 build {facility:UUID,blueprint:string}. Uses a known blueprint name and creates an unfilled ship owned by your organization.
 cancel_job {facility:UUID,job:UUID}.

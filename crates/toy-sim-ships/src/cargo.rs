@@ -74,6 +74,25 @@ impl Inventory {
             .collect()
     }
 
+    pub fn product_stacks(&self, cat: &Catalogue) -> Result<Vec<CargoStack>> {
+        self.validate_cargo(cat)?;
+
+        Ok(cat
+            .resources
+            .iter()
+            .zip(&self.quantities)
+            .filter(|(resource, quantity)| resource.exportable_product && **quantity > 0)
+            .map(|(resource, &quantity)| CargoStack {
+                item: CargoItem::Resource(resource.id.clone()),
+                quantity,
+                reserved: 0,
+                name: resource.title.clone(),
+                unit_mass_kg: resource.mass_kg,
+                unit_volume_m3: resource.volume_m3,
+            })
+            .collect())
+    }
+
     pub fn validate_cargo(&self, cat: &Catalogue) -> Result<()> {
         ensure!(
             self.cargo.len() == cat.resources.len()
@@ -200,6 +219,55 @@ impl Inventory {
 
         self.set_cargo_quantity(&item, remaining, cat);
         self.quantities[resource] = next;
+        Ok(())
+    }
+
+    fn product_withdrawal(
+        &self,
+        resource: usize,
+        quantity: u64,
+        cat: &Catalogue,
+    ) -> Result<(CargoItem, u64)> {
+        let definition = cat.resources.get(resource).context("unknown resource")?;
+        ensure!(
+            definition.exportable_product,
+            "operational consumables cannot be unloaded"
+        );
+        ensure!(quantity > 0, "zero product quantity");
+        let remaining = self
+            .quantities
+            .get(resource)
+            .context("invalid inventory shape")?
+            .checked_sub(quantity)
+            .context("insufficient product stock")?;
+
+        Ok((CargoItem::Resource(definition.id.clone()), remaining))
+    }
+
+    pub fn package_product(
+        &mut self,
+        resource: usize,
+        quantity: u64,
+        capacity: f64,
+        cat: &Catalogue,
+    ) -> Result<()> {
+        let (item, remaining) = self.product_withdrawal(resource, quantity, cat)?;
+        self.insert_item(&item, quantity, capacity, cat)?;
+        self.quantities[resource] = remaining;
+        Ok(())
+    }
+
+    pub fn unload_product(
+        &mut self,
+        target: &mut Self,
+        resource: usize,
+        quantity: u64,
+        capacity: f64,
+        cat: &Catalogue,
+    ) -> Result<()> {
+        let (item, remaining) = self.product_withdrawal(resource, quantity, cat)?;
+        target.insert_item(&item, quantity, capacity, cat)?;
+        self.quantities[resource] = remaining;
         Ok(())
     }
 

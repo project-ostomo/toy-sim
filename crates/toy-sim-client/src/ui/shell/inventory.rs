@@ -6,7 +6,7 @@ pub(super) struct State {
     consumables: bool,
     source: Option<Id>,
     target: Option<Id>,
-    selected: Option<(Id, CargoItem)>,
+    selected: Option<(Id, Storage, CargoItem)>,
     quantity: u64,
     search: String,
 }
@@ -14,7 +14,14 @@ pub(super) struct State {
 #[derive(Clone)]
 struct DraggedCargo {
     source: Id,
+    storage: Storage,
     item: CargoItem,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Storage {
+    Cargo,
+    Product,
 }
 
 impl State {
@@ -57,6 +64,14 @@ pub(super) fn draw(
             .hint_text("Filter resources and part kits…")
             .desired_width(f32::INFINITY),
     );
+    let panes = ui.available_rect_before_wrap();
+    ui.scope_builder(egui::UiBuilder::new().max_rect(panes), |ui| {
+        ui.set_clip_rect(ui.clip_rect().intersect(panes));
+        cargo_panes(ui, state, model);
+    });
+}
+
+fn cargo_panes(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
     ui.columns(2, |columns| {
         for (index, ui) in columns.iter_mut().enumerate() {
             ui.push_id(index, |ui| {
@@ -106,27 +121,16 @@ pub(super) fn draw(
                     .min_scrolled_height(0.0)
                     .max_height(height)
                     .show(ui, |ui| {
-                        let stacks: Vec<_> = facility
-                            .items
-                            .iter()
-                            .filter(|stack| {
-                                stack.quantity > 0 && stack.name.to_lowercase().contains(&search)
-                            })
-                            .collect();
-                        if stacks.is_empty() {
+                        if facility.items.is_empty() {
                             ui.weak("Cargo hold empty");
                         }
-                        let columns = (ui.available_width() / 96.0).floor().max(1.0) as usize;
-                        egui::Grid::new("cargo_grid")
-                            .spacing(egui::vec2(6.0, 6.0))
-                            .show(ui, |ui| {
-                                for (index, stack) in stacks.iter().enumerate() {
-                                    cargo_tile(ui, state, facility, stack);
-                                    if (index + 1) % columns == 0 {
-                                        ui.end_row();
-                                    }
-                                }
-                            });
+                        cargo_grid(ui, state, facility, Storage::Cargo, &search);
+
+                        if !facility.products.is_empty() {
+                            ui.separator();
+                            ui.small("REACTOR PRODUCTS · Installed reservoirs");
+                            cargo_grid(ui, state, facility, Storage::Product, &search);
+                        }
                     });
                 let drop_response = ui.interact(
                     response.inner_rect,
@@ -134,11 +138,12 @@ pub(super) fn draw(
                     egui::Sense::hover(),
                 );
                 if let Some(dragged) = drop_response.dnd_release_payload::<DraggedCargo>() {
-                    state.selected = Some((dragged.source, dragged.item.clone()));
+                    state.selected = Some((dragged.source, dragged.storage, dragged.item.clone()));
                     state.target = Some(facility.entity);
                     state.source = Some(dragged.source);
                     state.quantity =
-                        available_stack(model, dragged.source, &dragged.item).map_or(0, available);
+                        available_stack(model, dragged.source, dragged.storage, &dragged.item)
+                            .map_or(0, available);
                 }
             });
         }
@@ -156,12 +161,19 @@ pub(super) fn facility<'a>(model: &'a FrameModel<'_>, id: Id) -> Option<&'a Faci
 fn available_stack<'a>(
     model: &'a FrameModel,
     source: Id,
+    storage: Storage,
     item: &CargoItem,
 ) -> Option<&'a CargoStack> {
-    facility(model, source)?
-        .items
+    stacks(facility(model, source)?, storage)
         .iter()
         .find(|stack| &stack.item == item)
+}
+
+fn stacks(facility: &FacilityView, storage: Storage) -> &[CargoStack] {
+    match storage {
+        Storage::Cargo => &facility.items,
+        Storage::Product => &facility.products,
+    }
 }
 
 pub(super) fn available(stack: &CargoStack) -> u64 {
@@ -188,10 +200,13 @@ pub(super) fn transfer_error(
     target: &FacilityView,
     stack: &CargoStack,
     quantity: u64,
+    storage: Storage,
 ) -> Option<&'static str> {
     if !source.can_transfer || !target.can_transfer {
         Some("Cargo transfer permission is required on both inventories")
-    } else if !colocated(source, target) {
+    } else if !colocated(source, target)
+        && !(storage == Storage::Product && source.entity == target.entity)
+    {
         Some("Inventories must be physically colocated at the same station")
     } else if quantity == 0 || quantity > available(stack) {
         Some("Choose an available quantity; reserved items cannot be moved")
@@ -211,13 +226,18 @@ fn transfer_controls(
     intents: &mut Vec<Intent>,
 ) {
     ui.separator();
-    let Some((source, item)) = state.selected.as_ref() else {
+    let Some((source, storage, item)) = state.selected.as_ref() else {
         ui.weak("Select or drag cargo to the other inventory, then confirm the quantity.");
         return;
     };
     let source_id = *source;
-    let Some(stack) = available_stack(model, source_id, item) else {
-        ui.weak("Loading selected cargo…");
+    let storage = *storage;
+    let Some(stack) = available_stack(model, source_id, storage, item) else {
+        ui.weak(if facility(model, source_id).is_some() {
+            "Selected stock is no longer available."
+        } else {
+            "Loading selected cargo…"
+        });
         return;
     };
     let maximum = available(stack);
@@ -252,25 +272,37 @@ fn transfer_controls(
     let pair = facility(model, source_id).zip(state.target.and_then(|id| facility(model, id)));
     let error = pair.map_or(
         Some("Select a destination inventory"),
-        |(source, target)| transfer_error(source, target, stack, state.quantity),
+        |(source, target)| transfer_error(source, target, stack, state.quantity, storage),
     );
+    let label = match storage {
+        Storage::Cargo => "Transfer cargo",
+        Storage::Product => "Unload product",
+    };
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(
-                model.connected && error.is_none(),
-                egui::Button::new("Transfer cargo"),
-            )
+            .add_enabled(model.connected && error.is_none(), egui::Button::new(label))
             .clicked()
         {
-            intents.push(Intent::Industry(
-                IndustryCommand::Transfer {
+            let command = match (storage, item) {
+                (Storage::Product, CargoItem::Resource(resource)) => {
+                    IndustryCommand::UnloadProduct {
+                        source: source_id,
+                        target: state.target.unwrap(),
+                        resource: resource.clone(),
+                        quantity: state.quantity,
+                    }
+                }
+                (Storage::Cargo, _) => IndustryCommand::Transfer {
                     source: source_id,
                     target: state.target.unwrap(),
                     item: item.clone(),
                     quantity: state.quantity,
                 },
-                "Transfer cargo",
-            ));
+                (Storage::Product, CargoItem::Part(_)) => {
+                    unreachable!("validated resource product")
+                }
+            };
+            intents.push(Intent::Industry(command, label));
         }
         if let Some(error) = error {
             ui.weak(error);
@@ -285,11 +317,43 @@ pub(super) fn quantity_from_mass(mass_kg: f64, unit_mass_kg: f64, maximum: u64) 
     ((mass_kg.max(0.0) / unit_mass_kg).round() as u64).min(maximum)
 }
 
-fn cargo_tile(ui: &mut egui::Ui, state: &mut State, source: &FacilityView, stack: &CargoStack) {
+fn cargo_grid(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    facility: &FacilityView,
+    storage: Storage,
+    search: &str,
+) {
+    let columns = (ui.available_width() / 96.0).floor().max(1.0) as usize;
+    egui::Grid::new(("cargo_grid", storage))
+        .spacing(egui::vec2(6.0, 6.0))
+        .show(ui, |ui| {
+            let matching = stacks(facility, storage)
+                .iter()
+                .filter(|stack| stack.quantity > 0 && stack.name.to_lowercase().contains(search));
+
+            for (index, stack) in matching.enumerate() {
+                cargo_tile(ui, state, facility, stack, storage);
+                if (index + 1) % columns == 0 {
+                    ui.end_row();
+                }
+            }
+        });
+}
+
+fn cargo_tile(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    source: &FacilityView,
+    stack: &CargoStack,
+    storage: Storage,
+) {
     let selected = state
         .selected
         .as_ref()
-        .is_some_and(|(id, item)| *id == source.entity && item == &stack.item);
+        .is_some_and(|(id, selected_storage, item)| {
+            *id == source.entity && *selected_storage == storage && item == &stack.item
+        });
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(88.0, 88.0), egui::Sense::click_and_drag());
     let painter = ui.painter();
@@ -345,17 +409,22 @@ fn cargo_tile(ui: &mut egui::Ui, state: &mut State, source: &FacilityView, stack
         TEXT,
     );
     if response.clicked() {
-        state.selected = Some((source.entity, stack.item.clone()));
+        state.selected = Some((source.entity, storage, stack.item.clone()));
         state.quantity = available(stack);
     }
     if source.can_transfer && available(stack) > 0 {
         response.dnd_set_drag_payload(DraggedCargo {
             source: source.entity,
+            storage,
             item: stack.item.clone(),
         });
     }
+    let location = match storage {
+        Storage::Cargo => "Cargo hold",
+        Storage::Product => "Installed product reservoir · unload into cargo",
+    };
     response.on_hover_text(format!(
-        "{}\n{} available · {} reserved for jobs\n{:.1} kg · {:.3} m³",
+        "{}\n{location}\n{} available · {} reserved for jobs\n{:.1} kg · {:.3} m³",
         stack.name,
         available(stack),
         stack.reserved,
@@ -507,7 +576,7 @@ fn consumables_body(
     for resource in details
         .inventory
         .iter()
-        .filter(|resource| resource.capacity_kg > 0.0)
+        .filter(|resource| resource.capacity_kg > 0.0 && !exportable_product(&resource.resource))
     {
         meter(
             ui,
@@ -535,6 +604,15 @@ fn consumables_body(
         });
         ui.add_space(5.0);
     }
+}
+
+fn exportable_product(resource: &str) -> bool {
+    static CATALOGUE: std::sync::OnceLock<toy_sim_ships::Catalogue> = std::sync::OnceLock::new();
+    CATALOGUE
+        .get_or_init(toy_sim_ships::Catalogue::builtin)
+        .resources
+        .iter()
+        .any(|definition| definition.id == resource && definition.exportable_product)
 }
 
 fn refill_control(

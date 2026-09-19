@@ -21,6 +21,17 @@ with a chosen quantity. Refilling consumes cargo and adds it to the destination'
 tanks. Shield coolant cargo replenishes the installed shield reserve through the
 same interface. Dock power supplies electricity separately.
 
+Spent and bred reactor fuel remain in installed product reservoirs until unloaded.
+They appear in the Cargo tab under Reactor products. Select or drag a product,
+choose a destination hold and quantity, then use Unload product. A ship without a
+cargo hold can unload directly into its dock's warehouse. Both inventories require
+cargo-transfer permission and physical colocation; unloading into the ship's own
+hold is also possible. A full destination leaves the reservoir unchanged.
+Operational fuel and propellant cannot be unloaded from consumable tanks.
+
+Refineries accept the resulting cargo. Recovered reactor fuel can then be loaded
+through Refill. Onboard fuel processors continue to use their installed reservoirs.
+
 Industrial metals, electronics, reactor construction material and chemical
 feedstock use milligram quantities so that manufacturing small parts does not
 create or discard fractional kilograms. The UI displays their mass. Other

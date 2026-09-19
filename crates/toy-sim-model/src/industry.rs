@@ -98,6 +98,7 @@ pub struct FacilityView {
     pub cargo_capacity_m3: f64,
     pub cargo_used_m3: f64,
     pub items: Vec<CargoStack>,
+    pub products: Vec<CargoStack>,
     pub jobs: Vec<JobView>,
     pub capabilities: Vec<FacilityCapability>,
     pub location: Option<EntityId>,
@@ -114,6 +115,12 @@ pub struct BlueprintView {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum IndustryCommand {
+    UnloadProduct {
+        source: EntityId,
+        target: EntityId,
+        resource: String,
+        quantity: u64,
+    },
     Refill {
         source: EntityId,
         ship: EntityId,

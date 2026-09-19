@@ -211,23 +211,30 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         })
         .collect();
     world.entity_mut(station).insert(travel::DockingBays(bays));
-    let resource = world
-        .resource::<vessel::ShipCatalogue>()
-        .0
+    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
+    let resource = catalogue
         .resources
         .iter()
         .position(|r| r.id == "repair_material");
     if let Some(resource) = resource {
-        world
-            .get_mut::<hardware::ShipInventory>(station)
-            .unwrap()
-            .0
-            .cargo[resource] = 20000;
-        world
-            .get_mut::<hardware::ShipInventory>(player)
-            .unwrap()
-            .0
-            .cargo[resource] = 100;
+        let item = industry::CargoItem::Resource("repair_material".into());
+        for (entity, allocation) in [(station, 20_000), (player, 100)] {
+            let capacity = world
+                .get::<vessel::ShipDesign>(entity)
+                .unwrap()
+                .0
+                .capacity_m3;
+            let mut inventory = world.get_mut::<hardware::ShipInventory>(entity).unwrap();
+            let room = ((capacity - inventory.0.cargo_volume(&catalogue)).max(0.)
+                / catalogue.resources[resource].volume_m3)
+                .floor() as u64;
+            let quantity = allocation.min(room);
+            if quantity > 0 {
+                inventory
+                    .0
+                    .insert_item(&item, quantity, capacity, &catalogue)?;
+            }
+        }
     }
 
     let account = world.get::<identity::Control>(player).unwrap().account;

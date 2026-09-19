@@ -515,6 +515,7 @@ id = "spent_fuel"
 # The fuel ledger retains a 20% recoverable fraction; recycling is lossy and
 # cannot yield more than 75 TJ from an original kilogram rated at 60 TJ/kg.
 title = "Spent reactor fuel"
+exportable_product = true
 mass_kg = 1.0
 volume_m3 = 0.001
 storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
@@ -522,6 +523,7 @@ storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
 [[resources]]
 id = "bred_fuel"
 title = "Bred fuel awaiting processing"
+exportable_product = true
 mass_kg = 1.0
 volume_m3 = 0.001
 storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }

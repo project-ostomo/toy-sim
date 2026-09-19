@@ -68,10 +68,13 @@ pub(super) fn validate_command(command: &IndustryCommand) -> Result<()> {
     match command {
         IndustryCommand::Refill {
             resource, quantity, ..
+        }
+        | IndustryCommand::UnloadProduct {
+            resource, quantity, ..
         } => {
             ensure!(
                 text_valid(resource) && *quantity > 0,
-                "invalid refill request"
+                "invalid resource transfer request"
             );
         }
         IndustryCommand::StartRecipe {
@@ -155,6 +158,13 @@ pub fn validate_snapshot_content(snapshot: &IndustrySnapshot) -> Result<()> {
             "invalid industry facility"
         );
         validate_cargo(&facility.items)?;
+        validate_cargo(&facility.products)?;
+        ensure!(
+            facility.products.iter().all(|product| {
+                matches!(product.item, CargoItem::Resource(_)) && product.reserved == 0
+            }),
+            "invalid product reservoir stock"
+        );
         let mut jobs = BTreeSet::new();
         for job in &facility.jobs {
             ensure!(
@@ -237,6 +247,7 @@ mod tests {
                     unit_mass_kg: 1200.,
                     unit_volume_m3: 1.,
                 }],
+                products: Vec::new(),
                 jobs: Vec::new(),
                 capabilities: Vec::new(),
                 location: Some(Id([3; 16])),
@@ -289,6 +300,48 @@ mod tests {
         second.entity = Id([4; 16]);
         snapshot.facilities.push(second);
         assert!(validate_snapshot(&snapshot).is_err());
+    }
+
+    #[test]
+    fn reservoir_products_are_resources_without_cargo_reservations() {
+        let mut snapshot = snapshot();
+        snapshot.facilities[0].products.push(CargoStack {
+            item: CargoItem::Resource("spent_fuel".into()),
+            quantity: 10,
+            reserved: 0,
+            name: "Spent reactor fuel".into(),
+            unit_mass_kg: 1.,
+            unit_volume_m3: 0.001,
+        });
+        validate_snapshot(&snapshot).unwrap();
+        let bytes = postcard::to_allocvec(&snapshot).unwrap();
+        assert_eq!(
+            postcard::from_bytes::<IndustrySnapshot>(&bytes).unwrap(),
+            snapshot
+        );
+
+        let original = snapshot.clone();
+        snapshot.facilities[0].products[0].reserved = 1;
+        assert!(validate_snapshot(&snapshot).is_err());
+        snapshot = original.clone();
+        snapshot.facilities[0].products[0].item = CargoItem::Part("engine".into());
+        assert!(validate_snapshot(&snapshot).is_err());
+        snapshot = original;
+        let duplicate = snapshot.facilities[0].products[0].clone();
+        snapshot.facilities[0].products.push(duplicate);
+        assert!(validate_snapshot(&snapshot).is_err());
+
+        for (resource, quantity) in [("", 1), ("spent_fuel", 0)] {
+            assert!(
+                validate_command(&IndustryCommand::UnloadProduct {
+                    source: Id([1; 16]),
+                    target: Id([1; 16]),
+                    resource: resource.into(),
+                    quantity,
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]

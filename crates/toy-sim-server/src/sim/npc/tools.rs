@@ -171,6 +171,12 @@ pub enum Action {
         resource: String,
         quantity: u64,
     },
+    UnloadProduct {
+        source: String,
+        target: String,
+        resource: String,
+        quantity: u64,
+    },
     Recipe {
         facility: String,
         recipe: String,
@@ -514,7 +520,11 @@ pub fn query(world: &mut World, organization: &NpcOrganization, query: &Query) -
                     "quantity": stack.quantity,
                     "reserved": stack.reserved,
                 })).collect::<Vec<_>>(),
-                "next_offset": (next < inventory.items.len()).then_some(next),
+                "products": inventory.products.iter().skip(*offset).take(limit).map(|stack| json!({
+                    "item": item(&stack.item),
+                    "quantity": stack.quantity,
+                })).collect::<Vec<_>>(),
+                "next_offset": (next < inventory.items.len().max(inventory.products.len())).then_some(next),
                 "jobs": inventory.jobs.iter().take(8).map(|job| json!({
                     "job": job.id.to_string(),
                     "name": job.name,
@@ -692,6 +702,23 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                     source: id(source)?,
                     target: id(target)?,
                     item,
+                    quantity: *quantity,
+                },
+            )?;
+        }
+        Action::UnloadProduct {
+            source,
+            target,
+            resource,
+            quantity,
+        } => {
+            industry::execute(
+                world,
+                account,
+                IndustryCommand::UnloadProduct {
+                    source: id(source)?,
+                    target: id(target)?,
+                    resource: resource.clone(),
                     quantity: *quantity,
                 },
             )?;

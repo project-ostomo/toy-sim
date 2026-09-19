@@ -133,6 +133,7 @@ mod tests {
                     unit_volume_m3: 1.,
                 })
                 .collect(),
+            products: Vec::new(),
             jobs: Vec::new(),
             capabilities: Vec::new(),
             location: None,
