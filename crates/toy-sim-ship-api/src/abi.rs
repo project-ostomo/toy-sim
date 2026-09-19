@@ -1,10 +1,9 @@
-//! Ship ABI 26: fixed little-endian records and Postcard world services.
+//! Ship ABI 27: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v26";
-pub const VERSION: u32 = 26;
-pub const ERR_GAS: i32 = -1;
+pub const IMPORT_MODULE: &str = "ship_v27";
+pub const VERSION: u32 = 27;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -13,6 +12,8 @@ pub const ERR_HANDLE: i32 = -6;
 pub const ERR_UNSUPPORTED: i32 = -7;
 pub const CALL_GAS: u64 = 100;
 pub const SCAN_GAS_PER_OBJECT: u64 = 3000;
+pub const NAVIGATION_GAS_BASE: u64 = 100;
+pub const NAVIGATION_GAS_PER_GATE: u64 = 4096;
 pub const MAX_CONTACTS: u32 = 256;
 pub const MAX_TRACKS: u32 = 512;
 pub const MAX_SNAPSHOTS: u32 = 8;
@@ -246,21 +247,17 @@ const _: () = assert!(core::mem::offset_of!(TickContext, flags) == 88);
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
 pub struct BudgetInfo {
     pub gas_remaining: u64,
-    pub instruction_remaining: u64,
-    pub gas_capacity: u64,
-    pub gas_refill_per_s: u64,
-    pub instruction_limit: u64,
+    pub gas_limit: u64,
+    pub gas_per_tick: u64,
 }
 
 impl private::Sealed for BudgetInfo {}
 
 impl Record for BudgetInfo {}
-const _: () = assert!(size_of::<BudgetInfo>() == 40 && align_of::<BudgetInfo>() == 8);
+const _: () = assert!(size_of::<BudgetInfo>() == 24 && align_of::<BudgetInfo>() == 8);
 const _: () = assert!(core::mem::offset_of!(BudgetInfo, gas_remaining) == 0);
-const _: () = assert!(core::mem::offset_of!(BudgetInfo, instruction_remaining) == 8);
-const _: () = assert!(core::mem::offset_of!(BudgetInfo, gas_capacity) == 16);
-const _: () = assert!(core::mem::offset_of!(BudgetInfo, gas_refill_per_s) == 24);
-const _: () = assert!(core::mem::offset_of!(BudgetInfo, instruction_limit) == 32);
+const _: () = assert!(core::mem::offset_of!(BudgetInfo, gas_limit) == 8);
+const _: () = assert!(core::mem::offset_of!(BudgetInfo, gas_per_tick) == 16);
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -1249,7 +1246,7 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v26")]
+    #[link(wasm_import_module = "ship_v27")]
     unsafe extern "C" {
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
         pub fn persistent_write(input: *const u8, length: u32) -> i32;

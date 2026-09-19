@@ -2,7 +2,7 @@ use super::*;
 
 fn color(value: u64) -> CallResult<Ink> {
     if value > 0xff_ffff {
-        return Err(w::ERR_ARGUMENT);
+        return Err(w::ERR_ARGUMENT.into());
     }
 
     Ok([(value >> 16) as u8, (value >> 8) as u8, value as u8])
@@ -17,7 +17,7 @@ fn point(x: i64, y: i64) -> CallResult<[i16; 2]> {
 
 fn extent(x: u64, y: u64) -> CallResult<[u16; 2]> {
     if x > u64::from(u16::MAX) || y > u64::from(u16::MAX) {
-        return Err(w::ERR_ARGUMENT);
+        return Err(w::ERR_ARGUMENT.into());
     }
 
     Ok([x as u16, y as u16])
@@ -25,7 +25,7 @@ fn extent(x: u64, y: u64) -> CallResult<[u16; 2]> {
 
 fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
     if !matches!(kind, w::DRAW_TEXT | w::DRAW_POLYLINE) && !payload.is_empty() {
-        return Err(w::ERR_BUFFER);
+        return Err(w::ERR_BUFFER.into());
     }
 
     Ok(match kind {
@@ -40,7 +40,7 @@ fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
             let value = w::ScreenText::read(parameters).ok_or(w::ERR_BUFFER)?;
 
             if payload.len() > 4096 {
-                return Err(w::ERR_LIMIT);
+                return Err(w::ERR_LIMIT.into());
             }
 
             Draw::Text {
@@ -64,7 +64,7 @@ fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
             let stride = size_of::<w::ScreenPoint>();
 
             if payload.len() % stride != 0 || !(2..=256).contains(&(payload.len() / stride)) {
-                return Err(w::ERR_ARGUMENT);
+                return Err(w::ERR_ARGUMENT.into());
             }
 
             let points = payload
@@ -84,7 +84,7 @@ fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
             let value = w::ScreenRectangle::read(parameters).ok_or(w::ERR_BUFFER)?;
 
             if value.filled > 1 {
-                return Err(w::ERR_ARGUMENT);
+                return Err(w::ERR_ARGUMENT.into());
             }
 
             Draw::Rect {
@@ -98,7 +98,7 @@ fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
             let value = w::ScreenEllipse::read(parameters).ok_or(w::ERR_BUFFER)?;
 
             if value.filled > 1 {
-                return Err(w::ERR_ARGUMENT);
+                return Err(w::ERR_ARGUMENT.into());
             }
 
             Draw::Ellipse {
@@ -108,17 +108,19 @@ fn draw(kind: u64, parameters: &[u8], payload: &[u8]) -> CallResult<Draw> {
                 color: color(value.color)?,
             }
         }
-        _ => return Err(w::ERR_ARGUMENT),
+        _ => return Err(w::ERR_ARGUMENT.into()),
     })
 }
 
 pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_define",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ScreenDefinition>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::ScreenDefinition = input(&mut caller, pointer, bytes)?;
 
                 if value.id >= u64::from(w::MAX_SCREENS)
@@ -126,7 +128,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     || !(32..=2048).contains(&value.height)
                     || value.title.as_str().is_none_or(str::is_empty)
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let host = caller.data_mut();
@@ -142,7 +144,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     host.output
                         .screens
                         .retain(|frame| u64::from(frame.screen_id) != value.id);
-                    host.output.cleared_screens.push(value.id);
+                    clear_screen(host, value.id);
                 }
 
                 Ok(())
@@ -150,15 +152,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_remove",
-        |mut caller: Caller<'_, Host>, screen: u64| {
+        |mut caller: Caller<'_, Host>, screen: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if screen >= u64::from(w::MAX_SCREENS) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let host = caller.data_mut();
@@ -167,11 +168,12 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 host.output
                     .screens
                     .retain(|frame| u64::from(frame.screen_id) != screen);
-                host.output.cleared_screens.push(screen);
+                clear_screen(host, screen);
 
-                for event in &host.events {
-                    if event.screen == screen && !host.event_acks.contains(&event.id) {
-                        host.event_acks.push(event.id);
+                for index in 0..host.events.len() {
+                    let event = host.events[index];
+                    if event.screen == screen {
+                        acknowledge(host, event.id);
                     }
                 }
 
@@ -180,12 +182,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_begin",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ScreenFrame>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::ScreenFrame = input(&mut caller, pointer, bytes)?;
                 let background = color(value.background)?;
                 let host = caller.data_mut();
@@ -203,7 +207,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     .requested_screens
                     .contains(&(value.id as u8))
                 {
-                    return Err(w::ERR_UNAVAILABLE);
+                    return Err(w::ERR_UNAVAILABLE.into());
                 }
 
                 if host.drafts.contains_key(&value.id)
@@ -213,7 +217,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         .iter()
                         .any(|frame| u64::from(frame.screen_id) == value.id)
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 host.drafts.insert(
@@ -228,6 +232,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                             buttons: Default::default(),
                         },
                         payload_bytes: 0,
+                        draw_work: 0,
                     },
                 );
                 Ok(())
@@ -235,8 +240,8 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_draw",
         |mut caller: Caller<'_, Host>,
          screen: u64,
@@ -245,19 +250,17 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
          bytes: u32,
          data_pointer: u32,
          data_bytes: u32| {
+            CallPlan::bytes(&caller, pointer, bytes, 48)
+                .and_then(|plan| plan.extra_bytes(&caller, data_pointer, data_bytes, 4096))
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if bytes > 48 || data_bytes > 4096 {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
-                range(&caller, pointer, bytes).ok_or(w::ERR_BUFFER)?;
-                range(&caller, data_pointer, data_bytes).ok_or(w::ERR_BUFFER)?;
-                pay(
-                    &mut caller,
-                    u64::from(bytes).div_ceil(8) + u64::from(data_bytes).div_ceil(8),
-                )?;
+                memory_range(&caller, pointer, bytes)?;
+                memory_range(&caller, data_pointer, data_bytes)?;
 
                 let value = draw(
                     kind,
@@ -272,12 +275,12 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
 
                 if draft.frame.draws.len() >= w::MAX_SCREEN_PRIMITIVES as usize
                     || draft.payload_bytes + data_bytes as usize > w::MAX_SCREEN_PAYLOAD as usize
-                    || draft.frame.draws.iter().map(Draw::work).sum::<usize>() + value.work()
-                        > 1_048_576
+                    || draft.draw_work + value.work() > 1_048_576
                 {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
+                draft.draw_work += value.work();
                 draft.frame.draws.push(value);
                 draft.payload_bytes += data_bytes as usize;
                 Ok(())
@@ -285,24 +288,24 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_button",
         |mut caller: Caller<'_, Host>, screen: u64, key: u64, pointer: u32, bytes: u32| {
+            CallPlan::bytes(&caller, pointer, bytes, 24)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if key >= 12 || bytes > 24 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
-                pay(&mut caller, u64::from(bytes).div_ceil(8))?;
                 let label = std::str::from_utf8(payload(&caller, pointer, bytes)?)
                     .map_err(|_| w::ERR_ARGUMENT)?
                     .to_owned();
 
                 if label.chars().count() > 6 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let draft = caller
@@ -316,17 +319,17 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_end",
-        |mut caller: Caller<'_, Host>, screen: u64| {
+        |mut caller: Caller<'_, Host>, screen: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let host = caller.data_mut();
                 let draft = host.drafts.get(&screen).ok_or(w::ERR_UNAVAILABLE)?;
 
                 if !draft.frame.valid() {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let draft = host.drafts.remove(&screen).unwrap();

@@ -14,12 +14,23 @@ pub struct Snapshot {
     slots: BTreeMap<TrackId, u32>,
     spatial_ids: Vec<Option<TrackId>>,
     free_slots: Vec<u32>,
+    reply_sizes: BTreeMap<usize, usize>,
     tags: BTreeMap<Tag, BTreeSet<TrackId>>,
 }
 
 impl Snapshot {
     fn remove(&mut self, id: TrackId) {
         if let Some(track) = self.tracks.remove(&id) {
+            let bytes = postcard::experimental::serialized_size(track.as_ref())
+                .expect("sensor track serializes");
+            let count = self
+                .reply_sizes
+                .get_mut(&bytes)
+                .expect("indexed track size");
+            *count -= 1;
+            if *count == 0 {
+                self.reply_sizes.remove(&bytes);
+            }
             let slot = self.slots.remove(&id).unwrap();
             self.spatial.remove(slot);
             self.spatial_ids[slot as usize] = None;
@@ -33,6 +44,12 @@ impl Snapshot {
                 }
             }
         }
+    }
+
+    pub(crate) fn maximum_track_bytes(&self) -> usize {
+        self.reply_sizes
+            .last_key_value()
+            .map_or(0, |(&bytes, _)| bytes)
     }
 
     pub fn put(&mut self, track: Track) {
@@ -55,6 +72,9 @@ impl Snapshot {
         for tag in &track.tags {
             self.tags.entry(tag.clone()).or_default().insert(track.id);
         }
+        let bytes =
+            postcard::experimental::serialized_size(&track).expect("sensor track serializes");
+        *self.reply_sizes.entry(bytes).or_default() += 1;
         self.tracks.insert(track.id, Arc::new(track));
     }
 }
@@ -379,8 +399,10 @@ mod tests {
             ..Default::default()
         };
         let mut queries = Queries::default();
-        let a = queries.start(snapshot.clone(), query.clone(), 1).unwrap();
-        let b = queries.start(snapshot, query, 1).unwrap();
+        let a = queries
+            .start(snapshot.clone(), query.clone(), 1, usize::MAX)
+            .unwrap();
+        let b = queries.start(snapshot, query, 1, usize::MAX).unwrap();
         assert_eq!(a.tracks, b.tracks);
         assert_eq!(a.completion, Completion::Complete);
     }
@@ -408,13 +430,15 @@ mod tests {
             exclude: BTreeSet::from([Tag::Kind("ship".into())]),
             ..Default::default()
         };
-        let result = queries.start(group.snapshot(), query, 1).unwrap();
+        let result = queries
+            .start(group.snapshot(), query, 1, usize::MAX)
+            .unwrap();
         assert!(result.tracks.is_empty());
         assert_eq!(result.completion, Completion::WorkLimit);
         assert!(result.gas_used >= 1100 && result.gas_used <= 1200);
         assert!(
             queries
-                .next(result.continuation.unwrap(), 100_000, 12)
+                .next(result.continuation.unwrap(), 100_000, 12, usize::MAX)
                 .is_err()
         );
     }

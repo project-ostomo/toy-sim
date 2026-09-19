@@ -1,5 +1,5 @@
 use crate::sim::{
-    hardware, identity, infrastructure, intelligence, orrery, ownership, physics, precision,
+    gas, hardware, identity, infrastructure, intelligence, orrery, ownership, physics, precision,
     registry, simulation, spatial, travel, vessel,
 };
 use anyhow::{Context, Result, ensure};
@@ -16,6 +16,7 @@ use toy_sim_model::{Id, IffIdentity, InfoGroupKey, Pose, Track};
 struct WorldRecord {
     epoch: Id,
     directory: toy_sim_model::ownership::OwnershipDirectory,
+    gas: gas::GasLedgerSnapshot,
     rate: f64,
     sensor_seed: [u8; 32],
     catalogue: [u8; 32],
@@ -179,6 +180,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut record = WorldRecord {
         epoch: world.resource::<identity::WorldEpoch>().0,
         directory: world.resource::<ownership::Directory>().0.clone(),
+        gas: world.resource::<gas::GasLedger>().snapshot()?,
         rate: world.resource::<crate::sim::session::Clock>().rate,
         sensor_seed: world.resource::<identity::SensorSeed>().0,
         catalogue: world.resource::<registry::UniverseRegistry>().catalogue,
@@ -402,6 +404,14 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
 
     ensure!(record.directory.valid(), "invalid ownership directory");
     ensure!(
+        record
+            .gas
+            .accounts
+            .keys()
+            .all(|owner| record.directory.contains(*owner)),
+        "gas account principal unavailable"
+    );
+    ensure!(
         record.rate.is_finite() && (0.0..=100.0).contains(&record.rate),
         "invalid saved clock rate"
     );
@@ -477,6 +487,10 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     }
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
     for ship in &record.ships {
+        ensure!(
+            ship.software.is_none() || record.gas.accounts.contains_key(&ship.owner.0),
+            "ship computer gas account unavailable"
+        );
         ensure!(valid_pose(&ship.pose), "invalid saved ship pose");
         ensure!(
             access_valid(&ship.owner, &ship.access),
@@ -722,6 +736,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     );
     validate(world, &record)?;
     toy_sim_protocol::navigation::decode_catalogue(&record.navigation)?;
+    let ledger = gas::GasLedger::from_snapshot(record.gas)?;
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
     let entities = world
         .query_filtered::<Entity, Without<bevy::ecs::resource::IsResource>>()
@@ -748,6 +763,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.resource_mut::<travel::TravelEvents>().0.clear();
     world.insert_resource(identity::WorldEpoch(record.epoch));
     world.insert_resource(ownership::Directory(record.directory));
+    world.insert_resource(ledger);
     world.insert_resource(crate::sim::session::Clock {
         rate: record.rate,
         ..Default::default()
@@ -1100,6 +1116,51 @@ mod tests {
     use toy_sim_model::travel::{Order, QueuedOrder, Status};
 
     #[test]
+    fn gas_checkpoints_require_settlement_and_restore_spending_and_fairness_exactly() {
+        use toy_sim_model::ownership::Principal;
+
+        let account = Id::new();
+        let mut app = crate::scenario(&[account], Some(account), None).unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let ledger = world.resource::<gas::GasLedger>().clone();
+        let owner = Principal::Player(account);
+        let available = ledger.account(owner).unwrap().available;
+        ledger
+            .reserve(owner, available - 5)
+            .unwrap()
+            .settle(available - 5)
+            .unwrap();
+        let requests = [1, 2, 3].map(|id| gas::GasRequest {
+            id: Id([id; 16]),
+            maximum: 4,
+            minimum: 1,
+        });
+        let reservations = ledger.reserve_fair(owner, &requests).unwrap();
+        assert!(capture(world).is_err());
+        for (_, reservation) in reservations {
+            reservation.settle(1).unwrap();
+        }
+        let zero_reservation = ledger.reserve(owner, 0).unwrap();
+        assert!(capture(world).is_err());
+        zero_reservation.settle(0).unwrap();
+
+        let expected = ledger.snapshot().unwrap();
+        assert_eq!(expected.accounts[&owner].available, 2);
+        assert_eq!(expected.fairness[&owner], Id([2; 16]));
+        let bytes = capture(world).unwrap();
+        ledger.reserve(owner, 2).unwrap().settle(2).unwrap();
+        restore(world, &bytes).unwrap();
+
+        let restored = world.resource::<gas::GasLedger>().snapshot().unwrap();
+        assert_eq!(restored.accounts, expected.accounts);
+        assert_eq!(restored.fairness, expected.fairness);
+        assert_eq!(restored.accounts[&owner].available, 2);
+    }
+
+    #[test]
     fn paused_restore_rebuilds_optical_visibility_without_advancing_or_expiring_tracks() {
         let account = Id::new();
         let mut app = crate::scenario(&[account], Some(account), None).unwrap();
@@ -1167,6 +1228,39 @@ mod tests {
         different_definitions.definitions[0] ^= 1;
         let mut corrupt_navigation: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         corrupt_navigation.navigation.truncate(12);
+        let mut unsettled_gas: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        unsettled_gas
+            .gas
+            .accounts
+            .values_mut()
+            .next()
+            .unwrap()
+            .reserved = 1;
+        let mut missing_payer: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        let payer = missing_payer
+            .ships
+            .iter()
+            .find(|ship| ship.software.is_some())
+            .unwrap()
+            .owner
+            .0;
+        missing_payer.gas.accounts.remove(&payer);
+        let mut unknown_gas_owner: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        let unknown_owner = toy_sim_model::ownership::Principal::Player(Id::new());
+        unknown_gas_owner.gas.accounts.insert(
+            unknown_owner,
+            toy_sim_model::ownership::GasAccountSnapshot {
+                owner: unknown_owner,
+                available: 1,
+                reserved: 0,
+                spent: 0,
+            },
+        );
+        let mut overflowing_gas: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+        let balance = overflowing_gas.gas.accounts.values_mut().next().unwrap();
+        balance.available = u64::MAX;
+        balance.spent = 1;
+        let original_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
 
         for invalid in [
             missing_host,
@@ -1175,11 +1269,23 @@ mod tests {
             broken_orbit,
             different_definitions,
             corrupt_navigation,
+            unsettled_gas,
+            missing_payer,
+            unknown_gas_owner,
+            overflowing_gas,
         ] {
             let invalid = postcard::to_stdvec(&invalid).unwrap();
             assert!(restore(world, &invalid).is_err());
             assert_eq!(world.resource::<identity::WorldEpoch>().0, epoch);
             assert_eq!(world.resource::<identity::IdentityIndex>().0, identities);
+            assert_eq!(
+                world
+                    .resource::<gas::GasLedger>()
+                    .snapshot()
+                    .unwrap()
+                    .accounts,
+                original_gas.accounts
+            );
             assert!(
                 identities
                     .values()

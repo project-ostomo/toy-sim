@@ -1,30 +1,26 @@
 use super::*;
 
 pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "instrument_weapons_put",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32, rows_pointer: u32, count: u32| {
+            weapons_plan(&caller, pointer, bytes, rows_pointer, count)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::WeaponsState = input(&mut caller, pointer, bytes)?;
                 lease(&caller, value.valid_until_s)?;
                 if value.mode > w::WEAPONS_FIRING
                     || value.reason.as_str().is_none()
                     || count as usize > caller.data().catalogue.len()
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
                 let length = count
                     .checked_mul(size_of::<w::WeaponInstrument>() as u32)
                     .ok_or(w::ERR_BUFFER)?;
-                if range(&caller, rows_pointer, length).is_none() {
-                    return Err(w::ERR_BUFFER);
-                }
-                pay(
-                    &mut caller,
-                    u64::from(count) * w::WEAPON_ROW_GAS + u64::from(length) / 8,
-                )?;
+                memory_range(&caller, rows_pointer, length)?;
                 let mut rows = Vec::with_capacity(count as usize);
                 let mut ids = std::collections::BTreeSet::new();
                 for index in 0..count {
@@ -39,7 +35,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         || !ids.insert(row.device)
                         || row.solution_flags > w::WEAPON_SOLUTION
                     {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
                     finite(&[
                         row.time_of_flight_s,
@@ -50,7 +46,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         row.reading.next_fire_s,
                     ])?;
                     if row.time_of_flight_s < 0.0 || row.pointing_error_rad < 0.0 {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
                     if row.aim_marker != 0
                         && !caller
@@ -60,7 +56,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                             .markers
                             .contains_key(&row.aim_marker)
                     {
-                        return Err(w::ERR_HANDLE);
+                        return Err(w::ERR_HANDLE.into());
                     }
                     rows.push(row);
                 }
@@ -72,12 +68,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "instrument_attitude_put",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::AttitudeState>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::AttitudeState = input(&mut caller, pointer, bytes)?;
                 lease(&caller, value.valid_until_s)?;
                 finite(&value.reference)?;
@@ -87,12 +85,12 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     || value.present > w::ATTITUDE_REFERENCE
                     || value.control_error < 0.
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 if value.present == 0 {
                     if value.reference != [0.; 4] {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
                 } else if (value
                     .reference
@@ -103,7 +101,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     .abs()
                     > 1e-6
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 caller.data_mut().working.attitude = Some(value);
@@ -112,12 +110,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "instrument_navigation_put",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::NavigationState>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::NavigationState = input(&mut caller, pointer, bytes)?;
                 lease(&caller, value.valid_until_s)?;
                 fraction(value.throttle)?;
@@ -127,7 +127,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     || value.present & !31 != 0
                     || value.reason.as_str().is_none()
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 for (bit, measurement) in [
@@ -141,7 +141,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         || measurement < 0.
                         || (value.present & bit == 0 && measurement != 0.)
                     {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
                 }
 
@@ -151,12 +151,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "instrument_contacts_put",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ContactsState>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value: w::ContactsState = input(&mut caller, pointer, bytes)?;
                 lease(&caller, value.valid_until_s)?;
                 let host = caller.data_mut();
@@ -166,7 +168,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     .latest_scan_epoch
                     .is_none_or(|time| time + 2. <= host.current.epoch)
                 {
-                    return Err(w::ERR_UNAVAILABLE);
+                    return Err(w::ERR_UNAVAILABLE.into());
                 }
 
                 host.working.contacts = Some(value);
@@ -177,12 +179,12 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "instrument_clear",
-        |mut caller: Caller<'_, Host>, kind: u64| {
+        |mut caller: Caller<'_, Host>, kind: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let state = &mut caller.data_mut().working;
 
                 match kind {
@@ -197,7 +199,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         state.contact_list = Arc::default();
                         state.contact_epoch = None;
                     }
-                    _ => return Err(w::ERR_ARGUMENT),
+                    _ => return Err(w::ERR_ARGUMENT.into()),
                 }
 
                 Ok(())

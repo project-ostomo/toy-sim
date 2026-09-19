@@ -729,3 +729,132 @@ including density variation and LOD stability. Workspace formatting and diff
 checks pass. Final quiet release bakes measured Earth at 23.5 ms for 256 pixels
 and 1.97 s for 2,048 pixels; Jupiter at 9.4 ms and 814 ms. The playable client
 closed cleanly after the live check.
+
+## Resumable computers and global gas
+
+Planetary surfaces committed as `b33ceac`. The final full universe run passed
+34 tests. Work has moved to execution budgeting and owner-wide accounts.
+
+The runtime review found that Wasmtime's periodic async yielding does not make
+fuel exhaustion resumable: exhausted total fuel still traps. An old draft used
+a huge fuel tank, estimated yield counts, and instruction debt. That cannot
+guarantee prepaid account spending, so it is not being adopted. An isolated Wasmi
+prototype already demonstrates preserved local state and a deferred host call
+executing exactly once. Its portable interpreter is being compared with an
+instrumented JIT alternative before choosing the production runtime.
+
+The ledger uses tagged player, organization, and sovereignty principals. Actual
+asset ownership selects the payer; advertised IFF cannot redirect a bill. A
+checked integer reservation is made before execution and settled against actual
+usage. Parallel computers share low balances fairly, including rotating integer
+remainders. Checkpoint capture rejects live reservations rather than inventing
+refunds for work that may already have happened. Flight work settles at its own
+barrier; requested MFD work later spends only the remaining physical capacity
+for that ship and tick and settles before publication returns.
+
+The UI contract separates READY, SUSPENDED, and NO GAS from actual faults and
+reboot progress. Commands can still queue while an account is empty. The Society
+window receives only personal balances and pooled accounts the caller administers.
+
+Review also found an unrelated but concrete violation of the requested gameplay
+principle: the last officer could not leave an organization. That restriction is
+removed. An organization may become administratively abandoned; it keeps its
+assets and gas, and the former officer loses management credentials. Physical
+and credential limits remain enforceable; legal obligations are for in-game
+institutions and actors to enforce.
+
+Native-call admission is also being audited. Track queries must reserve their
+copying overhead as well as query work, and guest output buffers must be validated
+before cursor mutation. A sensor-history eviction path repeatedly searched every
+incoming contact for every possible eviction; it now builds one ID set and sorts
+eviction candidates once. The existing deterministic age/ID eviction rule remains.
+
+### Runtime comparison and admission details
+
+The completed interpreter comparison used the actual bundled computer and the
+3,000-system map. Wasmi's portable dispatch took about 120 microseconds for an
+idle callback versus 7.7 microseconds in Wasmtime. Cold routing used 550 ms of
+aggregate CPU versus 15.6 ms; warm routing used 111 ms versus 3.0 ms. The default
+interpreter dispatch also overflowed a normal worker stack, while portable
+dispatch passed the resumption tests. These results favor retaining the JIT if
+its explicit metering prototype passes correctness and workload checks.
+
+The JIT prototype injects a private prepaid meter through structured WASM
+rewriting. It has already preserved recursive locals and bulk memory work across
+ten suspensions. Guest modules cannot import its reserved host interface or
+address the appended private state through their original indices. Production
+integration is still pending the benchmark and remaining review.
+
+A ledger review caught a starvation case before integration: dividing one
+million available gas equally among three computers waiting for indivisible
+700,000-gas calls would stall all three forever. The allocator is being extended
+to admit complete minimum-sized execution steps, with rotating fairness, before
+sharing the remaining budget. It must allow one affordable call to proceed.
+
+ABI 27 removes the old saved reserve and separate instruction counter. Its
+budget record contains current remaining gas, the granted slice, and the ship's
+physical per-tick limit. The bundled computer now sizes optional catalogue
+queries from that allowance. In-flight request batches stay stable across a
+suspension; later commands queue for the next callback. Read-only observations
+and scene access can refresh when execution resumes.
+
+### JIT selected; integration checks
+
+The instrumented JIT prototype passed its execution and index-remapping checks.
+Idle and tracking callbacks took about 18.7 and 21.5 microseconds, versus 7.5 and
+9.0 microseconds with the old runtime. That comparison still had the old fuel
+meter enabled as well; production uses only the explicit prepaid meter. The
+production rewrite has 11 focused passing tests, including bulk memory pricing,
+recursive locals, indirect calls, original-global isolation, reserved names, and
+bounded loop segments. It uses wasm-encoder's structured rewriting rather than
+a fork of Wasmtime.
+
+The initial integrated Controller checks pass for local variables across many
+small grants, deferred calls with no unfunded effects, current scene access after
+resumption, stable request batches, durable writes before a later trap, and
+initialization across paid slices. The borrowed snapshot test exposed a missing
+lookup hook and is being rerun after that correction. The new rule retains one
+borrowed snapshot until the next explicit successful tick_read or callback end;
+existing snapshot_keep pins support longer retention. Implicit gas waits alone
+do not invalidate the borrowed handle.
+
+ABI version validation is now declarative: ship_api_version must return the
+literal version constant. Offline validation does not execute guest startup.
+This avoids rejecting a valid persisted computer merely because its initializer
+needs more than one execution slice. Live initialization still spends gas and
+can suspend normally.
+
+Server review also fixed startup-slot starvation. The per-tick creation cap
+applies to funded new VM instances; fee-only work, empty accounts, and existing
+suspended initializers do not keep those slots occupied. A regression exercises
+64 infinite initializers followed by a healthy computer. Full server, firmware,
+and interactive checks remain to be completed before this piece is committed.
+
+### Piece 6 completed — 2026-09-19 06:43 UTC
+
+The resumable JIT, prepaid host calls, shared owner gas ledger, and computer UI
+are integrated. All 51 runtime checks passed, including the full 3,000-system
+routing fixtures. The client suite passed 122 tests, protocol 16, model 13,
+intelligence queries 7, and network integration 4. Server verification covered
+268 passing tests with five explicit benchmark tests ignored. One old headless
+smoke test initially failed because it created unowned, unfunded computers; it
+now provisions an account through the production path and passes. The runnable
+debug client and server build successfully.
+
+Live keyboard and mouse playtesting used a fresh durable world. The Computer
+gas tab displayed exact integer account balances whose available and spent
+amounts summed to the starting credit. Planning Terminus produced the four-stage
+Sol gate, local transfer, slip, and arrival route, with ETAs and visible engine
+activity. CPU usage settled from catalogue prefetch to about 14–17 percent.
+Stopping paused the route; double-click alignment and Shift throttle control
+worked, with the HUD showing manual thrust and turning torque. The program did
+not fault during these interactions. Network tests also verify checkpoint
+restart with the new ledger. Screenshots are in
+`/tmp/toy-sequential-playtests/gas-live-*.png`; the archived client log is
+`/tmp/sequential-paid-runtime.log`.
+
+The live client still ran around 36–46 FPS in this scene, and initial window
+resize produced the existing Vulkan presentation-layout warnings. These remain
+open performance/rendering issues for the final integration pass; this milestone
+does not claim that the 120 FPS target is met. The account and runtime work is
+ready to commit. Missiles sharing their parent's surviving computer are next.

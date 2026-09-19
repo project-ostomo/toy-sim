@@ -5,7 +5,7 @@ fn metadata(caller: &Caller<'_, Host>, meta: w::SpatialMeta, maximum_role: u64) 
     lease(caller, meta.valid_until_s)?;
 
     if meta.id == 0 || meta.role > maximum_role || meta.label.as_str().is_none() {
-        return Err(w::ERR_ARGUMENT);
+        return Err(w::ERR_ARGUMENT.into());
     }
 
     Ok(())
@@ -22,13 +22,13 @@ fn frame(
     if frame.kind == w::FRAME_SNAPSHOT {
         return host
             .working
-            .snapshot(frame.reference, host.current)
+            .snapshot(frame.reference, host.current, host.borrowed_snapshot)
             .map(Some)
-            .ok_or(w::ERR_HANDLE);
+            .ok_or_else(|| w::ERR_HANDLE.into());
     }
 
     if frame.origin_velocity_m_s != [0.; 3] {
-        return Err(w::ERR_ARGUMENT);
+        return Err(w::ERR_ARGUMENT.into());
     }
 
     match frame.kind {
@@ -42,7 +42,7 @@ fn frame(
                 .ok_or(w::ERR_UNAVAILABLE)?;
 
             if track.at(host.current.epoch).is_none() {
-                return Err(w::ERR_UNAVAILABLE);
+                return Err(w::ERR_UNAVAILABLE.into());
             }
 
             Ok(None)
@@ -56,22 +56,24 @@ fn frame(
                 .ok_or(w::ERR_UNAVAILABLE)?;
 
             if path.header.kind != w::PATH_TIMED || !path.active(host.current.epoch) {
-                return Err(w::ERR_UNAVAILABLE);
+                return Err(w::ERR_UNAVAILABLE.into());
             }
 
             Ok(None)
         }
-        _ => Err(w::ERR_ARGUMENT),
+        _ => Err(w::ERR_ARGUMENT.into()),
     }
 }
 
 pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "spatial_marker_put",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::SpatialMarker>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let record: w::SpatialMarker = input(&mut caller, pointer, bytes)?;
                 metadata(&caller, record.meta, w::MARKER_EVENT)?;
                 finite(&record.offset_m)?;
@@ -83,32 +85,32 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     w::TIME_FIXED
                         if matches!(record.frame.kind, w::FRAME_SNAPSHOT | w::FRAME_PATH)
                             && record.time_s >= 0. => {}
-                    _ => return Err(w::ERR_ARGUMENT),
+                    _ => return Err(w::ERR_ARGUMENT.into()),
                 }
 
                 if snapshot.is_some_and(|snapshot| {
                     record.time_mode == w::TIME_FIXED && record.time_s < snapshot.epoch
                 }) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let spatial = &caller.data().working.spatial;
 
                 if spatial.paths.contains_key(&record.meta.id) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 if !spatial.markers.contains_key(&record.meta.id)
                     && spatial.markers.len() >= w::MAX_MARKERS as usize
                 {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
                 let path_revision = if record.frame.kind == w::FRAME_PATH {
                     let path = &spatial.paths[&record.frame.reference];
 
                     if record.time_mode == w::TIME_FIXED && path.at(record.time_s).is_none() {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
 
                     Some(path.revision)
@@ -132,19 +134,18 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "spatial_path_put",
         |mut caller: Caller<'_, Host>,
          pointer: u32,
          bytes: u32,
          vertex_pointer: u32,
-         count: u32| {
+         count: u32| { path_plan(&caller, pointer, bytes, vertex_pointer, count) },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if !(2..=w::MAX_PATH_VERTICES).contains(&count) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let header: w::SpatialPath = input(&mut caller, pointer, bytes)?;
@@ -154,7 +155,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 if header.kind > w::PATH_TIMED
                     || (header.kind == w::PATH_TIMED && snapshot.is_none())
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 match header.meta.role {
@@ -163,19 +164,19 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     w::PATH_CONTACT_FORECAST
                         if header.kind == w::PATH_TIMED && header.subject_contact != 0 => {}
                     w::PATH_REFERENCE | w::PATH_ROUTE if header.subject_contact == 0 => {}
-                    _ => return Err(w::ERR_ARGUMENT),
+                    _ => return Err(w::ERR_ARGUMENT.into()),
                 }
 
                 let spatial = &caller.data().working.spatial;
 
                 if spatial.markers.contains_key(&header.meta.id) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 if !spatial.paths.contains_key(&header.meta.id)
                     && spatial.paths.len() >= w::MAX_PATHS as usize
                 {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
                 let other_vertices: usize = spatial
@@ -186,12 +187,11 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     .sum();
 
                 if other_vertices + count as usize > w::MAX_TOTAL_VERTICES as usize {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
                 let vertex_bytes = count * size_of::<w::SpatialVertex>() as u32;
-                range(&caller, vertex_pointer, vertex_bytes).ok_or(w::ERR_BUFFER)?;
-                pay(&mut caller, u64::from(count) * 100)?;
+                memory_range(&caller, vertex_pointer, vertex_bytes)?;
                 let vertices: Vec<_> = payload(&caller, vertex_pointer, vertex_bytes)?
                     .chunks_exact(size_of::<w::SpatialVertex>())
                     .map(|bytes| w::SpatialVertex::read(bytes).unwrap())
@@ -203,10 +203,10 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
 
                     if header.kind == w::PATH_POLYLINE {
                         if vertex.time_s != 0. {
-                            return Err(w::ERR_ARGUMENT);
+                            return Err(w::ERR_ARGUMENT.into());
                         }
                     } else if vertex.time_s < snapshot.unwrap().epoch {
-                        return Err(w::ERR_ARGUMENT);
+                        return Err(w::ERR_ARGUMENT.into());
                     }
                 }
 
@@ -215,7 +215,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         .windows(2)
                         .all(|pair| pair[0].time_s < pair[1].time_s)
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let published_at = caller.data().current.epoch;
@@ -236,15 +236,14 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "spatial_remove",
-        |mut caller: Caller<'_, Host>, id: u64| {
+        |mut caller: Caller<'_, Host>, id: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if id == 0 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 caller.data_mut().working.spatial.remove(id);
@@ -253,12 +252,12 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "spatial_clear",
-        |mut caller: Caller<'_, Host>| {
+        |mut caller: Caller<'_, Host>| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
                 caller.data_mut().working.spatial.clear();
                 Ok(())
             })())

@@ -110,7 +110,11 @@ pub(super) fn computer_status(status: &ComputerStatus) -> String {
     match status {
         ComputerStatus::Unpowered => "Unpowered".into(),
         ComputerStatus::Booting { progress, .. } => format!("Booting · {:.0}%", progress * 100.),
-        ComputerStatus::Running { .. } => "Running".into(),
+        ComputerStatus::Running { execution, .. } => match execution {
+            ExecutionStatus::Ready => "Running".into(),
+            ExecutionStatus::Suspended => "Suspended · continuing next tick".into(),
+            ExecutionStatus::WaitingForGas => "No gas · commands queued".into(),
+        },
         ComputerStatus::Paused => "Paused".into(),
         ComputerStatus::Fault { message, .. } => format!("Fault: {message}"),
     }

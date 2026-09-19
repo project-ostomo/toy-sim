@@ -14,16 +14,28 @@ pub(super) fn draw(ui: &mut egui::Ui, details: &ShipPresentation, display_ns: u6
         ComputerStatus::Running {
             gas_used,
             gas_limit,
-            gas_reserve,
-            gas_capacity,
+            execution,
         } => {
             let fraction = *gas_used as f64 / (*gas_limit).max(1) as f64;
+            let (suffix, status, tone) = match execution {
+                ExecutionStatus::Ready => ("", "Ready for the next tick.", gauges::Tone::Heat),
+                ExecutionStatus::Suspended => (
+                    " · SUSPENDED",
+                    "Execution is preserved and continues on the next tick.",
+                    gauges::Tone::Heat,
+                ),
+                ExecutionStatus::WaitingForGas => (
+                    " · NO GAS",
+                    "Insufficient account gas to resume. Commands wait until the account can fund the pending work.",
+                    gauges::Tone::Reserve,
+                ),
+            };
             (
-                format!("CPU {:.0}%", fraction * 100.),
+                format!("CPU {:.0}%{suffix}", fraction * 100.),
                 fraction,
-                gauges::Tone::Heat,
+                tone,
                 format!(
-                    "Last simulation tick: {gas_used} / {gas_limit} gas\nReserve: {gas_reserve} / {gas_capacity} gas\nUsage above 100% spends accumulated reserves."
+                    "Last simulation tick: {gas_used} / {gas_limit} gas\n{status}\n\nThe meter shows this computer's physical work capacity per tick. Work spends the owner's shared gas account; the account balance does not increase that capacity. See Society → Computer gas for balances."
                 ),
             )
         }

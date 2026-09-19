@@ -37,7 +37,11 @@ impl ContactHandles {
     }
 
     pub fn get(&mut self, group: GroupId, track: TrackId, tick: u64) -> u64 {
-        self.expire(tick);
+        if let Some(&(handle, seen)) = self.entries.get(&(group, track))
+            && seen.saturating_add(600) < tick
+        {
+            self.remove(handle, seen);
+        }
         if let Some((handle, seen)) = self.entries.get_mut(&(group, track)) {
             self.expiry.remove(&(*seen, *handle));
             *seen = tick;
@@ -208,14 +212,68 @@ struct FusedScan {
     velocity: [f64; 3],
 }
 
+const MAX_QUERY_BEACON_BAYS: usize = 4096;
+const QUERY_BAY_GAS: u64 = 100;
+
+fn query_buffer_error(error: anyhow::Error) -> anyhow::Error {
+    if error.is::<toy_sim_intel::query::ReplyBufferTooSmall>() {
+        toy_sim_ship_wasm::WorldQueryError::BufferTooSmall.into()
+    } else {
+        error
+    }
+}
+
+fn check_reply_capacity(reply: &ProgramReply, capacity: usize) -> Result<()> {
+    let bytes = postcard::experimental::serialized_size(reply)?;
+    if bytes > capacity {
+        return Err(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall.into());
+    }
+    Ok(())
+}
+
 impl toy_sim_ship_wasm::ScanSource for FusedScan {
-    fn query(&self, query: ProgramQuery, display: bool) -> Result<ProgramReply> {
+    fn query_work(&self, query: &ProgramQuery) -> Result<u64> {
+        let bays = match query {
+            ProgramQuery::Beacon(id) => self
+                .beacons
+                .get(id)
+                .or_else(|| self.orbital.beacons.get(id))
+                .map_or(0, |beacon| beacon.bays.len()),
+            ProgramQuery::Beacons { after, limit } => {
+                ensure!((1..=256).contains(limit), "invalid beacon page");
+                merged_page(
+                    &self.beacons,
+                    &self.orbital.beacons,
+                    *after,
+                    usize::from(*limit),
+                )
+                .iter()
+                .try_fold(0usize, |total, (_, beacon)| {
+                    total.checked_add(beacon.bays.len())
+                })
+                .unwrap_or(usize::MAX)
+            }
+            _ => 0,
+        };
+        if bays > MAX_QUERY_BEACON_BAYS {
+            return Err(toy_sim_ship_wasm::WorldQueryError::LimitExceeded.into());
+        }
+        Ok(toy_sim_ship_wasm::query_work(query) + QUERY_BAY_GAS * bays as u64)
+    }
+
+    fn query(
+        &self,
+        query: ProgramQuery,
+        display: bool,
+        reply_capacity: usize,
+    ) -> Result<ProgramReply> {
+        self.query_work(&query)?;
         let queries = if display {
             &self.display_queries
         } else {
             &self.queries
         };
-        Ok(match query {
+        let reply = match query {
             ProgramQuery::SlipEligibility {
                 origin,
                 destination,
@@ -253,15 +311,21 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                     .tracks
                     .get(&reference.track)
                     .ok_or_else(|| anyhow::anyhow!("contact unavailable"))?;
-                ProgramReply::Contact {
+                let mut reply = ProgramReply::Contact {
                     pose: track.pose.clone(),
                     radius_m: track.radius_m.unwrap_or(1.),
-                    handle: self.handles.lock().unwrap().get(
-                        reference.group,
-                        reference.track,
-                        self.snapshot.tick,
-                    ),
-                }
+                    handle: u64::MAX,
+                };
+                check_reply_capacity(&reply, reply_capacity)?;
+                let ProgramReply::Contact { handle, .. } = &mut reply else {
+                    unreachable!()
+                };
+                *handle = self.handles.lock().unwrap().get(
+                    reference.group,
+                    reference.track,
+                    self.snapshot.tick,
+                );
+                reply
             }
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: self.travel.clone(),
@@ -271,17 +335,30 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             ProgramQuery::Tracks(mut query) => {
                 query.work = query.work.min(1_000_000);
                 toy_sim_protocol::validate_query(&query)?;
-                ProgramReply::Tracks(queries.lock().unwrap().start(
-                    self.snapshot.clone(),
-                    query,
-                    self.snapshot.tick,
-                )?)
+                ProgramReply::Tracks(
+                    queries
+                        .lock()
+                        .unwrap()
+                        .start(
+                            self.snapshot.clone(),
+                            query,
+                            self.snapshot.tick,
+                            reply_capacity,
+                        )
+                        .map_err(query_buffer_error)?,
+                )
             }
             ProgramQuery::Continue { cursor, work } => ProgramReply::Tracks(
                 queries
                     .lock()
                     .unwrap()
-                    .next(cursor, work.min(1_000_000), self.snapshot.tick)?,
+                    .next(
+                        cursor,
+                        work.min(1_000_000),
+                        self.snapshot.tick,
+                        reply_capacity,
+                    )
+                    .map_err(query_buffer_error)?,
             ),
             ProgramQuery::Beacon(id) => ProgramReply::Beacons(
                 self.beacons
@@ -340,8 +417,11 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                 let epoch = self.prediction_epoch(after_seconds)?;
                 ProgramReply::Pose(self.resolve_at(destination, epoch)?)
             }
-        })
+        };
+        check_reply_capacity(&reply, reply_capacity)?;
+        Ok(reply)
     }
+
     fn scan(&self, range_m: f64, n: usize) -> Vec<toy_sim_ship_wasm::SensorContact> {
         let count = n.min(256);
         if count == 0 || !range_m.is_finite() || range_m < 0.0 {
@@ -360,6 +440,7 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                 snapshot.clone(),
                 query,
                 snapshot.tick,
+                65_536,
             ) {
                 candidates.extend(page.tracks.into_iter().map(|track| (group, track)));
             }
@@ -1001,6 +1082,10 @@ pub fn contact_ref(
     let state = world.get::<ServiceState>(ship)?;
     let handles = state.handles.lock().unwrap();
     let &(group, track) = handles.reverse.get(&handle)?;
+    let &(_, seen) = handles.entries.get(&(group, track))?;
+    if seen.saturating_add(600) < world.resource::<SimulationCounters>().ticks {
+        return None;
+    }
     let group_entity = super::identity::lookup(world, group).ok()?;
     if group != PUBLIC_GROUP && world.get::<Membership>(ship)?.0 != group_entity {
         return None;
@@ -1262,19 +1347,19 @@ mod tests {
             arrival_after_seconds,
         };
         assert!(matches!(
-            source.query(query(0.0), false).unwrap(),
+            source.query(query(0.0), false, 65_536).unwrap(),
             ProgramReply::SlipEligibility { ready: true, .. }
         ));
         assert!(matches!(
-            source.query(query(10.037), false).unwrap(),
+            source.query(query(10.037), false, 65_536).unwrap(),
             ProgramReply::SlipEligibility { ready: false, .. }
         ));
         assert!(matches!(
-            source.query(query(20.0), false).unwrap(),
+            source.query(query(20.0), false, 65_536).unwrap(),
             ProgramReply::SlipEligibility { ready: true, .. }
         ));
         for invalid in [-1.0, f64::NAN, f64::INFINITY, MAX_PREDICTION_SECONDS + 1.0] {
-            assert!(source.query(query(invalid), false).is_err());
+            assert!(source.query(query(invalid), false, 65_536).is_err());
         }
     }
 
@@ -1407,6 +1492,7 @@ mod tests {
                             after_seconds: lead,
                         },
                         false,
+                        65_536,
                     )
                     .unwrap()
                 else {
@@ -1426,6 +1512,7 @@ mod tests {
                             arrival_after_seconds: lead,
                         },
                         false,
+                        65_536,
                     )
                     .unwrap()
                 else {
@@ -1529,6 +1616,7 @@ mod tests {
                         reference: GalacticPosition::ZERO,
                     },
                     false,
+                    65_536,
                 )
                 .unwrap()
             else {
@@ -1557,7 +1645,8 @@ mod tests {
                         limit: 129,
                         reference: GalacticPosition::ZERO
                     },
-                    false
+                    false,
+                    65_536
                 )
                 .is_err()
         );
@@ -1594,10 +1683,10 @@ mod tests {
             ..Default::default()
         });
         for _ in 0..8 {
-            source.query(query.clone(), false).unwrap();
+            source.query(query.clone(), false, 65_536).unwrap();
         }
-        assert!(source.query(query.clone(), false).is_err());
-        assert!(source.query(query, true).is_ok());
+        assert!(source.query(query.clone(), false, 65_536).is_err());
+        assert!(source.query(query, true, 65_536).is_ok());
     }
 
     #[test]
@@ -1886,6 +1975,126 @@ mod tests {
     }
 
     #[test]
+    fn beacon_work_counts_every_bay_and_rejects_oversized_pages_without_truncation() {
+        let mut source = source();
+        let make_beacon = |id, count| PublishedBeacon {
+            system: Id::new(),
+            beacon: Beacon {
+                entity: id,
+                radius_m: 10.0,
+                pose: Pose::default(),
+                iff: IffIdentity {
+                    owner: Id::new(),
+                    faction: None,
+                    labels: Default::default(),
+                    enabled: true,
+                    range_m: 1e8,
+                },
+                bays: (0..count).map(|id| (id as u32, Pose::default())).collect(),
+                gate_exit: None,
+                exclusion_m: 0.0,
+            },
+            owner: source.owner,
+            access: Default::default(),
+            bays: vec![
+                super::super::travel::Bay {
+                    centre_m: [0.0; 3],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    radius_m: 10.0,
+                    mass_capacity_kg: 10.0,
+                    public: true,
+                    allowed: Default::default(),
+                    reservation: None,
+                };
+                count
+            ],
+            orbit: None,
+        };
+        let first = Id([1; 16]);
+        let second = Id([2; 16]);
+        source.beacons = Arc::new(BTreeMap::from([
+            (first, make_beacon(first, MAX_QUERY_BEACON_BAYS)),
+            (second, make_beacon(second, 1)),
+        ]));
+        let page = ProgramQuery::Beacons {
+            after: None,
+            limit: 2,
+        };
+        assert!(matches!(
+            source.query_work(&page).unwrap_err().downcast_ref(),
+            Some(toy_sim_ship_wasm::WorldQueryError::LimitExceeded)
+        ));
+        assert!(matches!(
+            source
+                .query(page, false, usize::MAX)
+                .unwrap_err()
+                .downcast_ref(),
+            Some(toy_sim_ship_wasm::WorldQueryError::LimitExceeded)
+        ));
+
+        let one = ProgramQuery::Beacon(first);
+        let expected =
+            toy_sim_ship_wasm::query_work(&one) + QUERY_BAY_GAS * MAX_QUERY_BEACON_BAYS as u64;
+        assert_eq!(source.query_work(&one).unwrap(), expected);
+        assert!(matches!(
+            source
+                .query(one.clone(), false, 1)
+                .unwrap_err()
+                .downcast_ref(),
+            Some(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall)
+        ));
+        let ProgramReply::Beacons(beacons) = source.query(one, false, usize::MAX).unwrap() else {
+            panic!("expected beacons");
+        };
+        assert_eq!(beacons[0].bays.len(), MAX_QUERY_BEACON_BAYS);
+    }
+
+    #[test]
+    fn small_contact_reply_does_not_allocate_or_retire_handles() {
+        let mut source = source();
+        let id = Id::new();
+        Arc::make_mut(&mut source.snapshot).put(track(id, DVec3::ZERO, false));
+        let query = ProgramQuery::Contact(ContactRef {
+            group: source.group,
+            track: id,
+        });
+        let error = source.query(query.clone(), false, 1).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref(),
+            Some(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall)
+        ));
+        assert!(source.handles.lock().unwrap().entries.is_empty());
+
+        assert!(matches!(
+            source.query(query, false, 1024).unwrap(),
+            ProgramReply::Contact { .. }
+        ));
+        assert_eq!(source.handles.lock().unwrap().entries.len(), 1);
+    }
+
+    #[test]
+    fn expired_contact_lookup_renews_only_the_requested_handle() {
+        let mut handles = ContactHandles::default();
+        let group = Id::new();
+        let first_track = Id::new();
+        let second_track = Id::new();
+        let first = handles.get(group, first_track, 0);
+        let second = handles.get(group, second_track, 0);
+        assert_eq!(handles.get(group, first_track, 600), first);
+        let replacement = handles.get(group, second_track, 601);
+        assert_ne!(replacement, second);
+        assert!(!handles.reverse.contains_key(&second));
+        assert_eq!(handles.entries.len(), 2);
+
+        let replacement = handles.get(group, first_track, 1201);
+        assert_ne!(replacement, first);
+        assert_eq!(handles.entries.len(), 2);
+        handles.expire(1202);
+        assert_eq!(handles.entries.len(), 1);
+        assert!(handles.reverse.contains_key(&replacement));
+    }
+
+    #[test]
     fn contact_handle_indexes_remain_bounded_and_remove_old_references() {
         let mut handles = ContactHandles::default();
         let group = Id::new();
@@ -1957,6 +2166,7 @@ mod tests {
                     after_seconds: 0.0,
                 },
                 false,
+                65_536,
             )
             .unwrap();
         let ProgramReply::Pose(resolved) = reply else {

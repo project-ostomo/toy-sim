@@ -33,6 +33,7 @@ pub fn organization_id(name: &str) -> Id {
 }
 
 pub fn initialize(world: &mut World) {
+    world.init_resource::<super::gas::GasLedger>();
     if world.contains_resource::<Directory>() {
         return;
     }
@@ -112,11 +113,21 @@ pub fn initialize(world: &mut World) {
             .standings
             .insert((privateers, source), Standing::Hostile);
     }
+    let ledger = world.resource::<super::gas::GasLedger>();
+    for &id in directory.sovereignties.keys() {
+        ledger.ensure_account(Principal::Sovereignty(id), super::gas::STARTING_GAS);
+    }
+    for &id in directory.organizations.keys() {
+        ledger.ensure_account(Principal::Organization(id), super::gas::STARTING_GAS);
+    }
     world.insert_resource(Directory(directory));
 }
 
 pub fn add_account(world: &mut World, account: AccountId) {
     initialize(world);
+    world
+        .resource::<super::gas::GasLedger>()
+        .ensure_account(Principal::Player(account), super::gas::STARTING_GAS);
     world
         .resource_mut::<Directory>()
         .0
@@ -270,7 +281,6 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 .and_then(|player| player.organization)
                 .context("join a sovereign organization before founding one")?;
             let sovereignty = directory.organizations[&previous].sovereignty;
-            ensure_can_leave(directory, account, previous)?;
             let id = Id::new();
             let mut directory = world.resource_mut::<Directory>();
             directory
@@ -291,6 +301,9 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 },
             );
             directory.0.players.get_mut(&account).unwrap().organization = Some(id);
+            world
+                .resource::<super::gas::GasLedger>()
+                .ensure_account(Principal::Organization(id), super::gas::STARTING_GAS);
         }
         SocietyCommand::SetOfficer {
             organization,
@@ -316,10 +329,6 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
             if officer {
                 organization.officers.insert(member);
             } else {
-                ensure!(
-                    !organization.officers.contains(&member) || organization.officers.len() > 1,
-                    "organization must retain an officer"
-                );
                 organization.officers.remove(&member);
             }
         }
@@ -377,7 +386,6 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
             };
             ensure!(authorized, "membership access denied");
             if let Some(current) = current.filter(|current| Some(*current) != organization) {
-                ensure_can_leave(&world.resource::<Directory>().0, member, current)?;
                 world
                     .resource_mut::<Directory>()
                     .0
@@ -414,19 +422,6 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 .insert((AssetOwner(owner), AssetAccess::default()));
         }
     }
-    Ok(())
-}
-
-fn ensure_can_leave(
-    directory: &OwnershipDirectory,
-    account: AccountId,
-    organization: Id,
-) -> Result<()> {
-    let organization = &directory.organizations[&organization];
-    ensure!(
-        !organization.officers.contains(&account) || organization.officers.len() > 1,
-        "appoint another officer before leaving"
-    );
     Ok(())
 }
 
@@ -468,9 +463,30 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
         })
         .collect();
     assets.sort_by_key(|asset| asset.entity);
+    let ledger = world.resource::<super::gas::GasLedger>();
+    let gas_accounts = std::iter::once(Principal::Player(account))
+        .chain(
+            source
+                .organizations
+                .keys()
+                .copied()
+                .map(Principal::Organization),
+        )
+        .chain(
+            source
+                .sovereignties
+                .keys()
+                .copied()
+                .map(Principal::Sovereignty),
+        )
+        .filter(|owner| source.administers(account, *owner))
+        .filter_map(|owner| ledger.account(owner))
+        .collect();
+
     SocietySnapshot {
         account,
         directory,
+        gas_accounts,
         assets,
     }
 }
@@ -478,6 +494,47 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gas_balances_are_visible_only_to_the_owner_or_current_administrators() {
+        let mut world = World::new();
+        let owner = Id([1; 16]);
+        let member = Id([2; 16]);
+        identity::initialize(&mut world, &[owner, member]);
+        let organization = organization_id("Helion Flight Cooperative");
+        world
+            .resource_mut::<Directory>()
+            .0
+            .organizations
+            .get_mut(&organization)
+            .unwrap()
+            .officers
+            .insert(owner);
+
+        let owned = snapshot(&world, owner);
+        assert!(owned.valid());
+        assert_eq!(owned.gas_accounts.len(), 2);
+        assert!(
+            owned
+                .gas_accounts
+                .iter()
+                .any(|account| account.owner == Principal::Organization(organization))
+        );
+        let ordinary = snapshot(&world, member);
+        assert!(ordinary.valid());
+        assert_eq!(ordinary.gas_accounts.len(), 1);
+        assert_eq!(ordinary.gas_accounts[0].owner, Principal::Player(member));
+
+        world
+            .resource_mut::<Directory>()
+            .0
+            .organizations
+            .get_mut(&organization)
+            .unwrap()
+            .officers
+            .remove(&owner);
+        assert_eq!(snapshot(&world, owner).gas_accounts.len(), 1);
+    }
 
     #[test]
     fn captured_iff_does_not_grant_access_to_previous_owner() {
@@ -646,17 +703,6 @@ mod tests {
         assert!(
             apply(
                 &mut world,
-                account,
-                SocietyCommand::SetMembership {
-                    account,
-                    organization: None
-                }
-            )
-            .is_err()
-        );
-        assert!(
-            apply(
-                &mut world,
                 recruit,
                 SocietyCommand::CreateOrganization {
                     name: "neris independent haulers".into()
@@ -720,6 +766,58 @@ mod tests {
         .unwrap();
         assert!(!can_access(&world, account, ship, Permission::ManageAccess));
         assert!(can_access(&world, recruit, ship, Permission::ManageAccess));
+    }
+
+    #[test]
+    fn last_officer_can_leave_without_taking_organization_assets_or_gas() {
+        let mut world = World::new();
+        let account = Id([1; 16]);
+        identity::initialize(&mut world, &[account]);
+        apply(
+            &mut world,
+            account,
+            SocietyCommand::CreateOrganization {
+                name: "Independent Test Cooperative".into(),
+            },
+        )
+        .unwrap();
+        let organization = world.resource::<Directory>().0.players[&account]
+            .organization
+            .unwrap();
+        let owner = Principal::Organization(organization);
+        let ship = world.spawn(AssetOwner(owner)).id();
+        let balance = world
+            .resource::<super::super::gas::GasLedger>()
+            .account(owner)
+            .unwrap();
+
+        apply(
+            &mut world,
+            account,
+            SocietyCommand::SetMembership {
+                account,
+                organization: None,
+            },
+        )
+        .unwrap();
+
+        let directory = &world.resource::<Directory>().0;
+        assert_eq!(directory.players[&account].organization, None);
+        assert!(directory.organizations[&organization].officers.is_empty());
+        assert_eq!(world.get::<AssetOwner>(ship).unwrap().0, owner);
+        assert!(!can_access(&world, account, ship, Permission::ManageAccess));
+        assert_eq!(
+            world
+                .resource::<super::super::gas::GasLedger>()
+                .account(owner),
+            Some(balance)
+        );
+        assert!(
+            !snapshot(&world, account)
+                .gas_accounts
+                .iter()
+                .any(|account| account.owner == owner)
+        );
     }
 
     #[test]

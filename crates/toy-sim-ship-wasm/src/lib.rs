@@ -1,14 +1,20 @@
-//! Synchronous, metered ship imports. Faults discard staged outputs and cold-boot automatically.
 mod checkpoint;
-pub use checkpoint::ControllerCheckpoint;
+mod execution;
 mod imports;
+mod metering;
 mod session;
 pub mod spatial;
 
+pub use checkpoint::ControllerCheckpoint;
+pub use session::Session;
+
 use anyhow::{Context, Result, ensure};
 use imports::imports;
-pub use session::Session;
-use std::{collections::HashMap, mem::size_of, sync::Arc};
+use std::{
+    collections::HashMap,
+    mem::size_of,
+    sync::{Arc, Mutex},
+};
 use toy_sim_ship_api::abi::{self as w, Record};
 use toy_sim_ships::*;
 
@@ -18,35 +24,39 @@ use screens::*;
 pub use toy_sim_model::drawing as screens;
 
 use wasmtime::{
-    Caller, Config, Engine, Instance, Linker, Memory, Module, Store, StoreLimits,
+    Caller, Config, Engine, Global, Instance, Linker, Memory, Module, Store, StoreLimits,
     StoreLimitsBuilder, TypedFunc,
 };
-
 pub const MEMORY_LIMIT: usize = 8 * 1024 * 1024;
 pub const FUEL_PER_TICK: u64 = 1_000_000;
 pub const GAS_PER_SECOND: u64 = FUEL_PER_TICK * 10;
-pub const RESERVE_CAPACITY: u64 = FUEL_PER_TICK * 4;
-/// Leave one tick allowance for native calls as well as the instruction limit.
-pub const CALLBACK_START_GAS: u64 = FUEL_PER_TICK * 2;
 pub const BOOT_GAS: u64 = FUEL_PER_TICK * 50;
 pub const MAX_BOOTS_PER_TICK: usize = 64;
 /// Shared immutable scene access, called only after a successful scan admission.
 pub trait ScanSource: Send + Sync {
     fn scan(&self, range_m: f64, n: usize) -> Vec<SensorContact>;
+    fn query_work(&self, query: &toy_sim_model::ProgramQuery) -> Result<u64> {
+        Ok(query_work(query))
+    }
+
     fn query(
         &self,
         _query: toy_sim_model::ProgramQuery,
         _display: bool,
+        _reply_capacity: usize,
     ) -> Result<toy_sim_model::ProgramReply> {
         anyhow::bail!("world service unavailable")
     }
 }
+
 struct Host {
     persistent_data: Vec<u8>,
     display_only: bool,
     working: Session,
     current: spatial::Snapshot,
     sequence: u64,
+    observation_sequence: u64,
+    borrowed_snapshot: Option<spatial::Snapshot>,
     specs: Arc<[Vec<u8>]>,
     resources: Arc<[w::ResourceInfo]>,
     events: Vec<w::ScreenEvent>,
@@ -60,16 +70,24 @@ struct Host {
     contacts: Vec<SensorContact>,
     scan_time: Option<f64>,
     catalogue: Arc<[DeviceDescriptor]>,
-    gas: u64,
-    last_fuel: u64,
+    gas_limit: u64,
+    gas_per_tick: u64,
+    native_credit: u64,
     scan_seconds: f64,
     interest: u64,
     screens: Vec<w::ScreenDefinition>,
+    exchange: Arc<Mutex<execution::Exchange>>,
+    remaining: Option<Global>,
+    initial_remaining: Option<u64>,
+    prepared_query: Option<imports::PreparedWorldQuery>,
 }
+
 struct Machine {
     store: Store<Host>,
     tick: TypedFunc<(), ()>,
+    remaining: Global,
 }
+
 pub struct Controller {
     program: Arc<[u8]>,
     persistent_data: Vec<u8>,
@@ -84,58 +102,74 @@ pub struct Controller {
     pending_requests: Vec<Request>,
     pending_events: Vec<w::ScreenEvent>,
     module: Arc<Module>,
+    engine: Engine,
+    linker: Linker<Host>,
     machine: Option<Machine>,
-    gas: u64,
-    fractional_gas: f64,
+    execution: Mutex<Option<execution::Pending>>,
+    exchange: Arc<Mutex<execution::Exchange>>,
+    boot_remaining: u64,
+    initialized: bool,
+    waiting_for_gas: bool,
+    memory_bytes: usize,
     pub contacts: Vec<SensorContact>,
     pub scan_time: Option<f64>,
-    /// Native publication identity; never exposed through guest memory.
     pub trajectory_revision: u64,
     pub fault: Option<String>,
-    /// Native scene query time inside the most recent callback (part of run time).
     pub last_scan_seconds: f64,
     pub telemetry: Option<Observation>,
     pub screens: Vec<w::ScreenDefinition>,
-    /// Client subscriptions only affect optional trajectory generation, never control behavior.
     pub instrument_interest: u64,
 }
+
+#[derive(Debug, Default)]
+pub struct SliceOutput {
+    pub output: Output,
+    pub callback_completed: bool,
+}
+
 impl Controller {
     pub fn is_booting(&self) -> bool {
-        self.machine.is_none()
+        !self.initialized
     }
-    pub fn gas_remaining(&self) -> u64 {
-        self.gas
+
+    pub fn needs_instance_start(&self) -> bool {
+        !self.initialized && self.execution.lock().unwrap().is_none()
     }
+
+    pub fn boot_remaining_gas(&self) -> u64 {
+        self.boot_remaining
+    }
+
     pub fn boot_progress(&self) -> f64 {
-        if self.is_booting() {
-            self.gas as f64 / BOOT_GAS as f64
+        1. - self.boot_remaining as f64 / BOOT_GAS as f64
+    }
+
+    pub fn is_suspended(&self) -> bool {
+        self.initialized && self.execution.lock().unwrap().is_some()
+    }
+
+    pub fn execution_status(&self) -> toy_sim_model::ExecutionStatus {
+        if self.waiting_for_gas {
+            toy_sim_model::ExecutionStatus::WaitingForGas
+        } else if self.is_suspended() {
+            toy_sim_model::ExecutionStatus::Suspended
         } else {
-            1.
+            toy_sim_model::ExecutionStatus::Ready
         }
     }
-    pub fn can_run(&self) -> bool {
-        !self.is_booting() && self.gas >= CALLBACK_START_GAS
+
+    pub fn minimum_to_progress(&self) -> u64 {
+        if self.boot_remaining > 0 {
+            1
+        } else {
+            self.exchange.lock().unwrap().minimum.max(1)
+        }
     }
+
     pub fn memory_bytes(&self) -> usize {
-        self.machine
-            .as_ref()
-            .and_then(|m| m.store.data().memory.map(|mem| mem.data_size(&m.store)))
-            .unwrap_or(0)
+        self.memory_bytes
     }
-    /// Called once per powered physics tick, even when the script is sleeping or rebooting.
-    pub fn advance(&mut self, dt: f64) {
-        if !dt.is_finite() || dt <= 0. {
-            return;
-        }
-        let cap = if self.is_booting() {
-            BOOT_GAS
-        } else {
-            RESERVE_CAPACITY
-        };
-        let gain = (dt * GAS_PER_SECOND as f64 + self.fractional_gas).min(cap as f64);
-        self.fractional_gas = gain.fract();
-        self.gas = self.gas.saturating_add(gain.floor() as u64).min(cap);
-    }
+
     pub fn revoke_authority(&mut self) {
         self.reboot();
     }
@@ -143,157 +177,208 @@ impl Controller {
     pub fn reboot(&mut self) {
         self.restart_revision = self.restart_revision.wrapping_add(1);
         self.pending_requests.clear();
-        self.machine = None;
-        self.gas = 0;
-        self.fractional_gas = 0.;
-        self.state = Session::default();
         self.pending_events.clear();
+        self.execution.get_mut().unwrap().take();
+        self.machine = None;
+        self.exchange = Arc::default();
+        self.boot_remaining = BOOT_GAS;
+        self.initialized = false;
+        self.waiting_for_gas = false;
+        self.memory_bytes = 0;
+        self.state = Session::default();
         self.contacts.clear();
         self.scan_time = None;
         self.trajectory_revision = self.trajectory_revision.wrapping_add(1);
         self.telemetry = None;
         self.screens.clear();
     }
+
     pub fn fail(&mut self, message: String) {
         self.reboot();
         self.fault = Some(message);
     }
-    fn failed(&mut self, error: &anyhow::Error) {
-        self.reboot();
-        self.fault = Some(format!("{error:#}"));
-    }
-    /// Returns None while booting or accumulating an execution allowance. No saved stack exists.
-    pub fn run(&mut self, input: Input) -> Result<Option<Output>> {
-        self.run_with_scan(input, None)
-    }
-    pub fn run_with_scan(
+
+    pub fn run_slice(
         &mut self,
         mut input: Input,
         source: Option<Arc<dyn ScanSource>>,
-    ) -> Result<Option<Output>> {
-        self.last_scan_seconds = 0.;
+        grant: u64,
+        gas_per_tick: u64,
+    ) -> Result<SliceOutput> {
         self.last_gas_used = 0;
+        self.last_scan_seconds = 0.;
+        ensure!(
+            gas_per_tick > 0 && grant <= gas_per_tick,
+            "invalid computer gas grant"
+        );
+        ensure!(
+            input.devices.len() <= MAX_DEVICES
+                && input
+                    .requested_screens
+                    .iter()
+                    .all(|id| u32::from(*id) < w::MAX_SCREENS)
+                && input.dt.is_finite()
+                && input.dt >= 0.
+                && input.physics_dt.is_finite()
+                && input.physics_dt > 0.
+                && input.observation.time_s.is_finite(),
+            "controller input exceeds limits"
+        );
         self.state.expire(input.observation.time_s);
         self.queue_input(
             std::mem::take(&mut input.commands),
             std::mem::take(&mut input.screen_events),
         )?;
-        if !self.can_run() {
-            return Ok(None);
+        let new_callback = self.execution.get_mut().unwrap().is_none();
+        if new_callback {
+            input.commands.clone_from(&self.pending_requests);
+            input.screen_events.clone_from(&self.pending_events);
         }
-        input.commands = self.pending_requests.clone();
-        let result = (|| -> Result<Output> {
-            ensure!(
-                input.commands.len() <= 256
-                    && input.devices.len() <= MAX_DEVICES
-                    && input
-                        .requested_screens
-                        .iter()
-                        .all(|id| u32::from(*id) < w::MAX_SCREENS)
-                    && input.dt.is_finite()
-                    && input.dt >= 0.
-                    && input.physics_dt.is_finite()
-                    && input.physics_dt > 0.
-                    && input.observation.time_s.is_finite(),
-                "controller input exceeds limits"
-            );
-            let machine = self.machine.as_mut().unwrap();
-            let fuel = self.gas.min(FUEL_PER_TICK);
-            machine.store.set_fuel(fuel)?;
-            let host = machine.store.data_mut();
-            host.gas = self.gas;
-            host.persistent_data.clone_from(&self.persistent_data);
-            host.sequence += 1;
-            host.current =
-                spatial::Snapshot::new(host.sequence, self.observer_origin, &input.observation);
-            host.working = self.state.clone();
-            host.specs = self.device_specs.clone();
-            host.resources = self.resource_specs.clone();
-            host.events.clone_from(&self.pending_events);
-            host.event_acks.clear();
-            host.drafts.clear();
-            host.interest = self.instrument_interest;
-            host.screens.clone_from(&self.screens);
-            host.catalogue.clone_from(&self.catalogue);
-            host.last_fuel = fuel;
-            host.input = Some(input);
-            host.scan_time = None;
-            host.scan_seconds = 0.;
-            host.output = Output::default();
-            host.source = source;
-            host.contacts.clear();
-            let result = machine.tick.call(&mut machine.store, ());
-            // Guest execution and native syscalls share the persistent account; instruction
-            // fuel separately caps one callback. No rollback/reuse of a trapped guest stack.
-            let remaining = machine.store.get_fuel()?;
-            let host = machine.store.data_mut();
-            host.gas = host
-                .gas
-                .saturating_sub(host.last_fuel.saturating_sub(remaining));
-            self.last_gas_used = self.gas.saturating_sub(host.gas);
-            self.gas = host.gas;
-            self.last_scan_seconds = host.scan_seconds;
-            let observation = host.input.take().map(|i| i.observation);
-            host.source = None;
-            result?;
-            self.persistent_data.clone_from(&host.persistent_data);
-            let output = std::mem::take(&mut host.output);
+        self.waiting_for_gas = grant < self.minimum_to_progress();
+        if self.waiting_for_gas {
+            return Ok(SliceOutput::default());
+        }
 
-            if let Some(time) = host.scan_time.take() {
-                self.scan_time = Some(time);
-                self.contacts = std::mem::take(&mut host.contacts);
-            }
-
-            self.pending_requests
-                .retain(|request| !output.replies.iter().any(|reply| reply.id == request.id));
-            self.pending_events
-                .retain(|event| !host.event_acks.contains(&event.id));
-            self.state = std::mem::take(&mut host.working);
+        let boot_charge = grant.min(self.boot_remaining);
+        self.boot_remaining -= boot_charge;
+        self.last_gas_used = boot_charge;
+        let available = grant - boot_charge;
+        if available == 0 {
+            return Ok(SliceOutput::default());
+        }
+        let slice = execution::SliceInput {
+            input,
+            source,
+            observer_origin: self.observer_origin,
+            catalogue: self.catalogue.clone(),
+            specs: self.device_specs.clone(),
+            resources: self.resource_specs.clone(),
+            interest: self.instrument_interest,
+            grant: available,
+            gas_per_tick,
+            state: self.state.clone(),
+        };
+        {
+            let mut exchange = self.exchange.lock().unwrap();
+            exchange.resume = Some(slice);
+            exchange.remaining = available;
+            exchange.minimum = 1;
+            exchange.committed = None;
+        }
+        if new_callback {
+            let pending = if self.initialized {
+                execution::callback(self.machine.take().expect("ready computer has machine"))
+            } else {
+                execution::initialize(
+                    self.engine.clone(),
+                    self.linker.clone(),
+                    self.module.clone(),
+                    self.display_only,
+                    self.exchange.clone(),
+                    self.persistent_data.clone(),
+                )
+            };
+            *self.execution.get_mut().unwrap() = Some(pending);
+        }
+        let poll = self.execution.get_mut().unwrap().as_mut().unwrap().poll();
+        let (remaining, commit, minimum) = {
+            let mut exchange = self.exchange.lock().unwrap();
+            (
+                exchange.remaining,
+                exchange.committed.take(),
+                exchange.minimum,
+            )
+        };
+        ensure!(
+            remaining <= available,
+            "computer gas accounting exceeded grant"
+        );
+        self.last_gas_used += available - remaining;
+        let mut result = SliceOutput::default();
+        if let Some(commit) = commit {
+            self.persistent_data = commit.persistent_data;
+            self.state = commit.state;
             self.trajectory_revision = self.state.spatial.revision;
-            self.telemetry = observation;
             self.screens.clone_from(&self.state.screens);
-
-            Ok(output)
-        })();
-        match result {
-            Ok(out) => Ok(Some(out)),
-            Err(e) => {
-                self.failed(&e);
-                Err(e)
+            self.memory_bytes = commit.memory_bytes;
+            self.last_scan_seconds = commit.scan_seconds;
+            self.telemetry = commit.observation;
+            if let Some(time) = commit.scan_time {
+                self.scan_time = Some(time);
+                self.contacts = commit.contacts;
+            }
+            self.pending_requests.retain(|request| {
+                !commit
+                    .output
+                    .replies
+                    .iter()
+                    .any(|reply| reply.id == request.id)
+            });
+            self.pending_events
+                .retain(|event| !commit.event_acks.contains(&event.id));
+            result.output = commit.output;
+        }
+        match poll {
+            std::task::Poll::Pending => {
+                ensure!(
+                    minimum > remaining,
+                    "computer suspended despite an affordable operation"
+                );
+            }
+            std::task::Poll::Ready(completion) => {
+                self.execution.get_mut().unwrap().take();
+                match completion {
+                    Ok(machine) => {
+                        result.callback_completed = self.initialized;
+                        self.machine = Some(machine);
+                        self.initialized = true;
+                        self.fault = None;
+                    }
+                    Err(error) => {
+                        self.fail(format!("{error:#}"));
+                        return Err(error);
+                    }
+                }
             }
         }
+        Ok(result)
     }
 }
+
 pub struct ControllerRuntime {
     engine: Engine,
     linker: Linker<Host>,
     modules: HashMap<Vec<u8>, Arc<Module>>,
 }
+
 impl Default for ControllerRuntime {
     fn default() -> Self {
         Self::new().expect("WASM runtime")
     }
 }
+
 impl ControllerRuntime {
     pub fn new() -> Result<Self> {
-        let mut c = Config::new();
-        c.consume_fuel(true);
-        c.max_wasm_stack(128 * 1024);
-        let engine = Engine::new(&c)?;
-        let linker = imports(&engine)?;
+        let mut config = Config::new();
+        config.max_wasm_stack(128 * 1024);
+        let engine = Engine::new(&config)?;
+        let mut linker = imports(&engine)?;
+        execution::register(&mut linker)?;
         Ok(Self {
             engine,
             linker,
             modules: HashMap::new(),
         })
     }
+
     pub fn compile(&mut self, bytes: &[u8]) -> Result<Arc<Module>> {
         ensure!(bytes.len() <= 1024 * 1024, "controller exceeds 1 MiB");
-        if let Some(m) = self.modules.get(bytes) {
-            return Ok(m.clone());
+        if let Some(module) = self.modules.get(bytes) {
+            return Ok(module.clone());
         }
-        let m = Module::new(&self.engine, bytes)?;
-        for import in m.imports() {
+        let original = Module::new(&self.engine, bytes)?;
+        validate_version(bytes)?;
+        for import in original.imports() {
             ensure!(
                 import.module() == w::IMPORT_MODULE && w::IMPORTS.contains(&import.name()),
                 "unsupported controller import {}.{}",
@@ -301,45 +386,44 @@ impl ControllerRuntime {
                 import.name()
             );
         }
-        // Resolve types without allocating or starting a guest instance.
-        self.linker.instantiate_pre(&m)?;
+        self.linker.instantiate_pre(&original)?;
         ensure!(
-            m.exports().any(|e| e.name() == "memory"),
+            original.exports().any(|export| export.name() == "memory"),
             "controller must export memory"
         );
         for (name, params, results) in [("ship_tick", 0, 0), ("ship_api_version", 0, 1)] {
-            let ty = m
+            let ty = original
                 .exports()
-                .find(|e| e.name() == name)
-                .and_then(|e| e.ty().func().cloned())
+                .find(|export| export.name() == name)
+                .and_then(|export| export.ty().func().cloned())
                 .with_context(|| format!("missing function {name}"))?;
             ensure!(
                 ty.params().len() == params && ty.results().len() == results,
                 "unsupported {name} signature"
             );
         }
-        for export in m.exports() {
-            if let Some(mem) = export.ty().memory() {
+        for export in original.exports() {
+            if let Some(memory) = export.ty().memory() {
                 ensure!(
-                    !mem.is_64()
-                        && !mem.is_shared()
-                        && mem.minimum() <= (MEMORY_LIMIT / 65536) as u64,
+                    !memory.is_64()
+                        && !memory.is_shared()
+                        && memory.minimum() <= (MEMORY_LIMIT / 65536) as u64,
                     "unsupported controller memory"
                 );
             }
         }
-        let module = Arc::new(m);
+        let instrumented = metering::instrument(bytes)?;
+        let module = Arc::new(Module::new(&self.engine, instrumented)?);
+        self.linker.instantiate_pre(&module)?;
         self.modules.insert(bytes.to_vec(), module.clone());
         Ok(module)
     }
-    /// Offline editor/import preflight, including the executable ABI-version export.
-    /// Simulation startup still goes through the separately metered boot path.
+
     pub fn validate_program(&mut self, bytes: &[u8]) -> Result<()> {
-        let module = self.compile(bytes)?;
-        Machine::new(&self.engine, &self.linker, &module, false)?;
+        self.compile(bytes)?;
         Ok(())
     }
-    /// Compiles/validates the program, but leaves the computer in its initial 50-tick boot.
+
     pub fn instantiate(&mut self, bytes: &[u8]) -> Result<Controller> {
         Ok(Controller {
             program: Arc::from(bytes),
@@ -355,142 +439,92 @@ impl ControllerRuntime {
             pending_requests: Vec::new(),
             pending_events: Vec::new(),
             module: self.compile(bytes)?,
+            engine: self.engine.clone(),
+            linker: self.linker.clone(),
             machine: None,
-            gas: 0,
-            fractional_gas: 0.,
-            contacts: vec![],
+            execution: Mutex::new(None),
+            exchange: Arc::default(),
+            boot_remaining: BOOT_GAS,
+            initialized: false,
+            waiting_for_gas: false,
+            memory_bytes: 0,
+            contacts: Vec::new(),
             scan_time: None,
             trajectory_revision: 0,
             fault: None,
             last_scan_seconds: 0.,
             telemetry: None,
-            screens: vec![],
+            screens: Vec::new(),
             instrument_interest: 0,
         })
     }
-    /// The caller caps attempts per physics tick. The full startup charge is spent even on failure.
-    pub fn boot(&self, controller: &mut Controller) -> Result<bool> {
-        if !controller.is_booting() || controller.gas < BOOT_GAS {
-            return Ok(false);
-        }
-        controller.gas -= BOOT_GAS;
-        match Machine::new(
-            &self.engine,
-            &self.linker,
-            &controller.module,
-            controller.display_only,
-        ) {
-            Ok(machine) => {
-                controller.machine = Some(machine);
-                controller.fault = None;
-                Ok(true)
-            }
-            Err(e) => {
-                controller.failed(&e);
-                Err(e)
-            }
-        }
-    }
+
     pub fn cached_modules(&self) -> usize {
         self.modules.len()
     }
 
     pub fn instantiate_display(&mut self, bytes: &[u8]) -> Result<Controller> {
-        let mut controller = self.instantiate(bytes)?;
+        let mut computer = self.instantiate(bytes)?;
         ensure!(
-            controller.module.get_export("ship_display").is_some(),
+            computer.module.get_export("ship_display").is_some(),
             "program has no display entry point"
         );
-        controller.display_only = true;
-        controller.gas = BOOT_GAS;
-        self.boot(&mut controller)?;
-        controller.gas = CALLBACK_START_GAS;
-        Ok(controller)
+        computer.display_only = true;
+        Ok(computer)
     }
 }
-impl Machine {
-    fn new(
-        engine: &Engine,
-        linker: &Linker<Host>,
-        module: &Module,
-        display_only: bool,
-    ) -> Result<Self> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(MEMORY_LIMIT)
-            .memories(1)
-            .instances(1)
-            .table_elements(4096)
-            .build();
-        let mut store = Store::new(
-            engine,
-            Host {
-                persistent_data: Vec::new(),
-                display_only,
-                working: Session::default(),
-                current: spatial::Snapshot::default(),
-                sequence: 0,
-                specs: Arc::default(),
-                resources: Arc::default(),
-                events: Vec::new(),
-                event_acks: Vec::new(),
-                drafts: Default::default(),
-                limits,
-                memory: None,
-                input: None,
-                output: Output::default(),
-                source: None,
-                contacts: vec![],
-                scan_time: None,
-                catalogue: Arc::default(),
-                gas: FUEL_PER_TICK,
-                last_fuel: FUEL_PER_TICK,
-                scan_seconds: 0.,
-                interest: 0,
-                screens: vec![],
-            },
-        );
-        store.limiter(|h| &mut h.limits);
-        store.set_fuel(FUEL_PER_TICK)?;
-        let instance: Instance = linker.instantiate(&mut store, module)?;
-        let version = instance
-            .get_typed_func::<(), u32>(&mut store, "ship_api_version")?
-            .call(&mut store, ())?;
-        ensure!(
-            version == w::VERSION,
-            "unsupported ship controller API {version}; expected {}",
-            w::VERSION
-        );
-        store.data_mut().memory = Some(
-            instance
-                .get_memory(&mut store, "memory")
-                .context("missing guest memory")?,
-        );
-        let tick = instance.get_typed_func(
-            &mut store,
-            if display_only {
-                "ship_display"
-            } else {
-                "ship_tick"
-            },
-        )?;
-        Ok(Self { store, tick })
+
+fn validate_version(bytes: &[u8]) -> Result<()> {
+    use wasmparser::{ExternalKind, Operator, Parser, Payload, TypeRef};
+    let mut imported_functions = 0;
+    let mut version_function = None;
+    let mut body_index = 0;
+    for payload in Parser::new(0).parse_all(bytes) {
+        match payload? {
+            Payload::ImportSection(section) => {
+                for import in section.into_imports() {
+                    if matches!(import?.ty, TypeRef::Func(_)) {
+                        imported_functions += 1;
+                    }
+                }
+            }
+            Payload::ExportSection(section) => {
+                for export in section {
+                    let export = export?;
+                    if export.name == "ship_api_version" && export.kind == ExternalKind::Func {
+                        version_function = Some(export.index);
+                    }
+                }
+            }
+            Payload::CodeSectionEntry(body) => {
+                if version_function == Some(imported_functions + body_index) {
+                    ensure!(
+                        body.get_locals_reader()?.get_count() == 0,
+                        "ship_api_version must be a literal i32 constant"
+                    );
+                    let mut operators = body.get_operators_reader()?;
+                    let Operator::I32Const { value } = operators.read()? else {
+                        anyhow::bail!("ship_api_version must be a literal i32 constant");
+                    };
+                    ensure!(
+                        matches!(operators.read()?, Operator::End) && operators.eof(),
+                        "ship_api_version must be a literal i32 constant"
+                    );
+                    ensure!(
+                        value == w::VERSION as i32,
+                        "unsupported ship controller API {value}; expected {}",
+                        w::VERSION
+                    );
+                    return Ok(());
+                }
+                body_index += 1;
+            }
+            _ => {}
+        }
     }
+    anyhow::bail!("missing literal ship_api_version function")
 }
-fn charge(c: &mut Caller<'_, Host>, cost: u64) -> bool {
-    let Ok(fuel) = c.get_fuel() else {
-        return false;
-    };
-    let h = c.data_mut();
-    h.gas = h.gas.saturating_sub(h.last_fuel.saturating_sub(fuel));
-    h.last_fuel = fuel;
-    if h.gas < cost {
-        return false;
-    }
-    h.gas -= cost;
-    let next = fuel.min(h.gas);
-    h.last_fuel = next;
-    c.set_fuel(next).is_ok()
-}
+
 fn range(c: &Caller<'_, Host>, ptr: u32, len: u32) -> Option<std::ops::Range<usize>> {
     let end = (ptr as usize).checked_add(len as usize)?;
     if end > c.data().memory?.data_size(c) {

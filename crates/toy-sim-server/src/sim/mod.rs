@@ -4,6 +4,7 @@ pub mod diagnostics;
 pub mod displays;
 #[cfg(test)]
 mod firmware_tests;
+pub mod gas;
 pub mod hardware;
 pub mod infrastructure;
 pub mod presentation;
@@ -107,9 +108,8 @@ mod tests {
 
     #[test]
     fn original_ecs_runs_orbital_ships_without_rendering() {
-        let mut app = application(None);
-        app.update();
-        app.update();
+        let account = toy_sim_model::Id::new();
+        let mut app = provision(&[account], None, None).unwrap();
         let ship = app
             .world_mut()
             .query_filtered::<Entity, With<vessel::ControlledVessel>>()

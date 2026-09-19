@@ -83,12 +83,11 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
                 "invalid computer fault"
             ),
             ComputerStatus::Running {
+                gas_used,
                 gas_limit,
-                gas_reserve,
-                gas_capacity,
                 ..
             } => ensure!(
-                *gas_limit > 0 && gas_reserve <= gas_capacity,
+                *gas_limit > 0 && gas_used <= gas_limit,
                 "invalid computer gas allowance"
             ),
             ComputerStatus::Booting {
@@ -386,6 +385,61 @@ mod tests {
         assert!(!attitude_valid(&attitude));
         attitude.reference = Some([0., 0., 0., 1.]);
         assert!(attitude_valid(&attitude));
+    }
+
+    #[test]
+    fn execution_states_roundtrip_with_tick_usage_and_reject_invalid_allowances() {
+        let mut frame = PresentationFrame::default();
+        frame.ships.push(ShipPresentation {
+            propulsion: Default::default(),
+            ship: crate::Id([1; 16]),
+            revision: 1,
+            sim_time_ns: 0,
+            environment: None,
+            health: None,
+            execution: None,
+            mass_kg: 1000.,
+            inertia_kg_m2: [1.; 9],
+            control_rotation: [0., 0., 0., 1.],
+            hull_heat_capacity_j: 1000.,
+            battery_capacity_j: 1000,
+            power_generated_w: 0.,
+            power_consumed_w: 0.,
+            inventory: Vec::new(),
+            cargo_capacity_m3: 0.,
+            cargo_used_m3: 0.,
+            devices: Vec::new(),
+            computer: ComputerStatus::Paused,
+            instruments: None,
+            screens: Vec::new(),
+        });
+
+        for execution in [
+            ExecutionStatus::Ready,
+            ExecutionStatus::Suspended,
+            ExecutionStatus::WaitingForGas,
+        ] {
+            frame.ships[0].computer = ComputerStatus::Running {
+                gas_used: 800,
+                gas_limit: 1000,
+                execution,
+            };
+            assert!(validate(&frame).is_ok());
+            let bytes = postcard::to_allocvec(&frame).unwrap();
+            assert_eq!(
+                postcard::from_bytes::<PresentationFrame>(&bytes).unwrap(),
+                frame
+            );
+        }
+
+        for (gas_used, gas_limit) in [(1, 0), (1001, 1000)] {
+            frame.ships[0].computer = ComputerStatus::Running {
+                gas_used,
+                gas_limit,
+                execution: ExecutionStatus::Suspended,
+            };
+            assert!(validate(&frame).is_err());
+        }
     }
 }
 

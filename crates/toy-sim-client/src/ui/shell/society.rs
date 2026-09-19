@@ -10,6 +10,7 @@ enum Tab {
     #[default]
     Directory,
     Assets,
+    ComputerGas,
 }
 
 #[derive(Default)]
@@ -72,6 +73,7 @@ pub(super) fn draw(
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, Tab::Directory, "Affiliations & standings");
         ui.selectable_value(&mut state.tab, Tab::Assets, "Asset permissions");
+        ui.selectable_value(&mut state.tab, Tab::ComputerGas, "Computer gas");
     });
     if state.tab == Tab::Directory {
         ui.horizontal(|ui| {
@@ -104,7 +106,61 @@ pub(super) fn draw(
     ui.add_enabled_ui(model.connected, |ui| match state.tab {
         Tab::Directory => directory_panel(ui, state, snapshot, intents),
         Tab::Assets => assets_panel(ui, state, snapshot, intents),
+        Tab::ComputerGas => gas_accounts(ui, snapshot),
     });
+}
+
+fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietySnapshot) {
+    ui.weak("Computers with the same owner share one global gas account.");
+    ui.small("Available funds new work. Reserved is committed to pending work. Spent is total billed usage.");
+    ui.add_space(8.);
+    if snapshot.gas_accounts.is_empty() {
+        ui.weak("No gas account balances available.");
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .id_salt("computer_gas_accounts")
+        .show(ui, |ui| {
+            egui::Grid::new("gas_account_balances")
+                .num_columns(4)
+                .spacing(egui::vec2(20., 12.))
+                .striped(true)
+                .show(ui, |ui| {
+                    for heading in ["Owner", "Available", "Reserved", "Spent"] {
+                        ui.strong(heading);
+                    }
+                    ui.end_row();
+                    for account in &snapshot.gas_accounts {
+                        ui.label(name(&snapshot.directory, account.owner))
+                            .on_hover_text(lineage(&snapshot.directory, account.owner));
+                        ui.label(
+                            egui::RichText::new(gas_amount(account.available))
+                                .monospace()
+                                .color(if account.available == 0 {
+                                    THREAT
+                                } else {
+                                    ACCENT
+                                }),
+                        );
+                        ui.monospace(gas_amount(account.reserved));
+                        ui.monospace(gas_amount(account.spent));
+                        ui.end_row();
+                    }
+                });
+        });
+}
+
+fn gas_amount(amount: u64) -> String {
+    let digits = amount.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
 }
 
 fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
@@ -691,6 +747,76 @@ mod tests {
     use super::*;
     use toy_sim_model::ownership::PlayerAffiliation;
 
+    #[test]
+    fn gas_tab_shows_only_authorized_accounts_with_exact_integer_balances() {
+        use toy_sim_model::ownership::{GasAccountSnapshot, Organization, Sovereignty};
+
+        let ctx = egui::Context::default();
+        toy_sim_ui::theme::install(&ctx);
+        let mut snapshot = snapshot(true);
+        let sovereignty = Id([5; 16]);
+        let organization = Id([6; 16]);
+        snapshot.directory.sovereignties.insert(
+            sovereignty,
+            Sovereignty {
+                id: sovereignty,
+                name: "Test sovereignty".into(),
+                bloc: Bloc::NonAligned,
+                officers: Default::default(),
+            },
+        );
+        snapshot.directory.organizations.insert(
+            organization,
+            Organization {
+                id: organization,
+                name: "Shared Fleet".into(),
+                sovereignty,
+                open_membership: false,
+                officers: BTreeSet::from([snapshot.account]),
+            },
+        );
+        snapshot
+            .directory
+            .players
+            .get_mut(&snapshot.account)
+            .unwrap()
+            .organization = Some(organization);
+        snapshot.gas_accounts = vec![
+            GasAccountSnapshot {
+                owner: Principal::Player(snapshot.account),
+                available: u64::MAX,
+                reserved: 0,
+                spent: 0,
+            },
+            GasAccountSnapshot {
+                owner: Principal::Organization(organization),
+                available: 9_007_199_254_740_993,
+                reserved: 1234,
+                spent: 56789,
+            },
+        ];
+        assert!(snapshot.valid());
+        let mut state = State::default();
+        assert!(click(&ctx, &mut state, &snapshot, "Computer gas").is_empty());
+        let labels = render(&ctx, &mut state, &snapshot, vec![], &mut Vec::new());
+        for expected in [
+            "Shared Fleet",
+            "Available",
+            "Reserved",
+            "Spent",
+            "18,446,744,073,709,551,615",
+            "9,007,199,254,740,993",
+            "1,234",
+            "56,789",
+        ] {
+            assert!(
+                labels.iter().any(|(text, _)| text == expected),
+                "missing {expected}"
+            );
+        }
+        assert!(!labels.iter().any(|(text, _)| text == "Contact owner"));
+    }
+
     fn snapshot(can_manage: bool) -> SocietySnapshot {
         let account = Id([1; 16]);
         let peer = Id([2; 16]);
@@ -708,6 +834,7 @@ mod tests {
         SocietySnapshot {
             account,
             directory,
+            gas_accounts: Vec::new(),
             assets: vec![AssetAffiliation {
                 entity: Id([3; 16]),
                 name: "Patrol ship".into(),

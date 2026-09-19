@@ -10,6 +10,27 @@ pub const CALL_GAS: u64 = 100;
 pub const VISIT_GAS: u64 = 8;
 pub const CANDIDATE_GAS: u64 = 1000;
 
+// Covers the enclosing reply discriminant, page fields, and maximum-length varints.
+const PAGE_ENVELOPE_BYTES: usize = 64;
+
+#[derive(Debug)]
+pub struct ReplyBufferTooSmall;
+
+impl std::fmt::Display for ReplyBufferTooSmall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("query reply buffer cannot hold a track and its page header")
+    }
+}
+
+impl std::error::Error for ReplyBufferTooSmall {}
+
+fn validate_capacity(snapshot: &Snapshot, capacity: usize) -> Result<()> {
+    if capacity < PAGE_ENVELOPE_BYTES + snapshot.maximum_track_bytes() {
+        return Err(ReplyBufferTooSmall.into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Budget {
     pub remaining: u64,
@@ -86,7 +107,9 @@ impl Queries {
         snapshot: Arc<Snapshot>,
         query: TrackQuery,
         tick: u64,
+        reply_capacity: usize,
     ) -> Result<QueryPage> {
+        validate_capacity(&snapshot, reply_capacity)?;
         self.retire_expired(tick);
         ensure!(self.cursors.len() < 8, "query retention limit");
         ensure!(
@@ -143,16 +166,26 @@ impl Queries {
                 complete: false,
             },
         );
-        self.next(id, work, tick)
+        self.next(id, work, tick, reply_capacity)
     }
 
-    pub fn next(&mut self, id: Id, work: u64, tick: u64) -> Result<QueryPage> {
+    pub fn next(
+        &mut self,
+        id: Id,
+        work: u64,
+        tick: u64,
+        reply_capacity: usize,
+    ) -> Result<QueryPage> {
+        if let Some(cursor) = self.cursors.get(&id) {
+            validate_capacity(&cursor.snapshot, reply_capacity)?;
+        }
         self.retire_expired(tick);
         let Some(cursor) = self.cursors.get_mut(&id) else {
             bail!("query continuation expired");
         };
         let mut budget = Budget::new(work);
         let mut tracks = Vec::new();
+        let mut remaining_bytes = reply_capacity.saturating_sub(PAGE_ENVELOPE_BYTES);
         let mut completion = Completion::WorkLimit;
         if budget.charge(CALL_GAS) {
             while tracks.len() < usize::from(cursor.query.limit) {
@@ -169,9 +202,14 @@ impl Queries {
                 }
                 if matches_query(track, &cursor.query, cursor.snapshot.tick) {
                     let bytes = postcard::experimental::serialized_size(track.as_ref()).unwrap();
+                    if bytes > remaining_bytes {
+                        completion = Completion::ResultLimit;
+                        break;
+                    }
                     if !budget.charge((bytes as u64).div_ceil(8)) {
                         break;
                     }
+                    remaining_bytes -= bytes;
                     tracks.push((**track).clone());
                 }
                 cursor.pending = None;
@@ -333,7 +371,9 @@ mod tests {
             .collect();
         assert!(!expected.is_empty());
         let mut queries = Queries::default();
-        let mut page = queries.start(snapshot.clone(), query, 1).unwrap();
+        let mut page = queries
+            .start(snapshot.clone(), query, 1, usize::MAX)
+            .unwrap();
         assert!(page.tracks.is_empty());
         assert!(page.gas_used <= CALL_GAS + VISIT_GAS);
         assert_eq!(page.completion, Completion::WorkLimit);
@@ -354,13 +394,65 @@ mod tests {
                 break;
             };
             let budget = if pages % 2 == 0 { 108 } else { 1400 };
-            page = queries.next(continuation, budget, 1).unwrap();
+            page = queries.next(continuation, budget, 1, usize::MAX).unwrap();
             assert!(page.gas_used <= budget);
             pages += 1;
             assert!(pages < 10_000, "query continuation did not make progress");
         }
         assert_eq!(received, expected);
         assert!(pages > 1);
+    }
+
+    #[test]
+    fn reply_capacity_is_checked_before_cursor_mutation_and_pages_never_lose_tracks() {
+        let mut snapshot = Snapshot {
+            tick: 1,
+            ..Default::default()
+        };
+        for id in 0..20 {
+            let mut value = track(id, GalacticPosition::ZERO);
+            value.tags.insert(Tag::Advertised("x".repeat(64)));
+            snapshot.put(value);
+        }
+        let capacity = PAGE_ENVELOPE_BYTES + snapshot.maximum_track_bytes();
+        let snapshot = Arc::new(snapshot);
+        let query = TrackQuery {
+            limit: 20,
+            work: 100_000,
+            ..Default::default()
+        };
+        let mut queries = Queries::default();
+        for _ in 0..20 {
+            let error = queries
+                .start(snapshot.clone(), query.clone(), 1, capacity - 1)
+                .unwrap_err();
+            assert!(error.is::<ReplyBufferTooSmall>());
+            assert!(queries.cursors.is_empty());
+        }
+
+        let mut page = queries.start(snapshot, query, 1, capacity).unwrap();
+        let mut ids = BTreeSet::new();
+        loop {
+            assert_eq!(page.tracks.len(), 1);
+            assert!(
+                postcard::to_allocvec(&ProgramReply::Tracks(page.clone()))
+                    .unwrap()
+                    .len()
+                    <= capacity
+            );
+            assert!(ids.insert(page.tracks[0].id));
+            let Some(cursor) = page.continuation else {
+                break;
+            };
+            let error = queries.next(cursor, 100_000, 1, capacity - 1).unwrap_err();
+            assert!(error.is::<ReplyBufferTooSmall>());
+            page = queries.next(cursor, 100_000, 1, capacity).unwrap();
+            if page.tracks.is_empty() {
+                assert_eq!(page.completion, Completion::Complete);
+                break;
+            }
+        }
+        assert_eq!(ids.len(), 20);
     }
 
     #[test]
@@ -377,6 +469,7 @@ mod tests {
                     ..Default::default()
                 },
                 1,
+                usize::MAX,
             )
             .unwrap();
         assert_eq!(result.completion, Completion::Complete);
@@ -395,11 +488,12 @@ mod tests {
                     ..Default::default()
                 },
                 2,
+                usize::MAX,
             )
             .unwrap();
         assert!(
             queries
-                .next(result.continuation.unwrap(), 1000, 13)
+                .next(result.continuation.unwrap(), 1000, 13, usize::MAX)
                 .is_err()
         );
         assert!(weak.upgrade().is_some());
@@ -428,6 +522,7 @@ mod tests {
                     ..Default::default()
                 },
                 1,
+                usize::MAX,
             )
             .unwrap();
         let mut pages = 0;
@@ -437,7 +532,7 @@ mod tests {
             let Some(continuation) = page.continuation else {
                 break;
             };
-            page = queries.next(continuation, budget, 1).unwrap();
+            page = queries.next(continuation, budget, 1, usize::MAX).unwrap();
             pages += 1;
             assert!(pages < 1000);
         }

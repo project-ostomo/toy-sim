@@ -1,3 +1,8 @@
+#[macro_use]
+mod admission;
+pub(super) use admission::PreparedWorldQuery;
+use admission::*;
+
 mod drawing;
 mod instruments;
 mod publications;
@@ -7,39 +12,79 @@ use super::*;
 pub(super) struct ScreenDraft {
     frame: ScreenImage,
     payload_bytes: usize,
+    draw_work: usize,
 }
 
-type CallResult<T = ()> = std::result::Result<T, i32>;
+enum CallError {
+    Status(i32),
+    PricedStatus { status: i32, gas: u64 },
+    Memory,
+}
 
-fn enter(caller: &mut Caller<'_, Host>) -> CallResult {
-    pay(caller, w::CALL_GAS)?;
-
-    if caller.data().input.is_none() {
-        return Err(w::ERR_UNAVAILABLE);
+impl CallError {
+    fn admission_cost(&self) -> u64 {
+        match self {
+            Self::PricedStatus { gas, .. } => *gas,
+            Self::Status(_) | Self::Memory => w::CALL_GAS,
+        }
     }
 
-    Ok(())
-}
-
-fn pay(caller: &mut Caller<'_, Host>, gas: u64) -> CallResult {
-    if charge(caller, gas) {
-        Ok(())
-    } else {
-        Err(w::ERR_GAS)
+    fn priced(self, gas: u64) -> Self {
+        match self {
+            Self::Status(status) | Self::PricedStatus { status, .. } => {
+                Self::PricedStatus { status, gas }
+            }
+            Self::Memory => Self::Memory,
+        }
     }
 }
 
-fn status(result: CallResult) -> i32 {
-    result.map_or_else(|error| error, |()| 0)
+impl From<i32> for CallError {
+    fn from(status: i32) -> Self {
+        Self::Status(status)
+    }
+}
+
+type CallResult<T = ()> = std::result::Result<T, CallError>;
+
+fn finish(result: CallResult<i32>) -> wasmtime::Result<i32> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(CallError::Status(status) | CallError::PricedStatus { status, .. }) => Ok(status),
+        Err(CallError::Memory) => Err(wasmtime::Error::msg("host call outside guest memory")),
+    }
+}
+
+fn status(result: CallResult) -> wasmtime::Result<i32> {
+    finish(result.map(|()| 0))
+}
+
+fn memory_range(
+    caller: &Caller<'_, Host>,
+    pointer: u32,
+    bytes: u32,
+) -> CallResult<std::ops::Range<usize>> {
+    range(caller, pointer, bytes).ok_or(CallError::Memory)
+}
+
+fn acknowledge(host: &mut Host, id: u64) {
+    if let Err(index) = host.event_acks.binary_search(&id) {
+        host.event_acks.insert(index, id);
+    }
+}
+
+fn clear_screen(host: &mut Host, id: u64) {
+    if !host.output.cleared_screens.contains(&id) {
+        host.output.cleared_screens.push(id);
+    }
 }
 
 fn input<T: Record>(caller: &mut Caller<'_, Host>, pointer: u32, bytes: u32) -> CallResult<T> {
     if bytes as usize != size_of::<T>() {
-        return Err(w::ERR_BUFFER);
+        return Err(w::ERR_BUFFER.into());
     }
 
-    let value = read(caller, pointer, bytes).ok_or(w::ERR_BUFFER)?;
-    pay(caller, u64::from(bytes).div_ceil(8))?;
+    let value = T::read(payload(caller, pointer, bytes)?).ok_or(w::ERR_BUFFER)?;
     Ok(value)
 }
 
@@ -54,18 +99,17 @@ fn emit<T: Record>(
 
 fn emit_bytes(caller: &mut Caller<'_, Host>, pointer: u32, bytes: u32, value: &[u8]) -> CallResult {
     if bytes as usize != value.len() {
-        return Err(w::ERR_BUFFER);
+        return Err(w::ERR_BUFFER.into());
     }
 
-    let target = range(caller, pointer, bytes).ok_or(w::ERR_BUFFER)?;
-    pay(caller, u64::from(bytes).div_ceil(8))?;
+    let target = memory_range(caller, pointer, bytes)?;
     let memory = caller.data().memory.ok_or(w::ERR_UNAVAILABLE)?;
     memory.data_mut(caller)[target].copy_from_slice(value);
     Ok(())
 }
 
 fn payload<'a>(caller: &'a Caller<'_, Host>, pointer: u32, bytes: u32) -> CallResult<&'a [u8]> {
-    let source = range(caller, pointer, bytes).ok_or(w::ERR_BUFFER)?;
+    let source = memory_range(caller, pointer, bytes)?;
     let memory = caller.data().memory.ok_or(w::ERR_UNAVAILABLE)?;
     Ok(&memory.data(caller)[source])
 }
@@ -77,7 +121,7 @@ fn device_index(caller: &Caller<'_, Host>, id: u64) -> CallResult<usize> {
         .ok_or(w::ERR_HANDLE)?;
 
     if index >= caller.data().catalogue.len() {
-        return Err(w::ERR_HANDLE);
+        return Err(w::ERR_HANDLE.into());
     }
 
     Ok(index)
@@ -87,7 +131,7 @@ fn finite(values: &[f64]) -> CallResult {
     if values.iter().all(|value| value.is_finite()) {
         Ok(())
     } else {
-        Err(w::ERR_ARGUMENT)
+        Err(w::ERR_ARGUMENT.into())
     }
 }
 
@@ -95,7 +139,7 @@ fn fraction(value: f64) -> CallResult {
     if value.is_finite() && (0. ..=1.).contains(&value) {
         Ok(())
     } else {
-        Err(w::ERR_ARGUMENT)
+        Err(w::ERR_ARGUMENT.into())
     }
 }
 
@@ -103,7 +147,7 @@ fn lease(caller: &Caller<'_, Host>, until: f64) -> CallResult {
     if until.is_finite() && until > caller.data().current.epoch {
         Ok(())
     } else {
-        Err(w::ERR_ARGUMENT)
+        Err(w::ERR_ARGUMENT.into())
     }
 }
 
@@ -121,22 +165,19 @@ pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
 }
 
 fn persistent(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "persistent_read",
-        |mut caller: Caller<'_, Host>, pointer: u32, capacity: u32| -> wasmtime::Result<i32> {
-            if let Err(error) = enter(&mut caller) {
-                return Ok(error);
-            }
+        |mut caller: Caller<'_, Host>, pointer: u32, capacity: u32| {
+            persistent_read_plan(&caller, pointer, capacity)
+        },
+        {
             let length = caller.data().persistent_data.len();
             if length > capacity as usize {
                 return Ok(w::ERR_BUFFER);
             }
             let target = range(&caller, pointer, length as u32)
                 .ok_or_else(|| wasmtime::Error::msg("persistent read outside guest memory"))?;
-            if let Err(error) = pay(&mut caller, (length as u64).div_ceil(8)) {
-                return Ok(error);
-            }
             let bytes = caller.data().persistent_data.clone();
             let memory = caller
                 .data()
@@ -146,13 +187,13 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
             Ok(length as i32)
         },
     )?;
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "persistent_write",
-        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| -> wasmtime::Result<i32> {
-            if let Err(error) = enter(&mut caller) {
-                return Ok(error);
-            }
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| {
+            CallPlan::bytes(&caller, pointer, length, 65536)
+        },
+        {
             if caller.data().display_only {
                 return Ok(w::ERR_UNSUPPORTED);
             }
@@ -161,9 +202,6 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
             }
             let source = range(&caller, pointer, length)
                 .ok_or_else(|| wasmtime::Error::msg("persistent write outside guest memory"))?;
-            if let Err(error) = pay(&mut caller, u64::from(length).div_ceil(8)) {
-                return Ok(error);
-            }
             let memory = caller
                 .data()
                 .memory
@@ -177,80 +215,57 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
 }
 
 fn context(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "world_query",
-        |mut caller: Caller<'_, Host>,
-         pointer: u32,
-         length: u32,
-         output: u32,
-         capacity: u32|
-         -> i32 {
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32, output: u32, capacity: u32| {
+            world_query_plan(&caller, pointer, length, output, capacity)
+        },
+        {
             let result = (|| -> CallResult<usize> {
-                enter(&mut caller)?;
-                if length > 65536 || capacity > 65536 {
-                    return Err(w::ERR_BUFFER);
-                }
-                pay(&mut caller, u64::from(length).div_ceil(8))?;
-                let query: toy_sim_model::ProgramQuery =
-                    postcard::from_bytes(payload(&caller, pointer, length)?)
-                        .map_err(|_| w::ERR_ARGUMENT)?;
-                let work = match &query {
-                    toy_sim_model::ProgramQuery::Navigation { limit, .. } => {
-                        100 + 4096 * u64::from((*limit).min(128))
-                    }
-                    toy_sim_model::ProgramQuery::SlipEligibility { .. } => 131_072,
-                    toy_sim_model::ProgramQuery::Tracks(query) => query.work.min(1_000_000),
-                    toy_sim_model::ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),
-                    toy_sim_model::ProgramQuery::Beacons { limit, .. } => {
-                        100 + 1008 * u64::from((*limit).min(256))
-                    }
-                    _ => 1000,
-                };
-                if caller.data().gas < work {
-                    return Err(w::ERR_GAS);
-                }
+                let PreparedWorldQuery {
+                    query,
+                    work,
+                    capacity,
+                } = caller
+                    .data_mut()
+                    .prepared_query
+                    .take()
+                    .expect("admitted world query");
                 let source = caller.data().source.clone().ok_or(w::ERR_UNAVAILABLE)?;
-                let slip_query =
-                    matches!(&query, toy_sim_model::ProgramQuery::SlipEligibility { .. });
-                let reply = source
-                    .query(query, caller.data().display_only)
-                    .map_err(|_| w::ERR_ARGUMENT)?;
-                let used = match &reply {
-                    toy_sim_model::ProgramReply::Navigation { gates, .. } => {
-                        100 + 4096 * gates.len() as u64
-                    }
-                    toy_sim_model::ProgramReply::Tracks(page) => page.gas_used,
-                    toy_sim_model::ProgramReply::Beacons(beacons) => {
-                        100 + 1008 * beacons.len() as u64
-                    }
-                    _ if slip_query => 131_072,
-                    _ => 1000,
+                let result = source.query(query, caller.data().display_only, capacity);
+                let used = match &result {
+                    Ok(toy_sim_model::ProgramReply::Tracks(page)) => page.gas_used,
+                    _ => work,
                 };
-                pay(&mut caller, used)?;
+                assert!(used <= work, "world service exceeded admitted query work");
+                caller.data_mut().native_credit = work - used + words(capacity);
+                let reply = result.map_err(world_query_error)?;
                 let bytes = postcard::to_allocvec(&reply).map_err(|_| w::ERR_BUFFER)?;
-                if bytes.len() > capacity as usize {
-                    return Err(w::ERR_BUFFER);
+                if bytes.len() > capacity {
+                    return Err(w::ERR_BUFFER.into());
                 }
                 emit_bytes(&mut caller, output, bytes.len() as u32, &bytes)?;
+                caller.data_mut().native_credit -= words(bytes.len());
                 Ok(bytes.len())
             })();
-            result.map_or_else(|error| error, |length| length as i32)
+            finish(result.map(|length| length as i32))
         },
     )?;
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "world_command",
-        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| -> i32 {
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| {
+            CallPlan::bytes(&caller, pointer, length, 65536).map(|plan| plan.work(1000))
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 if caller.data().display_only
                     || length > 65536
                     || caller.data().output.world_actions.len() >= 8
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
-                pay(&mut caller, 1000 + u64::from(length).div_ceil(8))?;
                 let action = postcard::from_bytes(payload(&caller, pointer, length)?)
                     .map_err(|_| w::ERR_ARGUMENT)?;
                 caller.data_mut().output.world_actions.push(action);
@@ -258,12 +273,14 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
             })())
         },
     )?;
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "tick_read",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::TickContext>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let host = caller.data();
                 let input = host.input.as_ref().unwrap();
                 let value = w::TickContext {
@@ -283,43 +300,46 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
                         .fold(0, |mask, id| mask | 1 << id),
                     flags: u64::from(host.sequence == 1),
                 };
-                emit(&mut caller, pointer, bytes, &value)
+                let snapshot = host.current;
+                emit(&mut caller, pointer, bytes, &value)?;
+                caller.data_mut().borrowed_snapshot = Some(snapshot);
+                Ok(())
             })())
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "budget_read",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::BudgetInfo>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
-
-                if bytes as usize != size_of::<w::BudgetInfo>()
-                    || range(&caller, pointer, bytes).is_none()
-                {
-                    return Err(w::ERR_BUFFER);
+                if bytes as usize != size_of::<w::BudgetInfo>() {
+                    return Err(w::ERR_BUFFER.into());
                 }
+                memory_range(&caller, pointer, bytes)?;
 
-                pay(&mut caller, u64::from(bytes) / 8)?;
                 let value = w::BudgetInfo {
-                    gas_remaining: caller.data().gas,
-                    instruction_remaining: caller.get_fuel().map_err(|_| w::ERR_UNAVAILABLE)?,
-                    gas_capacity: RESERVE_CAPACITY,
-                    gas_refill_per_s: GAS_PER_SECOND,
-                    instruction_limit: FUEL_PER_TICK,
+                    gas_remaining: crate::execution::remaining(&mut caller)
+                        .map_err(|_| w::ERR_UNAVAILABLE)?,
+                    gas_limit: caller.data().gas_limit,
+                    gas_per_tick: caller.data().gas_per_tick,
                 };
                 status_to_result(put(&mut caller, pointer, bytes, &value))
             })())
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "flight_read",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::FlightState>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let observation = &caller.data().input.as_ref().unwrap().observation;
                 let value = w::FlightState {
                     rotation: observation.rotation,
@@ -334,12 +354,14 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "ship_resources_read",
         |mut caller: Caller<'_, Host>, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ShipResources>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let observation = &caller.data().input.as_ref().unwrap().observation;
                 let value = observation.resources;
                 emit(&mut caller, pointer, bytes, &value)
@@ -347,15 +369,14 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "tick_set_interval",
-        |mut caller: Caller<'_, Host>, seconds: f64| {
+        |mut caller: Caller<'_, Host>, seconds: f64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if !seconds.is_finite() || seconds < 0. {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 caller.data_mut().output.tick_interval_seconds = Some(seconds);
@@ -364,37 +385,36 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "snapshot_keep",
-        |mut caller: Caller<'_, Host>, id: u64| {
+        |mut caller: Caller<'_, Host>, id: u64| { CallPlan::fixed().map(|plan| plan.work(100)) },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let host = caller.data();
                 let snapshot = host
                     .working
-                    .snapshot(id, host.current)
+                    .snapshot(id, host.current, host.borrowed_snapshot)
                     .ok_or(w::ERR_HANDLE)?;
 
                 if !host.working.pins.contains_key(&id)
                     && host.working.pins.len() >= w::MAX_SNAPSHOTS as usize
                 {
-                    return Err(w::ERR_LIMIT);
+                    return Err(w::ERR_LIMIT.into());
                 }
 
-                pay(&mut caller, 100)?;
                 caller.data_mut().working.pins.insert(id, snapshot);
                 Ok(())
             })())
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "snapshot_drop",
-        |mut caller: Caller<'_, Host>, id: u64| {
+        |mut caller: Caller<'_, Host>, id: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
                 caller
                     .data_mut()
                     .working
@@ -409,17 +429,27 @@ fn context(linker: &mut Linker<Host>) -> Result<()> {
     Ok(())
 }
 
+fn world_query_error(error: anyhow::Error) -> CallError {
+    match error.downcast_ref::<WorldQueryError>() {
+        Some(WorldQueryError::BufferTooSmall) => w::ERR_BUFFER.into(),
+        Some(WorldQueryError::LimitExceeded) => w::ERR_LIMIT.into(),
+        None => w::ERR_ARGUMENT.into(),
+    }
+}
+
 fn status_to_result(value: i32) -> CallResult {
-    if value < 0 { Err(value) } else { Ok(()) }
+    if value < 0 { Err(value.into()) } else { Ok(()) }
 }
 
 fn hardware(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "device_info",
         |mut caller: Caller<'_, Host>, index: u32, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::DeviceInfo>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let device = caller
                     .data()
                     .catalogue
@@ -431,12 +461,14 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "device_group_read",
         |mut caller: Caller<'_, Host>, id: u64, group: u32, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::Text64>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let index = device_index(&caller, id)?;
                 let label = caller.data().catalogue[index]
                     .groups
@@ -448,18 +480,20 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    for name in ["device_spec", "device_read"] {
-        linker.func_wrap(
-            w::IMPORT_MODULE,
+    for (name, specification) in [("device_spec", true), ("device_read", false)] {
+        metered!(
+            linker,
             name,
-            move |mut caller: Caller<'_, Host>, id: u64, kind: u64, pointer: u32, bytes: u32| {
+            |mut caller: Caller<'_, Host>, id: u64, kind: u64, pointer: u32, bytes: u32| {
+                device_record_plan(&caller, id, kind, pointer, bytes, specification)
+            },
+            {
                 status((|| {
-                    enter(&mut caller)?;
                     let index = device_index(&caller, id)?;
                     let device = &caller.data().catalogue[index];
 
                     if device.kind.abi_tag() != kind {
-                        return Err(w::ERR_UNSUPPORTED);
+                        return Err(w::ERR_UNSUPPORTED.into());
                     }
 
                     let value = if name == "device_spec" {
@@ -486,14 +520,16 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
         )?;
     }
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "device_write",
         |mut caller: Caller<'_, Host>, id: u64, setting: u64, pointer: u32, bytes: u32| {
+            device_write_plan(&caller, setting, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 if caller.data().display_only {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
                 let index = device_index(&caller, id)?;
                 let setting = match setting {
@@ -510,7 +546,7 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
                             || value.valid_until_s < host.current.epoch
                             || value.valid_until_s > host.current.epoch + dt + 1e-6
                         {
-                            return Err(w::ERR_ARGUMENT);
+                            return Err(w::ERR_ARGUMENT.into());
                         }
                         DeviceSetting::Weapon(value)
                     }
@@ -533,7 +569,7 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
                         let value: w::EnabledSetting = input(&mut caller, pointer, bytes)?;
 
                         if value.enabled > 1 {
-                            return Err(w::ERR_ARGUMENT);
+                            return Err(w::ERR_ARGUMENT.into());
                         }
 
                         if setting == w::SET_SHIELD_ENABLED {
@@ -542,30 +578,36 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
                             DeviceSetting::SensorEnabled(value.enabled != 0)
                         }
                     }
-                    _ => return Err(w::ERR_ARGUMENT),
+                    _ => return Err(w::ERR_ARGUMENT.into()),
                 };
 
                 if !setting.supports(&caller.data().catalogue[index].kind) {
-                    return Err(w::ERR_UNSUPPORTED);
+                    return Err(w::ERR_UNSUPPORTED.into());
                 }
 
                 let commands = &mut caller.data_mut().output.devices;
-                commands.retain(|command| usize::from(command.device.0) != index);
-                commands.push(DeviceCommand {
+                let command = DeviceCommand {
                     device: DeviceHandle(index as u16),
                     setting,
-                });
+                };
+                match commands.binary_search_by_key(&index, |command| usize::from(command.device.0))
+                {
+                    Ok(index) => commands[index] = command,
+                    Err(index) => commands.insert(index, command),
+                }
                 Ok(())
             })())
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "resource_info",
         |mut caller: Caller<'_, Host>, index: u32, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ResourceInfo>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let inventory = &caller.data().input.as_ref().unwrap().observation.inventory;
                 inventory.get(index as usize).ok_or(w::ERR_ARGUMENT)?;
                 let value = caller
@@ -579,12 +621,14 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "resource_read",
         |mut caller: Caller<'_, Host>, id: u64, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ResourceAmount>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let index = id
                     .checked_sub(1)
                     .and_then(|value| usize::try_from(value).ok())
@@ -600,35 +644,34 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
 }
 
 fn sensors(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "sensor_scan",
         |mut caller: Caller<'_, Host>, sensor: u64, maximum: u32, pointer: u32, bytes: u32| {
-            (|| -> CallResult<i32> {
-                enter(&mut caller)?;
-
+            scan_plan(&caller, maximum, pointer, bytes)
+        },
+        {
+            finish((|| -> CallResult<i32> {
                 if maximum > w::MAX_CONTACTS {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
-                if bytes != maximum * size_of::<w::Contact>() as u32
-                    || range(&caller, pointer, bytes).is_none()
-                {
-                    return Err(w::ERR_BUFFER);
+                if bytes != maximum * size_of::<w::Contact>() as u32 {
+                    return Err(w::ERR_BUFFER.into());
                 }
+                memory_range(&caller, pointer, bytes)?;
 
                 let index = device_index(&caller, sensor)?;
                 let observation = caller.data().input.as_ref().unwrap();
                 let device = observation.devices.get(index).ok_or(w::ERR_UNAVAILABLE)?;
                 let DeviceReading::Sensor { range_m } = device.reading else {
-                    return Err(w::ERR_UNSUPPORTED);
+                    return Err(w::ERR_UNSUPPORTED.into());
                 };
 
                 if !device.powered || !device.operational || range_m <= 0. {
-                    return Err(w::ERR_UNAVAILABLE);
+                    return Err(w::ERR_UNAVAILABLE.into());
                 }
 
-                pay(&mut caller, u64::from(maximum) * w::SCAN_GAS_PER_OBJECT)?;
                 let start = std::time::Instant::now();
                 let mut contacts = if maximum == 0 {
                     Vec::new()
@@ -658,17 +701,18 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
                 host.working.latest_sensor = sensor;
                 host.contacts = contacts;
                 Ok(host.contacts.len() as i32)
-            })()
-            .unwrap_or_else(|error| error)
+            })())
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "contact_label",
         |mut caller: Caller<'_, Host>, id: u64, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::Text64>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let track = caller
                     .data()
                     .working
@@ -678,7 +722,7 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
                     .ok_or(w::ERR_UNAVAILABLE)?;
 
                 if track.latest.epoch + 2. <= caller.data().current.epoch {
-                    return Err(w::ERR_UNAVAILABLE);
+                    return Err(w::ERR_UNAVAILABLE.into());
                 }
 
                 let value = w::Text64::new(&track.contact.name);
@@ -691,12 +735,14 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
 }
 
 fn requests(linker: &mut Linker<Host>) -> Result<()> {
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "request_info",
         |mut caller: Caller<'_, Host>, index: u32, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::RequestInfo>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let request = caller
                     .data()
                     .input
@@ -716,12 +762,14 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "request_read",
         |mut caller: Caller<'_, Host>, index: u32, expected: u64, pointer: u32, bytes: u32| {
+            request_read_plan(&caller, index, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let request = caller
                     .data()
                     .input
@@ -733,7 +781,7 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
                 let (kind, payload) = request.command.payload();
 
                 if expected != kind {
-                    return Err(w::ERR_UNSUPPORTED);
+                    return Err(w::ERR_UNSUPPORTED.into());
                 }
 
                 emit_bytes(&mut caller, pointer, bytes, &payload)
@@ -741,15 +789,16 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "request_reply",
         |mut caller: Caller<'_, Host>, id: u64, result: u64, pointer: u32, bytes: u32| {
+            CallPlan::bytes(&caller, pointer, bytes, 256)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if result > w::REPLY_UNSUPPORTED || bytes > 256 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 if !caller
@@ -761,10 +810,9 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
                     .iter()
                     .any(|request| request.id == id)
                 {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
-                pay(&mut caller, u64::from(bytes).div_ceil(8))?;
                 let message = std::str::from_utf8(payload(&caller, pointer, bytes)?)
                     .map_err(|_| w::ERR_ARGUMENT)?
                     .to_owned();
@@ -780,12 +828,14 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_event_read",
         |mut caller: Caller<'_, Host>, index: u32, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ScreenEvent>(&caller, pointer, bytes)
+        },
+        {
             status((|| {
-                enter(&mut caller)?;
                 let value = *caller
                     .data()
                     .events
@@ -796,20 +846,17 @@ fn requests(linker: &mut Linker<Host>) -> Result<()> {
         },
     )?;
 
-    linker.func_wrap(
-        w::IMPORT_MODULE,
+    metered!(
+        linker,
         "screen_event_ack",
-        |mut caller: Caller<'_, Host>, id: u64| {
+        |mut caller: Caller<'_, Host>, id: u64| { CallPlan::fixed() },
+        {
             status((|| {
-                enter(&mut caller)?;
-
                 if !caller.data().events.iter().any(|event| event.id == id) {
-                    return Err(w::ERR_ARGUMENT);
+                    return Err(w::ERR_ARGUMENT.into());
                 }
 
-                if !caller.data().event_acks.contains(&id) {
-                    caller.data_mut().event_acks.push(id);
-                }
+                acknowledge(caller.data_mut(), id);
 
                 Ok(())
             })())

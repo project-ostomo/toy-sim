@@ -27,7 +27,6 @@ pub struct Display {
     program: Controller,
     frames: BTreeMap<u8, ScreenUpdate>,
     last_viewed: u64,
-    last_advanced: Option<u64>,
     authority: u64,
     revision: u64,
     event_id: u64,
@@ -80,7 +79,10 @@ pub fn update(world: &mut World) {
         world.entity_mut(entity).remove::<Display>();
     }
 
-    let mut boots = 0;
+    let ledger = world.resource::<super::gas::GasLedger>().clone();
+    let mut work = Vec::new();
+    let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
+    let mut entities = BTreeMap::new();
     for (ship, slots) in wanted {
         let Some(identity) = world.get::<Identity>(ship) else {
             continue;
@@ -88,10 +90,6 @@ pub fn update(world: &mut World) {
         let id = identity.0;
         let authority = world.get::<Control>(ship).unwrap().revision;
         if world.get::<Display>(ship).is_none() {
-            if boots >= toy_sim_ship_wasm::MAX_BOOTS_PER_TICK {
-                continue;
-            }
-            boots += 1;
             let firmware = world
                 .get::<DisplayEnvironment>(ship)
                 .unwrap()
@@ -113,7 +111,6 @@ pub fn update(world: &mut World) {
                 program,
                 frames: BTreeMap::new(),
                 last_viewed: tick,
-                last_advanced: None,
                 authority,
                 revision,
                 event_id: 0,
@@ -127,84 +124,137 @@ pub fn update(world: &mut World) {
         let mut display = world.entity_mut(ship).take::<Display>().unwrap();
         display.last_viewed = tick;
         display.frames.retain(|slot, _| slots.contains_key(slot));
-
-        if display.last_advanced != Some(tick) {
-            let elapsed = display
-                .last_advanced
-                .map_or(1, |last| tick.saturating_sub(last));
-            display.program.advance(elapsed.min(10) as f64 * 0.1);
-            display.last_advanced = Some(tick);
+        let mut input = input.unwrap_or_default();
+        input.commands.clear();
+        input.screen_events.clear();
+        input.requested_screens = slots
+            .iter()
+            .filter_map(|(&slot, &hz)| {
+                let due = display.frames.get(&slot).is_none_or(|frame| {
+                    tick.saturating_mul(u64::from(hz)) / 10
+                        > frame.tick.saturating_mul(u64::from(hz)) / 10
+                });
+                due.then_some(slot)
+            })
+            .collect();
+        let ready = display.program.is_booting()
+            || display.program.is_suspended()
+            || display.program.has_pending_input()
+            || !input.requested_screens.is_empty();
+        if !ready {
+            world.entity_mut(ship).insert(display);
+            continue;
         }
 
-        if display.program.is_booting() && boots < toy_sim_ship_wasm::MAX_BOOTS_PER_TICK {
-            boots += 1;
-            let _ = world.resource::<WasmRuntime>().0.boot(&mut display.program);
+        let physical_tick = world.get::<super::hardware::HardwareClock>(ship).unwrap().0;
+        let mut software = world.get_mut::<super::vessel::ShipSoftware>(ship).unwrap();
+        software.begin_gas_tick(physical_tick);
+        let maximum = software.remaining_gas();
+        let minimum = display.program.minimum_to_progress();
+        let owner = super::gas::payer(world, ship).expect("display owner");
+        ledger.ensure_account(owner, super::gas::STARTING_GAS);
+        if minimum <= maximum {
+            requests
+                .entry(owner)
+                .or_default()
+                .push(super::gas::GasRequest {
+                    id,
+                    minimum,
+                    maximum,
+                });
+            entities.insert(id, ship);
         }
+        work.push((ship, id, display, input, source, origin, slots));
+    }
 
-        if let Some(mut input) = input {
-            input.commands.clear();
-            input.screen_events.clear();
-            input.requested_screens = slots
-                .iter()
-                .filter_map(|(&slot, &hz)| {
-                    let due = display.frames.get(&slot).is_none_or(|frame| {
-                        tick.saturating_mul(u64::from(hz)) / 10
-                            > frame.tick.saturating_mul(u64::from(hz)) / 10
-                    });
-                    due.then_some(slot)
-                })
-                .collect();
-            display.program.observer_origin = origin;
-            if !input.requested_screens.is_empty() {
-                let requested = input.requested_screens.clone();
-                match display.program.run_with_scan(input, source) {
-                    Ok(Some(output)) => {
-                        for slot in output.cleared_screens {
-                            if let Ok(slot) = u8::try_from(slot) {
-                                display.frames.remove(&slot);
-                            }
-                        }
-                        for frame in output.screens {
-                            let slot = frame.screen_id;
-                            if requested.contains(&slot) {
-                                let revision = display.revision;
-                                display.frames.insert(
-                                    slot,
-                                    ScreenUpdate {
-                                        ship: id,
-                                        slot,
-                                        revision,
-                                        tick,
-                                        frame: Some(frame),
-                                        error: None,
-                                    },
-                                );
-                            }
-                        }
+    let mut grants = BTreeMap::new();
+    for (owner, requests) in requests {
+        for (id, reservation) in ledger
+            .reserve_fair(owner, &requests)
+            .expect("valid display gas requests")
+        {
+            grants.insert(entities[&id], reservation);
+        }
+    }
+    let mut starts = 0;
+    for (ship, id, mut display, input, source, origin, slots) in work {
+        let mut reservation = grants.remove(&ship);
+        let mut grant = reservation.as_ref().map_or(0, |grant| grant.limit());
+        if display.program.needs_instance_start() && grant > display.program.boot_remaining_gas() {
+            if starts == toy_sim_ship_wasm::MAX_BOOTS_PER_TICK {
+                drop(reservation.take());
+                grant = 0;
+            } else {
+                starts += 1;
+            }
+        }
+        let physical_limit = world
+            .get::<super::vessel::ShipSoftware>(ship)
+            .unwrap()
+            .last_gas_limit;
+        display.program.observer_origin = origin;
+        let result = display
+            .program
+            .run_slice(input, source, grant, physical_limit);
+        let used = display.program.last_gas_used;
+        if let Some(reservation) = reservation.as_mut() {
+            reservation
+                .record_used(used)
+                .expect("display gas within granted allowance");
+        } else {
+            assert_eq!(used, 0, "unfunded display execution");
+        }
+        let mut software = world.get_mut::<super::vessel::ShipSoftware>(ship).unwrap();
+        software.last_gas_used += used;
+        assert!(software.last_gas_used <= software.last_gas_limit);
+        drop(software);
+        drop(reservation);
+
+        match result {
+            Ok(slice) => {
+                for slot in slice.output.cleared_screens {
+                    if let Ok(slot) = u8::try_from(slot) {
+                        display.frames.remove(&slot);
                     }
-                    Err(error) => {
-                        let error = error.to_string();
-                        let mut end = error.len().min(512);
-                        while !error.is_char_boundary(end) {
-                            end -= 1;
-                        }
-                        let error = error[..end].to_owned();
-                        for slot in requested {
-                            let revision = display.revision;
-                            display.frames.insert(
+                }
+                for frame in slice.output.screens {
+                    let slot = frame.screen_id;
+                    if slots.contains_key(&slot) {
+                        let revision = display.revision;
+                        display.frames.insert(
+                            slot,
+                            ScreenUpdate {
+                                ship: id,
                                 slot,
-                                ScreenUpdate {
-                                    ship: id,
-                                    slot,
-                                    revision,
-                                    tick,
-                                    frame: None,
-                                    error: Some(error.clone()),
-                                },
-                            );
-                        }
+                                revision,
+                                tick,
+                                frame: Some(frame),
+                                error: None,
+                            },
+                        );
                     }
-                    Ok(None) => {}
+                }
+            }
+            Err(error) => {
+                let error = error.to_string();
+                let mut end = error.len().min(512);
+                while !error.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let error = error[..end].to_owned();
+                for slot in slots.keys() {
+                    let revision = display.revision;
+                    display.frames.insert(
+                        *slot,
+                        ScreenUpdate {
+                            ship: id,
+                            slot: *slot,
+                            revision,
+                            tick,
+                            frame: None,
+                            error: Some(error.clone()),
+                        },
+                    );
                 }
             }
         }
@@ -335,11 +385,19 @@ mod tests {
         let catalogue = Catalogue::builtin();
         let design = Arc::new(toy_sim_ships::armed_starter().compile(&catalogue).unwrap());
         let firmware = Arc::from(design.blueprint.controller_bytes());
+        let mut controller = world
+            .resource_mut::<WasmRuntime>()
+            .0
+            .instantiate(design.blueprint.controller_bytes())
+            .unwrap();
+        controller.configure_hardware(&design, &catalogue);
         world.insert_resource(ShipCatalogue(catalogue));
         let id = Id::new();
         let ship = world
             .spawn((
                 ShipDesign(design),
+                crate::sim::vessel::ShipSoftware::new(controller),
+                crate::sim::hardware::HardwareClock(0),
                 ownership::AssetOwner(toy_sim_model::ownership::Principal::Player(account)),
                 ownership::AssetAccess::default(),
                 Control {
@@ -499,5 +557,52 @@ mod tests {
                 .has_pending_input()
         );
         assert!(input(&mut world, ship, 0, revision + 1, 0, 0, 0, [0.0; 2], "").is_err());
+    }
+    #[test]
+    fn displays_spend_only_flight_leftovers_once_per_physical_tick() {
+        let (mut world, ship, _, _, _) = fixture();
+        let owner = crate::sim::gas::payer(&world, ship).unwrap();
+        let ledger = world.resource::<crate::sim::gas::GasLedger>().clone();
+        let before = ledger.account(owner).unwrap().available;
+        world
+            .get_mut::<crate::sim::hardware::HardwareClock>(ship)
+            .unwrap()
+            .0 = 1;
+        {
+            let mut software = world
+                .get_mut::<crate::sim::vessel::ShipSoftware>(ship)
+                .unwrap();
+            software.begin_gas_tick(1);
+            software.last_gas_used = 900_000;
+        }
+        update(&mut world);
+        assert_eq!(
+            world
+                .get::<crate::sim::vessel::ShipSoftware>(ship)
+                .unwrap()
+                .last_gas_used,
+            1_000_000
+        );
+        assert_eq!(ledger.account(owner).unwrap().available, before - 100_000);
+        assert_eq!(
+            world
+                .get::<Display>(ship)
+                .unwrap()
+                .program
+                .boot_remaining_gas(),
+            toy_sim_ship_wasm::BOOT_GAS - 100_000
+        );
+        assert!(ledger.snapshot().is_ok());
+
+        world.resource_mut::<SimulationCounters>().ticks = 10;
+        update(&mut world);
+        assert_eq!(ledger.account(owner).unwrap().available, before - 100_000);
+        world
+            .get_mut::<crate::sim::hardware::HardwareClock>(ship)
+            .unwrap()
+            .0 = 2;
+        update(&mut world);
+        assert_eq!(ledger.account(owner).unwrap().available, before - 1_100_000);
+        assert_eq!(ledger.account(owner).unwrap().reserved, 0);
     }
 }

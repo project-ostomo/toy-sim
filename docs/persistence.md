@@ -46,17 +46,27 @@ overrides, asset owners and access grants, information groups and sensor tracks,
 ship designs and resources, physical poses and motion, damage and thermal state,
 docking relationships, gates, slip transit, and the simulation clock. Ship programs
 are stored once per content hash, alongside each computer's explicit persistent
-data. Runtime execution stacks restart on recovery. The host navigation queue, current
-stage, autopilot toggle and slip charging work survive; actuator commands restart
+data. Runtime execution stacks restart on recovery, including computers suspended
+inside a callback. Only explicitly committed durable guest data survives. The
+host navigation queue, current stage, autopilot toggle and slip charging work
+survive; actuator commands restart
 from their boot defaults while the computer comes online. A trapped program still
 uses the normal fault/reset behavior. The durable guest API is
 described in [Ship controller ABI](ship-abi.md).
+
+Gas balances are saved for their actual owner: a player, organization or
+sovereignty. Available and spent gas retain their exact integer values, together
+with the allocation cursor used to share scarce gas fairly between computers.
+Capture requires every reservation to be settled, including reservations of zero
+gas. A checkpoint cannot contain outstanding debits. Restore validates all billing
+principals and requires an account for every ship with a computer before replacing
+the world; it does not replenish a saved balance from the starting allocation.
 
 Queued slip orders preserve their typed destination references. An active charge
 also retains its concrete candidate, start tick and accumulated energy. A ship
 already in transit restores the galactic endpoint frozen at departure.
 
-Saved programs must implement the current ABI 26. Restore validates each
+Saved programs must implement the current ABI 27. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
 
@@ -66,8 +76,8 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 2. SQLite’s table schema and the
-outer checkpoint container retain their existing format. Section 1 checkpoints
+The current named `world` section has version 3. SQLite’s table schema and the
+outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.
 

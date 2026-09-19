@@ -27,10 +27,7 @@ const SEARCH_CALLBACK_LIMIT: u32 = 60;
 fn work_budget_available() -> bool {
     #[cfg(target_arch = "wasm32")]
     {
-        toy_sim_ship_api::sdk::budget().is_ok_and(|budget| {
-            budget.instruction_remaining > 300_000
-                && budget.gas_remaining > budget.gas_refill_per_s / 10 + 300_000
-        })
+        toy_sim_ship_api::sdk::budget().is_ok_and(crate::budget::planning_allowed)
     }
     #[cfg(not(target_arch = "wasm32"))]
     {

@@ -125,7 +125,7 @@ impl ScanSource for PublicNavigation {
         Vec::new()
     }
 
-    fn query(&self, query: ProgramQuery, _: bool) -> anyhow::Result<ProgramReply> {
+    fn query(&self, query: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
         Ok(match query {
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: TravelState {
@@ -249,9 +249,15 @@ fn run_routes(
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut computer = runtime.instantiate(EXAMPLE_CONTROLLER).unwrap();
     computer.configure_hardware(&design, &catalogue);
-    computer.advance(5.);
-    assert!(runtime.boot(&mut computer).unwrap());
-    computer.advance(0.4);
+    for _ in 0..60 {
+        if !computer.is_booting() {
+            break;
+        }
+        computer
+            .run_slice(Input::default(), None, FUEL_PER_TICK, FUEL_PER_TICK)
+            .unwrap();
+    }
+    assert!(!computer.is_booting());
     let source = Arc::new(source);
     let mut results = Vec::new();
     let mut started_at = warmup;
@@ -283,7 +289,7 @@ fn run_routes(
             devices: state.snapshot(&design),
             ..Default::default()
         };
-        let output = computer.run_with_scan(input, Some(source.clone()));
+        let output = computer.run_slice(input, Some(source.clone()), FUEL_PER_TICK, FUEL_PER_TICK);
         assert!(
             output.is_ok(),
             "tick {tick}: {output:?}; {:?}",
@@ -296,7 +302,8 @@ fn run_routes(
         );
         peak_memory = peak_memory.max(computer.memory_bytes());
         peak_gas = peak_gas.max(computer.last_gas_used);
-        if let Some(output) = output.unwrap() {
+        {
+            let output = output.unwrap().output;
             for action in output.world_actions {
                 match action {
                     ProgramAction::Route {
@@ -360,7 +367,6 @@ fn run_routes(
                 }
             }
         }
-        computer.advance(0.1);
     }
     panic!("large route failed to finish; peak gas {peak_gas}, memory {peak_memory}");
 }
@@ -483,7 +489,7 @@ impl ScanSource for MovingSlip {
         Vec::new()
     }
 
-    fn query(&self, query: ProgramQuery, _: bool) -> anyhow::Result<ProgramReply> {
+    fn query(&self, query: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
         let seconds = self.tick.load(Ordering::Relaxed) as f64 * 0.1;
         Ok(match query {
             ProgramQuery::Travel => ProgramReply::Travel {
@@ -536,9 +542,15 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut computer = runtime.instantiate(EXAMPLE_CONTROLLER).unwrap();
     computer.configure_hardware(&design, &catalogue);
-    computer.advance(5.);
-    assert!(runtime.boot(&mut computer).unwrap());
-    computer.advance(0.4);
+    for _ in 0..60 {
+        if !computer.is_booting() {
+            break;
+        }
+        computer
+            .run_slice(Input::default(), None, FUEL_PER_TICK, FUEL_PER_TICK)
+            .unwrap();
+    }
+    assert!(!computer.is_booting());
     let source = Arc::new(MovingSlip {
         tick: AtomicU64::new(0),
         destination: Destination::Relative {
@@ -552,7 +564,7 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
     for tick in 0..100 {
         source.tick.store(tick, Ordering::Relaxed);
         let output = computer
-            .run_with_scan(
+            .run_slice(
                 Input {
                     tick,
                     observation: Observation {
@@ -576,9 +588,11 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
                     ..Default::default()
                 },
                 Some(source.clone()),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
             )
             .unwrap()
-            .unwrap();
+            .output;
         assert!(
             computer.fault.is_none(),
             "tick {tick}: {:?}",
@@ -596,7 +610,6 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
                 output.world_actions
             );
             assert!(tick < 20, "hardware discovery did not complete");
-            computer.advance(0.1);
             continue;
         };
         let now = tick as f64 * 0.1;
@@ -604,9 +617,8 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
         let expected = GalacticPosition::from_meters(DVec3::new(1e16, 30_000. * arrival, 0.));
         assert!(destination.relative_to(expected).length() < 0.001);
         updates += 1;
-        computer.advance(0.1);
     }
     assert!(updates >= 80, "only {updates} charging updates");
-    assert!(peak_gas < FUEL_PER_TICK, "peak gas {peak_gas}");
+    assert!(peak_gas <= FUEL_PER_TICK, "peak gas {peak_gas}");
     eprintln!("moving-slip refresh peak gas {peak_gas}");
 }

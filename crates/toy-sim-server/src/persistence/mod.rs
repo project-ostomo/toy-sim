@@ -46,7 +46,7 @@ fn capture(world: &World) -> Result<Snapshot> {
     let records = BTreeMap::from([(
         "world".into(),
         SectionData {
-            version: 2,
+            version: 3,
             bytes: self::world::capture(world).context("capture world checkpoint")?,
         },
     )]);
@@ -67,7 +67,7 @@ fn restore(world: &mut World, snapshot: Snapshot) -> Result<()> {
         .get("world")
         .context("snapshot missing world section")?;
     ensure!(
-        saved.version == 2,
+        saved.version == 3,
         "unsupported world snapshot section version {}; explicitly start a new database for this universe",
         saved.version
     );
@@ -351,6 +351,36 @@ mod tests {
         shutdown(&mut world).unwrap();
         assert!(!world.contains_resource::<Checkpoints>());
         assert!(!directory.exists());
+    }
+
+    #[test]
+    fn earlier_world_sections_are_rejected_before_restore() {
+        let mut world = World::new();
+        let epoch = toy_sim_model::Id::new();
+        world.insert_resource(crate::sim::identity::WorldEpoch(epoch));
+
+        for version in [1, 2] {
+            let error = restore(
+                &mut world,
+                Snapshot {
+                    tick: 0,
+                    saved_at_unix_ms: 0,
+                    sections: BTreeMap::from([(
+                        "world".into(),
+                        SectionData {
+                            version,
+                            bytes: Vec::new(),
+                        },
+                    )]),
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("unsupported world snapshot"));
+            assert_eq!(
+                world.resource::<crate::sim::identity::WorldEpoch>().0,
+                epoch
+            );
+        }
     }
 
     #[test]

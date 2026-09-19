@@ -429,7 +429,7 @@ mod tests {
         let bytes = wat::parse_str(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const 13)
+            (func (export "ship_api_version") (result i32) i32.const 27)
             (func (export "ship_tick")))"#,
         )
         .unwrap();
@@ -523,5 +523,40 @@ mod tests {
         computer.reboot();
         assert!(computer.pending_requests.is_empty());
         assert!(!computer.has_pending_input());
+    }
+}
+
+#[derive(Debug)]
+pub enum WorldQueryError {
+    BufferTooSmall,
+    LimitExceeded,
+}
+
+impl std::fmt::Display for WorldQueryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BufferTooSmall => formatter.write_str("world query reply buffer is too small"),
+            Self::LimitExceeded => formatter.write_str("world query exceeds its work limit"),
+        }
+    }
+}
+
+impl std::error::Error for WorldQueryError {}
+
+pub fn query_work(query: &toy_sim_model::ProgramQuery) -> u64 {
+    use toy_sim_model::ProgramQuery;
+
+    match query {
+        ProgramQuery::Navigation { limit, .. } => {
+            abi::NAVIGATION_GAS_BASE + abi::NAVIGATION_GAS_PER_GATE * u64::from((*limit).min(128))
+        }
+        ProgramQuery::SlipEligibility { .. } => 131_072,
+        ProgramQuery::Tracks(query) => query.work.min(1_000_000),
+        ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),
+        ProgramQuery::Beacons { limit, .. } => 100 + 1008 * u64::from((*limit).min(256)),
+        ProgramQuery::Beacon(_)
+        | ProgramQuery::Contact(_)
+        | ProgramQuery::Travel
+        | ProgramQuery::Resolve { .. } => 1000,
     }
 }

@@ -191,9 +191,8 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             }
         })
         .collect();
-    let reboot_remaining_s = toy_sim_ship_wasm::BOOT_GAS
-        .saturating_sub(software.controller.gas_remaining()) as f64
-        / toy_sim_ship_wasm::GAS_PER_SECOND as f64;
+    let reboot_remaining_s =
+        software.controller.boot_remaining_gas() as f64 / software.last_gas_limit as f64 * 0.1;
     let computer = if world.get::<super::travel::Dormant>(entity).is_some() {
         ComputerStatus::Paused
     } else if let Some(fault) = &software.controller.fault {
@@ -212,8 +211,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         ComputerStatus::Running {
             gas_used: software.last_gas_used,
             gas_limit: software.last_gas_limit,
-            gas_reserve: software.controller.gas_remaining(),
-            gas_capacity: toy_sim_ship_wasm::RESERVE_CAPACITY,
+            execution: software.controller.execution_status(),
         }
     };
     let mut screens = super::displays::definitions(world, entity);

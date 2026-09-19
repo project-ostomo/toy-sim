@@ -1,6 +1,9 @@
 //! Host-owned observation frames and admitted sensor estimates. No world queries.
 use crate::{Observation, SensorContact};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 use toy_sim_ship_api::abi as w;
 
 pub type Position = [i128; 3];
@@ -218,21 +221,21 @@ impl State {
             );
         }
 
-        while self.tracks.len() > w::MAX_TRACKS as usize {
-            let key = self
-                .tracks
-                .iter()
-                .filter(|(id, _)| !contacts.iter().any(|c| c.id == **id))
-                .min_by(|a, b| {
-                    a.1.latest
-                        .epoch
-                        .total_cmp(&b.1.latest.epoch)
-                        .then(a.0.cmp(b.0))
-                })
-                .map(|(id, _)| *id);
-            let Some(id) = key else {
-                break;
-            };
+        let excess = self.tracks.len().saturating_sub(w::MAX_TRACKS as usize);
+        if excess == 0 {
+            return;
+        }
+
+        let incoming: BTreeSet<_> = contacts.iter().map(|contact| contact.id).collect();
+        let mut candidates: Vec<_> = self
+            .tracks
+            .iter()
+            .filter(|(id, _)| !incoming.contains(id))
+            .map(|(id, track)| (*id, track.latest.epoch))
+            .collect();
+        candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1).then(a.0.cmp(&b.0)));
+
+        for (id, _) in candidates.into_iter().take(excess) {
             self.tracks.remove(&id);
         }
     }

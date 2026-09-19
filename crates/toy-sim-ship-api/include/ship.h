@@ -12,12 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v26"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v27"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (26)
-#define SHIP_ERR_GAS (-1)
+#define SHIP_API_VERSION (27)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
 #define SHIP_ERR_UNAVAILABLE (-4)
@@ -26,6 +25,8 @@ extern "C" {
 #define SHIP_ERR_UNSUPPORTED (-7)
 #define SHIP_CALL_GAS (100)
 #define SHIP_SCAN_GAS_PER_OBJECT (3000)
+#define SHIP_NAVIGATION_GAS_BASE (100)
+#define SHIP_NAVIGATION_GAS_PER_GATE (4096)
 #define SHIP_MAX_CONTACTS (256)
 #define SHIP_MAX_TRACKS (512)
 #define SHIP_MAX_SNAPSHOTS (8)
@@ -190,17 +191,13 @@ SHIP_ASSERT(sizeof(ship_tick_context_record) == 96, "TickContext size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_tick_context_record) == 8, "TickContext alignment");
 typedef struct {
     uint64_t gas_remaining;
-    uint64_t instruction_remaining;
-    uint64_t gas_capacity;
-    uint64_t gas_refill_per_s;
-    uint64_t instruction_limit;
+    uint64_t gas_limit;
+    uint64_t gas_per_tick;
 } ship_budget_info_record;
 SHIP_ASSERT(offsetof(ship_budget_info_record, gas_remaining) == 0, "BudgetInfo.gas_remaining");
-SHIP_ASSERT(offsetof(ship_budget_info_record, instruction_remaining) == 8, "BudgetInfo.instruction_remaining");
-SHIP_ASSERT(offsetof(ship_budget_info_record, gas_capacity) == 16, "BudgetInfo.gas_capacity");
-SHIP_ASSERT(offsetof(ship_budget_info_record, gas_refill_per_s) == 24, "BudgetInfo.gas_refill_per_s");
-SHIP_ASSERT(offsetof(ship_budget_info_record, instruction_limit) == 32, "BudgetInfo.instruction_limit");
-SHIP_ASSERT(sizeof(ship_budget_info_record) == 40, "BudgetInfo size");
+SHIP_ASSERT(offsetof(ship_budget_info_record, gas_limit) == 8, "BudgetInfo.gas_limit");
+SHIP_ASSERT(offsetof(ship_budget_info_record, gas_per_tick) == 16, "BudgetInfo.gas_per_tick");
+SHIP_ASSERT(sizeof(ship_budget_info_record) == 24, "BudgetInfo size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_budget_info_record) == 8, "BudgetInfo alignment");
 typedef struct {
     double rotation[4];

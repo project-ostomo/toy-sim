@@ -466,8 +466,9 @@ impl Predictor {
     /// the previous atomic publication with its original epoch and expiry.
     pub fn update(&mut self, requested: bool, nav: &Pursuit, obs: &Sample, b: &Bindings) -> bool {
         #[cfg(target_arch = "wasm32")]
-        self.retired_snapshots
-            .retain(|id| matches!(toy_sim_ship_api::sdk::drop_snapshot(*id), Err(abi::ERR_GAS)));
+        for id in self.retired_snapshots.drain(..) {
+            let _ = toy_sim_ship_api::sdk::drop_snapshot(id);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         self.retired_snapshots.clear();
 
@@ -524,8 +525,7 @@ impl Predictor {
         let Some(p) = &mut self.pending else {
             return false;
         };
-        // Native builds have the same bounded work quantum; WASM additionally
-        // stops before exhausting the instruction allowance. No VM suspension.
+        // Optional forecasts leave gas for actuation and instrument publication.
         for _ in 0..512 {
             if p.done || !budget() {
                 break;

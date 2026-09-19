@@ -596,7 +596,12 @@ impl Session {
                 .ok_or_else(|| anyhow::anyhow!("group unavailable"))?
                 .snapshot
                 .clone();
-            let page = toy_sim_intel::query::Queries::default().start(snapshot, query, tick)?;
+            let page = toy_sim_intel::query::Queries::default().start(
+                snapshot,
+                query,
+                tick,
+                usize::MAX,
+            )?;
             work = work.saturating_sub(page.gas_used);
             views.push(ViewState {
                 focused_ship: view.focused_ship,

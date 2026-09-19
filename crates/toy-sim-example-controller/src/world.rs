@@ -160,9 +160,16 @@ impl Planner {
                     .reserve_exact(MAX_GATES - self.catalogue.len());
             }
         }
+        let limit = crate::budget::navigation_limit(
+            sdk::budget()?,
+            if checking { 1 } else { GATES_PER_TICK },
+        );
+        if limit == 0 {
+            return Ok(false);
+        }
         let ProgramReply::Navigation { revision, gates } = query(&ProgramQuery::Navigation {
             after: if checking { None } else { self.catalogue_after },
-            limit: if checking { 1 } else { GATES_PER_TICK },
+            limit,
             reference: pose.position,
         })?
         else {
@@ -180,7 +187,7 @@ impl Planner {
         if checking {
             return Ok(true);
         }
-        self.catalogue_complete = gates.len() < GATES_PER_TICK as usize;
+        self.catalogue_complete = gates.len() < usize::from(limit);
         for gate in gates {
             if self
                 .catalogue_after

@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v26" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v26" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v26" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v26" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v26" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v27" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v27" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v27" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v27" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v27" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -19,7 +19,7 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
         i32.const 1024 i64.load offset=56 i64.const 0 i64.gt_u
         if
             i32.const 1024 f64.load offset=16 f64.const 8 f64.lt
-            if (loop $forever br $forever) end
+            if unreachable end
             i32.const 0 i32.const 2048 i32.const 24 call $request drop
             i32.const 2048 i64.load i64.const 0 i32.const 0 i32.const 0 call $reply drop
         end
@@ -60,18 +60,20 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
     app.insert_resource(ShipCatalogue(cat))
         .insert_resource(WasmRuntime(ControllerRuntime::new().unwrap()))
         .insert_resource(Time::<Fixed>::from_hz(10.));
+    let account = toy_sim_model::Id([11; 16]);
+    crate::sim::identity::initialize(app.world_mut(), &[account]);
     let mut entities = vec![];
     for _ in 0..count {
-        entities.push(
-            spawn_ship(
-                app.world_mut(),
-                design.clone(),
-                PreciseTransform::default(),
-                DVec3::ZERO,
-                "Regression vessel".into(),
-            )
-            .unwrap(),
-        );
+        let entity = spawn_ship(
+            app.world_mut(),
+            design.clone(),
+            PreciseTransform::default(),
+            DVec3::ZERO,
+            "Regression vessel".into(),
+        )
+        .unwrap();
+        crate::sim::identity::attach_ship(app.world_mut(), entity, account).unwrap();
+        entities.push(entity);
     }
     crate::sim::hardware::install(&mut app);
     app.add_systems(
@@ -279,8 +281,8 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
     {
         let world = app.world();
         let software = world.get::<ShipSoftware>(entity).unwrap();
-        assert!(software.last_gas_used >= toy_sim_ship_wasm::FUEL_PER_TICK);
-        assert!(software.last_gas_used < toy_sim_ship_wasm::RESERVE_CAPACITY);
+        assert!(software.last_gas_used > 0);
+        assert!(software.last_gas_used <= toy_sim_ship_wasm::FUEL_PER_TICK);
         assert_eq!(software.last_gas_limit, toy_sim_ship_wasm::FUEL_PER_TICK);
         assert!(software.controller.state.weapons.is_none());
         assert!(software.controller.state.navigation.is_none());
@@ -416,15 +418,9 @@ fn sleeping_computers_keep_hardware_running_and_commands_wake_them() {
 #[test]
 fn simultaneous_startups_are_limited_per_tick() {
     let (mut app, entities) = fleet(toy_sim_ship_wasm::MAX_BOOTS_PER_TICK + 5);
-    step(&mut app);
-    for &entity in &entities {
-        app.world_mut()
-            .get_mut::<ShipSoftware>(entity)
-            .unwrap()
-            .controller
-            .advance(5.);
+    for _ in 0..49 {
+        step(&mut app);
     }
-    // Only one bounded startup batch is admitted in this tick.
     step(&mut app);
     let running = entities
         .iter()
@@ -436,8 +432,10 @@ fn simultaneous_startups_are_limited_per_tick() {
                 .is_booting()
         })
         .count();
-    assert_eq!(running, toy_sim_ship_wasm::MAX_BOOTS_PER_TICK);
-    step(&mut app);
+    assert!(running <= toy_sim_ship_wasm::MAX_BOOTS_PER_TICK);
+    for _ in 0..3 {
+        step(&mut app);
+    }
     assert!(entities.iter().all(|&e| {
         !app.world()
             .get::<ShipSoftware>(e)
@@ -512,8 +510,8 @@ fn fault_reboot_budget_pauses_without_power() {
             .get::<ShipSoftware>(ship)
             .unwrap()
             .controller
-            .gas_remaining(),
-        0
+            .boot_remaining_gas(),
+        toy_sim_ship_wasm::BOOT_GAS
     );
     let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
     assert!(matches!(
@@ -534,5 +532,130 @@ fn fault_reboot_budget_pauses_without_power() {
     let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
     assert!(
         matches!(state.computer, toy_sim_model::ComputerStatus::Fault { reboot_remaining_s: Some(seconds), .. } if seconds > 0. && seconds < 5.)
+    );
+}
+
+#[test]
+fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
+    let (mut app, ships) = fleet(3);
+    let owner = crate::sim::gas::payer(app.world(), ships[0]).unwrap();
+    let ledger = crate::sim::gas::GasLedger::default();
+    ledger.ensure_account(owner, 0);
+    app.insert_resource(ledger.clone());
+    for _ in 0..10 {
+        step(&mut app);
+    }
+    for &ship in &ships {
+        let software = app.world().get::<ShipSoftware>(ship).unwrap();
+        assert_eq!(
+            software.controller.boot_remaining_gas(),
+            toy_sim_ship_wasm::BOOT_GAS
+        );
+        assert_eq!(software.last_gas_used, 0);
+        assert_eq!(throttle(app.world(), ship), 0.);
+    }
+    ledger.deposit(owner, 1_000_000).unwrap();
+    step(&mut app);
+    let mut total = 0;
+    for &ship in &ships {
+        let software = app.world().get::<ShipSoftware>(ship).unwrap();
+        assert!((333_333..=333_334).contains(&software.last_gas_used));
+        total += software.last_gas_used;
+    }
+    assert_eq!(total, 1_000_000);
+    let account = ledger.account(owner).unwrap();
+    assert_eq!(
+        (account.available, account.reserved, account.spent),
+        (0, 0, total)
+    );
+    assert!(ledger.snapshot().is_ok());
+    step(&mut app);
+    assert_eq!(ledger.account(owner).unwrap(), account);
+}
+
+#[test]
+fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
+    let program = wat::parse_str(format!(
+        r#"(module
+        (import "ship_v27" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (memory (export "memory") 1)
+        (func (export "ship_api_version") (result i32) i32.const {})
+        (func (export "ship_tick") (local $remaining i32)
+            i32.const 600000 local.set $remaining
+            (loop $work
+                local.get $remaining i32.const 1 i32.sub local.tee $remaining
+                br_if $work)
+            i32.const 16 f64.const 0.4 f64.store
+            i64.const 6 i64.const 0 i32.const 16 i32.const 8 call $write drop))"#,
+        abi::VERSION
+    ))
+    .unwrap();
+    let (mut app, ships) = fleet_with_program(1, program);
+    let ship = ships[0];
+    let owner = crate::sim::gas::payer(app.world(), ship).unwrap();
+    let mut suspended = false;
+    let mut completed = false;
+    for _ in 0..100 {
+        step(&mut app);
+        let software = app.world().get::<ShipSoftware>(ship).unwrap();
+        assert!(software.controller.fault.is_none());
+        assert!(software.last_gas_used <= toy_sim_ship_wasm::FUEL_PER_TICK);
+        suspended |= software.controller.is_suspended();
+        if throttle(app.world(), ship) == 0.4 {
+            completed = true;
+            break;
+        }
+    }
+    assert!(suspended && completed);
+    let ledger = app.world().resource::<crate::sim::gas::GasLedger>();
+    let account = ledger.account(owner).unwrap();
+    assert!(account.spent > toy_sim_ship_wasm::BOOT_GAS);
+    assert_eq!(
+        account.available + account.spent,
+        crate::sim::gas::STARTING_GAS
+    );
+    assert!(ledger.snapshot().is_ok());
+}
+
+#[test]
+fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue() {
+    let program = wat::parse_str(format!(
+        r#"(module
+            (memory (export "memory") 1)
+            (func (export "ship_api_version") (result i32) i32.const {})
+            (func $initialize (loop $forever br $forever))
+            (start $initialize)
+            (func (export "ship_tick")))"#,
+        abi::VERSION
+    ))
+    .unwrap();
+    let (mut app, pending) = fleet_with_program(toy_sim_ship_wasm::MAX_BOOTS_PER_TICK, program);
+    let design = Arc::new(
+        starter(test_controller(None))
+            .compile(&app.world().resource::<ShipCatalogue>().0)
+            .unwrap(),
+    );
+    let later = spawn_ship(
+        app.world_mut(),
+        design,
+        PreciseTransform::default(),
+        DVec3::ZERO,
+        "Later healthy computer".into(),
+    )
+    .unwrap();
+    crate::sim::identity::attach_ship(app.world_mut(), later, toy_sim_model::Id([11; 16])).unwrap();
+    boot(&mut app, later);
+    assert_eq!(throttle(app.world(), later), 0.4);
+    for ship in pending {
+        let software = app.world().get::<ShipSoftware>(ship).unwrap();
+        assert!(software.controller.is_booting());
+        assert!(!software.controller.needs_instance_start());
+        assert!(software.controller.fault.is_none());
+    }
+    assert!(
+        app.world()
+            .resource::<crate::sim::gas::GasLedger>()
+            .snapshot()
+            .is_ok()
     );
 }

@@ -7,7 +7,7 @@ use crate::sim::{
 };
 use bevy::{math::DVec3, prelude::*};
 use smol_str::SmolStr;
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use toy_sim_ship_api::abi;
 use toy_sim_ship_wasm::{Command, Input, Observation, Request, RequestReply};
 use toy_sim_ship_wasm::{Controller, ControllerRuntime};
@@ -50,6 +50,8 @@ pub struct ShipSoftware {
     pub last_input: Option<Input>,
     pub last_gas_used: u64,
     pub last_gas_limit: u64,
+    pub(crate) gas_tick: Option<u64>,
+    gas_reservation: Option<super::gas::GasReservation>,
 }
 impl ShipSoftware {
     pub fn new(controller: Controller) -> Self {
@@ -72,7 +74,22 @@ impl ShipSoftware {
             observed_restart,
             last_gas_used: 0,
             last_gas_limit: toy_sim_ship_wasm::FUEL_PER_TICK,
+            gas_tick: None,
+            gas_reservation: None,
         }
+    }
+
+    pub(crate) fn begin_gas_tick(&mut self, tick: u64) {
+        if self.gas_tick != Some(tick) {
+            assert!(self.gas_reservation.is_none(), "unsettled flight gas");
+            self.gas_tick = Some(tick);
+            self.last_gas_used = 0;
+            self.last_gas_limit = toy_sim_ship_wasm::FUEL_PER_TICK;
+        }
+    }
+
+    pub(crate) fn remaining_gas(&self) -> u64 {
+        self.last_gas_limit - self.last_gas_used
     }
 
     pub fn command(&mut self, command: Command) {
@@ -235,7 +252,7 @@ fn prepare_resets(
 }
 
 pub(crate) fn run(
-    wasm: Res<WasmRuntime>,
+    ledger: Res<super::gas::GasLedger>,
     time: Res<Time<Fixed>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     mut ships: Query<
@@ -251,37 +268,66 @@ pub(crate) fn run(
             &AngularVelocity,
             &crate::sim::physics::AccelerometerState,
             &MassProps,
+            &super::identity::Identity,
+            &super::ownership::AssetOwner,
         ),
         Without<super::travel::Dormant>,
     >,
 ) {
-    // VM allocation/start is paid separately and bounded across the fleet.
-    let mut boots = 0;
-    for (_, design, mut hardware, mut software, ..) in &mut ships {
-        software.last_gas_used = 0;
-        software.last_gas_limit =
-            (time.delta_secs_f64() * toy_sim_ship_wasm::GAS_PER_SECOND as f64).round() as u64;
-        if hardware.computer_running(&design.0) {
-            software.controller.advance(time.delta_secs_f64());
-            if software.controller.is_booting()
-                && software.controller.gas_remaining() >= toy_sim_ship_wasm::BOOT_GAS
-                && boots < toy_sim_ship_wasm::MAX_BOOTS_PER_TICK
-            {
-                boots += 1;
-                match wasm.0.boot(&mut software.controller) {
-                    Ok(true) => {
-                        software.last_input = None;
-                        software.callback_dt = 0.;
-                        software.schedule = default();
-                        software.results.clear();
-                    }
-                    Err(error) => warn!("Computer boot failed: {error:#}"),
-                    _ => {}
-                }
-            }
+    let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
+    let mut entities = BTreeMap::new();
+    for (entity, design, hardware, mut software, _, _, _, _, _, _, _, identity, owner) in &mut ships
+    {
+        software.begin_gas_tick(hardware.clock.0);
+        software.callback_dt += time.delta_secs_f64();
+        software.schedule.advance(time.delta_secs_f64());
+        let ready = software.controller.is_booting()
+            || software.controller.is_suspended()
+            || software
+                .schedule
+                .ready(!software.inbox.is_empty() || software.controller.has_pending_input());
+        if !hardware.computer_running(&design.0) || !ready {
+            continue;
         }
-        if software.controller.is_booting() {
-            hardware.reset_commands(&design.0);
+
+        ledger.ensure_account(owner.0, super::gas::STARTING_GAS);
+        let minimum = software.controller.minimum_to_progress();
+        let maximum = software.remaining_gas();
+        if minimum <= maximum {
+            requests
+                .entry(owner.0)
+                .or_default()
+                .push(super::gas::GasRequest {
+                    id: identity.0,
+                    minimum,
+                    maximum,
+                });
+            entities.insert(identity.0, entity);
+        }
+    }
+    for (owner, requests) in requests {
+        for (id, reservation) in ledger
+            .reserve_fair(owner, &requests)
+            .expect("valid flight gas requests")
+        {
+            let (_, _, _, mut software, ..) = ships.get_mut(entities[&id]).unwrap();
+            software.gas_reservation = Some(reservation);
+        }
+    }
+    let mut starts = 0;
+    for (_, _, _, mut software, ..) in &mut ships {
+        let grant = software
+            .gas_reservation
+            .as_ref()
+            .map_or(0, |grant| grant.limit());
+        if software.controller.needs_instance_start()
+            && grant > software.controller.boot_remaining_gas()
+        {
+            if starts == toy_sim_ship_wasm::MAX_BOOTS_PER_TICK {
+                drop(software.gas_reservation.take());
+            } else {
+                starts += 1;
+            }
         }
     }
     ships.par_iter_mut().for_each(
@@ -297,15 +343,15 @@ pub(crate) fn run(
             angular,
             accelerometer,
             mass,
+            _identity,
+            _owner,
         )| {
             let start = std::time::Instant::now();
             let mut timings = ShipStepTimings::default();
             let mut callback_end = start;
             let design = &d.0;
-            software.callback_dt += time.delta_secs_f64();
             let m = mass.mass;
             let inertia = mass.inertia;
-            software.schedule.advance(time.delta_secs_f64());
             display.powered = h.computer_running(design);
             display.source = software.world_source.clone();
             display.origin = [
@@ -314,11 +360,11 @@ pub(crate) fn run(
                 pose.translation_um.z,
             ];
             let ready = display.powered
-                && software.controller.fault.is_none()
-                && software.controller.can_run()
-                && software
-                    .schedule
-                    .ready(!software.inbox.is_empty() || software.controller.has_pending_input());
+                && (software.controller.is_booting()
+                    || software.controller.is_suspended()
+                    || software.schedule.ready(
+                        !software.inbox.is_empty() || software.controller.has_pending_input(),
+                    ));
             let current_input = if ready || active_display.is_some() {
                 let obs = Observation {
                     time_s: time.elapsed_secs_f64() - time.delta_secs_f64(),
@@ -367,45 +413,72 @@ pub(crate) fn run(
             } else {
                 None
             };
-            if h.computer_running(design) && software.controller.fault.is_none() {
-                // Callbacks are atomic with respect to staged outputs. Sleeping
-                // programs retain the last completed settings; faults clear them.
-                let result = if ready {
-                    let mut input = current_input.expect("ready callback observation");
+            if ready {
+                let mut input = current_input.expect("ready computer observation");
+                let booting = software.controller.is_booting();
+                let grant = software
+                    .gas_reservation
+                    .as_ref()
+                    .map_or(0, |grant| grant.limit());
+                if !booting
+                    && !software.controller.is_suspended()
+                    && grant >= software.controller.minimum_to_progress()
+                {
                     input.dt = std::mem::take(&mut software.callback_dt);
-                    input.commands = std::mem::take(&mut software.inbox);
-                    let source = software.world_source.clone();
-                    let callback_start = std::time::Instant::now();
-                    timings.prepare = callback_start.duration_since(start).as_secs_f64();
-                    software.last_input = Some(input.clone());
-                    let result = software.controller.run_with_scan(input, source);
-                    software.last_gas_used = software.controller.last_gas_used;
-                    callback_end = std::time::Instant::now();
-                    timings.callback = callback_end.duration_since(callback_start).as_secs_f64();
-                    timings.scan = software.controller.last_scan_seconds;
-                    result
+                }
+                input.commands = std::mem::take(&mut software.inbox);
+                let source = software.world_source.clone();
+                let physical_limit = software.last_gas_limit;
+                let callback_start = std::time::Instant::now();
+                timings.prepare = callback_start.duration_since(start).as_secs_f64();
+                let result =
+                    software
+                        .controller
+                        .run_slice(input.clone(), source, grant, physical_limit);
+                let used = software.controller.last_gas_used;
+                if let Some(reservation) = software.gas_reservation.as_mut() {
+                    reservation
+                        .record_used(used)
+                        .expect("flight gas within granted allowance");
                 } else {
-                    Ok(None)
-                };
+                    assert_eq!(used, 0, "unfunded flight execution");
+                }
+                software.last_gas_used += used;
+                callback_end = std::time::Instant::now();
+                timings.callback = callback_end.duration_since(callback_start).as_secs_f64();
+                timings.scan = software.controller.last_scan_seconds;
+                if booting {
+                    h.reset_commands(design);
+                    if !software.controller.is_booting() {
+                        software.callback_dt = 0.;
+                        software.schedule = default();
+                        software.results.clear();
+                    }
+                }
+
                 match result {
-                    Ok(Some(output)) => {
-                        if let Err(error) = h.apply_commands(design, &output.devices) {
+                    Ok(slice) => {
+                        if let Err(error) = h.apply_commands(design, &slice.output.devices) {
                             h.reset_commands(design);
                             software.controller.fail(format!("{error:#}"));
                             warn!("Invalid device commands: {error:#}");
                         } else {
-                            software.schedule.completed(output.tick_interval_seconds);
-                            software.results = output.replies;
-                            software.world_actions.extend(output.world_actions);
+                            if slice.callback_completed {
+                                software.last_input = Some(input);
+                                software
+                                    .schedule
+                                    .completed(slice.output.tick_interval_seconds);
+                            }
+                            software.results = slice.output.replies;
+                            software.world_actions.extend(slice.output.world_actions);
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => {
+                    Err(error) => {
                         h.reset_commands(design);
-                        warn!("Ship controller fault: {e:#}");
+                        warn!("Ship controller fault: {error:#}");
                     }
                 }
-            } else {
+            } else if !display.powered {
                 h.reset_commands(design);
             }
             if timings.callback == 0. {
@@ -424,6 +497,11 @@ pub(crate) fn run(
             software.last_seconds = end.duration_since(start).as_secs_f64();
         },
     );
+    for (_, _, _, mut software, ..) in &mut ships {
+        if let Some(reservation) = software.gas_reservation.take() {
+            drop(reservation);
+        }
+    }
 }
 
 fn clear_computer_resets(

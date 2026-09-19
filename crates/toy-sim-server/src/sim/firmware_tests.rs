@@ -27,6 +27,8 @@ impl HardwareFixture {
         app.init_resource::<vessel::WasmRuntime>();
         app.insert_resource(Time::<Fixed>::from_hz(10.));
         hardware::install(&mut app);
+        let account = toy_sim_model::Id([12; 16]);
+        super::identity::initialize(app.world_mut(), &[account]);
         let ship = vessel::spawn_ship(
             app.world_mut(),
             Arc::new(design.clone()),
@@ -35,6 +37,7 @@ impl HardwareFixture {
             "Firmware test".into(),
         )
         .unwrap();
+        super::identity::attach_ship(app.world_mut(), ship, account).unwrap();
         app.world_mut()
             .run_system_once(hardware::initialize)
             .unwrap();
@@ -89,10 +92,20 @@ fn ready(runtime: &mut ControllerRuntime, bytes: &[u8]) -> Controller {
         rotation: [0., 0., 0., 1.],
     }]
     .into();
-    controller.advance(5.);
-    assert!(runtime.boot(&mut controller).unwrap());
-    controller.advance(0.4);
+    paid_boot(&mut controller);
     controller
+}
+
+fn paid_boot(controller: &mut Controller) {
+    for _ in 0..64 {
+        if !controller.is_booting() {
+            return;
+        }
+        controller
+            .run_slice(Input::default(), None, FUEL_PER_TICK, FUEL_PER_TICK)
+            .unwrap();
+    }
+    panic!("paid boot did not complete");
 }
 
 fn input(time: f64) -> Input {
@@ -147,13 +160,17 @@ fn real_custom_firmware_registers_draws_and_acknowledges_input() {
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut computer = runtime.instantiate_display(bytes).unwrap();
     computer.configure_hardware(&design, &catalogue);
+    paid_boot(&mut computer);
 
     let mut observation = input(0.);
     observation.devices = hardware.snapshot(&design);
     observation.observation.flight.mass_kg = mass;
     observation.observation.flight.inertia = inertia.to_cols_array();
     observation.observation.inventory = hardware.inventory.quantities.clone();
-    let out = computer.run(observation.clone()).unwrap().unwrap();
+    let out = computer
+        .run_slice(observation.clone(), None, FUEL_PER_TICK, FUEL_PER_TICK)
+        .unwrap()
+        .output;
     assert_eq!(computer.screens.len(), 1);
     assert_eq!(out.screens.len(), 1);
     assert!(computer.state.attitude.is_none());
@@ -169,20 +186,23 @@ fn real_custom_firmware_registers_draws_and_acknowledges_input() {
         y: 120.,
         ..Default::default()
     });
-    computer.advance(0.2);
-    let out = computer.run(observation.clone()).unwrap().unwrap();
+
+    let out = computer
+        .run_slice(observation.clone(), None, FUEL_PER_TICK, FUEL_PER_TICK)
+        .unwrap()
+        .output;
     assert!(
         out.screens[0].draws.iter().any(|draw| {
             matches!(draw, screens::Draw::Text { text, .. } if text == "PRESSES 1")
         })
     );
     observation.screen_events.clear();
-    computer.advance(0.2);
+
     assert!(
         computer
-            .run(observation)
+            .run_slice(observation, None, FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap()
-            .unwrap()
+            .output
             .screens
             .is_empty()
     );
@@ -260,11 +280,15 @@ fn bundled_firmware_finishes_full_forecasts_with_retained_sources_under_fuel_lim
             ];
         }
 
-        computer.advance(0.1);
         let out = computer
-            .run_with_scan(observation, Some(Arc::new(Target)))
+            .run_slice(
+                observation,
+                Some(Arc::new(Target)),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
             .unwrap()
-            .unwrap();
+            .output;
         assert!(
             out.replies
                 .iter()
@@ -410,16 +434,26 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
                     | Command::UnmarkTarget
             )
         });
-        manual_only.advance(0.1);
+
         let manual_output = manual_only
-            .run_with_scan(manual_observation, Some(Arc::new(Target)))
+            .run_slice(
+                manual_observation,
+                Some(Arc::new(Target)),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
             .unwrap()
-            .expect("manual callback ran out of reserve");
-        computer.advance(0.1);
+            .output;
+
         let output = computer
-            .run_with_scan(observation, Some(Arc::new(Target)))
+            .run_slice(
+                observation,
+                Some(Arc::new(Target)),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
             .unwrap()
-            .expect("armed callback ran out of reserve");
+            .output;
         assert!(!computer.is_booting());
         assert!(
             output
@@ -571,11 +605,15 @@ fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
             ];
         }
 
-        computer.advance(0.1);
         let output = computer
-            .run_with_scan(observation, Some(Arc::new(Player)))
+            .run_slice(
+                observation,
+                Some(Arc::new(Player)),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
             .unwrap()
-            .expect("pursuit callback must fit its gas budget");
+            .output;
         for reply in &output.replies {
             assert_eq!(reply.result, abi::REPLY_ACCEPTED, "{reply:?}");
             accepted += 1;
@@ -619,10 +657,6 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
         .unwrap();
     computer.configure_hardware(&design, &catalogue);
     for tick in 0..150 {
-        computer.advance(0.1);
-        if computer.is_booting() {
-            runtime.boot(&mut computer).unwrap();
-        }
         let mut observation = input(tick as f64 * 0.1);
         let (mass, inertia) = hardware.mass_properties(&design, &catalogue);
         observation.observation.flight.mass_kg = mass;
@@ -631,15 +665,16 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
             (glam::DQuat::from_rotation_x(0.7) * glam::DQuat::from_rotation_y(1.2)).to_array();
         observation.observation.inventory = hardware.inventory.quantities.clone();
         observation.devices = hardware.snapshot(&design);
-        if let Some(out) = computer
-            .run_with_scan(
+        let out = computer
+            .run_slice(
                 observation,
                 Some(Arc::new(CountedSource(Arc::new(AtomicUsize::new(0))))),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
             )
             .unwrap()
-        {
-            fixture.command(&out.devices);
-        }
+            .output;
+        fixture.command(&out.devices);
         fixture.advance();
         hardware = fixture.snapshot();
         if tick > 70 {
@@ -647,7 +682,7 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
                 computer.state.contacts.is_some(),
                 "tick={tick}, fault={:?}, gas={}, attitude={}, weapons={}, scan={:?}",
                 computer.fault,
-                computer.gas_remaining(),
+                computer.last_gas_used,
                 computer.state.attitude.is_some(),
                 computer.state.weapons.is_some(),
                 computer.scan_time
@@ -657,7 +692,7 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
 }
 
 #[test]
-fn dense_sensor_results_keep_stock_callbacks_within_continuous_gas_refill() {
+fn dense_sensor_results_keep_stock_slices_within_physical_gas_budget() {
     struct Dense;
     impl ScanSource for Dense {
         fn scan(&self, _: f64, maximum: usize) -> Vec<SensorContact> {
@@ -694,16 +729,17 @@ fn dense_sensor_results_keep_stock_callbacks_within_continuous_gas_refill() {
         observation.observation.flight.inertia = inertia.to_cols_array();
         observation.observation.inventory = hardware.inventory.quantities.clone();
         observation.devices = hardware.snapshot(&design);
-        computer.advance(0.1);
+
         let output = computer
-            .run_with_scan(observation, Some(Arc::new(Dense)))
+            .run_slice(
+                observation,
+                Some(Arc::new(Dense)),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
             .unwrap()
-            .unwrap_or_else(|| {
-                panic!(
-                    "dense callback starved at tick {tick}, gas={}",
-                    computer.gas_remaining()
-                )
-            });
+            .output;
+        assert!(computer.last_gas_used <= FUEL_PER_TICK);
         fixture.command(&output.devices);
         fixture.advance();
         assert!(!computer.is_booting());

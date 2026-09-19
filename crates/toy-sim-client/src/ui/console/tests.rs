@@ -51,8 +51,7 @@ fn details() -> ShipPresentation {
         computer: ComputerStatus::Running {
             gas_used: 100,
             gas_limit: 1000,
-            gas_reserve: 3000,
-            gas_capacity: 4000,
+            execution: ExecutionStatus::Ready,
         },
         instruments: Some(Instruments {
             valid_until_ns: u64::MAX,
@@ -108,20 +107,39 @@ fn console_headless_layout_and_manual_lockout() {
     world.spawn((ship, ShipDetails(details)));
     let mut textures = std::collections::BTreeMap::new();
     let size = egui::vec2(1600., 900.);
-    for (name, computer) in [
+    for (name, expected_label, computer) in [
         (
             "normal",
+            "CPU 34%",
             ComputerStatus::Running {
                 gas_used: 340_000,
                 gas_limit: 1_000_000,
-                gas_reserve: 2_500_000,
-                gas_capacity: 4_000_000,
+                execution: ExecutionStatus::Ready,
+            },
+        ),
+        (
+            "suspended",
+            "CPU 80% · SUSPENDED",
+            ComputerStatus::Running {
+                gas_used: 800_000,
+                gas_limit: 1_000_000,
+                execution: ExecutionStatus::Suspended,
+            },
+        ),
+        (
+            "no-gas",
+            "CPU 0% · NO GAS",
+            ComputerStatus::Running {
+                gas_used: 0,
+                gas_limit: 1_000_000,
+                execution: ExecutionStatus::WaitingForGas,
             },
         ),
         (
             "fault",
+            "FAULTED · reboot in 4.2 s",
             ComputerStatus::Fault {
-                message: "WASM instruction budget exhausted".into(),
+                message: "WASM memory access out of bounds".into(),
                 reboot_remaining_s: Some(4.2),
             },
         ),
@@ -136,6 +154,9 @@ fn console_headless_layout_and_manual_lockout() {
                 details.0.sim_time_ns += 1;
             }
         }
+        for (ship, details) in world.query::<(&OwnedShip, &ShipDetails)>().iter(&world) {
+            assert_eq!(manual(&ship.0, &details.0, true), !faulted);
+        }
         for frame in 0..4 {
             let mut output = ctx.run_ui(
                 egui::RawInput {
@@ -148,6 +169,24 @@ fn console_headless_layout_and_manual_lockout() {
                 },
             );
             let bounds = toy_sim_ui::desktop::workspace_in(&ctx);
+            fn has_label(shape: &egui::Shape, expected: &str) -> bool {
+                match shape {
+                    egui::Shape::Text(shape) => shape.galley.job.text == expected,
+                    egui::Shape::Vec(shapes) => {
+                        shapes.iter().any(|shape| has_label(shape, expected))
+                    }
+                    _ => false,
+                }
+            }
+            if frame == 3 {
+                assert!(
+                    output
+                        .shapes
+                        .iter()
+                        .any(|shape| has_label(&shape.shape, expected_label)),
+                    "missing computer status {expected_label}"
+                );
+            }
             assert_eq!(bounds.bottom(), size.y - STATUS_HEIGHT - 10.);
             assert!(bounds.width() > 100. && bounds.height() > 100.);
             if let Ok(directory) = std::env::var("TOY_SIM_CONSOLE_CAPTURE") {

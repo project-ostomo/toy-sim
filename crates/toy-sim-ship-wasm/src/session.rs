@@ -56,11 +56,18 @@ impl Session {
         }
     }
 
-    pub(crate) fn snapshot(&self, id: u64, current: Snapshot) -> Option<Snapshot> {
+    pub(crate) fn snapshot(
+        &self,
+        id: u64,
+        current: Snapshot,
+        borrowed: Option<Snapshot>,
+    ) -> Option<Snapshot> {
         if id == current.id {
             Some(current)
         } else {
-            self.pins.get(&id).copied()
+            borrowed
+                .filter(|snapshot| snapshot.id == id)
+                .or_else(|| self.pins.get(&id).copied())
         }
     }
 }

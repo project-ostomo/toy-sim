@@ -1,6 +1,12 @@
-# Ship controller ABI (version 26)
+# Ship controller ABI (version 27)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v26`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v27`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 27 replaces the accumulating local reserve and separate instruction budget
+with one gas slice. `BudgetInfo` is now a 24-byte record containing
+`gas_remaining`, `gas_limit` and `gas_per_tick`, in that order. Guest execution and
+host calls spend the same allowance. Older import namespaces, API versions and
+record layouts are rejected; rebuild programs and bindings together.
 
 ABI 26 retains a typed `Destination` in each queued slip order and adds future
 epochs to destination resolution and aperture queries. `Resolve` takes
@@ -12,14 +18,14 @@ rebuild them and their language bindings together.
 The public `Navigation` query pages gate facts for firmware route planning.
 Planning progress and the `search_limited` flag are published through the host
 travel state. The standard runtime permits 8 MiB of guest linear memory while
-retaining its metered instruction and native-work budgets.
+metering both guest execution and native host work.
 
 ABI 24 adds a persistent byte store for each computer. `persistent_read(out, capacity)`
 returns its length and copies the current data, or returns `ERR_BUFFER` if the
 buffer is too small. `persistent_write(data, length)` replaces the whole store;
 an empty write clears it. The maximum length is 65536 bytes. Copies are metered,
 out-of-bounds memory accesses trap, and display callbacks cannot write. A write
-is committed only when the callback succeeds. The committed data survives a
+is committed when an execution slice successfully yields or completes. The committed data survives a
 computer reboot and is included with the program in server checkpoints.
 
 Server recovery creates a fresh VM from the saved program and restores this byte
@@ -53,53 +59,54 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v26` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v27` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` with no parameters and one result.
+- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 27; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 
-Instantiation (at boot, or in `validate_program`) also calls `ship_api_version` and requires it to return `26`. Store limits: one instance, one memory up to 8 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
+`validate_program` performs structural validation, including the literal version export, without executing guest code. Normal funded initialization runs the module's start function and version export under slice accounting and may suspend. Store limits: one instance, one memory up to 8 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
 For `wasm32-unknown-unknown` builds, [.cargo/config.toml](../.cargo/config.toml) passes `-zstack-size=65536` and `--max-memory=8388608` to the linker.
 
 ## Lifecycle
 
 ```
-instantiate ──► booting ──(50,000,000 gas accumulated, boot slot)──► running
-                   ▲                                                   │
-                   └──────────── fault or reboot (gas reset to 0) ─────┘
+instantiate ──► paid boot work ──► initialization ──► ready
+                     ▲                               │
+                     │                   callback ──► suspended
+                     │                               │
+                     └──────── fault or reboot ──────┘
 ```
 
-- **Gas.** A computer accrues 10,000,000 gas per simulated second while its avionics are powered. While booting, the reserve can reach `BOOT_GAS` (50,000,000, which is 5 s or 50 ticks). While running, it is capped at `RESERVE_CAPACITY` (4,000,000).
-- **Boot.** When the reserve is full, the host spends the whole `BOOT_GAS` and instantiates the module. At most 64 boots happen per simulation tick. A failed instantiation still spends the gas and records a fault.
-- **Callback admission.** A running computer is called when it holds at least `CALLBACK_START_GAS` (2,000,000) and either its interval has elapsed or it has pending requests or screen events.
-- **Instruction limit.** Each callback runs with `min(gas, 1,000,000)` instruction fuel (`FUEL_PER_TICK`). Syscalls charge the same account and can lower the remaining fuel. Running out of fuel traps.
-- **Faults.** A trap, a host error, or device commands the hardware rejects will reboot the computer. The instance is dropped, gas returns to zero, and all session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. The fault message is kept until the next successful boot. Pending requests are discarded. The server clears the autopilot queue and toggle, staged actions, slip preparation and docking reservations. New requests submitted during startup are delivered after boot.
+- **Gas.** Every computer draws from its actual owner's global account. The standard physical ceiling is 1,000,000 gas per simulation tick (`FUEL_PER_TICK`), shared by flight and display execution. Guest instructions and native calls consume one allowance. Unused grants return to the account at settlement.
+- **Boot.** A new or rebooted instance consumes `BOOT_GAS` (50,000,000) across its grants before initialization. At the full standard allowance this fee takes 50 ticks, or 5 s; account scarcity and other work can extend it. Initialization code is also metered and may suspend. The displayed countdown estimates the unpaid fixed fee at the physical ceiling, so it can reach zero while initialization is still running.
+- **Callbacks.** An idle computer starts a callback when its interval has elapsed or pending requests or screen events wake it. A suspended callback resumes where it stopped; the host does not start another `ship_tick` concurrently or queue missed tick calls.
+- **Suspension.** Insufficient slice gas pauses execution. A host call waits until its entire bounded cost can be admitted, then runs without preemption. A call that cannot fit the physical tick ceiling returns `ERR_LIMIT`. Insufficient owner gas leaves the continuation waiting until the account can fund its next indivisible operation.
+- **Faults.** Invalid guest memory, traps and rejected hardware commands still reboot the computer. The instance is dropped and session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. Work already consumed remains charged. The fault message is kept until the next successful boot. The server clears the autopilot queue and toggle, staged actions, slip preparation and docking reservations. New requests submitted during startup are delivered after boot.
 
-### Atomic callbacks
+### Slice commits
 
-Each callback edits a private copy of the session. Only when the entry point returns normally are these committed: the device writes, request replies, screen frames, instrument records, spatial publications, admitted scans and staged world actions. If the callback traps, all of it is discarded and the hardware's command settings are reset.
+Successful suspension and normal callback completion commit completed device writes, request replies, finished screen frames, instrument records, spatial publications, admitted scans, durable bytes and staged world actions. A trap discards changes from the current uncommitted slice. Earlier successful slices have already committed. A screen draft remains private until `screen_end` completes.
 
-Hardware keeps the last committed settings between callbacks. A sleeping program therefore keeps its throttles and torques.
+Hardware keeps the last committed settings while execution sleeps or suspends. On resume, host reads use refreshed observations, device readings, time and world-query sources. Guest locals and linear memory retain the values the program previously stored. The request and screen-event batch belongs to the current callback; newly queued inputs wait for the next callback.
 
 ### Scheduling
 
 `tick_set_interval(seconds)` sets how long the host waits after this callback completes before calling again. The value persists until changed. Zero means every tick. New requests or screen events wake the program early. The simulation tick is 0.1 s.
 
-The server honours the interval through `CallbackSchedule`: a flight program is called only when its interval has elapsed or requests are queued, and queued requests are handed over only on a callback that runs. Display instances are scheduled separately, by the subscribers' refresh rate ([Display entry point](#display-entry-point)).
+The server honours the interval through `CallbackSchedule`: an idle flight program starts only when its interval has elapsed or requests are queued. A suspended callback resumes before any new callback starts. Display refresh requests follow the subscribers' refresh rate ([Display entry point](#display-entry-point)) and share the ship's physical CPU ceiling and owner account.
 
 ## Calling conventions
 
-- Pointers are `u32` offsets into the exported memory. Every buffer length must equal the record size exactly, or the call returns `ERR_BUFFER`. A failed call writes nothing.
+- Pointers are `u32` offsets into the exported memory. Every fixed-record length must equal its record size exactly, or the call returns `ERR_BUFFER`. Out-of-range memory accesses trap and reboot the computer. A failed call writes nothing.
 - Every import costs `CALL_GAS` (100). Copying records into or out of guest memory costs one gas per 8 bytes. Some calls add their own charges, listed below.
 - Imports return `0` (or a count) on success and a negative error otherwise:
 
 | Code | Name | Meaning |
 | --- | --- | --- |
-| −1 | `ERR_GAS` | Not enough gas for the call |
-| −2 | `ERR_BUFFER` | Wrong length or out-of-bounds pointer |
+| −2 | `ERR_BUFFER` | Wrong record length or insufficient output capacity |
 | −3 | `ERR_ARGUMENT` | Invalid value, index or combination |
 | −4 | `ERR_UNAVAILABLE` | Resource or data not available now |
 | −5 | `ERR_LIMIT` | A quota would be exceeded |
@@ -113,17 +120,31 @@ Device IDs are `1..=device_count`, the dense device index plus one. Resource IDs
 | Import | Record | Notes |
 | --- | --- | --- |
 | `tick_read(out, bytes)` | `TickContext` (96 bytes) | See fields below |
-| `budget_read(out, bytes)` | `BudgetInfo` (40) | Gas remaining, instructions remaining in this callback, gas capacity, refill per second, instruction limit |
+| `budget_read(out, bytes)` | `BudgetInfo` (24) | Remaining slice gas, actual slice grant, physical per-ship tick ceiling |
 | `flight_read(out, bytes)` | `FlightState` (168) | Body-to-world rotation (xyzw), angular velocity, velocity (inertial m/s), mass, inertia tensor (column array), hull radius |
 | `ship_resources_read(out, bytes)` | `ShipResources` (80) | Hull HP and maximum, internal heat and storage budget, shield temperature, reserve mass and capacity, shield strength, stored energy and shield state |
 | `tick_set_interval(seconds)` | f64 argument | Finite and non-negative |
+
+`BudgetInfo` uses three little-endian `u64` fields with eight-byte alignment:
+
+| Offset | Field | Meaning |
+| --- | --- | --- |
+| 0 | `gas_remaining` | Unspent gas in the current execution slice |
+| 8 | `gas_limit` | Total gas granted to this slice |
+| 16 | `gas_per_tick` | The computer's configured physical limit per simulation tick |
+
+The owner's available gas may produce a grant smaller than `gas_per_tick`.
+Unused gas is returned to the owner's shared account when the slice settles;
+the computer does not accumulate a private reserve. Client CPU telemetry uses
+the physical tick ceiling as its denominator, so a small grant does not appear
+as a fully loaded computer merely because the owner has little gas left.
 
 `TickContext` fields:
 
 | Field | Meaning |
 | --- | --- |
 | `tick` | Hardware tick counter |
-| `snapshot` | ID of this callback's observation snapshot |
+| `snapshot` | Borrowed snapshot ID returned by this `tick_read` |
 | `time_s` | Simulation time at the start of the tick |
 | `dt_s` | Simulation time since the previous delivered observation |
 | `physics_dt_s` | Hardware step length (0.1 s) |
@@ -191,7 +212,7 @@ The server answers from the ship's fused information-group snapshot and the publ
 
 `Contact` fields are `id` (an opaque per-ship handle for a group track), `kind` (`CONTACT_SHIP` 0), `radius_m`, and position and velocity relative to the ship. Celestial bodies are excluded from sensor contacts; use explicit celestial world queries for navigation. A previously authenticated ship may retain its IFF identity while its estimate coasts. See [server-client.md](server-client.md#contact-handles) for handle lifetime and query accounting.
 
-The standard firmware starts with a 32-contact scan buffer, grows it when full and reduces it for sparse results. It reserves gas for flight control and the next callback before admitting a scan or forecast work.
+The standard firmware starts with a 32-contact scan buffer, grows it when full and reduces it for sparse results. It leaves room for flight control and publication before admitting optional scans, forecasts or catalogue pages.
 
 Every successful scan is admitted into host-side tracks, up to 512. Each track keeps its latest and previous estimates. Tracks expire 2 s after their latest measurement. `contact_label(id, out, bytes)` returns the contact's name as `Text64` while its track is current.
 
@@ -206,21 +227,25 @@ ABI 12 adds two imports that connect firmware to the authoritative world's trave
 
 ### `world_query`
 
-**Buffers.** `bytes` and `capacity` are each at most 65,536. The reply must fit in `capacity`, otherwise the call returns `ERR_BUFFER`. Unlike record imports, `out` does not need to match the reply size exactly.
+**Buffers.** `bytes` and `capacity` are each at most 65,536. The reply must fit in `capacity`, otherwise the call returns `ERR_BUFFER`. Unlike record imports, `out` does not need to match the reply size exactly. Track pages stop at the encoded output capacity and retain the next unreturned track for continuation. If even one track and its page header cannot fit, the call returns `ERR_BUFFER` before changing its cursor.
 
 **Gas.**
 
 1. The call cost (100) plus one gas per 8 input bytes.
-2. A pre-check that the computer holds at least the estimated work: `min(work, 1,000,000)` for `Tracks` and `Continue`, `100 + 1008 × min(limit, 256)` for `Beacons`, `100 + 4096 × min(limit, 128)` for `Navigation`, 131,072 for `SlipEligibility`, and 1000 for anything else. If it does not, the call returns `ERR_GAS`.
-3. After the query, the actual work: the page's `gas_used` for track queries, `100 + 1008 × returned_count` for beacons, `100 + 4096 × returned_count` for navigation endpoints, 131,072 for slip eligibility, or 1000.
+2. Admission for bounded query work and the output-copy allowance. `Tracks` and `Continue` work is capped by the physical tick ceiling after allowing for the call and input/output copies. The remaining query prices are `100 + 1008 × min(limit, 256)` for `Beacons`, `100 + 4096 × min(limit, 128)` for `Navigation`, 131,072 for `SlipEligibility`, and 1000 for other queries. Navigation prices are exposed as `NAVIGATION_GAS_BASE` and `NAVIGATION_GAS_PER_GATE`. A call that fits the physical ceiling can suspend until its slice can pay; a call exceeding that ceiling returns `ERR_LIMIT`.
+3. The actual bounded native work, with track pages reporting their measured `gas_used`.
 4. One gas per 8 reply bytes.
+
+`Beacon` and `Beacons` also admit 100 gas per inspected docking bay. One call may
+inspect at most 4096 bays across its results; a larger page returns `ERR_LIMIT`
+without silently truncating its bay lists.
 
 **Errors.** Undecodable input, a failed query or an invalid query returns `ERR_ARGUMENT`. A host with no world provider returns `ERR_UNAVAILABLE`.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
 | `Travel` | `Travel { state, pose, slip_ready }`: the ship's travel state, its exact galactic pose, and whether its slipdrive is ready |
-| `Tracks(TrackQuery)` | `Tracks(QueryPage)` from the ship's information group snapshot. Work is capped at 1,000,000 and the query is validated with the network limits. |
+| `Tracks(TrackQuery)` | `Tracks(QueryPage)` from the ship's information group snapshot. Work is bounded by the physical tick ceiling after its call/copy envelope; other fields use the network limits. |
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
@@ -242,7 +267,7 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 
 **Limits.** Input is at most 65,536 bytes, and a callback can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. It returns `ERR_ARGUMENT` for undecodable input, for a display instance, or when the limit is reached.
 
-**Application.** Staged actions are applied only if the callback commits. The world applies them after every ship's program has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
+**Application.** Staged actions are applied only after a successful slice commit. The world applies them after every ship's slice has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
 
 | `ProgramAction` | Effect |
 | --- | --- |
@@ -276,7 +301,7 @@ Every production flight computer uses the server's fused scan and world-service 
 - It boots at once and starts with `CALLBACK_START_GAS`.
 - Each callback calls `ship_display` instead of `ship_tick`.
 
-A display instance is a separate WebAssembly instance with its own memory, gas, session, screens and query cursors. It shares no memory with the flight instance. The same imports are linked, with these differences:
+A display instance is a separate WebAssembly instance with its own memory, session, screens and query cursors. Its boot and execution consume the ship's shared physical tick allowance and the same owner's gas account. It shares no memory with the flight instance. The same imports are linked, with these differences:
 
 - `device_write` and `world_command` return `ERR_ARGUMENT`.
 - `world_query` uses the display cursor store.
@@ -310,22 +335,30 @@ Players and other host code send requests. Each has an ID, a kind and a fixed pa
 | `REQUEST_START_FIRING` | 10 | none |
 | `REQUEST_THROTTLE` | 11 | `ThrottleRequest { throttle }` (8) |
 
-A request stays pending, and is presented in every callback, until a callback that replies to it commits. The host queue holds at most 256 requests. A new manual request replaces any queued manual request.
+A request stays pending until its reply commits at a successful slice boundary. The input batch is fixed for a callback, including its resumed slices; new inputs wait for the next callback. The host queue holds at most 256 requests. A new manual request replaces any queued manual request.
 
 ## Snapshots and spatial publications
 
-Each callback has an observation snapshot. It records the callback ID, the simulation time, the ship's exact galactic position, its velocity and its rotation. Positions in `SNAPSHOT` frames are metres relative to that exact origin, so publications stay precise at any galactic coordinate.
+Each successful `tick_read` lends the program one observation snapshot containing
+the simulation time, the ship's exact galactic position, its velocity and its
+rotation. That borrowed snapshot stays valid across implicit gas suspension until
+the next explicit successful `tick_read` or callback completion. Host observations
+refresh on resume; the borrowed snapshot retains its original epoch and pose.
+Positions in `SNAPSHOT` frames are metres relative to that exact origin, so
+publications stay precise at any galactic coordinate.
 
 | Import | Notes |
 | --- | --- |
-| `snapshot_keep(id)` | Pin the current snapshot, or keep an already pinned one. Costs 100 gas. At most 8 pins (`ERR_LIMIT`). Unknown IDs return `ERR_HANDLE`. |
+| `snapshot_keep(id)` | Pin a valid borrowed snapshot, or keep an already pinned one. Costs 100 gas. At most 8 pins (`ERR_LIMIT`). Unknown IDs return `ERR_HANDLE`. |
 | `snapshot_drop(id)` | Release a pin |
 | `spatial_marker_put(marker, bytes)` | `SpatialMarker` (176) |
 | `spatial_path_put(path, bytes, vertices, count)` | `SpatialPath` (152) plus `count` × `SpatialVertex` (32). `count` is 2 to 128. Costs 100 gas per vertex. |
 | `spatial_remove(id)` | Remove a marker or path |
 | `spatial_clear()` | Remove all markers and paths |
 
-A snapshot that is not pinned can only be referenced during its own callback.
+Pin a snapshot before another `tick_read` or callback completion when it must
+remain available longer. There is one active borrowed snapshot and at most
+eight explicit pins; suspended code does not accumulate an unbounded history.
 
 `SpatialMeta` holds `id` (non-zero, one namespace shared by markers and paths), `role`, `valid_until_s` (a lease that must be later than the current time) and a `label`. Publications disappear when their lease expires. Firmware refreshes them by publishing again.
 
@@ -394,7 +427,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v19", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v27", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
@@ -410,11 +443,11 @@ The script parses the record structs, `Text` sizes, integer constants and the `r
 
 For isolated ABI tests or tools that embed the runtime:
 
-- `ControllerRuntime::new()`, `compile(bytes)`, `validate_program(bytes)`, `instantiate(bytes)` (returns a booting `Controller`), `instantiate_display(bytes)` (returns a booted display controller), `boot(&mut controller)`, `cached_modules()`
+- `ControllerRuntime::new()`, `compile(bytes)`, `validate_program(bytes)`, `instantiate(bytes)` and `instantiate_display(bytes)` (both return a booting controller), `cached_modules()`
 - `Controller::configure_hardware(design, catalogue)` installs the device and resource directories.
-- `advance(dt)`, `can_run()`, `is_booting()`, `boot_progress()`, `gas_remaining()`, `memory_bytes()`
-- `run(input)` and `run_with_scan(input, Option<Arc<dyn ScanSource>>)` return `Ok(None)` when the computer cannot run yet.
-- `ScanSource` has `scan(range_m, n)` and `query(ProgramQuery, display)`. The default `query` fails, which makes `world_query` return `ERR_ARGUMENT`.
+- `is_booting()`, `boot_progress()`, `boot_remaining_gas()`, `execution_status()`, `is_suspended()`, `minimum_to_progress()` and `memory_bytes()` expose state without replenishing any gas.
+- `run_slice(input, source, grant, gas_per_tick)` advances paid boot, starts a callback or resumes its continuation. It returns `SliceOutput { output, callback_completed }`. `last_gas_used` records actual consumption even if execution traps.
+- `ScanSource` has `scan(range_m, n)`, `query_work(&ProgramQuery)` and `query(ProgramQuery, display, reply_capacity)`. The provider supplies a bounded admission price before executing a query.
 - `reboot()`, `revoke_authority()` (drops pending requests and screen events, then reboots), `fail(message)`, `enqueue_screen_event(event)`, `has_pending_input()`
 - State fields: `state` (the committed `Session`), `fault`, `contacts`, `scan_time`, `telemetry`, `screens`, `trajectory_revision`, `instrument_interest`, `observer_origin`
 - `CallbackSchedule` implements the interval logic. Call `advance(dt)` once per tick, check `ready(has_input)`, and call `completed(output.tick_interval_seconds)` after a successful callback.
@@ -432,7 +465,7 @@ cargo test -p toy-sim-ship-wasm
 - rejection of old versions and foreign imports
 - C and Rust programs sharing the ABI with isolated memory
 - memory growth to 1 MiB and reset on reboot
-- runaway loops faulting and requiring a full reboot
+- bounded execution and continuation across gas slices
 - exact buffer lengths
 - path snapshots and rejected replacements
 - lease expiry

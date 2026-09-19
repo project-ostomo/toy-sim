@@ -133,14 +133,20 @@ pub enum ComputerStatus {
     Running {
         gas_used: u64,
         gas_limit: u64,
-        gas_reserve: u64,
-        gas_capacity: u64,
+        execution: ExecutionStatus,
     },
     Paused,
     Fault {
         message: String,
         reboot_remaining_s: Option<f64>,
     },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionStatus {
+    Ready,
+    Suspended,
+    WaitingForGas,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

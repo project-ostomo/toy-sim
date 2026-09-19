@@ -188,8 +188,8 @@ impl Allocator {
         }
         for _ in 0..24 {
             #[cfg(target_arch = "wasm32")]
-            if toy_sim_ship_api::sdk::budget().map_or(0, |budget| budget.instruction_remaining)
-                < 60_000 + layout.handles.len() as u64 * 180
+            if !toy_sim_ship_api::sdk::budget()
+                .is_ok_and(|budget| crate::budget::allocation_allowed(budget, layout.handles.len()))
             {
                 break;
             }
