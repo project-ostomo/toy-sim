@@ -141,11 +141,6 @@ impl Computer {
         let failed = |_| "Could not read request payload".to_owned();
         match kind {
             abi::REQUEST_MARK_TARGET => {
-                if !self.hardware.devices.iter().any(|d| {
-                    d.info.kind == abi::DEVICE_WEAPON && d.info.flags & abi::CONTROL_ENABLED != 0
-                }) {
-                    return Err("No weapons available for automatic control".into());
-                }
                 let value = sdk::request_read(index, kind).map_err(failed)?;
                 self.weapons.mark_target(value, sample.tick.time_s)
             }
@@ -382,10 +377,12 @@ extern "C" fn ship_tick() {
 
     // The host enters one callback at a time and rejects shared Wasm memories.
     let computer = unsafe { &mut *core::ptr::addr_of_mut!(COMPUTER) };
-    computer
-        .get_or_insert_with(Computer::default)
-        .run()
-        .expect("flight computer syscall failed");
+    match computer.get_or_insert_with(Computer::default).run() {
+        // The parent hull can disappear while this callback is suspended.
+        // Missing hardware ends its work without rebooting surviving missiles.
+        Ok(_) | Err(abi::ERR_UNAVAILABLE) => {}
+        Err(error) => panic!("flight computer syscall failed: {error}"),
+    }
 }
 
 #[cfg(feature = "firmware")]

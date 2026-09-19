@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v27"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v28"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (27)
+#define SHIP_API_VERSION (28)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
 #define SHIP_ERR_UNAVAILABLE (-4)
@@ -834,6 +834,44 @@ SHIP_ASSERT(offsetof(ship_screen_event_record, text) == 56, "ScreenEvent.text");
 SHIP_ASSERT(sizeof(ship_screen_event_record) == 128, "ScreenEvent size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_screen_event_record) == 8, "ScreenEvent alignment");
 typedef struct {
+    uint64_t handle;
+    uint64_t target_visible;
+    double target_offset_m[3];
+    double target_relative_velocity_m_s[3];
+    double rotation[4];
+    double angular_velocity_rad_s[3];
+    double velocity_m_s[3];
+    double maximum_acceleration_m_s2;
+    double turn_rate_rad_s;
+    uint64_t fuel_units;
+    double dt_s;
+    double time_s;
+    double target_uncertainty_m;
+} ship_missile_observation_record;
+SHIP_ASSERT(offsetof(ship_missile_observation_record, handle) == 0, "MissileObservation.handle");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, target_visible) == 8, "MissileObservation.target_visible");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, target_offset_m) == 16, "MissileObservation.target_offset_m");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, target_relative_velocity_m_s) == 40, "MissileObservation.target_relative_velocity_m_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, rotation) == 64, "MissileObservation.rotation");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, angular_velocity_rad_s) == 96, "MissileObservation.angular_velocity_rad_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, velocity_m_s) == 120, "MissileObservation.velocity_m_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, maximum_acceleration_m_s2) == 144, "MissileObservation.maximum_acceleration_m_s2");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, turn_rate_rad_s) == 152, "MissileObservation.turn_rate_rad_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, fuel_units) == 160, "MissileObservation.fuel_units");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, dt_s) == 168, "MissileObservation.dt_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, time_s) == 176, "MissileObservation.time_s");
+SHIP_ASSERT(offsetof(ship_missile_observation_record, target_uncertainty_m) == 184, "MissileObservation.target_uncertainty_m");
+SHIP_ASSERT(sizeof(ship_missile_observation_record) == 192, "MissileObservation size");
+SHIP_ASSERT(SHIP_ALIGNOF(ship_missile_observation_record) == 8, "MissileObservation alignment");
+typedef struct {
+    double direction[3];
+    double throttle;
+} ship_missile_control_record;
+SHIP_ASSERT(offsetof(ship_missile_control_record, direction) == 0, "MissileControl.direction");
+SHIP_ASSERT(offsetof(ship_missile_control_record, throttle) == 24, "MissileControl.throttle");
+SHIP_ASSERT(sizeof(ship_missile_control_record) == 32, "MissileControl size");
+SHIP_ASSERT(SHIP_ALIGNOF(ship_missile_control_record) == 8, "MissileControl alignment");
+typedef struct {
     uint64_t propellant_resource;
     double per_axis_thrust_n;
     double per_axis_propellant_units_s;
@@ -859,6 +897,8 @@ SHIP_ASSERT(offsetof(ship_rcs_reading_record, status) == 0, "RcsReading.status")
 SHIP_ASSERT(offsetof(ship_rcs_reading_record, thrust_n) == 8, "RcsReading.thrust_n");
 SHIP_ASSERT(sizeof(ship_rcs_reading_record) == 32, "RcsReading size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_rcs_reading_record) == 8, "RcsReading alignment");
+SHIP_IMPORT("missile_read") int32_t ship_missile_read(void * output, uint32_t bytes);
+SHIP_IMPORT("missile_control") int32_t ship_missile_control(const void * input, uint32_t bytes);
 SHIP_IMPORT("persistent_read") int32_t ship_persistent_read(void * output, uint32_t capacity);
 SHIP_IMPORT("persistent_write") int32_t ship_persistent_write(const void * input, uint32_t length);
 SHIP_IMPORT("world_query") int32_t ship_world_query(const void * input, uint32_t bytes, void * out, uint32_t capacity);

@@ -184,7 +184,13 @@ fn sync_ships(
                 ship.0.presence != toy_sim_model::travel::Presence::Space
             });
         for (source, ship, pose, appearance) in &owned {
-            if Some(ship.0.ship) != view.focused_ship {
+            if Some(ship.0.ship) != view.focused_ship
+                || matches!(
+                    ship.0.presence,
+                    toy_sim_model::travel::Presence::Destroyed
+                        | toy_sim_model::travel::Presence::StoredInWreck(_)
+                )
+            {
                 continue;
             }
             if appearance.is_none() {

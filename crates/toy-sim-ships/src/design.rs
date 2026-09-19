@@ -458,6 +458,15 @@ impl ShipBlueprint {
                 });
             }
         }
+        let fitted_sensor_range = parts
+            .iter()
+            .filter_map(|part| match part.definition.equipment {
+                Equipment::Utility {
+                    utility: crate::utilities::UtilityDef::Sensor { range_m, .. },
+                } => Some(range_m),
+                _ => None,
+            })
+            .reduce(f64::max);
         let avionics_handles = core::array::from_fn(|i| {
             use crate::*;
             let handle = DeviceHandle(device_catalogue.len() as u16);
@@ -466,7 +475,7 @@ impl ShipBlueprint {
                 1 => (DeviceKind::Accelerometer, "accelerometer"),
                 _ => (
                     DeviceKind::Sensor {
-                        range_m: SENSOR_RANGE_M,
+                        range_m: fitted_sensor_range.unwrap_or(SENSOR_RANGE_M),
                     },
                     "radar",
                 ),

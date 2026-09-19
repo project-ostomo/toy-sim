@@ -1023,6 +1023,7 @@ pub fn destroy(world: &mut World, ship: Entity) {
     }
     set_dormant(world, ship, Presence::Destroyed);
     world.entity_mut(ship).remove::<BeaconEmitter>();
+    super::missiles::destroyed(world, ship);
     emit(world, ship, "destroyed", None);
 }
 

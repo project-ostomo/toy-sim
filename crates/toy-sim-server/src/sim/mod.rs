@@ -7,6 +7,7 @@ mod firmware_tests;
 pub mod gas;
 pub mod hardware;
 pub mod infrastructure;
+pub mod missiles;
 pub mod presentation;
 pub mod registry;
 pub mod services;
@@ -56,6 +57,7 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
             physics::PhysicsPlugin,
             vessel::VesselsPlugin,
         ));
+    missiles::install(&mut app);
     registry::initialize(app.world_mut()).expect("valid universe catalogue");
     app.add_systems(
         FixedUpdate,

@@ -5,6 +5,7 @@ use admission::*;
 
 mod drawing;
 mod instruments;
+mod missiles;
 mod publications;
 
 use super::*;
@@ -143,9 +144,9 @@ fn fraction(value: f64) -> CallResult {
     }
 }
 
-fn lease(caller: &Caller<'_, Host>, until: f64) -> CallResult {
-    if until.is_finite() && until > caller.data().current.epoch {
-        Ok(())
+fn lease_active(caller: &Caller<'_, Host>, until: f64) -> CallResult<bool> {
+    if until.is_finite() {
+        Ok(until > caller.data().current.epoch)
     } else {
         Err(w::ERR_ARGUMENT.into())
     }
@@ -154,6 +155,7 @@ fn lease(caller: &Caller<'_, Host>, until: f64) -> CallResult {
 pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
     let mut linker = Linker::new(engine);
     persistent(&mut linker)?;
+    missiles::register(&mut linker)?;
     context(&mut linker)?;
     hardware(&mut linker)?;
     sensors(&mut linker)?;
@@ -532,6 +534,17 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
                     return Err(w::ERR_ARGUMENT.into());
                 }
                 let index = device_index(&caller, id)?;
+                if caller
+                    .data()
+                    .input
+                    .as_ref()
+                    .unwrap()
+                    .devices
+                    .get(index)
+                    .is_none()
+                {
+                    return Err(w::ERR_UNAVAILABLE.into());
+                }
                 let setting = match setting {
                     w::SET_RCS => {
                         let value: w::RcsSetting = input(&mut caller, pointer, bytes)?;
@@ -543,7 +556,6 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
                         let host = caller.data();
                         let dt = host.input.as_ref().unwrap().physics_dt;
                         if !toy_sim_ships::weapons::valid_setting(&value)
-                            || value.valid_until_s < host.current.epoch
                             || value.valid_until_s > host.current.epoch + dt + 1e-6
                         {
                             return Err(w::ERR_ARGUMENT.into());
@@ -583,6 +595,12 @@ fn hardware(linker: &mut Linker<Host>) -> Result<()> {
 
                 if !setting.supports(&caller.data().catalogue[index].kind) {
                     return Err(w::ERR_UNSUPPORTED.into());
+                }
+
+                if let DeviceSetting::Weapon(value) = &setting {
+                    if !lease_active(&caller, value.valid_until_s)? {
+                        return Ok(());
+                    }
                 }
 
                 let commands = &mut caller.data_mut().output.devices;

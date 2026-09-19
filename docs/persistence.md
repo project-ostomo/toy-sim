@@ -66,7 +66,27 @@ Queued slip orders preserve their typed destination references. An active charge
 also retains its concrete candidate, start tick and accumulated energy. A ship
 already in transit restores the galactic endpoint frozen at departure.
 
-Saved programs must implement the current ABI 27. Restore validates each
+Missiles save their ordinary ship hardware and integer fuel, physical pose,
+lifetime clock, steering command, guidance flag, target contact reference, parent
+UUID and per-parent handle. Launcher cooldowns, callback rotation and the next
+unused handle are saved with the parent. Handles are never reassigned after a
+restart. A target contact may have expired; recovery does not require it to remain
+visible or turn it into a privileged position lookup.
+
+A destroyed parent with guided missiles retains its shared computer on the same
+stable identity. Its owner, information group, program, committed durable bytes
+and paid gas balance survive recovery. The parent restores as destroyed and
+inactive in physics; only its retained missile computer remains available. Each
+missile body restores without a second WASM instance. As with ordinary computers,
+a suspended native continuation cold boots after recovery.
+
+Before capture or restore, the server rejects missing parents, missile parents
+that are themselves missiles, duplicate or reused handles, and guided missiles
+without a retained parent computer where one is required. Restore also checks
+that a guided parent's saved program exports `missile_tick`. Invalid launcher
+clocks, handle counters and steering values stop recovery before world mutation.
+
+Saved programs must implement the current ABI 28. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
 
@@ -76,7 +96,7 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 3. SQLite’s table schema and the
+The current named `world` section has version 4. SQLite’s table schema and the
 outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.

@@ -52,6 +52,8 @@ pub trait ScanSource: Send + Sync {
 struct Host {
     persistent_data: Vec<u8>,
     display_only: bool,
+    callback: Option<CallbackKind>,
+    missile: Option<w::MissileObservation>,
     working: Session,
     current: spatial::Snapshot,
     sequence: u64,
@@ -85,6 +87,7 @@ struct Host {
 struct Machine {
     store: Store<Host>,
     tick: TypedFunc<(), ()>,
+    missile_tick: Option<TypedFunc<u64, ()>>,
     remaining: Global,
 }
 
@@ -106,6 +109,7 @@ pub struct Controller {
     linker: Linker<Host>,
     machine: Option<Machine>,
     execution: Mutex<Option<execution::Pending>>,
+    callback: Option<CallbackKind>,
     exchange: Arc<Mutex<execution::Exchange>>,
     boot_remaining: u64,
     initialized: bool,
@@ -125,11 +129,20 @@ pub struct Controller {
 pub struct SliceOutput {
     pub output: Output,
     pub callback_completed: bool,
+    pub callback: Option<CallbackKind>,
 }
 
 impl Controller {
     pub fn is_booting(&self) -> bool {
         !self.initialized
+    }
+
+    pub fn pending_callback(&self) -> Option<CallbackKind> {
+        self.callback
+    }
+
+    pub fn supports_missiles(&self) -> bool {
+        !self.display_only && self.module.get_export("missile_tick").is_some()
     }
 
     pub fn needs_instance_start(&self) -> bool {
@@ -179,6 +192,7 @@ impl Controller {
         self.pending_requests.clear();
         self.pending_events.clear();
         self.execution.get_mut().unwrap().take();
+        self.callback = None;
         self.machine = None;
         self.exchange = Arc::default();
         self.boot_remaining = BOOT_GAS;
@@ -200,13 +214,58 @@ impl Controller {
 
     pub fn run_slice(
         &mut self,
+        input: Input,
+        source: Option<Arc<dyn ScanSource>>,
+        grant: u64,
+        gas_per_tick: u64,
+    ) -> Result<SliceOutput> {
+        let kind = if self.display_only {
+            CallbackKind::Display
+        } else {
+            CallbackKind::Ship
+        };
+        self.run_callback_slice(kind, input, source, None, grant, gas_per_tick)
+    }
+
+    pub fn run_callback_slice(
+        &mut self,
+        kind: CallbackKind,
         mut input: Input,
         source: Option<Arc<dyn ScanSource>>,
+        missile: Option<w::MissileObservation>,
         grant: u64,
         gas_per_tick: u64,
     ) -> Result<SliceOutput> {
         self.last_gas_used = 0;
         self.last_scan_seconds = 0.;
+        ensure!(
+            self.callback.is_none_or(|pending| pending == kind),
+            "callback kind does not match suspended execution"
+        );
+        match kind {
+            CallbackKind::Missile(handle) => {
+                ensure!(
+                    self.supports_missiles(),
+                    "program has no missile_tick callback"
+                );
+                ensure!(
+                    handle != 0 && missile.is_some_and(|value| value.handle == handle),
+                    "missile observation handle does not match callback"
+                );
+            }
+            CallbackKind::Ship => {
+                ensure!(
+                    !self.display_only && missile.is_none(),
+                    "invalid ship callback context"
+                );
+            }
+            CallbackKind::Display => {
+                ensure!(
+                    self.display_only && missile.is_none(),
+                    "invalid display callback context"
+                );
+            }
+        }
         ensure!(
             gas_per_tick > 0 && grant <= gas_per_tick,
             "invalid computer gas grant"
@@ -236,7 +295,10 @@ impl Controller {
         }
         self.waiting_for_gas = grant < self.minimum_to_progress();
         if self.waiting_for_gas {
-            return Ok(SliceOutput::default());
+            return Ok(SliceOutput {
+                callback: self.callback,
+                ..Default::default()
+            });
         }
 
         let boot_charge = grant.min(self.boot_remaining);
@@ -244,7 +306,10 @@ impl Controller {
         self.last_gas_used = boot_charge;
         let available = grant - boot_charge;
         if available == 0 {
-            return Ok(SliceOutput::default());
+            return Ok(SliceOutput {
+                callback: self.callback,
+                ..Default::default()
+            });
         }
         let slice = execution::SliceInput {
             input,
@@ -257,6 +322,7 @@ impl Controller {
             grant: available,
             gas_per_tick,
             state: self.state.clone(),
+            missile,
         };
         {
             let mut exchange = self.exchange.lock().unwrap();
@@ -267,7 +333,11 @@ impl Controller {
         }
         if new_callback {
             let pending = if self.initialized {
-                execution::callback(self.machine.take().expect("ready computer has machine"))
+                self.callback = Some(kind);
+                execution::callback(
+                    self.machine.take().expect("ready computer has machine"),
+                    kind,
+                )
             } else {
                 execution::initialize(
                     self.engine.clone(),
@@ -294,7 +364,10 @@ impl Controller {
             "computer gas accounting exceeded grant"
         );
         self.last_gas_used += available - remaining;
-        let mut result = SliceOutput::default();
+        let mut result = SliceOutput {
+            callback: self.callback,
+            ..Default::default()
+        };
         if let Some(commit) = commit {
             self.persistent_data = commit.persistent_data;
             self.state = commit.state;
@@ -330,6 +403,7 @@ impl Controller {
                 match completion {
                     Ok(machine) => {
                         result.callback_completed = self.initialized;
+                        self.callback = None;
                         self.machine = Some(machine);
                         self.initialized = true;
                         self.fault = None;
@@ -402,6 +476,15 @@ impl ControllerRuntime {
                 "unsupported {name} signature"
             );
         }
+        if let Some(export) = original.get_export("missile_tick") {
+            let ty = export.func().context("missile_tick must be a function")?;
+            ensure!(
+                ty.params().len() == 1
+                    && matches!(ty.params().next(), Some(wasmtime::ValType::I64))
+                    && ty.results().len() == 0,
+                "missile_tick must accept one i64 handle and return nothing"
+            );
+        }
         for export in original.exports() {
             if let Some(memory) = export.ty().memory() {
                 ensure!(
@@ -443,6 +526,7 @@ impl ControllerRuntime {
             linker: self.linker.clone(),
             machine: None,
             execution: Mutex::new(None),
+            callback: None,
             exchange: Arc::default(),
             boot_remaining: BOOT_GAS,
             initialized: false,

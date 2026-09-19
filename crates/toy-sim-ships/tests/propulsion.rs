@@ -10,9 +10,21 @@ fn propulsion_catalogue_preserves_energy_and_names_real_consumables() {
                 propellant_kg_s,
                 power_w,
                 propellant_resource,
+                propellant_energy_j_kg,
                 ..
+            } => {
+                assert!(
+                    0.5 * thrust_n.powi(2) / propellant_kg_s
+                        <= *power_w + propellant_kg_s * propellant_energy_j_kg
+                );
+                assert!(
+                    catalogue
+                        .resources
+                        .iter()
+                        .any(|resource| resource.id == *propellant_resource)
+                );
             }
-            | Equipment::Rcs {
+            Equipment::Rcs {
                 thrust_n,
                 propellant_kg_s,
                 power_w,

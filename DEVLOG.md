@@ -858,3 +858,226 @@ resize produced the existing Vulkan presentation-layout warnings. These remain
 open performance/rendering issues for the final integration pass; this milestone
 does not claim that the 120 FPS target is met. The account and runtime work is
 ready to commit. Missiles sharing their parent's surviving computer are next.
+
+## Piece 7 — missiles and physical defenses
+
+Work began after commit `425bccb`. The interceptor is a small ordinary ship with
+a chemical engine, finite battery and propellant, turning actuators, and sensors.
+A launcher consumes one packaged round with matching mass and applies ejection
+recoil. Existing collision, laser, thermal, and optical systems handle it.
+Guidance receives the fused observed track, including uncertainty; it cannot read
+an unobserved target from the authoritative world.
+
+The computer exports an optional missile_tick(handle) callback. Flight and
+missile callbacks share memory, the same resumable VM, one hardware allowance,
+and the actual owner's gas account. A destroyed parent leaves its computer data
+available while surviving guided missiles depend on it, with no remaining hull,
+engine, or sensor contribution. Exhausted missiles coast physically rather than
+being deleted by an arbitrary lifetime rule.
+
+The installation-defense catalogue will include a launcher platform and a patrol
+variant. Gates remain physically traversable without a sovereignty permission
+check. Future policing policy must act through observers and weapons, and may
+fail or misidentify an attacker. Review found that the old demo retaliation code
+reads the player's private firing state; the upcoming NPC policy pass must
+replace that shortcut with behavior driven by observations.
+
+Integration also exposed a gap in the preceding gas-scheduler tests: flight and
+display execution sampled HardwareClock on opposite sides of its increment.
+That can accidentally replenish a per-tick allowance during publication. The
+missile scheduler work will establish one tick identity across all callbacks and
+add a real application-update/publication regression.
+
+### Missile catalogue and callback checks
+
+ABI 28 adds the optional shared missile callback, a 192-byte observation record,
+and a 32-byte current-missile control record. Tests cover shared memory,
+resumption with the correct callback identity, changing sensor observations,
+prepaid host calls, and safe completion after a missile disappears. The runtime
+checks passed 57 tests. All four bundled WASM binaries were rebuilt.
+
+The Kite interceptor has 160 kg dry mass and 240 kg of storable gel propellant,
+a 25 kN chemical motor with 3 km/s exhaust speed, and a powered 2 Mm seeker.
+Its battery gives a design endurance of roughly 900 seconds; actual stored
+energy governs operation. A launcher holds 12 rounds and cycles every ten
+seconds. The optional Shrike patrol carries 24 rounds, and the Kestrel defense
+installation carries 48. Their blueprints are in `assets/ships/`. Ship catalogue
+and physical specification verification passed all 44 tests, plus three shared
+part-information UI checks.
+
+Stock guidance uses proportional navigation, acquisition thrust, coasting, and
+alignment-dependent throttle. The controller has 43 passing tests, including
+finite-fuel crossing and long-range intercept cases. The client UI suite passed
+123 tests. Missiles have a distinct rocket marker while using ordinary ship
+geometry, exhaust, and optical glints. A separate review caught and fixed the
+focused destroyed hull continuing to render beside its debris. The actual server
+launch, torquer, shootdown, shared scheduling, and restart tests are still in
+progress; native guidance simulations alone do not establish those behaviors.
+
+### Additional integration review notes
+
+Missile launch review also checks stored mass in a station carrying docked ships,
+off-axis ejection momentum, and guidance retirement with a tiny unusable battery
+residue. Parent and last-missile destruction in one collision tick must leave a
+checkpointable world immediately. The retained computer's world-service source
+is rebuilt from current authorized fused observations, with the remembered hull
+position used only as a coordinate origin.
+
+A privacy item for final integration: identity::attach_ship currently serializes
+a sanitized blueprint as the visual asset, but still includes tank configuration
+and original initial_fill values. Firmware, names, and aliases are already
+removed. The visual asset should expose geometry without those internal loadout
+details; simply removing tanks would change the compiled centre of mass, so this
+needs a geometry representation that preserves the original visual origin.
+
+### Full missile verification — 2026-09-19 07:27 UTC
+
+The complete server library suite passed 281 tests (five benchmark cases ignored),
+and the client suite passed 123. Physical regressions cover launch mass and
+momentum with stored ships, ordinary same-owner laser and projectile shootdown,
+continued guidance after a collision destroys the carrier, docked carrier
+undocking, and one shared gas allowance across actual application updates and
+MFD publication. The stock firmware intercepted a target initially 10 km away
+and moving sideways at 200 m/s, with 144 of 240 kg propellant remaining.
+
+Three network tests passed, but the authenticated snapshot test timed out waiting
+for a subscribed MFD frame. This is under investigation before the live missile
+playtest or commit; successful library tests alone are insufficient for the
+shared scheduling change.
+
+### Shared display scheduling and expiring intent
+
+The network failure was display starvation: stock flight software used roughly
+915,000 gas per tick while warming its navigation catalogue. Correctly sharing
+the hardware cap left the separate MFD VM paying its boot cost extremely slowly.
+The scheduler now shares the actual funded allowance between active flight and
+display work, rotating priority per computer when an atomic call cannot fit both.
+The deterministic stock-display regression renders at tick 101 while preserving
+exact account debits and the one-million-gas physical cap.
+
+That scheduling exposed an additional suspension problem. Stock weapon commands
+and instrument publications carry short expiry times. A callback can legitimately
+resume after its original command has expired, but the host treated expiry as an
+invalid argument, causing the stock program to panic. The runtime fix will let
+well-formed expired intent lapse without reviving old firing or stale display
+state. Malformed accesses and invalid values must still fail normally. The
+network subscription test now passes, but the observed guest fault is being
+resolved before live verification.
+
+### Live missile freeze — 2026-09-19 07:55 UTC
+
+The extended 200-tick MFD regression and the authenticated network test now pass
+without a guest fault. The runtime's 21 sandbox tests include a real suspended
+callback that safely discards expired fire and geometry publications. All four
+ABI 28 programs were rebuilt. A separate stock-WASM test proves that marking,
+starting, stopping, and unmarking work with no turret handles installed.
+
+The live Shrike patrol accepted Mark and Fire through the Selected Item panel.
+Two Kite contacts appeared in Overview with their missile classification. About
+5.3 seconds after firing, however, the server stopped advancing at tick 1066.
+The client stayed responsive and reported an empty jitter buffer while the
+simulation worker consumed a core. Perf attributed 72.4 percent to rotation drift
+inside collision prediction, followed by shape-pose and distance queries. This
+is a collision-progress defect exposed by the actual two-launcher encounter;
+it blocks the milestone until reproduced and fixed. The live process was kept
+for stack and body-state inspection. Screenshots are under
+`/tmp/toy-sequential-playtests/missiles-live-*.png`.
+
+The current desktop outputs are configured at 60 Hz, despite supporting 120 Hz.
+Live client readings here remain around 41–49 FPS; the final performance pass
+must distinguish compositor pacing, rendering cost, and simulation stalls.
+
+### Captured contact cascade — 2026-09-19 08:09 UTC
+
+The saved live state rules out shield depletion. The target still had 50 kg of
+deployed material, 100 kg in reserve, and only about 26 MJ of shield heat.
+Instead, two missiles had accumulated approximately 383,000 and 391,000 contact
+revisions while advancing only 24.14 ms into the tick. Their inertia was finite
+and well conditioned. The solver detected contacts inside a 0.2 mm shell but
+separated resolved bodies by only 0.01 mm, repeatedly admitting the same contacts.
+
+A separation skin outside the detection shell reduced the captured replay to
+134 impacts. That alone was insufficient: the replay still performed 13.4 million
+distance queries and took 11.6 seconds. The whole-tick rotational-motion bound
+became excessively loose after impacts caused the missiles to tumble. Work now
+focuses on cached short-angle rotation segments with conservative collision
+bounds, plus a bounded conservative geometry fallback for extreme spin. The
+regression uses the actual captured three-body state and a second run with a
+large common orbital velocity. Completion and live retesting remain pending.
+
+### Rotation and contact regression results
+
+All 44 collision tests passed (two existing benchmarks ignored), as did eight
+rotation tests. The captured contact state completed 20 consecutive ticks in
+192 ms total, with a maximum of 139 impacts and 112,066 detailed queries in one
+tick. Adding a common velocity of (22,000, -2,000, 23,000) m/s produced comparable
+results: 184 ms total, at most 140 impacts and 112,847 queries. A low-speed
+three-body cluster ran 100 ticks per reference frame without energy gain or
+penetration. The extreme-spin regression verified that the bounded rotational
+envelope still intercepts a crossing body.
+
+The fresh stock-firmware fight also progresses, but exceeded its provisional
+100,000-query assertion with 179,336 queries in a tick. The test is being run
+through the full minute to measure the actual peak before setting a justified
+regression bound. The captured state's first tick took roughly 127 ms, so the
+freeze is resolved in that replay but the worst contact cost still exceeds the
+100 ms simulation budget. This is recorded as a performance limit, not presented
+as a completed performance fix. A geometry-preserving shortcut for centred
+spheres and immediate envelope refitting after centre-of-mass changes are also
+being integrated before live verification.
+
+### Contact tolerance and fresh combat
+
+The full one-minute stock fight completed with twelve launches, correct packaged
+ammunition and missile mass, and no VM fault. Its worst tick initially took
+332.55 ms and performed 390,084 detailed queries. For collision geometry already
+voxelized at one metre, the old 0.1 mm contact tolerance imposed unnecessary
+near-contact work. The feature-scaled tolerance is now 1 mm for metre-scale
+features, retaining the existing 10 micrometre minimum and 1 mm maximum; the
+separation skin remains ten times that tolerance. Tiny projectiles retain their
+small-scale precision.
+
+All 44 collision tests pass with that change and unchanged energy/no-tunneling
+assertions. The captured state now runs twenty ticks in 33 ms total, with at most
+82 impacts and 18,610 detailed queries; adding common orbital motion gives nearly
+identical results. A fresh minute of fighting completed in 9.27 seconds of test
+wall time, with twelve launches and at most 137 impacts, 121,123 detailed queries,
+and 117.30 ms in one tick. The occasional 17 ms overrun remains a performance
+measurement for final review. The original freeze and multi-second contact work
+have been removed from these cases. A second fresh run and live UI verification
+remain before committing the missile milestone.
+
+### Piece 7 completed — live missile fight
+
+The second independent one-minute stock fight passed: twelve launches, exact
+mass and ammunition accounting, no VM faults, and the shared gas allowance
+respected. Its peak was 70,483 detailed queries and 82.26 ms per tick. The
+regression allows 250,000 queries to accommodate stochastic resource consumption
+and different contact histories; the deterministic captured-state test uses a
+100,000-query bound and currently peaks near 18,600. All 44 collision tests and
+eight rotation tests pass. Formatting and diff checks pass.
+
+The final live test used real mouse input to select the hostile patrol, Mark,
+Fire, Look at, Hold fire, and Unmark. Twenty rounds launched over about 97 seconds;
+the inventory showed four of twenty-four remaining. Missile meshes, exhaust,
+HUD labels, Overview rows, shield impacts and continued flight were visible.
+Already launched missiles continued after holding fire. The application closed
+normally after 3,210 logged ticks, with no guest fault, device loss or recurrence
+of the frozen simulation. Screenshots and the archived log are in
+`/tmp/toy-sequential-playtests/missiles-final-*`.
+
+Live performance remains an open final-pass item: server tick p95 was 19.29 ms,
+with a maximum of 292.38 ms (214.33 ms in collision) under concurrent rendering.
+Client reporting ranged from roughly 27 to 53 FPS. The original multi-second and
+nonterminating contact cases are addressed, but these figures do not meet the
+requested 120 FPS experience. Two UI/rendering observations are also retained:
+the Inventory window needed resizing to expose all consumable rows during this
+run, and some celestial surface textures disappeared later in the camera-follow
+session. These need targeted checks in the inventory and final rendering passes.
+
+Missile implementation also includes the shared-display scheduling and expired
+publication fixes described above. Prior verification for this piece includes
+281 server and 123 client library tests, all 16 missile persistence tests, 21
+sandbox tests, the stock launcher-only marking regression, and the authenticated
+network/MFD test. The collision and fresh-fight checks were rerun after the live
+freeze fixes. The next piece is industry and physical cargo logistics.

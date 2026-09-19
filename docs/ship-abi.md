@@ -1,6 +1,11 @@
-# Ship controller ABI (version 27)
+# Ship controller ABI (version 28)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v27`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host only through the imports of module `ship_v28`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 28 adds an optional `missile_tick(handle: u64)` export and the
+`missile_read` and `missile_control` imports. Missile callbacks run in their
+parent's flight instance, sharing its linear memory, durable store and gas
+allowance. A suspended callback resumes before another callback begins.
 
 ABI 27 replaces the accumulating local reserve and separate instruction budget
 with one gas slice. `BudgetInfo` is now a 24-byte record containing
@@ -59,12 +64,15 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v27` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v28` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 27; end`, allowing the host to verify the ABI without running guest code.
+- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 28; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
+
+`missile_tick` is optional. When present, it must accept one `i64` handle and return
+nothing. It belongs to the flight instance, so it cannot run as a display callback.
 
 `validate_program` performs structural validation, including the literal version export, without executing guest code. Normal funded initialization runs the module's start function and version export under slice accounting and may suspend. Store limits: one instance, one memory up to 8 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
@@ -204,6 +212,13 @@ The accelerometer reading holds an ideal specific-force sample at the mount, in 
 
 An unknown setting code returns `ERR_ARGUMENT`. A setting that does not match the device kind returns `ERR_UNSUPPORTED`.
 
+A well-formed `SET_WEAPON` command whose lease has already expired returns success
+without changing the weapon command. Suspension can delay a callback beyond its
+sample's lease; the host never extends that lease or reactivates its stale aim.
+Device handles, record sizes, finite values, and aim constraints are still
+validated. A future weapon lease cannot exceed one physics tick beyond the
+current time.
+
 ## Sensors and tracks
 
 `sensor_scan(sensor, maximum, contacts, bytes)` fills up to `maximum` (at most 256) `Contact` records (72 bytes each), and `bytes` must equal `maximum × 72`. It returns the number written. The sensor device must be operational and powered with a non-zero range, otherwise the call returns `ERR_UNAVAILABLE`. It charges `maximum × 3000` gas (`SCAN_GAS_PER_OBJECT`) before querying.
@@ -215,6 +230,39 @@ The server answers from the ship's fused information-group snapshot and the publ
 The standard firmware starts with a 32-contact scan buffer, grows it when full and reduces it for sparse results. It leaves room for flight control and publication before admitting optional scans, forecasts or catalogue pages.
 
 Every successful scan is admitted into host-side tracks, up to 512. Each track keeps its latest and previous estimates. Tracks expire 2 s after their latest measurement. `contact_label(id, out, bytes)` returns the contact's name as `Text64` while its track is current.
+
+## Missile callbacks
+
+The optional `missile_tick(handle: u64)` export executes in the parent's flight
+instance. The handle identifies one launched missile within that parent and
+remains stable across saved-world recovery. Missile and ship callbacks share
+globals, linear memory, committed persistent bytes and the owner's paid gas.
+They run serially; a suspended callback retains its kind and handle until it
+finishes. The missile body does not receive a separate WASM instance.
+
+| Import | Record | Cost and scope |
+| --- | --- | --- |
+| `missile_read(out, bytes)` | `MissileObservation` (192 bytes) | 124 gas; reads the current missile callback's observation |
+| `missile_control(input, bytes)` | `MissileControl` (32 bytes) | 104 gas; stages steering for that same missile |
+
+Both calls use the implicitly active handle. Outside a missile callback they
+return `ERR_UNAVAILABLE`; a caller cannot pass another missile's handle to either
+import. The full call cost is admitted before reading or staging its effect.
+
+`MissileObservation` contains the handle, `target_visible`, target offset and
+relative velocity, the missile's orientation and angular velocity, inertial
+velocity, maximum acceleration, turn rate, integer fuel units, tick duration,
+simulation time and target uncertainty. Vectors use metres, seconds and radians.
+The target offset and steering direction use galactic axes. An unavailable target
+does not become an exact server-side position merely because the missile was
+launched at it.
+
+`MissileControl` contains `direction: [f64; 3]` and `throttle: f64`. Throttle must
+be finite and within zero to one. Direction must be a unit vector within a squared
+length tolerance of `1e-6`; a zero direction is also accepted when throttle is
+zero. The last control written in a slice replaces earlier writes for its active
+missile. It becomes effective at a successful slice commit. Rust programs use
+`sdk::missile()` and `sdk::control_missile()`.
 
 ## World services
 
@@ -360,7 +408,13 @@ Pin a snapshot before another `tick_read` or callback completion when it must
 remain available longer. There is one active borrowed snapshot and at most
 eight explicit pins; suspended code does not accumulate an unbounded history.
 
-`SpatialMeta` holds `id` (non-zero, one namespace shared by markers and paths), `role`, `valid_until_s` (a lease that must be later than the current time) and a `label`. Publications disappear when their lease expires. Firmware refreshes them by publishing again.
+`SpatialMeta` holds `id` (non-zero, one namespace shared by markers and paths), `role`, `valid_until_s` (a finite lease deadline) and a `label`. Publications disappear when their lease expires. Firmware refreshes them by publishing again.
+
+An expired publication returns success without replacing existing data. The host
+still validates record sizes, memory ranges, finite values, frame kinds, and
+vertex ordering. It does not resolve expired publications' snapshot, contact,
+path, or aim-marker references: those objects may have expired while the callback
+was suspended. Live publications must resolve their references normally.
 
 `SpatialFrame` holds `kind`, `reference` and `origin_velocity_m_s`:
 
@@ -381,6 +435,11 @@ eight explicit pins; suspended code does not accumulate an unbounded history.
 ## Instruments
 
 Instruments are fixed records that the client renders natively. Each carries a `valid_until_s` lease.
+
+Well-formed expired instruments return success without publishing or replacing
+newer state. Their scalar and device-handle validation still applies; an expired
+contacts instrument does not require a current scan. Non-finite lease deadlines
+remain invalid.
 
 | Import | Record | Validation |
 | --- | --- | --- |
@@ -427,7 +486,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v27", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v28", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
@@ -447,6 +506,7 @@ For isolated ABI tests or tools that embed the runtime:
 - `Controller::configure_hardware(design, catalogue)` installs the device and resource directories.
 - `is_booting()`, `boot_progress()`, `boot_remaining_gas()`, `execution_status()`, `is_suspended()`, `minimum_to_progress()` and `memory_bytes()` expose state without replenishing any gas.
 - `run_slice(input, source, grant, gas_per_tick)` advances paid boot, starts a callback or resumes its continuation. It returns `SliceOutput { output, callback_completed }`. `last_gas_used` records actual consumption even if execution traps.
+- `run_callback_slice(kind, input, source, missile, grant, gas_per_tick)` selects `CallbackKind::Ship`, `Display` or `Missile(handle)`. A missile callback requires the matching `MissileObservation`; `pending_callback()` identifies a suspended callback. `SliceOutput.callback` identifies the callback producing its committed output.
 - `ScanSource` has `scan(range_m, n)`, `query_work(&ProgramQuery)` and `query(ProgramQuery, display, reply_capacity)`. The provider supplies a bounded admission price before executing a query.
 - `reboot()`, `revoke_authority()` (drops pending requests and screen events, then reboots), `fail(message)`, `enqueue_screen_event(event)`, `has_pending_input()`
 - State fields: `state` (the committed `Session`), `fault`, `contacts`, `scan_time`, `telemetry`, `screens`, `trajectory_revision`, `instrument_interest`, `observer_origin`

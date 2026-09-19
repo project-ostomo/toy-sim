@@ -249,14 +249,7 @@ fn draw(
                     _ => None,
                 })
                 .unwrap_or_else(|| format!("Contact {}", short_id(track.id)));
-            let kind = track
-                .tags
-                .iter()
-                .find_map(|tag| match tag {
-                    Tag::Kind(kind) => Some(kind.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| "Contact".into());
+            let kind = super::contacts::kind(&track.tags).to_owned();
             rows.push(Row {
                 target: SelectedTarget::Contact(contact.1),
                 name,

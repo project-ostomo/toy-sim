@@ -10,6 +10,7 @@ pub struct Generator {
 #[derive(Component)]
 pub struct Engine {
     pub propellant_resource: String,
+    pub propellant_energy_j_kg: f64,
     pub thrust_n: f64,
     pub propellant_kg_s: f64,
     pub power_w: f64,
@@ -85,6 +86,7 @@ pub fn install(part: &mut EntityCommands, equipment: &Equipment) {
         }
         Equipment::Engine {
             ref propellant_resource,
+            propellant_energy_j_kg,
             thrust_n,
             propellant_kg_s,
             power_w,
@@ -93,6 +95,7 @@ pub fn install(part: &mut EntityCommands, equipment: &Equipment) {
             part.insert((
                 Engine {
                     propellant_resource: propellant_resource.clone(),
+                    propellant_energy_j_kg,
                     thrust_n,
                     propellant_kg_s,
                     power_w,
@@ -197,6 +200,7 @@ pub(crate) fn prepare_engines(
                     .find(|(_, r)| r.id == engine.propellant_resource)
                     .map(|(i, r)| (i, engine.propellant_kg_s * dt * throttle / r.mass_kg)),
                 waste_heat_j: (engine.power_w
+                    + engine.propellant_kg_s * engine.propellant_energy_j_kg
                     - 0.5 * engine.thrust_n.powi(2) / engine.propellant_kg_s)
                     .max(0.0)
                     * dt

@@ -1433,3 +1433,138 @@ color = [0.3,0.5,0.65]
 model = "models/parts/power-coupler-2m.glb"
 kind = "utility"
 utility = { type = "slip_drive", power_w = 100000000.0 }
+
+[[resources]]
+id = "rocket_propellant"
+title = "Storable gel rocket propellant (kg)"
+mass_kg = 1.0
+volume_m3 = 0.000625
+storage = { class = "charges", usable_fraction = 1.0, containment_kg_m3 = 0.0 }
+
+[[resources]]
+id = "interceptor_missile"
+title = "Kite interceptor"
+mass_kg = 400.0
+volume_m3 = 0.5
+storage = { class = "charges", usable_fraction = 1.0, containment_kg_m3 = 0.0 }
+
+[[parts]]
+id = "missile_launcher_2m"
+title = "2m Kite missile launcher"
+dimensions = [20,20,40]
+tank_volume_m3 = 6.0
+mass_kg = 500.0
+hull = 800.0
+color = [0.42,0.46,0.50]
+model = "models/parts/fuselage-8m.glb"
+model_scale = 0.25
+collision = { shape = "cylinder" }
+kind = "utility"
+[parts.utility]
+type = "missile_launcher"
+[parts.utility.spec]
+cycle_interval_s = 10.0
+ejection_speed_m_s = 60.0
+maximum_range_m = 1000000.0
+power_w = 10000.0
+
+[[parts]]
+id = "interceptor_body"
+title = "Kite missile body and battery"
+dimensions = [5,5,10]
+tank_volume_m3 = 0.15
+mass_kg = 49.0
+hull = 60.0
+color = [0.66,0.69,0.71]
+model = "models/parts/fuselage-8m.glb"
+model_scale = 0.0625
+collision = { shape = "cylinder" }
+kind = "battery"
+capacity_j = 20000000
+nodes = [
+{ name = "fore", connector = "missile_bus", position_m = [0.0,0.0,-0.5], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "missile_bus", position_m = [0.0,0.0,0.5], normal = [0.0,0.0,1.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,0.25,0.0], normal = [0.0,1.0,0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0,-0.25,0.0], normal = [0.0,-1.0,0.0] }
+]
+
+[[parts]]
+id = "interceptor_engine"
+title = "Kite chemical rocket motor"
+dimensions = [5,5,8]
+mass_kg = 10.0
+hull = 20.0
+color = [0.38,0.43,0.48]
+model = "models/parts/thermal-engine-4m.glb"
+model_scale = 0.125
+kind = "engine"
+propellant_resource = "rocket_propellant"
+propellant_kg_s = 8.333333333333334
+thrust_n = 25000.0
+power_w = 1000.0
+propellant_energy_j_kg = 4500000.0
+nodes = [
+{ name = "fore", connector = "missile_bus", position_m = [0.0,0.0,-0.4], normal = [0.0,0.0,-1.0] }
+]
+[parts.plume]
+origin_m = [0.0,0.0,0.4]
+length_m = 8.0
+nozzle_radius_m = 0.16
+expansion_half_angle_rad = 0.035
+color_linear_rgb = [1.0,0.65,0.30]
+intensity = 12.0
+axial_falloff = 2.0
+radial_falloff = 2.0
+noise_strength = 0.15
+noise_scale_m = 0.10
+noise_speed_m_s = 8.0
+
+[[parts]]
+id = "interceptor_seeker"
+title = "Kite active seeker"
+dimensions = [5,5,2]
+mass_kg = 10.0
+hull = 10.0
+color = [0.38,0.43,0.48]
+model = "models/parts/fuselage-end-8m.glb"
+model_scale = 0.0625
+kind = "utility"
+nodes = [
+{ name = "aft", connector = "missile_bus", position_m = [0.0,0.0,0.1], normal = [0.0,0.0,1.0] }
+]
+[parts.utility]
+type = "sensor"
+range_m = 2000000.0
+power_w = 20000.0
+active = true
+
+[[parts]]
+id = "interceptor_torquer"
+title = "Kite attitude actuator"
+dimensions = [2,2,2]
+mass_kg = 5.0
+hull = 10.0
+color = [0.40,0.46,0.52]
+model = "models/parts/torquer-1m.glb"
+model_scale = 0.2
+kind = "torquer"
+torque_nm = 500.0
+power_w = 1000.0
+
+[[parts]]
+id = "interceptor_command"
+title = "Kite guidance interface"
+dimensions = [4,4,4]
+mass_kg = 10.0
+hull = 10.0
+color = [0.45,0.50,0.56]
+model = "models/parts/command-2m.glb"
+model_scale = 0.2
+kind = "utility"
+nodes = [
+{ name = "fore", connector = "missile_bus", position_m = [0.0,0.0,-0.2], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "missile_bus", position_m = [0.0,0.0,0.2], normal = [0.0,0.0,1.0] }
+]
+[parts.utility]
+type = "command"
+power_w = 100.0

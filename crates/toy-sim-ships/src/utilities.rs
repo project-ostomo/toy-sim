@@ -9,6 +9,9 @@ pub enum UtilityDef {
     Command {
         power_w: f64,
     },
+    MissileLauncher {
+        spec: crate::missiles::MissileLauncherDef,
+    },
     Sensor {
         range_m: f64,
         power_w: f64,
@@ -46,6 +49,7 @@ pub enum UtilityDef {
 impl UtilityDef {
     pub fn valid(&self) -> bool {
         let values = match *self {
+            Self::MissileLauncher { spec } => return spec.valid(),
             Self::SlipDrive { power_w } | Self::Command { power_w } | Self::Beacon { power_w } => {
                 vec![power_w]
             }

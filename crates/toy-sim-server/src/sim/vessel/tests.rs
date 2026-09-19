@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v27" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v27" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v27" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v27" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v27" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v28" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v28" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v28" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v28" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v28" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -577,7 +577,7 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
 fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v27" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v28" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
         (memory (export "memory") 1)
         (func (export "ship_api_version") (result i32) i32.const {})
         (func (export "ship_tick") (local $remaining i32)
@@ -658,4 +658,110 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
             .snapshot()
             .is_ok()
     );
+}
+
+#[test]
+fn shared_missile_callbacks_resume_and_rotate_within_the_parent_account_budget() {
+    let program = wat::parse_str(format!(
+        r#"(module
+            (import "ship_v28" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+            (import "ship_v28" "missile_control" (func $control (param i32 i32) (result i32)))
+            (memory (export "memory") 1)
+            (global $ship_calls (mut i32) (i32.const 0))
+            (func (export "ship_api_version") (result i32) i32.const {})
+            (func $work (local $count i32)
+                i32.const 40000 local.set $count
+                (loop $again
+                    local.get $count i32.const 1 i32.sub local.tee $count br_if $again))
+            (func (export "ship_tick")
+                call $work
+                global.get $ship_calls i32.const 1 i32.add global.set $ship_calls
+                i32.const 64 global.get $ship_calls f64.convert_i32_u f64.const 0.001 f64.mul f64.store
+                i64.const 6 i64.const 0 i32.const 64 i32.const 8 call $write drop)
+            (func (export "missile_tick") (param i64)
+                call $work
+                i32.const 16 f64.const -1 f64.store
+                i32.const 24 f64.const 0.2 f64.store
+                i32.const 0 i32.const 32 call $control drop))"#,
+        abi::VERSION
+    )).unwrap();
+    let (mut app, ships) = fleet_with_program(1, program);
+    let parent = ships[0];
+    boot(&mut app, parent);
+    let initial_throttle = throttle(app.world(), parent);
+    app.world_mut()
+        .entity_mut(parent)
+        .insert(super::super::missiles::Launchers::default());
+    app.insert_resource(super::super::missiles::Callbacks(BTreeMap::from([(
+        parent,
+        (1..=3)
+            .map(|handle| {
+                (
+                    handle,
+                    abi::MissileObservation {
+                        handle,
+                        rotation: [0., 0., 0., 1.],
+                        dt_s: 0.1,
+                        ..default()
+                    },
+                )
+            })
+            .collect(),
+    )])));
+    let owner = super::super::gas::payer(app.world(), parent).unwrap();
+    let ledger = super::super::gas::GasLedger::default();
+    ledger.ensure_account(owner, 0);
+    app.insert_resource(ledger.clone());
+    let mut seen = std::collections::BTreeSet::new();
+    let mut spent = 0;
+    let mut suspended = false;
+    for _ in 0..100 {
+        ledger.deposit(owner, 100_000).unwrap();
+        step(&mut app);
+        let mut software = app.world_mut().get_mut::<ShipSoftware>(parent).unwrap();
+        assert!(software.controller.fault.is_none());
+        assert!(software.last_gas_used <= toy_sim_ship_wasm::FUEL_PER_TICK);
+        spent += software.last_gas_used;
+        suspended |= software.controller.is_suspended();
+        for (handle, control) in std::mem::take(&mut software.missile_controls) {
+            assert_eq!(control.throttle, 0.2);
+            seen.insert(handle);
+        }
+        let account = ledger.account(owner).unwrap();
+        assert_eq!(account.spent, spent);
+        assert_eq!(account.reserved, 0);
+        assert!(ledger.snapshot().is_ok());
+    }
+    assert!(suspended, "callbacks must span account-funded slices");
+    assert_eq!(seen, [1, 2, 3].into_iter().collect());
+    assert!(throttle(app.world(), parent) >= initial_throttle + 0.003);
+    assert_eq!(ledger.account(owner).unwrap().available + spent, 10_000_000);
+}
+
+#[test]
+fn flight_and_display_share_small_grants_without_stranding_atomic_calls() {
+    for (flight, display, grant) in [
+        (700_000, 700_000, 1_000_000),
+        (1, 1, 1),
+        (700_000, 1, 1_000_000),
+        (1, 700_000, 1_000_000),
+        (10, 10, 30),
+    ] {
+        let mut flight_progress = false;
+        let mut display_progress = false;
+        for tick in 0..2 {
+            let allowance = flight_allowance(grant, flight, Some(display), tick != 0);
+            assert!(allowance <= grant);
+            assert!(allowance == 0 || allowance >= flight);
+            flight_progress |= allowance >= flight;
+            display_progress |= grant - allowance >= display;
+        }
+        assert!(
+            flight_progress && display_progress,
+            "{flight}/{display} with grant {grant}"
+        );
+    }
+    assert_eq!(flight_allowance(100, 700_000, Some(1), false), 0);
+    assert_eq!(flight_allowance(100, 1, Some(700_000), true), 100);
+    assert_eq!(flight_allowance(0, 1, Some(1), true), 0);
 }

@@ -162,12 +162,23 @@ fn overlay(
                     .track_standing(session.society.account, &track.tags),
             );
             let square = egui::Rect::from_center_size(center, egui::vec2(14.0, 14.0));
-            painter.rect_stroke(
-                square,
-                0.0,
-                egui::Stroke::new(if selected || targeted { 2.0 } else { 1.0 }, color),
-                egui::StrokeKind::Inside,
-            );
+            let kind = crate::ui::contacts::kind(&track.tags);
+            if kind == "Missile" {
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    toy_sim_ui::icons::Icon::Missile.glyph(),
+                    toy_sim_ui::icons::Icon::font(18.0),
+                    color,
+                );
+            } else {
+                painter.rect_stroke(
+                    square,
+                    0.0,
+                    egui::Stroke::new(if selected || targeted { 2.0 } else { 1.0 }, color),
+                    egui::StrokeKind::Inside,
+                );
+            }
             if targeted {
                 painter.rect_stroke(
                     square.expand(4.),
@@ -191,7 +202,7 @@ fn overlay(
                     Tag::Advertised(name) => Some(name.as_str()),
                     _ => None,
                 })
-                .unwrap_or("Contact");
+                .unwrap_or(kind);
             let text = format!("{name}\n{}", distance(relative.length()));
             painter.text(
                 square.right_bottom() + egui::vec2(2.0, 2.0),

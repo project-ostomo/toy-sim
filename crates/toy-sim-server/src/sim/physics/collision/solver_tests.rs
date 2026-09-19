@@ -59,6 +59,8 @@ pub(super) fn object(
         generation: 0,
         impulse_dv: DVec3::ZERO,
         impulse_dw: DVec3::ZERO,
+        rotation_path: None,
+        rotational_envelopes: Vec::new(),
     }
 }
 
@@ -1058,4 +1060,264 @@ fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
     bodies[1].position = GalacticPosition::from_meters(DVec3::X * 5.0);
     activate(&mut bodies);
     assert!(bodies[1].members[0].shielded());
+}
+
+#[test]
+fn touching_missiles_and_shield_finish_the_tick_without_inelastic_collapse() {
+    #[derive(serde::Deserialize)]
+    struct Captured {
+        missile: bool,
+        position: [i64; 3],
+        rotation: [f64; 4],
+        velocity: [f64; 3],
+        momentum: [f64; 3],
+        mass: f64,
+        inertia_inv: [[f64; 3]; 3],
+        hull: f64,
+        thermal: ThermalState,
+    }
+    // Captured from the live two-launcher fight after 383,548 contact revisions
+    // had advanced only 24ms into one tick. Retain its spin, shapes and heat.
+    #[derive(serde::Deserialize)]
+    struct Capture {
+        bodies: Vec<Captured>,
+    }
+    let captured: Capture =
+        toml::from_str(include_str!("fixtures/three-body-contact.toml")).unwrap();
+    let catalogue = toy_sim_ships::Catalogue::builtin();
+    let missile = toy_sim_ships::missiles::blueprint()
+        .compile(&catalogue)
+        .unwrap();
+    let ship = toy_sim_ships::expedition_patrol()
+        .compile(&catalogue)
+        .unwrap();
+    for common_velocity in [DVec3::ZERO, DVec3::new(22_000., -2_000., 23_000.)] {
+        let mut world = World::new();
+        let mut bodies: Vec<_> = captured
+            .bodies
+            .iter()
+            .map(|capture| {
+                let design = if capture.missile { &missile } else { &ship };
+                let geometry = Arc::new(Geometry::ship(design));
+                let mut body = object(
+                    &mut world,
+                    geometry.hull.clone(),
+                    geometry.radius,
+                    1.,
+                    DVec3::ZERO,
+                    DVec3::from_array(capture.velocity) + common_velocity,
+                    capture.mass,
+                );
+                body.position = GalacticPosition::new(
+                    i128::from(capture.position[0]),
+                    i128::from(capture.position[1]),
+                    i128::from(capture.position[2]),
+                );
+                body.rotation = DQuat::from_array(capture.rotation);
+                body.momentum = DVec3::from_array(capture.momentum);
+                body.inertia_inv = DMat3::from_cols_array_2d(&capture.inertia_inv);
+                body.members[0].geometry = geometry;
+                body.members[0].inertia = body.inertia_inv.inverse();
+                body.members[0].hull = capture.hull;
+                body.members[0].thermal = capture.thermal;
+                body.members[0].model = ThermalModel::from(design);
+                body
+            })
+            .collect();
+        let mut maximum_queries = 0;
+        let mut maximum_impacts = 0;
+        let start = std::time::Instant::now();
+        for tick in 0..20 {
+            let duration = if tick == 0 { 0.07585977888339283 } else { 0.1 };
+            let report = simulate(&mut bodies, duration);
+            maximum_queries = maximum_queries.max(report.detailed);
+            maximum_impacts = maximum_impacts.max(report.impacts);
+            assert!(
+                report.impacts < 1_000,
+                "{} repeated contacts",
+                report.impacts
+            );
+            // This captured state accumulated hundreds of thousands of old-solver
+            // impacts before capture; its high spin is an exceptional work guard.
+            assert!(
+                report.detailed < 100_000,
+                "{} detailed queries",
+                report.detailed
+            );
+            assert_eq!(report.rotation_envelope_fallbacks, 0);
+            assert!(bodies.iter().all(|body| body.time == duration));
+            for body in &mut bodies {
+                assert!(
+                    body.position
+                        .relative_to(GalacticPosition::default())
+                        .is_finite()
+                );
+                assert!(body.velocity.is_finite() && body.momentum.is_finite());
+                body.time = 0.0;
+                for member in &mut body.members {
+                    member.thermal_time = 0.0;
+                }
+            }
+        }
+        eprintln!(
+            "captured contact replay: common_velocity={common_velocity:?} max_impacts={maximum_impacts} max_queries={maximum_queries} elapsed={:?}",
+            start.elapsed()
+        );
+    }
+}
+
+#[test]
+fn persistent_three_body_cluster_stays_bounded_and_dissipates_energy() {
+    let mut outcomes = Vec::new();
+    for common_velocity in [DVec3::ZERO, DVec3::new(22_000.0, -2_000.0, 23_000.0)] {
+        let mut world = World::new();
+        let mut bodies: Vec<_> = [-1.0, 0.0, 1.0]
+            .into_iter()
+            .map(|x| {
+                object(
+                    &mut world,
+                    SharedShape::ball(1.0),
+                    1.0,
+                    1.0,
+                    DVec3::X * x * 2.00001,
+                    common_velocity - DVec3::X * x * 0.01,
+                    1000.0,
+                )
+            })
+            .collect();
+        let energy = |bodies: &[Body]| {
+            bodies
+                .iter()
+                .map(|body| {
+                    0.5 * body.mass * (body.velocity - common_velocity).length_squared()
+                        + 0.5 * body.momentum.dot(body.world_inverse() * body.momentum)
+                })
+                .sum::<f64>()
+        };
+        let mut previous_energy = energy(&bodies);
+        let mut total_impacts = 0;
+        for _ in 0..100 {
+            let report = simulate(&mut bodies, 0.1);
+            total_impacts += report.impacts;
+            assert!(report.impacts < 100 && report.detailed < 1000);
+            let current_energy = energy(&bodies);
+            assert!(current_energy <= previous_energy + 1e-10);
+            previous_energy = current_energy;
+            for pair in bodies.windows(2) {
+                assert!(pair[1].position.relative_to(pair[0].position).x >= 2.0 - 1e-5);
+            }
+            for body in &mut bodies {
+                body.time = 0.0;
+                body.members[0].thermal_time = 0.0;
+            }
+        }
+        assert!(total_impacts > 0);
+        outcomes.push(
+            bodies
+                .iter()
+                .map(|body| {
+                    (
+                        body.position.relative_to(bodies[1].position),
+                        body.velocity - common_velocity,
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+    }
+    for (a, b) in outcomes[0].iter().zip(&outcomes[1]) {
+        assert!((a.0 - b.0).length() < 2e-4);
+        assert!((a.1 - b.1).length() < 1e-8);
+    }
+}
+
+#[test]
+fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
+    let mut world = World::new();
+    let mut rotor = object(
+        &mut world,
+        SharedShape::cuboid(2.0, 0.1, 0.1),
+        2.01,
+        0.2,
+        DVec3::ZERO,
+        DVec3::ZERO,
+        1000.0,
+    );
+    let geometry = Arc::make_mut(&mut rotor.members[0].geometry);
+    geometry.shield = SharedShape::ball(3.0);
+    geometry.shield_radius = 3.0;
+    rotor.members[0].local_position = DVec3::X * 4.0;
+    let mut opposite = rotor.members[0].clone();
+    opposite.entity = world.spawn_empty().id();
+    opposite.local_position = -DVec3::X * 4.0;
+    rotor.members.push(opposite);
+    rotor.mass = 2000.0;
+    rotor.radius = 7.0;
+    rotor.momentum = DVec3::Z * 1e8;
+    assert!(rotor.prepare_rotation(0.1));
+    for member in 0..rotor.members.len() {
+        let hull = rotor
+            .collision_shape(member, false)
+            .as_ball()
+            .unwrap()
+            .radius;
+        let shield = rotor
+            .collision_shape(member, true)
+            .as_ball()
+            .unwrap()
+            .radius;
+        assert_eq!(hull, 6.01);
+        assert_eq!(shield, 7.0);
+        for step in 0..100 {
+            let rotation = rotor.orientation(step as f64 * 0.001).0;
+            for corner in [DVec3::new(2.0, 0.1, 0.1), -DVec3::new(2.0, 0.1, 0.1)] {
+                let point = rotation * (rotor.members[member].local_position + corner);
+                assert!(point.length() <= hull);
+            }
+        }
+    }
+    // Uneven mass loss shifts the COM while the same contact is being resolved.
+    // Its immediate correction must still see envelopes of the new offsets.
+    let mut ablated = rotor.clone();
+    ablated.members[0].mass = 400.0;
+    ablated.members[0].inertia *= 0.4;
+    ablated.sync_mass();
+    for (index, member) in ablated.members.iter().enumerate() {
+        let offset = member.local_position.length();
+        assert_eq!(
+            ablated
+                .collision_shape(index, false)
+                .as_ball()
+                .unwrap()
+                .radius,
+            offset + member.geometry.radius,
+        );
+        assert_eq!(
+            ablated
+                .collision_shape(index, true)
+                .as_ball()
+                .unwrap()
+                .radius,
+            offset + member.geometry.shield_radius,
+        );
+    }
+    let incoming = object(
+        &mut world,
+        SharedShape::ball(0.25),
+        0.25,
+        0.5,
+        DVec3::new(-15.0, 5.0, 0.0),
+        DVec3::X * 300.0,
+        10.0,
+    );
+    let mut bodies = vec![rotor, incoming];
+    let report = simulate(&mut bodies, 0.1);
+    assert!(report.rotation_envelope_fallbacks > 0);
+    assert!(report.impacts > 0);
+    assert!(report.detailed < 1000);
+    assert!(bodies[1].velocity.x < 300.0);
+    assert!(
+        bodies
+            .iter()
+            .all(|body| body.velocity.is_finite() && body.momentum.is_finite())
+    );
 }

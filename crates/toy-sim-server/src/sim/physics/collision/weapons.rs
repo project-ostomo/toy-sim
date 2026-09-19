@@ -392,6 +392,8 @@ pub fn projectile_body(
         generation: 0,
         impulse_dv: DVec3::ZERO,
         impulse_dw: DVec3::ZERO,
+        rotation_path: None,
+        rotational_envelopes: Vec::new(),
         projectile: true,
         launch_owner: None,
         expires_at: Some(t + 2.0),
@@ -896,11 +898,10 @@ pub fn resolve_beam(
                 continue;
             }
             let pose = body.shape_pose(member_index, t, beam.position);
-            let shape = if member.entity == beam.owner {
-                &member.geometry.hull
-            } else {
-                member.shape()
-            };
+            let shape = body.collision_shape(
+                member_index,
+                member.entity != beam.owner && member.shielded(),
+            );
             if let Some(hit) = shape.cast_ray(&pose, &ray, distance, true) {
                 distance = hit;
                 closest = Some((body_index, member_index));

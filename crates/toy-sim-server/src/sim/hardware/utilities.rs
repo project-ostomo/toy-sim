@@ -119,6 +119,7 @@ pub fn run(
                 | UtilityDef::LifeSupport { power_w, .. }
                 | UtilityDef::Workshop { power_w, .. }
                 | UtilityDef::CargoHandler { power_w, .. } => power_w,
+                UtilityDef::MissileLauncher { spec } => spec.power_w,
                 _ => 0.,
             };
             power.requested_w = requested;

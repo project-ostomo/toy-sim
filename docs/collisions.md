@@ -26,13 +26,26 @@ Ship geometry is cached per compiled design.
 2. **Shield activation** at tick start (`activate`). A field requires an installed generator, enabled and powered hardware, and deployed coolant. It becomes active when its sphere is clear of other bodies. Projectiles launched by the member itself are ignored in the clearance test. Disabled, unpowered, depleted and blocked fields report their corresponding states. Re-enabling a clear field can take effect at the next tick boundary.
 3. **Weapons.** Copy each armed ship's weapon state and inventory into the solver workspace.
 4. **Simulate** the tick (below).
-5. **Write back.** For each body, write position, rotation, velocity, mass properties and end-of-tick angular velocity, and clear the accumulators. Rewrite the `AccelerometerState` as `force/mass − gravity + impulse Δv/dt` in body axes, plus the angular terms. Write hull, thermal and weapon state back to `ShipHardware`, and lifetime and hit points back to `Projectile`. Write poses for docked members.
-6. **Effects and destruction.** Send motion segments, shots and impacts to `combat_effects`. Replace destroyed ships with explosions and despawn destroyed projectiles. Despawn dock parents whose members were all destroyed.
-7. **Statistics.** Update `CollisionStats`, shown in the Diagnostics window: collision step time, body count, index/query/solve times, candidate pairs, geometry queries, impulses, contact reviews and total impact heat.
+5. **Write back.** For each body, write position, rotation, velocity, mass properties and end-of-tick angular velocity, and clear the accumulators. Rewrite the `AccelerometerState` as `force/mass − gravity + impulse Δv/dt` in body axes, plus the angular terms. Write hull, thermal, inventory and installed weapon components back to their ECS entities, and lifetime and hit points back to `Projectile`.
+6. **Effects and destruction.** Record motion segments, shots and impacts through `combat::ingest` for authorized client presentation. Despawn destroyed projectiles. Move destroyed ships into dormant destroyed state, retaining their stable identity and any computer still guiding missiles.
+7. **Statistics.** Update `CollisionStats` and server tracing: collision step time, body count, index/query/solve times, candidate pairs, geometry queries, impulses, contact reviews, rotational-envelope fallbacks and total impact heat.
 
 ## Motion within a tick
 
 Between events, each body translates at constant velocity. Its rotation follows torque-free rigid-body motion with constant world angular momentum, using the split integrator in [rotation.rs](../crates/toy-sim-server/src/sim/physics/rotation.rs). Because forces were applied as a kick at the tick start, the combined scheme is symplectic Euler, consistent with `apply_forces`.
+
+Stationary and slowly rotating bodies use the direct drift sampler. Faster
+rotation is sampled from cached short-angle segments of the same integrator.
+Each segment preserves world angular momentum, and a conservative derivative
+bound covers the continuous path across segment boundaries. This prevents a
+whole-tick polynomial bound from causing millions of tiny distance-query steps
+after a body begins tumbling. Impacts and mass changes invalidate the trajectory.
+
+The cache has at most 4,096 segments. When finer segmentation would be needed,
+collision uses a conservative spherical envelope around each rotating member,
+including its offset from the body's centre. This can detect contact earlier
+than the detailed hull at extreme spin; it does not drop collision candidates.
+The solver counts these fallbacks in its diagnostics.
 
 ## Broad phase
 
@@ -49,9 +62,9 @@ This replaces the separate region/BVH broad phase. Parry's BVHs within compound 
 For each candidate pair, `prediction`:
 
 1. Finds the time window during which the bounding spheres (radii summed, plus 4 mm) overlap along the relative straight-line motion. It uses a closest-approach formula that stays numerically stable. No window means no event.
-2. Sets a contact tolerance `ε = clamp(0.0001 × smallest part dimension, 10 µm, 1 mm)`.
+2. Sets a contact tolerance `ε = clamp(0.001 × smallest part dimension, 10 µm, 1 mm)`.
 3. **Translation-only fast path.** If neither body rotates, or all of a body's live members are centred balls, it runs Parry's `cast_shapes` for every member pair and keeps the earliest approaching hit. It keeps the cast's own witness points and normal. If the pair already penetrates, or Parry reports failure, it falls back to the general path.
-4. **General path: conservative advancement.** Starting at the window's entry, it computes the minimum distance over member pairs. It then advances by `0.9·(distance − ε) / speed bound`. The speed bound is the relative linear speed plus each body's radius times a rotation-rate bound, derived for the five-stage rotation sampler. When the distance falls within `2ε`, it switches to a contact review.
+4. **General path: conservative advancement.** Starting at the window's entry, it computes the minimum distance over member pairs. It then advances by `0.9·(distance − ε) / speed bound`. The speed bound is the relative linear speed plus each body's radius times its conservative trajectory rotation-rate bound. Centred spheres and rotational envelopes contribute no rotational geometry motion. When the distance falls within `2ε`, it switches to a contact review.
 5. **Contact review.** For each primitive pair (compound children are pruned by BVH), it sweeps forward and builds convex contact manifolds when primitives come within `2ε`. A manifold point becomes a contact event if the points are approaching or penetrating deeper than `ε`. Otherwise the pair is scheduled for another review after `min(0.01 s, 0.25·feature / speed)`. A face already at rest therefore cannot hide a new contact elsewhere on the same compound.
 
 A numerical assertion stops the program if advancement can no longer make progress in time.
@@ -89,7 +102,7 @@ When the bodies are closing at speed `c`:
 - The impulse changes linear and angular momentum and is recorded for the accelerometer.
 - Half of `q` goes to each member: into its shield when shielded, otherwise into its hull as heat and damage at 1 hit point per 100 kJ.
 
-After resolution, if the shapes still overlap, the bodies are pushed apart along the current contact normal by the penetration depth plus 10 µm. The push is split in inverse proportion to mass.
+After resolution, the solver separates the current shapes to a skin of `10ε`, sharing the correction in inverse proportion to mass. The skin is outside the `2ε` detection shell. This prevents repeated near-identical contacts from consuming a tick while bodies remain within numerical contact tolerance; it changes positions without adding velocity or heat.
 
 ### Projectiles
 
@@ -106,17 +119,20 @@ See [ships.md](ships.md#heat-hull-and-shields) for the coolant and heat equation
 
 When a member's hull reaches zero (from impact or heat), a `Destruction` record captures its pose, velocity (including rotation about the body's centre of mass), mass and thermal state. If other members survive in a docked body, the body's centre of mass, inertia, radius and momentum are recomputed without the destroyed member. The survivors keep their velocity field.
 
-In the ECS, `combat_effects::destroy`:
+The server records destruction through `combat::ingest` before changing the
+entity. Ordinary projectiles are despawned. Ships enter `Presence::Destroyed`,
+lose active physics and sensor participation, and retain their stable identity.
+Stored ships become inventory inside the wreck. A destroyed carrier's computer
+continues while guided missiles depend on it; that computer is retired when the
+last dependent stops needing guidance.
 
-- Despawns destroyed projectiles.
-- Ship breakup produces a brief billboard flash and a glowing puff lasting at most two seconds. Fragments remain visible for up to ten seconds: one fragment per part, with momentum-neutral radial velocities from a share of the stored heat and electrical energy, plus small chips. Flashes and puffs share a quad, texture atlas, and material, with bounded screen size and at most 256 sprites per view. If the ship had camera focus, focus moves to the explosion and the camera leaves any orbital framing.
-- Despawns the ship.
-
-When the controlled ship is gone, a "Ship destroyed" window offers "Reset encounter".
+Authorized clients receive the destruction event and render the breakup using
+shared billboard effects and debris. The focused hull mesh is removed while its
+destruction effect remains visible.
 
 ## Presentation data
 
-The solver records motion segments for bodies whose motion changed within the tick, and for all projectiles. `combat_effects` samples these segments at the presentation time. Fast slugs and hulls are therefore drawn at their true intermediate positions, and tracer ribbons follow the exact launch-to-impact path. Impact events whose energy is not already part of a ship breakup spawn small flashes, with debris chips when no shield was involved.
+The solver records motion segments for bodies whose motion changed within the tick, and for all projectiles. The server publishes authorized combat events, and the client samples their motion segments at presentation time. Fast slugs and hulls are therefore drawn at their true intermediate positions, and tracer ribbons follow the exact launch-to-impact path. Impact events whose energy is not already part of a ship breakup spawn small flashes, with debris chips when no shield was involved.
 
 ## Tests and benchmarks
 
@@ -144,6 +160,8 @@ cargo test -p toy-sim-server collision
 - spinning spheres keeping their cast normal
 - shared impact damage destroying fast slugs while slow glancing slugs survive
 - projectile expiry at 2 s
+- the captured three-body missile contact cascade and large common orbital motion
+- bounded rotation caches and conservative extreme-spin envelopes
 
 [ecs.rs](../crates/toy-sim-server/src/sim/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
 

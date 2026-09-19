@@ -26,7 +26,7 @@ impl Row {
 
     pub fn icon(&self) -> Icon {
         match self.target {
-            SelectedTarget::Contact(_) => Icon::Ship,
+            SelectedTarget::Contact(_) => crate::ui::contacts::icon(&self.kind),
             SelectedTarget::Celestial(_) => Icon::Planet,
             SelectedTarget::Beacon(_) => Icon::Navigation,
         }

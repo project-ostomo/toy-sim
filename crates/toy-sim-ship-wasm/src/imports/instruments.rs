@@ -10,7 +10,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         {
             status((|| {
                 let value: w::WeaponsState = input(&mut caller, pointer, bytes)?;
-                lease(&caller, value.valid_until_s)?;
+                let active = lease_active(&caller, value.valid_until_s)?;
                 if value.mode > w::WEAPONS_FIRING
                     || value.reason.as_str().is_none()
                     || count as usize > caller.data().catalogue.len()
@@ -48,7 +48,8 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     if row.time_of_flight_s < 0.0 || row.pointing_error_rad < 0.0 {
                         return Err(w::ERR_ARGUMENT.into());
                     }
-                    if row.aim_marker != 0
+                    if active
+                        && row.aim_marker != 0
                         && !caller
                             .data()
                             .working
@@ -59,6 +60,9 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         return Err(w::ERR_HANDLE.into());
                     }
                     rows.push(row);
+                }
+                if !active {
+                    return Ok(());
                 }
                 let state = &mut caller.data_mut().working;
                 state.weapons = Some(value);
@@ -77,7 +81,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         {
             status((|| {
                 let value: w::AttitudeState = input(&mut caller, pointer, bytes)?;
-                lease(&caller, value.valid_until_s)?;
+                let active = lease_active(&caller, value.valid_until_s)?;
                 finite(&value.reference)?;
                 finite(&[value.control_error])?;
 
@@ -104,7 +108,9 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     return Err(w::ERR_ARGUMENT.into());
                 }
 
-                caller.data_mut().working.attitude = Some(value);
+                if active {
+                    caller.data_mut().working.attitude = Some(value);
+                }
                 Ok(())
             })())
         },
@@ -119,7 +125,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         {
             status((|| {
                 let value: w::NavigationState = input(&mut caller, pointer, bytes)?;
-                lease(&caller, value.valid_until_s)?;
+                let active = lease_active(&caller, value.valid_until_s)?;
                 fraction(value.throttle)?;
                 fraction(value.throttle_limit)?;
 
@@ -145,7 +151,9 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     }
                 }
 
-                caller.data_mut().working.navigation = Some(value);
+                if active {
+                    caller.data_mut().working.navigation = Some(value);
+                }
                 Ok(())
             })())
         },
@@ -160,7 +168,9 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         {
             status((|| {
                 let value: w::ContactsState = input(&mut caller, pointer, bytes)?;
-                lease(&caller, value.valid_until_s)?;
+                if !lease_active(&caller, value.valid_until_s)? {
+                    return Ok(());
+                }
                 let host = caller.data_mut();
 
                 if host

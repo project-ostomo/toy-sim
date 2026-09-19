@@ -236,6 +236,7 @@ impl PartDescription {
                 thrust_n,
                 propellant_kg_s,
                 power_w,
+                propellant_energy_j_kg,
                 ..
             } => {
                 performance.quantity("Maximum thrust", *thrust_n, Force);
@@ -247,7 +248,11 @@ impl PartDescription {
                 (
                     "Main engine",
                     Category::Propulsion,
-                    "Converts electrical power and propellant into forward thrust.",
+                    if *propellant_energy_j_kg > 0. {
+                        "Burns stored propellant to produce thrust; electrical power runs the controls."
+                    } else {
+                        "Converts electrical power and propellant into forward thrust."
+                    },
                 )
             }
             Equipment::ThermalEngine {
@@ -427,6 +432,30 @@ impl PartDescription {
             Equipment::Utility { utility } => {
                 use toy_sim_ships::utilities::UtilityDef;
                 let (kind, summary) = match *utility {
+                    UtilityDef::MissileLauncher { spec } => {
+                        performance.quantity("Launch interval", spec.cycle_interval_s, Seconds);
+                        performance.quantity("Ejection speed", spec.ejection_speed_m_s, Speed);
+                        performance.quantity("Engagement range", spec.maximum_range_m, Metres);
+                        requirements.quantity("Electrical input", spec.power_w, Power);
+                        if let Some(ammunition) = catalogue
+                            .resources
+                            .iter()
+                            .find(|resource| resource.id == toy_sim_ships::missiles::AMMUNITION)
+                        {
+                            performance.text(
+                                "Magazine capacity",
+                                format!(
+                                    "{} rounds",
+                                    (part.tank_volume_m3 / ammunition.volume_m3).floor()
+                                ),
+                            );
+                            requirements.text("Ammunition", &ammunition.title);
+                        }
+                        (
+                            "Missile launcher",
+                            "Launches guided interceptors using the ship computer and shared sensor picture.",
+                        )
+                    }
                     UtilityDef::SlipDrive { power_w } => {
                         requirements.quantity("Preparation power", power_w, Power);
                         (
@@ -528,7 +557,12 @@ impl PartDescription {
                         ("Power coupler", "Charges the batteries of docked ships.")
                     }
                 };
-                (kind, Category::Utilities, summary)
+                let category = if matches!(utility, UtilityDef::MissileLauncher { .. }) {
+                    Category::Weapons
+                } else {
+                    Category::Utilities
+                };
+                (kind, category, summary)
             }
             Equipment::Radiator {
                 area_m2,
@@ -720,6 +754,7 @@ mod tests {
             thrust_n: 900.,
             propellant_kg_s: 3.,
             power_w: 12000.,
+            propellant_energy_j_kg: 0.,
             plume: None,
         };
         let info = PartDescription::new(&part, &catalogue);

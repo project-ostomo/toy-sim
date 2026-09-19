@@ -567,6 +567,49 @@ Screens for network clients come from a separate WebAssembly instance of the shi
 
 The stock firmware's `ship_display` defines each requested slot as a 512 × 256 screen titled "Ship status" and draws five text lines: `SHIP STATUS`, simulation time, speed, mass and battery energy. It does not read screen events. Firmware without a `ship_display` export cannot be instantiated as a display, so its subscribed slots report "Display unavailable".
 
+## Missiles and shared computers
+
+[missiles.rs](../crates/toy-sim-server/src/sim/missiles.rs) launches missiles as
+ordinary simulated ships. A powered launcher consumes one packaged missile from
+its magazine, creates the assembled body with its fuel and battery, and applies
+the corresponding parent mass, recoil and angular-momentum changes. Launch
+requires a current target contact in the parent's information group, range and
+cooldown checks, and a working computer with the optional ABI 28
+`missile_tick(u64)` callback. The launcher has no privileged target-position
+lookup. The existing marked-target and firing state controls launcher fire.
+
+Each missile has its own physical body, engine, steering devices, seeker and
+integer resource inventory. It inherits the parent's actual owner and information
+group, and launches with its IFF transponder disabled. Sensor contacts carry both
+`Kind("ship")` and `Kind("missile")`; clients can distinguish them while general
+ship queries still include them. Optical appearance remains subject to ordinary
+visibility admission.
+
+The missile's stable handle selects a callback in its parent's flight computer;
+it does not create another WASM instance. All such callbacks share the parent's
+memory, persistent store, owner gas account and physical CPU allowance. A pending
+callback retains its kind and handle when gas runs out. The scoped
+`missile_read` and `missile_control` imports expose its observation and steering
+command, as described in [Ship controller ABI](ship-abi.md#missile-callbacks).
+Targets are fused information-group contacts with uncertainty. An expired or
+unavailable contact is reported as unavailable. The stock guidance coasts when it
+cannot see its target or has no propellant, and uses proportional navigation to
+correct a visible interception.
+
+Guidance can continue while the parent is docked or in slip transit, provided its
+missiles still have working electronics and energy. Computer telemetry reports
+that shared execution, including paid boot, suspension and fault recovery. It does
+not mark the dormant parent's physical devices as powered.
+
+Destroying the parent hull retains the shared computer while guided missiles
+remain. The destroyed parent contributes no hull, collision body, sensor source,
+beacon or display. Its original ownership and information group still determine
+billing and observations. The retained computer is released when its last guided
+missile becomes inactive. Missile impacts use ordinary ship collision and hull
+damage rules. Checkpoints preserve bodies, guidance controls, stable handles,
+launcher state and the retained computer's committed data; suspended native
+execution cold boots after recovery.
+
 ## Docking and travel
 
 Docking and travel are implemented in [travel.rs](../crates/toy-sim-server/src/sim/travel.rs).
@@ -575,7 +618,7 @@ Docking and travel are implemented in [travel.rs](../crates/toy-sim-server/src/s
 
 `Presence` is one of `Space`, `Docked { host, bay }`, `SlipTransit(id)`, `StoredInWreck(host)` or `Destroyed`. Private telemetry includes an appearance hash, radius and presentation pose in space, docking storage and slip transit. Docked poses follow the host bay; transit poses follow the declared slip segment. Only space presence participates in normal physics.
 
-Leaving space makes a ship dormant. Its hardware is shut down (default device settings, avionics unpowered, sensor range 0), and its velocity, rigid body, collision body and spatial body are removed and remembered. Dormant ships take no part in physics, sensing, programs, world services or displays. Their hull and shield thermal state advances once per simulated second. Returning to space restores the remembered components.
+Leaving space makes a ship dormant. Its hardware is shut down (default device settings, avionics unpowered, sensor range 0), and its velocity, rigid body, collision body and spatial body are removed and remembered. Dormant ships take no part in physics, sensing or displays. Ordinary flight callbacks and world actions stop. A destroyed parent can retain its shared computer to guide already launched missiles, using information-group observations without restoring the parent's sensor. Their hull and shield thermal state advances once per simulated second. Returning to space restores the remembered components.
 
 ### Bays and docking
 
@@ -665,7 +708,7 @@ World actions are applied after all ships have run, in ship ID order. If an acti
 The stock firmware's planner ([world.rs](../crates/toy-sim-example-controller/src/world.rs), [graph.rs](../crates/toy-sim-example-controller/src/world/graph.rs)) runs inside `ship_tick`:
 
 - **Target.** Beacon destinations use a clearance outside the hull; gate destinations also include the mouth's exclusion radius. Docking approaches from the ship's current side.
-- **Gate scan.** Under ABI 27 (`ship_v27`), the planner reads bounded pages of public navigation endpoints. A page shorter than requested ends the scan. It retains topology and graph allocations across routes, prefetches while idle and periodically checks the topology revision. A changed revision invalidates the cache. Gate poses may advance between pages or after caching; execution resolves and validates current destinations. Detailed bay and IFF data come from separate beacon queries when needed.
+- **Gate scan.** Under ABI 28 (`ship_v28`), the planner reads bounded pages of public navigation endpoints. A page shorter than requested ends the scan. It retains topology and graph allocations across routes, prefetches while idle and periodically checks the topology revision. A changed revision invalidates the cache. Gate poses may advance between pages or after caching; execution resolves and validates current destinations. Detailed bay and IFF data come from separate beacon queries when needed.
 - **Route graph.** Dijkstra runs over the origin, target, mouths and admissible staging points outside exclusions. Graph preparation, search and path reconstruction advance in bounded steps across callbacks. The firmware checks its remaining slice gas and preserves headroom for flight control. Sublight adjacency is local to a system, with explicit paired-mouth edges and optional intersystem slip candidates. Sublight edges use the estimated duration of the weighted time/propellant transfer; paired-mouth crossings cost one tick. Eligible slip edges include charging, transit and matching the arrival destination's motion. Node velocities include the departure ship, target and moving gates. Edges are compared by time plus the weighted propulsion fuel cost. Estimates assume constant rated acceleration, mass and drive power; attitude, gravity and changing hardware output can increase actual cost.
 - **Review.** Before publishing a selected path, the planner refreshes its gate records through single-record `Navigation` pages, handling at most four records per callback. It resolves destinations at their estimated future epochs, updates departure motion, checks each chosen slip segment through `SlipEligibility`, and recomputes time and fuel estimates. Cumulative timing includes preceding legs, remaining preparation, flight and velocity matching. A changed topology restarts catalogue loading. Changed eligibility updates the cached gate facts and causes a retry. These checks finish before the route enters the authoritative order queue.
 - **Queue.** The chosen route expands the current destination into explicit sublight, gate and slip orders. Later queued destinations remain intact and are expanded when they become current. The autopilot panel, editable Navigation list and map all display this queue. Gate staging points move with their beacons. Slip preparation coasts without a galactic braking burn; subsequent sublight guidance matches arrival motion. Gate orders fly toward the mouth and physics performs the crossing. The server validates each operation at execution time.
@@ -679,7 +722,7 @@ The graph retains all local gate-mouth choices and prunes slip candidates using 
 
 The planner estimates transfer time from straight-line distances, acceleration and propellant weighting. Public navigation pages provide topology and staging facts; the ship computer owns graph search and cost selection. Those host queries read current server facts independently of the client's static map asset. Authorized bay availability comes from beacon replies. Drive readiness, enablement, obstruction and curvature are checked again by the server when an action is applied.
 
-Navigation queries pre-admit `100 + 4096 × requested_limit` work units, then charge `100 + 4096 × returned_count`, in addition to normal syscall and serialization costs. They return at most 128 records and use the existing 65,536-byte world-query buffers. The standard WASM runtime and bundled firmware have an 8 MiB linear-memory ceiling to hold the expanded routing graph. Per-tick gas limits still apply. Server and bundled firmware must use ABI 27 together.
+Navigation queries pre-admit `100 + 4096 × requested_limit` work units, then charge `100 + 4096 × returned_count`, in addition to normal syscall and serialization costs. They return at most 128 records and use the existing 65,536-byte world-query buffers. The standard WASM runtime and bundled firmware have an 8 MiB linear-memory ceiling to hold the expanded routing graph. Per-tick gas limits still apply. Server and bundled firmware must use ABI 28 together.
 
 ## Client playback
 

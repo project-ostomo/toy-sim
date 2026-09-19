@@ -143,7 +143,7 @@ pub fn bundle(d: &CompiledShipDesign, state: ShipState) -> impl Bundle + use<> {
 pub fn install(app: &mut App) {
     app.add_systems(
         FixedUpdate,
-        (initialize, apply_impacts)
+        (initialize, apply_impacts, advance_computer_clock)
             .chain()
             .in_set(HardwareSystems::Initialize)
             .before(super::vessel::run),
@@ -406,6 +406,12 @@ fn apply_impacts(mut ships: Query<(&ShipDesign, &mut Hull, &mut ShipThermal, &mu
         });
 }
 
+fn advance_computer_clock(mut clocks: Query<&mut HardwareClock>) {
+    for mut clock in &mut clocks {
+        clock.0 = clock.0.checked_add(1).expect("hardware clock exhausted");
+    }
+}
+
 fn begin(
     mut ships: Query<
         (&ShipDesign, HardwareWrite, &mut DormantThermalElapsed),
@@ -415,7 +421,6 @@ fn begin(
     ships
         .par_iter_mut()
         .for_each(|(design, mut hardware, mut dormant_elapsed)| {
-            hardware.clock.0 += 1;
             hardware.range.0 = 0.0;
             hardware.thermal.0.shield_powered = false;
             hardware.thermal.0.shield_enabled = false;
@@ -482,10 +487,20 @@ pub(crate) fn avionics(
             h.reset_commands(&d.0);
             return;
         }
-        if matches!(
-            h.settings.0[d.0.avionics_handles[2].0 as usize],
-            Some(DeviceSetting::SensorEnabled(true))
-        ) && spend(&mut h.inventory.0, [0., 0., SENSOR_POWER_W * dt]) >= 1. - 1e-9
+        let fitted_sensor = d.0.parts.iter().any(|part| {
+            matches!(
+                part.definition.equipment,
+                Equipment::Utility {
+                    utility: toy_sim_ships::utilities::UtilityDef::Sensor { .. }
+                }
+            )
+        });
+        if !fitted_sensor
+            && matches!(
+                h.settings.0[d.0.avionics_handles[2].0 as usize],
+                Some(DeviceSetting::SensorEnabled(true))
+            )
+            && spend(&mut h.inventory.0, [0., 0., SENSOR_POWER_W * dt]) >= 1. - 1e-9
         {
             h.range.0 = SENSOR_RANGE_M;
         }
@@ -897,16 +912,19 @@ fn power_totals(
             &Avionics,
             &SensorRange,
             &mut PowerFlow,
-            &mut super::displays::DisplayEnvironment,
+            Option<&mut super::displays::DisplayEnvironment>,
         ),
         Without<super::travel::Dormant>,
     >,
     parts: Query<&DevicePower>,
 ) {
-    ships.par_iter_mut().for_each(
-        |(design, installed, avionics, sensor, mut flow, mut display)| {
+    ships
+        .par_iter_mut()
+        .for_each(|(design, installed, avionics, sensor, mut flow, display)| {
             *flow = PowerFlow::default();
-            display.powered = avionics.0.operational && avionics.0.powered;
+            if let Some(mut display) = display {
+                display.powered = avionics.0.operational && avionics.0.powered;
+            }
 
             for (index, part) in installed.0.iter().enumerate() {
                 let Ok(power) = parts.get(*part) else {
@@ -924,12 +942,19 @@ fn power_totals(
                 }
             }
 
-            if sensor.0 > 0.0 {
+            let fitted_sensor = design.0.parts.iter().any(|part| {
+                matches!(
+                    part.definition.equipment,
+                    Equipment::Utility {
+                        utility: toy_sim_ships::utilities::UtilityDef::Sensor { .. }
+                    }
+                )
+            });
+            if sensor.0 > 0.0 && !fitted_sensor {
                 flow.requested_w += SENSOR_POWER_W;
                 flow.supplied_w += SENSOR_POWER_W;
             }
-        },
-    );
+        });
 }
 
 fn dormant_thermal(

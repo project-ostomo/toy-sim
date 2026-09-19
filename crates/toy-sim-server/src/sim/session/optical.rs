@@ -131,6 +131,17 @@ impl OpticalSession {
             else {
                 continue;
             };
+            if world
+                .get::<super::super::travel::PresenceState>(observer)
+                .is_some_and(|state| {
+                    matches!(
+                        state.0,
+                        travel::Presence::Destroyed | travel::Presence::StoredInWreck(_)
+                    )
+                })
+            {
+                continue;
+            }
             let mut budget = ViewBudget::new(views.len());
             let mut append = |entity: Entity, radius_m: f64, luminosity_w: f64| {
                 if budget.remaining_count == 0 {
@@ -424,17 +435,68 @@ mod tests {
         world
             .entity_mut(fixture.observer)
             .insert(crate::sim::travel::Dormant);
+        world
+            .entity_mut(fixture.target)
+            .insert(crate::sim::travel::DockingBays(vec![
+                crate::sim::travel::Bay {
+                    centre_m: [0.0; 3],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    radius_m: 100.0,
+                    mass_capacity_kg: 1e9,
+                    public: true,
+                    allowed: Default::default(),
+                    reservation: None,
+                },
+            ]));
         let mut optical = OpticalSession::default();
-        let (objects, visible) = optical.observe(
-            world,
-            fixture.account,
-            &[fixture.view.clone()],
-            &BTreeMap::new(),
+        for presence in [
+            travel::Presence::Docked {
+                host: fixture.target_id,
+                bay: 0,
+            },
+            travel::Presence::SlipTransit(Id::new()),
+        ] {
+            world
+                .entity_mut(fixture.observer)
+                .insert(crate::sim::travel::PresenceState(presence));
+            let (objects, visible) = optical.observe(
+                world,
+                fixture.account,
+                &[fixture.view.clone()],
+                &BTreeMap::new(),
+            );
+            assert_eq!(objects.len(), 1);
+            assert_eq!(objects[0].known_entity, Some(fixture.own_id));
+            assert_eq!(visible, BTreeSet::from([fixture.own_id]));
+            assert!(objects[0].appearance.is_some());
+        }
+    }
+
+    #[test]
+    fn destroyed_or_wreck_stored_focus_has_no_optical_mesh_or_remote_scene() {
+        let mut fixture = Fixture::new();
+        let world = fixture.app.world_mut();
+        let mut optical = OpticalSession::default();
+        let views = [fixture.view.clone()];
+        let (before, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        assert!(
+            before
+                .iter()
+                .any(|object| object.known_entity == Some(fixture.own_id))
         );
-        assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].known_entity, Some(fixture.own_id));
-        assert_eq!(visible, BTreeSet::from([fixture.own_id]));
-        assert!(objects[0].appearance.is_some());
+        for presence in [
+            travel::Presence::Destroyed,
+            travel::Presence::StoredInWreck(fixture.target_id),
+        ] {
+            world.entity_mut(fixture.observer).insert((
+                crate::sim::travel::Dormant,
+                crate::sim::travel::PresenceState(presence),
+            ));
+            let (objects, visible) =
+                optical.observe(world, fixture.account, &views, &BTreeMap::new());
+            assert!(objects.is_empty());
+            assert!(visible.is_empty());
+        }
     }
 
     #[test]

@@ -1,22 +1,43 @@
 use super::*;
 use crate::spatial::{Marker, Path, Snapshot};
 
-fn metadata(caller: &Caller<'_, Host>, meta: w::SpatialMeta, maximum_role: u64) -> CallResult {
-    lease(caller, meta.valid_until_s)?;
+fn metadata(
+    caller: &Caller<'_, Host>,
+    meta: w::SpatialMeta,
+    maximum_role: u64,
+) -> CallResult<bool> {
+    let active = lease_active(caller, meta.valid_until_s)?;
 
     if meta.id == 0 || meta.role > maximum_role || meta.label.as_str().is_none() {
         return Err(w::ERR_ARGUMENT.into());
     }
 
-    Ok(())
+    Ok(active)
 }
 
 fn frame(
     caller: &Caller<'_, Host>,
     frame: w::SpatialFrame,
     marker: bool,
+    active: bool,
 ) -> CallResult<Option<Snapshot>> {
     finite(&frame.origin_velocity_m_s)?;
+
+    match frame.kind {
+        w::FRAME_SHIP | w::FRAME_SHIP_BODY if frame.reference == 0 => {}
+        w::FRAME_SNAPSHOT | w::FRAME_CONTACT if frame.reference != 0 => {}
+        w::FRAME_PATH if marker && frame.reference != 0 => {}
+        _ => return Err(w::ERR_ARGUMENT.into()),
+    }
+
+    if frame.kind != w::FRAME_SNAPSHOT && frame.origin_velocity_m_s != [0.; 3] {
+        return Err(w::ERR_ARGUMENT.into());
+    }
+
+    if !active {
+        return Ok(None);
+    }
+
     let host = caller.data();
 
     if frame.kind == w::FRAME_SNAPSHOT {
@@ -25,10 +46,6 @@ fn frame(
             .snapshot(frame.reference, host.current, host.borrowed_snapshot)
             .map(Some)
             .ok_or_else(|| w::ERR_HANDLE.into());
-    }
-
-    if frame.origin_velocity_m_s != [0.; 3] {
-        return Err(w::ERR_ARGUMENT.into());
     }
 
     match frame.kind {
@@ -75,10 +92,10 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         {
             status((|| {
                 let record: w::SpatialMarker = input(&mut caller, pointer, bytes)?;
-                metadata(&caller, record.meta, w::MARKER_EVENT)?;
+                let active = metadata(&caller, record.meta, w::MARKER_EVENT)?;
                 finite(&record.offset_m)?;
                 finite(&[record.time_s])?;
-                let snapshot = frame(&caller, record.frame, true)?;
+                let snapshot = frame(&caller, record.frame, true, active)?;
 
                 match record.time_mode {
                     w::TIME_CURRENT if record.time_s == 0. => {}
@@ -92,6 +109,10 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     record.time_mode == w::TIME_FIXED && record.time_s < snapshot.epoch
                 }) {
                     return Err(w::ERR_ARGUMENT.into());
+                }
+
+                if !active {
+                    return Ok(());
                 }
 
                 let spatial = &caller.data().working.spatial;
@@ -149,11 +170,11 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 }
 
                 let header: w::SpatialPath = input(&mut caller, pointer, bytes)?;
-                metadata(&caller, header.meta, w::PATH_ROUTE)?;
-                let snapshot = frame(&caller, header.frame, false)?;
+                let active = metadata(&caller, header.meta, w::PATH_ROUTE)?;
+                let snapshot = frame(&caller, header.frame, false, active)?;
 
                 if header.kind > w::PATH_TIMED
-                    || (header.kind == w::PATH_TIMED && snapshot.is_none())
+                    || (header.kind == w::PATH_TIMED && header.frame.kind != w::FRAME_SNAPSHOT)
                 {
                     return Err(w::ERR_ARGUMENT.into());
                 }
@@ -165,6 +186,40 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                         if header.kind == w::PATH_TIMED && header.subject_contact != 0 => {}
                     w::PATH_REFERENCE | w::PATH_ROUTE if header.subject_contact == 0 => {}
                     _ => return Err(w::ERR_ARGUMENT.into()),
+                }
+
+                let vertex_bytes = count * size_of::<w::SpatialVertex>() as u32;
+                memory_range(&caller, vertex_pointer, vertex_bytes)?;
+                let vertices: Vec<_> = payload(&caller, vertex_pointer, vertex_bytes)?
+                    .chunks_exact(size_of::<w::SpatialVertex>())
+                    .map(|bytes| w::SpatialVertex::read(bytes).unwrap())
+                    .collect();
+
+                for vertex in &vertices {
+                    finite(&vertex.position_m)?;
+                    finite(&[vertex.time_s])?;
+
+                    if header.kind == w::PATH_POLYLINE {
+                        if vertex.time_s != 0. {
+                            return Err(w::ERR_ARGUMENT.into());
+                        }
+                    } else if vertex.time_s < 0.
+                        || snapshot.is_some_and(|snapshot| vertex.time_s < snapshot.epoch)
+                    {
+                        return Err(w::ERR_ARGUMENT.into());
+                    }
+                }
+
+                if header.kind == w::PATH_TIMED
+                    && !vertices
+                        .windows(2)
+                        .all(|pair| pair[0].time_s < pair[1].time_s)
+                {
+                    return Err(w::ERR_ARGUMENT.into());
+                }
+
+                if !active {
+                    return Ok(());
                 }
 
                 let spatial = &caller.data().working.spatial;
@@ -188,34 +243,6 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
 
                 if other_vertices + count as usize > w::MAX_TOTAL_VERTICES as usize {
                     return Err(w::ERR_LIMIT.into());
-                }
-
-                let vertex_bytes = count * size_of::<w::SpatialVertex>() as u32;
-                memory_range(&caller, vertex_pointer, vertex_bytes)?;
-                let vertices: Vec<_> = payload(&caller, vertex_pointer, vertex_bytes)?
-                    .chunks_exact(size_of::<w::SpatialVertex>())
-                    .map(|bytes| w::SpatialVertex::read(bytes).unwrap())
-                    .collect();
-
-                for vertex in &vertices {
-                    finite(&vertex.position_m)?;
-                    finite(&[vertex.time_s])?;
-
-                    if header.kind == w::PATH_POLYLINE {
-                        if vertex.time_s != 0. {
-                            return Err(w::ERR_ARGUMENT.into());
-                        }
-                    } else if vertex.time_s < snapshot.unwrap().epoch {
-                        return Err(w::ERR_ARGUMENT.into());
-                    }
-                }
-
-                if header.kind == w::PATH_TIMED
-                    && !vertices
-                        .windows(2)
-                        .all(|pair| pair[0].time_s < pair[1].time_s)
-                {
-                    return Err(w::ERR_ARGUMENT.into());
                 }
 
                 let published_at = caller.data().current.epoch;

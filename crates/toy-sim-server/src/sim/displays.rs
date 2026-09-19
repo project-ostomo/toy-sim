@@ -30,6 +30,22 @@ pub struct Display {
     authority: u64,
     revision: u64,
     event_id: u64,
+    requested_slots: BTreeMap<u8, u8>,
+}
+
+impl Display {
+    pub(crate) fn minimum_to_progress(&self, tick: u64) -> Option<u64> {
+        let ready = self.program.is_booting()
+            || self.program.is_suspended()
+            || self.program.has_pending_input()
+            || self.requested_slots.iter().any(|(&slot, &hz)| {
+                self.frames.get(&slot).is_none_or(|frame| {
+                    tick.saturating_mul(u64::from(hz)) / 10
+                        > frame.tick.saturating_mul(u64::from(hz)) / 10
+                })
+            });
+        ready.then(|| self.program.minimum_to_progress())
+    }
 }
 
 #[derive(Resource, Default)]
@@ -114,6 +130,7 @@ pub fn update(world: &mut World) {
                 authority,
                 revision,
                 event_id: 0,
+                requested_slots: slots.clone(),
             });
         }
 
@@ -123,6 +140,7 @@ pub fn update(world: &mut World) {
         let origin = env.origin;
         let mut display = world.entity_mut(ship).take::<Display>().unwrap();
         display.last_viewed = tick;
+        display.requested_slots.clone_from(&slots);
         display.frames.retain(|slot, _| slots.contains_key(slot));
         let mut input = input.unwrap_or_default();
         input.commands.clear();
@@ -449,6 +467,63 @@ mod tests {
             },
         );
         revision
+    }
+
+    #[test]
+    fn subscribed_stock_display_boots_with_the_flight_computer_under_one_tick_cap() {
+        let account = Id::new();
+        let mut app = crate::sim::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<crate::sim::vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let id = world.get::<Identity>(ship).unwrap().0;
+        let session = session::connect(world, account).unwrap();
+        world
+            .get_mut::<Session>(session)
+            .unwrap()
+            .screens
+            .insert((id, 0), 10);
+        let owner = crate::sim::gas::payer(world, ship).unwrap();
+        let ledger = world.resource::<crate::sim::gas::GasLedger>().clone();
+        let mut first_frame = None;
+        for tick in 0..200 {
+            let before = ledger.account(owner).unwrap().spent;
+            app.update();
+            let world = app.world_mut();
+            update(world);
+            let software = world.get::<crate::sim::vessel::ShipSoftware>(ship).unwrap();
+            assert!(
+                software.controller.fault.is_none(),
+                "tick={tick}: {:?}",
+                software.controller.fault
+            );
+            assert_eq!(
+                ledger.account(owner).unwrap().spent - before,
+                world
+                    .get::<crate::sim::vessel::ShipSoftware>(ship)
+                    .unwrap()
+                    .last_gas_used
+            );
+            assert!(
+                world
+                    .get::<crate::sim::vessel::ShipSoftware>(ship)
+                    .unwrap()
+                    .last_gas_used
+                    <= toy_sim_ship_wasm::FUEL_PER_TICK
+            );
+            if frame(world, ship, 0)
+                .and_then(|f| f.frame)
+                .is_some_and(|f| f.draws.len() >= 5)
+            {
+                first_frame.get_or_insert(tick);
+            }
+        }
+        assert!(
+            first_frame.is_some_and(|tick| tick < 150),
+            "stock display did not publish after fifteen simulated seconds"
+        );
     }
 
     #[test]

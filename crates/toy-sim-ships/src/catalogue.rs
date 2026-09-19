@@ -167,6 +167,8 @@ pub enum Equipment {
         thrust_n: f64,
         propellant_kg_s: f64,
         power_w: f64,
+        #[serde(default)]
+        propellant_energy_j_kg: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plume: Option<VacuumPlume>,
     },
@@ -332,12 +334,20 @@ impl Equipment {
                 thrust_n,
                 propellant_kg_s,
                 power_w,
+                propellant_energy_j_kg,
                 ..
             } => {
-                if 0.5 * thrust_n.powi(2) / propellant_kg_s > power_w * (1.0 + 1e-10) {
+                let supplied_power = power_w + propellant_kg_s * propellant_energy_j_kg;
+                if !propellant_energy_j_kg.is_finite()
+                    || propellant_energy_j_kg < 0.
+                    || !power_w.is_finite()
+                    || power_w < 0.
+                    || !supplied_power.is_finite()
+                    || 0.5 * thrust_n.powi(2) / propellant_kg_s > supplied_power * (1.0 + 1e-10)
+                {
                     return false;
                 }
-                vec![thrust_n, propellant_kg_s, power_w]
+                vec![thrust_n, propellant_kg_s]
             }
             Self::ThermalEngine {
                 thrust_n,
@@ -524,6 +534,24 @@ impl Catalogue {
                     .spec(self)
                     .ok_or_else(|| anyhow::anyhow!("unknown ammunition"))?;
             }
+            if matches!(
+                p.equipment,
+                Equipment::Utility {
+                    utility: crate::utilities::UtilityDef::MissileLauncher { .. }
+                }
+            ) {
+                let ammunition = self
+                    .resources
+                    .iter()
+                    .find(|resource| resource.id == crate::missiles::AMMUNITION)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("missile launcher requires interceptor ammunition")
+                    })?;
+                ensure!(
+                    p.tank_volume_m3 >= ammunition.volume_m3,
+                    "missile launcher needs room for at least one round"
+                );
+            }
             if let Equipment::Engine {
                 propellant_resource,
                 ..
@@ -667,7 +695,7 @@ mod tests {
             ("radial_falloff = 2.0", "radial_falloff = -1.0"),
         ] {
             assert!(source.contains(from));
-            let c: Catalogue = toml::from_str(&source.replace(from, to)).unwrap();
+            let c: Catalogue = toml::from_str(&source.replacen(from, to, 1)).unwrap();
             assert!(
                 c.validate()
                     .unwrap_err()

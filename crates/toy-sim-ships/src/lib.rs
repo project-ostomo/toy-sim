@@ -15,6 +15,8 @@ pub mod thermal;
 
 pub mod weapons;
 
+pub mod missiles;
+
 pub mod reactors;
 
 pub mod utilities;

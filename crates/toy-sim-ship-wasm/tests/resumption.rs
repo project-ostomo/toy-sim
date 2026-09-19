@@ -124,7 +124,7 @@ fn initialization_can_span_paid_slices_without_failing_preflight_validation() {
 #[test]
 fn locals_and_callback_identity_survive_many_small_grants() {
     let program = guest(
-        r#"(import "ship_v27" "persistent_write"
+        r#"(import "ship_v28" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "(global $calls (mut i64) (i64.const 0))",
         r#"
@@ -168,11 +168,11 @@ fn locals_and_callback_identity_survive_many_small_grants() {
 fn borrowed_snapshot_survives_implicit_wait_until_it_can_be_pinned() {
     let program = guest(
         r#"
-            (import "ship_v27" "tick_read"
+            (import "ship_v28" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v27" "snapshot_keep"
+            (import "ship_v28" "snapshot_keep"
                 (func $keep (param i64) (result i32)))
-            (import "ship_v27" "snapshot_drop"
+            (import "ship_v28" "snapshot_drop"
                 (func $drop (param i64) (result i32)))
         "#,
         "",
@@ -237,7 +237,7 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
     .unwrap();
     let data: String = query.iter().map(|byte| format!("\\{byte:02x}")).collect();
     let program = guest(
-        r#"(import "ship_v27" "world_query"
+        r#"(import "ship_v28" "world_query"
             (func $query (param i32 i32 i32 i32) (result i32)))"#,
         &format!(r#"(data (i32.const 0) "{data}")"#),
         &format!(
@@ -292,7 +292,7 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
 #[test]
 fn malformed_large_query_still_requires_its_input_processing_allowance() {
     let program = guest(
-        r#"(import "ship_v27" "world_query"
+        r#"(import "ship_v28" "world_query"
             (func $query (param i32 i32 i32 i32) (result i32)))"#,
         r#"(data (i32.const 0) "\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff")"#,
         &format!(
@@ -321,13 +321,13 @@ fn malformed_large_query_still_requires_its_input_processing_allowance() {
 fn request_batches_stay_stable_while_observations_refresh() {
     let program = guest(
         r#"
-            (import "ship_v27" "request_info"
+            (import "ship_v28" "request_info"
                 (func $request (param i32 i32 i32) (result i32)))
-            (import "ship_v27" "request_reply"
+            (import "ship_v28" "request_reply"
                 (func $reply (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v27" "tick_read"
+            (import "ship_v28" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v27" "persistent_write"
+            (import "ship_v28" "persistent_write"
                 (func $save (param i32 i32) (result i32)))
         "#,
         "",
@@ -387,7 +387,7 @@ fn request_batches_stay_stable_while_observations_refresh() {
 #[test]
 fn later_trap_keeps_prior_slice_durable_writes_but_reboots_the_computer() {
     let program = guest(
-        r#"(import "ship_v27" "persistent_write"
+        r#"(import "ship_v28" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "",
         r#"

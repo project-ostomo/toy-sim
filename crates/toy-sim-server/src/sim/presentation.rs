@@ -193,14 +193,20 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         .collect();
     let reboot_remaining_s =
         software.controller.boot_remaining_gas() as f64 / software.last_gas_limit as f64 * 0.1;
-    let computer = if world.get::<super::travel::Dormant>(entity).is_some() {
+    let dormant = world.get::<super::travel::Dormant>(entity).is_some();
+    let shared_computer = world
+        .get_resource::<super::missiles::Callbacks>()
+        .and_then(|callbacks| callbacks.0.get(&entity))
+        .is_some_and(|callbacks| !callbacks.is_empty());
+    let computer_powered = (!dormant && state.computer_running(design)) || shared_computer;
+    let computer = if dormant && !shared_computer {
         ComputerStatus::Paused
     } else if let Some(fault) = &software.controller.fault {
         ComputerStatus::Fault {
             message: bounded(fault, 4096),
-            reboot_remaining_s: state.computer_running(design).then_some(reboot_remaining_s),
+            reboot_remaining_s: computer_powered.then_some(reboot_remaining_s),
         }
-    } else if !state.computer_running(design) {
+    } else if !computer_powered {
         ComputerStatus::Unpowered
     } else if software.controller.is_booting() {
         ComputerStatus::Booting {
@@ -211,7 +217,12 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         ComputerStatus::Running {
             gas_used: software.last_gas_used,
             gas_limit: software.last_gas_limit,
-            execution: software.controller.execution_status(),
+            execution: match software.controller.execution_status() {
+                toy_sim_model::ExecutionStatus::WaitingForGas if software.display_limited => {
+                    toy_sim_model::ExecutionStatus::Suspended
+                }
+                status => status,
+            },
         }
     };
     let mut screens = super::displays::definitions(world, entity);

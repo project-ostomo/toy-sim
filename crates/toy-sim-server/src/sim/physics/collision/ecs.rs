@@ -51,6 +51,7 @@ pub struct CollisionStats {
     pub detailed_queries: u64,
     pub impacts: u64,
     pub contact_reviews: u64,
+    pub rotation_envelope_fallbacks: u64,
     pub dissipated_j: f64,
     pub index_seconds: f64,
     pub query_seconds: f64,
@@ -120,6 +121,8 @@ pub fn step(world: &mut World) {
             generation: 0,
             impulse_dv: DVec3::ZERO,
             impulse_dw: DVec3::ZERO,
+            rotation_path: None,
+            rotational_envelopes: Vec::new(),
         });
     }
     let ships: Vec<_> = world
@@ -374,6 +377,7 @@ pub fn step(world: &mut World) {
         detailed_queries: report.detailed,
         impacts: report.impacts,
         contact_reviews: report.reviews,
+        rotation_envelope_fallbacks: report.rotation_envelope_fallbacks,
         dissipated_j: report.dissipated_j,
         index_seconds: report.index_seconds,
         query_seconds: report.query_seconds,

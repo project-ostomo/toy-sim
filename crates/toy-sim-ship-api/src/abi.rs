@@ -1,9 +1,9 @@
-//! Ship ABI 27: fixed little-endian records and Postcard world services.
+//! Ship ABI 28: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v27";
-pub const VERSION: u32 = 27;
+pub const IMPORT_MODULE: &str = "ship_v28";
+pub const VERSION: u32 = 28;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -1202,7 +1202,50 @@ const _: () = assert!(core::mem::offset_of!(ScreenEvent, modifiers) == 32);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, x) == 40);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, y) == 48);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, text) == 56);
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MissileObservation {
+    pub handle: u64,
+    pub target_visible: u64,
+    pub target_offset_m: [f64; 3],
+    pub target_relative_velocity_m_s: [f64; 3],
+    pub rotation: [f64; 4],
+    pub angular_velocity_rad_s: [f64; 3],
+    pub velocity_m_s: [f64; 3],
+    pub maximum_acceleration_m_s2: f64,
+    pub turn_rate_rad_s: f64,
+    pub fuel_units: u64,
+    pub dt_s: f64,
+    pub time_s: f64,
+    pub target_uncertainty_m: f64,
+}
+
+impl private::Sealed for MissileObservation {}
+impl Record for MissileObservation {}
+const _: () =
+    assert!(size_of::<MissileObservation>() == 192 && align_of::<MissileObservation>() == 8);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, target_offset_m) == 16);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, rotation) == 64);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, angular_velocity_rad_s) == 96);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, maximum_acceleration_m_s2) == 144);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, fuel_units) == 160);
+const _: () = assert!(core::mem::offset_of!(MissileObservation, target_uncertainty_m) == 184);
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct MissileControl {
+    pub direction: [f64; 3],
+    pub throttle: f64,
+}
+
+impl private::Sealed for MissileControl {}
+impl Record for MissileControl {}
+const _: () = assert!(size_of::<MissileControl>() == 32 && align_of::<MissileControl>() == 8);
+const _: () = assert!(core::mem::offset_of!(MissileControl, throttle) == 24);
+
 pub const IMPORTS: &[&str] = &[
+    "missile_read",
+    "missile_control",
     "persistent_read",
     "persistent_write",
     "world_query",
@@ -1246,8 +1289,10 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v27")]
+    #[link(wasm_import_module = "ship_v28")]
     unsafe extern "C" {
+        pub fn missile_read(output: *mut u8, bytes: u32) -> i32;
+        pub fn missile_control(input: *const u8, bytes: u32) -> i32;
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
         pub fn persistent_write(input: *const u8, length: u32) -> i32;
         pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;

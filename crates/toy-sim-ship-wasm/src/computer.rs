@@ -140,10 +140,18 @@ impl Default for Input {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallbackKind {
+    Ship,
+    Display,
+    Missile(u64),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Output {
     pub world_actions: Vec<toy_sim_model::ProgramAction>,
     pub devices: Vec<DeviceCommand>,
+    pub missiles: Vec<(u64, abi::MissileControl)>,
     pub replies: Vec<RequestReply>,
     pub screens: Vec<ScreenImage>,
     pub cleared_screens: Vec<u64>,
@@ -271,6 +279,18 @@ impl crate::Controller {
         use toy_sim_ships::{DeviceKind, DeviceSource, Equipment};
 
         self.catalogue = design.device_catalogue.clone().into();
+        let sensor_power_w = design
+            .parts
+            .iter()
+            .filter_map(|part| match part.definition.equipment {
+                Equipment::Utility {
+                    utility: toy_sim_ships::utilities::UtilityDef::Sensor { power_w, .. },
+                } => Some(power_w),
+                _ => None,
+            })
+            .reduce(|total, power| total + power)
+            .unwrap_or(toy_sim_ships::SENSOR_POWER_W);
+
         self.resource_specs = catalogue
             .resources
             .iter()
@@ -292,7 +312,7 @@ impl crate::Controller {
                     return match design.device_catalogue[index].kind {
                         DeviceKind::Sensor { range_m } => abi::SensorSpec {
                             max_range_m: range_m,
-                            power_w: toy_sim_ships::SENSOR_POWER_W,
+                            power_w: sensor_power_w,
                         }
                         .bytes()
                         .to_vec(),
@@ -429,7 +449,7 @@ mod tests {
         let bytes = wat::parse_str(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const 27)
+            (func (export "ship_api_version") (result i32) i32.const 28)
             (func (export "ship_tick")))"#,
         )
         .unwrap();

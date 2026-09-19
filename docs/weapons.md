@@ -1,11 +1,11 @@
 # Weapons
 
-Weapons are ship parts that launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Electric weapons draw shot energy from the shared ship battery. Conventional guns use cartridges and draw no shot electricity or separate counterpropellant.
+The catalogue includes projectile guns, lasers, and launchers for guided kinetic interceptors. Projectile guns launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Electric weapons draw shot energy from the shared ship battery. Conventional guns use cartridges and draw no shot electricity or separate counterpropellant.
 
 Source:
 
 - Definitions, specs and servo mechanics: [crates/toy-sim-ships/src/weapons.rs](../crates/toy-sim-ships/src/weapons.rs)
-- Hardware commands and readings: `ShipState::step` in [runtime.rs](../crates/toy-sim-ships/src/runtime.rs)
+- Hardware commands and readings: [server hardware systems](../crates/toy-sim-server/src/sim/hardware.rs)
 - Launch events inside the collision timeline: [crates/toy-sim-server/src/sim/physics/collision/weapons.rs](../crates/toy-sim-server/src/sim/physics/collision/weapons.rs)
 - Standard firmware engagement policy: [crates/toy-sim-example-controller/src/weapons.rs](../crates/toy-sim-example-controller/src/weapons.rs)
 
@@ -35,13 +35,16 @@ Electric shot energy is `½·m·v² / efficiency`. An electric shot also consume
 
 ### Bundled weapons
 
-| Part | Ammunition | Radius | Shot energy | Cycle | Efficiency | Dispersion | Muzzle offset | Slew |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `railgun_turret` | `bearing` (0.01 kg) | 5 mm | ≈ 416.7 kJ | 0.05 s | 0.3 | 0.1 mrad | (0, 0, −1) m | π rad/s |
-| `coilgun_turret` | `coil_slug` (10 kg) | 67 mm | 250 MJ | 1 s | 0.5 | 0.2 mrad | (0, 0, −1.6) m | π/3 rad/s |
-| `coilgun` | `coil_slug` (10 kg) | 67 mm | 250 MJ | 1 s | 0.5 | 0.2 mrad | (0, 0, −1.7) m | fixed |
+| Part | Projectile or beam | Firing rate | Energy input |
+| --- | --- | --- | --- |
+| `railgun_compact` | 1 g at 20 km/s | 20 shots/s | 400 kJ per shot |
+| `autocannon_compact` | 0.1 kg at 1100 m/s | 40 shots/s | Chemical cartridge; no shot electricity |
+| `laser_2m` | 2 MW optical output | Continuous, integrated at 10 Hz | 5 MW electrical |
+| `laser_4m` | 40 MW optical output | Continuous, integrated at 10 Hz | 100 MW electrical |
 
-All three fire at 5000 m/s. The armed starter carries one railgun turret and one coilgun turret. The test loadout provides 1000 bearings and 12 coilgun slugs when storage allows ([ships.md](ships.md#test-loadout)).
+The default expedition patrol carries lasers. The optional Shrike patrol carries
+two missile launchers; the Kestrel defense installation carries four. Tank
+configuration supplies ammunition.
 
 ## The weapon setting
 
@@ -52,10 +55,14 @@ Firmware writes `SET_WEAPON` with a `WeaponSetting` (72 bytes):
 | `aim_direction` | Unit vector (±1e-6), world axes | Desired bore direction at the tick start |
 | `aim_angular_velocity_rad_s` | Finite, magnitude at most 100 | The desired direction rotates at this rate during the tick |
 | `maximum_pointing_error_rad` | In [0, π] | Largest bore error at which a shot may fire |
-| `valid_until_s` | From the current time to one physics step later (+1e-6 s) | Shots after this time are refused |
+| `valid_until_s` | Finite, no later than one physics step after the current time (+1e-6 s) | Expired commands are ignored; shots after the deadline are refused |
 | `trigger` | 0 or 1 | Whether to fire |
 
-Settings outside these rules return `ERR_ARGUMENT` and are not staged. Because `valid_until_s` expires within one tick, firmware must restate its intent every tick in order to keep firing.
+Settings outside these rules return `ERR_ARGUMENT` and are not staged. A valid
+setting at or before the current time returns success without changing the
+weapon command, so a suspended callback can safely finish after its aim expires.
+The host never extends a stale lease. Because `valid_until_s` expires within one
+tick, firmware must restate its intent every tick in order to keep firing.
 
 ## What happens during a tick
 
@@ -65,7 +72,7 @@ The next launch is scheduled after the firing interval, inside the current tick 
 
 Barrel clearance sweeps a projectile-sized ball from pivot to muzzle against the other ship parts and docked members. The muzzle must also lie outside its own part. Failed attempts consume no ammunition or shot energy.
 
-A successful shot subtracts `½ m v² / efficiency` from the battery, consumes one round and its counter-exhaust propellant, and restarts the firing interval. Projectile kinetic energy is `½ m v²`; the remainder enters the ship's waste heat system. The shield cooling circuit accepts waste heat while available, and the internal heat buffer stores it otherwise. See [ships.md](ships.md#heat-hull-and-shields).
+A successful electric shot subtracts `½ m v² / efficiency` from the battery and consumes one round and its counter-exhaust propellant. A chemical shot consumes its cartridge. Both restart the firing interval. Projectile kinetic energy is `½ m v²`; the remainder enters the ship's waste heat system. The shield cooling circuit accepts waste heat while available, and the internal heat buffer stores it otherwise. See [ships.md](ships.md#heat-hull-and-shields).
 
 Direction is sampled uniformly within the dispersion cone using the ship entity, part ID and shot count as a deterministic seed. Launch velocity is `ship velocity + ω × muzzle offset + direction × muzzle speed`. Projectile mass and propellant leave the ship. Angular momentum scales with the reduced mass, preserving ship spin and velocity under the prototype recoilless launch model.
 
@@ -93,7 +100,7 @@ The reading reports current resource availability and relevant conditions from t
 
 The bundled firmware separates target marking from the firing latch (see [ship-abi.md](ship-abi.md#requests)):
 
-- `REQUEST_MARK_TARGET { contact, maximum_flight_time_s }` replaces the marked target and stops firing. A control-enabled weapon must exist, the contact must be a visible ship, and the maximum flight time must be in [0.01, 60] s.
+- `REQUEST_MARK_TARGET { contact, maximum_flight_time_s }` replaces the marked target and stops firing. The contact must be a visible ship, and the maximum flight time must be in [0.01, 60] s. Marking also works on ships equipped only with missile launchers.
 - `REQUEST_UNMARK_TARGET` clears the mark and stops firing.
 - `REQUEST_START_FIRING` enables fire against the marked target. It is rejected when no target is marked.
 - `REQUEST_STOP_FIRING` disables fire while retaining the target and its aiming solutions.
@@ -144,6 +151,27 @@ These cover:
 
 ## Laser equipment
 
-Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. ABI 15 exposes the beam fields to firmware.
+Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. The current ABI exposes the beam fields to firmware.
 
-The default NTR patrol uses `autocannon_compact`: 0.1 kg rounds at 1100 m/s and 40 shots/s, with 35% efficiency. It can fire with an empty battery and no counterpropellant. Avionics still need power to issue aim and trigger commands.
+The small water-NTR patrol blueprint uses `autocannon_compact`: 0.1 kg rounds at 1100 m/s and 40 shots/s, with 35% efficiency. It can fire with an empty battery and no counterpropellant. Avionics still need power to issue aim and trigger commands.
+
+## Guided kinetic interceptors
+
+The Kite is a 400 kg wet missile with 240 kg of storable propellant, a 25 kN
+chemical engine, a 3 km/s exhaust speed, powered sensors, a finite battery, and
+ordinary attitude actuators. A launcher consumes a packaged round, ejects it
+outside the carrier's shield, and conserves launch mass and momentum. Each
+launcher holds twelve rounds and cycles every ten seconds. The firing latch
+starts new launches; holding fire leaves already launched missiles flying.
+
+Missiles use ordinary ship physics, collision, heat, optics, and damage. They can
+be shot down by the carrier's own weapons. Guidance exhaustion leaves a coasting
+physical body. The standard firmware uses proportional navigation and coasting
+between corrections; guidance reads the group's observed track, including sensor
+uncertainty. There is no separate explosive warhead rule in this version.
+
+The optional `missile_tick(handle)` callback shares its carrier's VM, memory,
+physical gas allowance, and owner's account. A destroyed carrier retains that
+computer while surviving missiles need it, without retaining a hull or sensors.
+The parent VM retires after its last guided dependent is lost. A checkpoint
+restores missile state and cold-boots the shared computer with its durable data.

@@ -16,6 +16,7 @@ pub(super) struct SliceInput {
     pub grant: u64,
     pub gas_per_tick: u64,
     pub state: Session,
+    pub missile: Option<w::MissileObservation>,
 }
 
 #[derive(Default)]
@@ -73,6 +74,7 @@ fn refresh(host: &mut Host, mut slice: SliceInput, new_callback: bool) {
     );
     host.working.expire(slice.input.observation.time_s);
     host.input = Some(slice.input);
+    host.missile = slice.missile;
     host.source = slice.source;
     host.catalogue = slice.catalogue;
     host.specs = slice.specs;
@@ -270,6 +272,8 @@ pub(super) fn initialize(
             let mut host = Host {
                 persistent_data,
                 display_only,
+                callback: None,
+                missile: None,
                 working: Session::default(),
                 current: spatial::Snapshot::default(),
                 sequence: 0,
@@ -329,21 +333,27 @@ pub(super) fn initialize(
                         "ship_tick"
                     },
                 )?;
-                Ok::<_, anyhow::Error>((tick, remaining))
+                let missile_tick = if module.get_export("missile_tick").is_some() {
+                    Some(instance.get_typed_func::<u64, ()>(&mut store, "missile_tick")?)
+                } else {
+                    None
+                };
+                Ok::<_, anyhow::Error>((tick, missile_tick, remaining))
             }
             .await;
             finish(&mut store, result.is_ok())?;
-            let (tick, remaining) = result?;
+            let (tick, missile_tick, remaining) = result?;
             Ok(Machine {
                 store,
                 tick,
+                missile_tick,
                 remaining,
             })
         }),
     }
 }
 
-pub(super) fn callback(mut machine: Machine) -> Pending {
+pub(super) fn callback(mut machine: Machine, kind: CallbackKind) -> Pending {
     Pending {
         future: Box::pin(async move {
             let exchange = machine.store.data().exchange.clone();
@@ -354,15 +364,32 @@ pub(super) fn callback(mut machine: Machine) -> Pending {
                 .take()
                 .expect("callback slice");
             let grant = slice.grant;
-            machine.store.data_mut().sequence += 1;
+            if !matches!(kind, CallbackKind::Missile(_)) {
+                machine.store.data_mut().sequence += 1;
+            }
+            machine.store.data_mut().callback = Some(kind);
             refresh(machine.store.data_mut(), slice, true);
             machine.remaining.set(
                 &mut machine.store,
                 wasmtime::Val::I64(i64::try_from(grant)?),
             )?;
-            let result = machine.tick.call_async(&mut machine.store, ()).await;
+            let result = match kind {
+                CallbackKind::Ship | CallbackKind::Display => {
+                    machine.tick.call_async(&mut machine.store, ()).await
+                }
+                CallbackKind::Missile(handle) => {
+                    machine
+                        .missile_tick
+                        .as_ref()
+                        .expect("validated missile callback")
+                        .call_async(&mut machine.store, handle)
+                        .await
+                }
+            };
             finish(&mut machine.store, result.is_ok())?;
             result?;
+            machine.store.data_mut().callback = None;
+            machine.store.data_mut().missile = None;
             Ok(machine)
         }),
     }

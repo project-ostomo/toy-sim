@@ -959,6 +959,102 @@ pub fn publish_indexes(
         .map_or(0, |navigation| navigation.catalogue.topology_revision);
 }
 
+struct SourceContext {
+    entity: Entity,
+    id: EntityId,
+    owner: ownership::Principal,
+    radius: f64,
+    mass: f64,
+    pose: Pose,
+    travel: TravelState,
+    slip: Option<super::travel::SlipDrive>,
+}
+
+fn fused_source(
+    publication: &PublishedWorld,
+    tick: u64,
+    group: &Group,
+    state: &ServiceState,
+    context: SourceContext,
+) -> Arc<dyn toy_sim_ship_wasm::ScanSource> {
+    state.handles.lock().unwrap().expire(tick);
+    state.queries.lock().unwrap().expire(tick);
+    state.display_queries.lock().unwrap().expire(tick);
+    let slip = context.slip.as_ref();
+    Arc::new(FusedScan {
+        navigation_revision: publication.navigation_revision,
+        gates: publication.gates.clone(),
+        universe: publication.universe.clone(),
+        epoch: hifitime::Epoch::from_mjd_utc(0.0)
+            + hifitime::Duration::from_seconds(tick as f64 * 0.1),
+        own: context.id,
+        physical: context.entity,
+        owner: context.owner,
+        directory: publication.directory.clone(),
+        radius: context.radius,
+        mass: context.mass,
+        group: group.id,
+        handles: state.handles.clone(),
+        pose: context.pose.clone(),
+        travel: context.travel,
+        slip_ready: slip.is_some_and(|drive| drive.ready_tick <= tick),
+        slip_power_w: slip.map_or(0.0, |drive| drive.power_w),
+        slip_preparation: slip.and_then(|drive| drive.preparation.clone()),
+        tick,
+        beacons: publication.beacons.clone(),
+        celestial: publication.celestial.clone(),
+        apertures: publication.public_apertures.clone(),
+        orbital: publication.orbital.clone(),
+        public: publication.public.clone(),
+        queries: state.queries.clone(),
+        display_queries: state.display_queries.clone(),
+        snapshot: group.snapshot.clone(),
+        origin: context.pose.position,
+        velocity: context.pose.velocity,
+    })
+}
+
+pub(crate) fn retained_source(
+    world: &mut World,
+    parent: Entity,
+) -> Option<Arc<dyn toy_sim_ship_wasm::ScanSource>> {
+    world.get::<super::travel::Dormant>(parent)?;
+    let membership = world.get::<Membership>(parent)?.0;
+    let group_id = world.get::<Group>(membership)?.id;
+    if world
+        .get::<ServiceState>(parent)
+        .is_none_or(|state| state.group != Some(group_id))
+    {
+        world.entity_mut(parent).insert(ServiceState {
+            group: Some(group_id),
+            ..Default::default()
+        });
+    }
+
+    // The remembered position is only a coordinate origin for already shared
+    // intelligence. It creates no sensor measurements or physical observer.
+    let pose = super::intelligence::pose(world.get::<PreciseTransform>(parent)?, None, None);
+    let context = SourceContext {
+        entity: parent,
+        id: world.get::<Identity>(parent)?.0,
+        owner: world.get::<super::ownership::AssetOwner>(parent)?.0,
+        radius: world.get::<super::vessel::ShipDesign>(parent)?.0.radius,
+        mass: world.get::<super::physics::MassProps>(parent)?.mass,
+        pose,
+        travel: world
+            .get::<super::travel::Travel>(parent)
+            .map_or_else(TravelState::default, |travel| travel.0.clone()),
+        slip: None,
+    };
+    Some(fused_source(
+        world.get_resource::<PublishedWorld>()?,
+        world.get_resource::<SimulationCounters>()?.ticks,
+        world.get::<Group>(membership)?,
+        world.get::<ServiceState>(parent)?,
+        context,
+    ))
+}
+
 pub fn prepare_sources(
     mut commands: Commands,
     publication: Res<PublishedWorld>,
@@ -1010,41 +1106,23 @@ pub fn prepare_sources(
         let state = state
             .filter(|state| state.group == Some(group.id))
             .unwrap_or(&fresh);
-        state.handles.lock().unwrap().expire(clock.ticks);
-        state.queries.lock().unwrap().expire(clock.ticks);
-        state.display_queries.lock().unwrap().expire(clock.ticks);
         let pose = super::intelligence::pose(transform, Some(velocity), Some(angular));
-        software.world_source = Some(Arc::new(FusedScan {
-            navigation_revision: publication.navigation_revision,
-            gates: publication.gates.clone(),
-            universe: publication.universe.clone(),
-            epoch: hifitime::Epoch::from_mjd_utc(0.0)
-                + hifitime::Duration::from_seconds(clock.ticks as f64 * 0.1),
-            own: id.0,
-            physical: entity,
-            owner: owner.0,
-            directory: publication.directory.clone(),
-            radius: design.0.radius,
-            mass: mass.mass,
-            group: group.id,
-            handles: state.handles.clone(),
-            pose: pose.clone(),
-            travel: travel.map_or_else(TravelState::default, |travel| travel.0.clone()),
-            slip_ready: slip.is_some_and(|drive| drive.ready_tick <= clock.ticks),
-            slip_power_w: slip.map_or(0., |drive| drive.power_w),
-            slip_preparation: slip.and_then(|drive| drive.preparation.clone()),
-            tick: clock.ticks,
-            beacons: publication.beacons.clone(),
-            celestial: publication.celestial.clone(),
-            apertures: publication.public_apertures.clone(),
-            orbital: publication.orbital.clone(),
-            public: publication.public.clone(),
-            queries: state.queries.clone(),
-            display_queries: state.display_queries.clone(),
-            snapshot: group.snapshot.clone(),
-            origin: pose.position,
-            velocity: pose.velocity,
-        }));
+        software.world_source = Some(fused_source(
+            &publication,
+            clock.ticks,
+            group,
+            state,
+            SourceContext {
+                entity,
+                id: id.0,
+                owner: owner.0,
+                radius: design.0.radius,
+                mass: mass.mass,
+                pose,
+                travel: travel.map_or_else(TravelState::default, |travel| travel.0.clone()),
+                slip: slip.cloned(),
+            },
+        ));
         if std::ptr::eq(state, &fresh) {
             commands.entity(entity).insert(fresh);
         }
@@ -1063,7 +1141,17 @@ pub fn dispatch_actions(world: &mut World) {
     batches.sort_by_key(|(id, _, _)| *id);
     for (_, entity, actions) in batches {
         for action in actions {
-            if let Err(error) = super::travel::dispatch(world, entity, action) {
+            let absent = world
+                .get::<super::travel::PresenceState>(entity)
+                .is_some_and(|state| {
+                    matches!(state.0, Presence::Destroyed | Presence::StoredInWreck(_))
+                });
+            let result = if absent {
+                Err(anyhow::anyhow!("ship has no active physical hardware"))
+            } else {
+                super::travel::dispatch(world, entity, action)
+            };
+            if let Err(error) = result {
                 if let Some(mut travel) = world.get_mut::<super::travel::Travel>(entity) {
                     travel.0.status = Status::Blocked(error.to_string());
                     travel.0.planning = None;
@@ -1361,6 +1449,97 @@ mod tests {
         for invalid in [-1.0, f64::NAN, f64::INFINITY, MAX_PREDICTION_SECONDS + 1.0] {
             assert!(source.query(query(invalid), false, 65_536).is_err());
         }
+    }
+
+    #[test]
+    fn retained_computer_reads_fresh_shared_intelligence_without_a_physical_observer() {
+        let mut world = World::new();
+        world.init_resource::<SimulationCounters>();
+        world.init_resource::<PublishedWorld>();
+        let group_id = Id::new();
+        let first = Id::new();
+        let second = Id::new();
+        let mut snapshot = toy_sim_intel::Snapshot::default();
+        snapshot.put(track(first, DVec3::X * 100.0, false));
+        let group = world
+            .spawn(Group {
+                id: group_id,
+                key: None,
+                snapshot: Arc::new(snapshot),
+            })
+            .id();
+        let catalogue = toy_sim_ships::Catalogue::builtin();
+        let design = Arc::new(toy_sim_ships::armed_starter().compile(&catalogue).unwrap());
+        let parent = world
+            .spawn((
+                Identity(Id::new()),
+                Membership(group),
+                super::super::ownership::AssetOwner(ownership::Principal::Player(Id::new())),
+                PreciseTransform::default(),
+                super::super::vessel::ShipDesign(design),
+                super::super::physics::MassProps::default(),
+                super::super::travel::Travel::default(),
+                super::super::travel::PresenceState(Presence::Destroyed),
+                super::super::travel::Dormant,
+                super::super::travel::SlipDrive::default(),
+            ))
+            .id();
+        let contact = |track| {
+            ProgramQuery::Contact(ContactRef {
+                group: group_id,
+                track,
+            })
+        };
+        let old = retained_source(&mut world, parent).unwrap();
+        assert!(old.query(contact(first), false, 1024).is_ok());
+
+        let mut next = toy_sim_intel::Snapshot::default();
+        next.tick = 2;
+        next.put(track(second, DVec3::Y * 200.0, false));
+        world.get_mut::<Group>(group).unwrap().snapshot = Arc::new(next);
+        world.resource_mut::<SimulationCounters>().ticks = 2;
+        let current = retained_source(&mut world, parent).unwrap();
+        assert!(current.query(contact(first), false, 1024).is_err());
+        let ProgramReply::Contact { pose, .. } =
+            current.query(contact(second), false, 1024).unwrap()
+        else {
+            panic!("expected shared contact");
+        };
+        assert_eq!(
+            pose.position,
+            GalacticPosition::from_meters(DVec3::Y * 200.0)
+        );
+        let foreign = ProgramQuery::Contact(ContactRef {
+            group: Id::new(),
+            track: second,
+        });
+        assert!(current.query(foreign, false, 1024).is_err());
+        assert!(matches!(
+            current.query(ProgramQuery::Travel, false, 4096).unwrap(),
+            ProgramReply::Travel {
+                slip_ready: false,
+                ..
+            }
+        ));
+
+        assert!(world.get::<Velocity>(parent).is_none());
+        assert!(world.get::<AngularVelocity>(parent).is_none());
+        assert!(
+            world
+                .get::<super::super::physics::RigidBody>(parent)
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<super::super::physics::collision::CollisionBody>(parent)
+                .is_none()
+        );
+        assert!(
+            world
+                .get::<super::super::spatial::SpatialBody>(parent)
+                .is_none()
+        );
+        assert!(world.get::<super::super::sensors::Sensor>(parent).is_none());
     }
 
     #[test]

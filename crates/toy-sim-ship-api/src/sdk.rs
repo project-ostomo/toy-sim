@@ -282,3 +282,15 @@ pub fn persistent_write(bytes: &[u8]) -> Result<(), i32> {
     }
     check(unsafe { abi::raw::persistent_write(bytes.as_ptr(), bytes.len() as u32) })
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn missile() -> Result<abi::MissileObservation, i32> {
+    read(|pointer, bytes| unsafe { abi::raw::missile_read(pointer, bytes) })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn control_missile(control: &abi::MissileControl) -> Result<(), i32> {
+    write(control, |pointer, bytes| unsafe {
+        abi::raw::missile_control(pointer, bytes)
+    })
+}

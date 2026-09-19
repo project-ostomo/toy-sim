@@ -1,6 +1,6 @@
 use crate::sim::{
-    gas, hardware, identity, infrastructure, intelligence, orrery, ownership, physics, precision,
-    registry, simulation, spatial, travel, vessel,
+    gas, hardware, identity, infrastructure, intelligence, missiles, orrery, ownership, physics,
+    precision, registry, simulation, spatial, travel, vessel,
 };
 use anyhow::{Context, Result, ensure};
 use bevy::{
@@ -78,6 +78,9 @@ struct ShipRecord {
     hardware: toy_sim_ships::ShipState,
     parts: Vec<PartRecord>,
     software: Option<SoftwareRecord>,
+    missile: Option<missiles::Missile>,
+    launchers: Option<missiles::Launchers>,
+    retained_computer: bool,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
     group: Option<Id>,
@@ -290,6 +293,9 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     })
                     .collect(),
                 software,
+                missile: world.get::<missiles::Missile>(entity).cloned(),
+                launchers: world.get::<missiles::Launchers>(entity).cloned(),
+                retained_computer: world.get::<missiles::RetainedComputer>(entity).is_some(),
                 control: control(world, entity),
                 iff: world
                     .get::<identity::Transponder>(entity)
@@ -395,6 +401,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             });
         }
     }
+    let ships = record.ships.iter().map(|ship| (ship.id, ship)).collect();
+    validate_missiles(&record.ships, &ships)?;
     Ok(postcard::to_stdvec(&record)?)
 }
 
@@ -430,6 +438,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
     let gates: BTreeMap<_, _> = record.gates.iter().map(|gate| (gate.id, gate)).collect();
+    validate_missiles(&record.ships, &ships)?;
     ensure!(
         groups.contains(&PUBLIC_GROUP),
         "public information group unavailable"
@@ -475,15 +484,30 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                 && iff.range_m >= 0.
         })
     };
+    let missile_programs: BTreeSet<_> = record
+        .ships
+        .iter()
+        .filter_map(|ship| ship.missile.as_ref())
+        .filter(|missile| missile.guidance_enabled)
+        .map(|missile| ships[&missile.parent].program)
+        .collect();
     for (hash, program) in &record.programs {
         ensure!(
             *blake3::hash(program).as_bytes() == *hash,
             "saved program checksum mismatch"
         );
-        world
-            .resource_mut::<vessel::WasmRuntime>()
-            .0
-            .validate_program(program)?;
+        let mut runtime = world.resource_mut::<vessel::WasmRuntime>();
+        runtime.0.validate_program(program)?;
+        if missile_programs.contains(hash) {
+            ensure!(
+                runtime
+                    .0
+                    .compile(program)?
+                    .get_export("missile_tick")
+                    .is_some(),
+                "guided missile parent has no missile callback"
+            );
+        }
     }
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
     for ship in &record.ships {
@@ -514,6 +538,18 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         );
         let blueprint: toy_sim_ships::ShipBlueprint = toml::from_str(&ship.blueprint)?;
         let design = blueprint.compile(catalogue)?;
+        if let Some(launchers) = &ship.launchers {
+            ensure!(
+                launchers.next_handle > 0
+                    && launchers.last_guided < launchers.next_handle
+                    && launchers.next_launch_s.iter().all(|(part, seconds)| {
+                        design.part_index.contains_key(part)
+                            && seconds.is_finite()
+                            && *seconds >= 0.
+                    }),
+                "invalid saved missile launcher state"
+            );
+        }
         let hardware = &ship.hardware;
         ensure!(
             hardware.inventory.quantities.len() == catalogue.resources.len()
@@ -707,6 +743,72 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     Ok(())
 }
 
+fn validate_missiles(records: &[ShipRecord], ships: &BTreeMap<Id, &ShipRecord>) -> Result<()> {
+    let mut handles = std::collections::BTreeSet::new();
+    let mut guided_parents = std::collections::BTreeSet::new();
+    for ship in records {
+        let Some(missile) = &ship.missile else {
+            continue;
+        };
+        let parent = ships
+            .get(&missile.parent)
+            .context("missile parent unavailable")?;
+        let launchers = parent
+            .launchers
+            .as_ref()
+            .context("missile parent launcher state unavailable")?;
+        ensure!(
+            parent.id != ship.id
+                && parent.missile.is_none()
+                && ship.software.is_none()
+                && !ship.retained_computer
+                && missile.handle > 0
+                && missile.handle < launchers.next_handle
+                && handles.insert((missile.parent, missile.handle)),
+            "invalid shared missile computer identity"
+        );
+        let direction_squared = missile
+            .direction
+            .iter()
+            .map(|value| value * value)
+            .sum::<f64>();
+        ensure!(
+            missile.age_s.is_finite()
+                && missile.age_s >= 0.
+                && missile.direction.iter().all(|value| value.is_finite())
+                && missile.throttle.is_finite()
+                && (0.0..=1.0).contains(&missile.throttle)
+                && ((direction_squared - 1.).abs() <= 1e-6
+                    || (direction_squared == 0. && missile.throttle == 0.)),
+            "invalid saved missile guidance"
+        );
+        if missile.guidance_enabled {
+            ensure!(
+                ship.presence == Presence::Space && ship.hardware.hull > 0.,
+                "inactive missile retains live guidance"
+            );
+            ensure!(
+                parent.software.is_some()
+                    && (parent.presence != Presence::Destroyed || parent.retained_computer),
+                "guided missile computer unavailable"
+            );
+            guided_parents.insert(parent.id);
+        }
+    }
+    for ship in records {
+        if ship.retained_computer {
+            ensure!(
+                ship.presence == Presence::Destroyed
+                    && ship.software.is_some()
+                    && ship.missile.is_none()
+                    && guided_parents.contains(&ship.id),
+                "invalid retained missile computer"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn valid_pose(pose: &Pose) -> bool {
     pose.velocity
         .iter()
@@ -771,6 +873,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.remove_resource::<physics::collision::CollisionReport>();
     world.insert_resource(crate::sim::services::PublishedWorld::default());
     world.insert_resource(crate::sim::combat::CombatHistory::default());
+    world.insert_resource(missiles::Callbacks::default());
     world.insert_resource(spatial::SpatialIndex::default());
     world.insert_resource(identity::SensorSeed(record.sensor_seed));
     world.resource_mut::<simulation::SimulationCounters>().ticks = record.tick;
@@ -962,11 +1065,18 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 power: ship.dock_services.1,
             },
         ));
+        if let Some(missile) = ship.missile {
+            world.entity_mut(entity).insert(missile);
+        }
+        if let Some(launchers) = ship.launchers {
+            world.entity_mut(entity).insert(launchers);
+        }
         relationships.push((
             entity,
             ship.presence,
             ship.spatial_instance,
             ship.dormant_thermal_s,
+            ship.retained_computer,
         ));
         drives.push((entity, ship.drive));
         thermal_parts.push((entity, ship.parts));
@@ -998,7 +1108,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             world.entity_mut(entity).insert(drive);
         }
     }
-    for (entity, presence, instance, dormant_thermal_s) in relationships {
+    for (entity, presence, instance, dormant_thermal_s, retained_computer) in relationships {
         if let Presence::Docked { host, .. } | Presence::StoredInWreck(host) = presence {
             let host = identity::lookup(world, host)?;
             world.entity_mut(entity).insert(travel::DockedIn(host));
@@ -1013,6 +1123,15 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             world
                 .entity_mut(entity)
                 .insert(identity::SpatialInstance(instance));
+        }
+        if retained_computer {
+            missiles::restore_retained(world, entity);
+        }
+        if world
+            .get::<missiles::Missile>(entity)
+            .is_some_and(|missile| !missile.guidance_enabled)
+        {
+            missiles::disable_guidance(world, entity);
         }
     }
     for gate in record.gates {
@@ -1114,6 +1233,289 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use toy_sim_model::travel::{Order, QueuedOrder, Status};
+
+    #[test]
+    fn launched_missiles_restore_retained_computer_and_reject_broken_relations() {
+        let account = Id::new();
+        let blueprint = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../assets/ships/missile-patrol.ship");
+        let mut app = crate::scenario(&[account], Some(account), Some(blueprint)).unwrap();
+        for _ in 0..80 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let parent = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let parent_id = id(world, parent).unwrap();
+        assert!(
+            !world
+                .get::<vessel::ShipSoftware>(parent)
+                .unwrap()
+                .controller
+                .is_booting()
+        );
+        let launcher = world
+            .get::<vessel::ShipDesign>(parent)
+            .unwrap()
+            .0
+            .parts
+            .iter()
+            .find(|part| part.placed.prototype == toy_sim_ships::missiles::LAUNCHER_PART)
+            .unwrap()
+            .placed
+            .id;
+        let group_entity = world.get::<identity::Membership>(parent).unwrap().0;
+        let group = world.get::<intelligence::Group>(group_entity).unwrap();
+        let parent_position = world
+            .get::<precision::PreciseTransform>(parent)
+            .unwrap()
+            .translation_um;
+        let target = group
+            .snapshot
+            .tracks
+            .values()
+            .filter(|track| track.entity != Some(parent_id))
+            .min_by(|a, b| {
+                a.pose
+                    .position
+                    .relative_to(parent_position)
+                    .length_squared()
+                    .total_cmp(
+                        &b.pose
+                            .position
+                            .relative_to(parent_position)
+                            .length_squared(),
+                    )
+            })
+            .unwrap();
+        let target = toy_sim_model::ContactRef {
+            group: group.id,
+            track: target.id,
+        };
+        let missile = missiles::launch(world, parent, launcher, target).unwrap();
+        let missile_id = id(world, missile).unwrap();
+        let mut initialize = Schedule::default();
+        initialize.add_systems(hardware::initialize);
+        initialize.run(world);
+        {
+            let mut state = world.get_mut::<missiles::Missile>(missile).unwrap();
+            state.age_s = 12.5;
+            state.direction = DVec3::X.to_array();
+            state.throttle = 0.625;
+            state.target.track = Id::new();
+        }
+        let saved_guidance = world.get::<missiles::Missile>(missile).unwrap().clone();
+        let saved_launchers = world.get::<missiles::Launchers>(parent).unwrap().clone();
+        let saved_inventory = world
+            .get::<hardware::ShipInventory>(missile)
+            .unwrap()
+            .0
+            .clone();
+        let saved_pose = pose(world, missile).unwrap();
+        let group_id = id(world, group_entity).unwrap();
+        let owner = world.get::<ownership::AssetOwner>(parent).unwrap().0;
+        let mut checkpoint = world
+            .get::<vessel::ShipSoftware>(parent)
+            .unwrap()
+            .controller
+            .checkpoint();
+        checkpoint.persistent_data = b"retained missile controller".to_vec();
+        let controller = world
+            .resource_mut::<vessel::WasmRuntime>()
+            .0
+            .restore(&checkpoint)
+            .unwrap();
+        world
+            .get_mut::<vessel::ShipSoftware>(parent)
+            .unwrap()
+            .controller = controller;
+        world
+            .resource::<gas::GasLedger>()
+            .reserve(owner, 1234)
+            .unwrap()
+            .settle(1234)
+            .unwrap();
+        let expected_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
+        let active_bytes = capture(world).unwrap();
+
+        travel::destroy(world, parent);
+        assert!(world.get::<missiles::RetainedComputer>(parent).is_some());
+        let bytes = capture(world).unwrap();
+        restore(world, &bytes).unwrap();
+
+        let parent = identity::lookup(world, parent_id).unwrap();
+        let missile = identity::lookup(world, missile_id).unwrap();
+        assert_eq!(
+            world.get::<travel::PresenceState>(parent).unwrap().0,
+            Presence::Destroyed
+        );
+        assert!(world.get::<missiles::RetainedComputer>(parent).is_some());
+        assert!(world.get::<physics::Velocity>(parent).is_none());
+        assert!(world.get::<physics::RigidBody>(parent).is_none());
+        assert!(
+            world
+                .get::<physics::collision::CollisionBody>(parent)
+                .is_none()
+        );
+        assert!(world.get::<spatial::SpatialBody>(parent).is_none());
+        assert!(world.get::<crate::sim::sensors::Sensor>(parent).is_none());
+        assert!(
+            world
+                .get::<crate::sim::sensors::SensorContacts>(parent)
+                .is_none()
+        );
+        assert!(world.get::<identity::BeaconEmitter>(parent).is_none());
+        assert!(world.resource::<missiles::Callbacks>().0.is_empty());
+        let restored_controller = &world
+            .get::<vessel::ShipSoftware>(parent)
+            .unwrap()
+            .controller;
+        assert!(restored_controller.is_booting());
+        assert_eq!(restored_controller.checkpoint().program, checkpoint.program);
+        assert_eq!(
+            restored_controller.checkpoint().persistent_data,
+            checkpoint.persistent_data
+        );
+        assert_eq!(world.get::<ownership::AssetOwner>(parent).unwrap().0, owner);
+        assert_eq!(
+            id(world, world.get::<identity::Membership>(parent).unwrap().0).unwrap(),
+            group_id
+        );
+        let restored_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
+        assert_eq!(restored_gas.accounts, expected_gas.accounts);
+        assert_eq!(restored_gas.fairness, expected_gas.fairness);
+        assert!(world.get::<vessel::ShipSoftware>(missile).is_none());
+        assert!(world.get::<physics::Velocity>(missile).is_some());
+        assert_eq!(pose(world, missile).unwrap(), saved_pose);
+        assert_eq!(
+            postcard::to_stdvec(&world.get::<hardware::ShipInventory>(missile).unwrap().0).unwrap(),
+            postcard::to_stdvec(&saved_inventory).unwrap()
+        );
+        assert_eq!(
+            world.get::<ownership::AssetOwner>(missile).unwrap().0,
+            owner
+        );
+        assert_eq!(
+            postcard::to_stdvec(world.get::<missiles::Missile>(missile).unwrap()).unwrap(),
+            postcard::to_stdvec(&saved_guidance).unwrap()
+        );
+        assert_eq!(
+            postcard::to_stdvec(world.get::<missiles::Launchers>(parent).unwrap()).unwrap(),
+            postcard::to_stdvec(&saved_launchers).unwrap()
+        );
+
+        let identities = world.resource::<identity::IdentityIndex>().0.clone();
+        for case in 0..6 {
+            let mut invalid: WorldRecord = postcard::from_bytes(&bytes).unwrap();
+            let child_index = invalid
+                .ships
+                .iter()
+                .position(|ship| ship.id == missile_id)
+                .unwrap();
+            let parent_index = invalid
+                .ships
+                .iter()
+                .position(|ship| ship.id == parent_id)
+                .unwrap();
+            match case {
+                0 => invalid.ships[child_index].missile.as_mut().unwrap().parent = Id::new(),
+                1 => invalid.ships[child_index].missile.as_mut().unwrap().parent = missile_id,
+                2 => {
+                    invalid.ships[parent_index]
+                        .launchers
+                        .as_mut()
+                        .unwrap()
+                        .next_handle = saved_guidance.handle;
+                }
+                3 => invalid.ships[parent_index].software = None,
+                4 => {
+                    invalid.ships[child_index]
+                        .missile
+                        .as_mut()
+                        .unwrap()
+                        .throttle = 1.1
+                }
+                5 => {
+                    let mut duplicate: ShipRecord = postcard::from_bytes(
+                        &postcard::to_stdvec(&invalid.ships[child_index]).unwrap(),
+                    )
+                    .unwrap();
+                    duplicate.id = Id::new();
+                    invalid.ships.push(duplicate);
+                }
+                _ => unreachable!(),
+            }
+            assert!(
+                restore(world, &postcard::to_stdvec(&invalid).unwrap()).is_err(),
+                "case {case}"
+            );
+            assert_eq!(world.resource::<identity::IdentityIndex>().0, identities);
+            assert_eq!(
+                world
+                    .resource::<gas::GasLedger>()
+                    .snapshot()
+                    .unwrap()
+                    .accounts,
+                expected_gas.accounts
+            );
+        }
+
+        app.update();
+        let world = app.world_mut();
+        let parent = identity::lookup(world, parent_id).unwrap();
+        let presentation = crate::sim::presentation::ship(world, parent, false).unwrap();
+        assert!(matches!(
+            presentation.computer,
+            toy_sim_model::presentation::ComputerStatus::Booting { .. }
+        ));
+        let design = &world.get::<vessel::ShipDesign>(parent).unwrap().0;
+        assert!(
+            !hardware::snapshot(world, parent)
+                .unwrap()
+                .computer_running(design)
+        );
+        assert!(
+            world
+                .resource::<gas::GasLedger>()
+                .account(owner)
+                .unwrap()
+                .spent
+                > expected_gas.accounts[&owner].spent
+        );
+        world
+            .get_mut::<vessel::ShipSoftware>(parent)
+            .unwrap()
+            .controller
+            .fail("retained computer trap".into());
+        let presentation = crate::sim::presentation::ship(world, parent, false).unwrap();
+        assert!(matches!(
+            presentation.computer,
+            toy_sim_model::presentation::ComputerStatus::Fault {
+                reboot_remaining_s: Some(_),
+                ..
+            }
+        ));
+
+        restore(world, &active_bytes).unwrap();
+        let parent = identity::lookup(world, parent_id).unwrap();
+        let missile = identity::lookup(world, missile_id).unwrap();
+        travel::destroy(world, parent);
+        travel::destroy(world, missile);
+        let retired = capture(world).unwrap();
+        restore(world, &retired).unwrap();
+        let parent = identity::lookup(world, parent_id).unwrap();
+        let missile = identity::lookup(world, missile_id).unwrap();
+        assert!(world.get::<missiles::RetainedComputer>(parent).is_none());
+        assert!(world.get::<vessel::ShipSoftware>(parent).is_none());
+        assert!(
+            !world
+                .get::<missiles::Missile>(missile)
+                .unwrap()
+                .guidance_enabled
+        );
+    }
 
     #[test]
     fn gas_checkpoints_require_settlement_and_restore_spending_and_fairness_exactly() {

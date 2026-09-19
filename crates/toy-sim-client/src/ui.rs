@@ -1,5 +1,6 @@
 mod celestials;
 mod console;
+mod contacts;
 mod scene;
 mod selection;
 mod shell;

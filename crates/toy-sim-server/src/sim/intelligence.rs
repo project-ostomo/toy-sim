@@ -112,6 +112,7 @@ pub fn acquire(
         &SensorRange,
         &Appearance,
         Has<BeaconEmitter>,
+        Has<super::missiles::Missile>,
     )>,
     mut groups: Query<(Entity, &Group, Option<&GroupShips>, &mut Measurements)>,
 ) {
@@ -132,6 +133,7 @@ pub fn acquire(
                     _,
                     appearance,
                     beacon,
+                    missile,
                 ) in &ships
                 {
                     if !beacon {
@@ -145,6 +147,9 @@ pub fn acquire(
                         Provenance::Beacon,
                     );
                     sample.tags.insert(Tag::Kind("beacon".into()));
+                    if missile {
+                        sample.tags.insert(Tag::Kind("missile".into()));
+                    }
                     sample.radius_m = Some(design.0.radius);
                     sample.appearance = Some(appearance.0);
                     measurements.0.push(sample);
@@ -167,6 +172,7 @@ pub fn acquire(
                     hardware,
                     appearance,
                     _,
+                    missile,
                 )) = ships.get(member)
                 else {
                     continue;
@@ -178,6 +184,9 @@ pub fn acquire(
                     &iff.0,
                     Provenance::GroupMember,
                 );
+                if missile {
+                    own.tags.insert(Tag::Kind("missile".into()));
+                }
                 own.radius_m = Some(design.0.radius);
                 own.appearance = Some(appearance.0);
                 measurements.0.push(own);
@@ -210,6 +219,7 @@ pub fn acquire(
                         _,
                         target_appearance,
                         _,
+                        target_missile,
                     )) = ships.get(contact.entity)
                     else {
                         continue;
@@ -245,6 +255,9 @@ pub fn acquire(
                                 clock.ticks,
                             )
                         };
+                    if target_missile {
+                        sample.tags.insert(Tag::Kind("missile".into()));
+                    }
                     sample.radius_m = Some(target_design.0.radius);
                     sample.appearance = Some(target_appearance.0);
                     measurements.0.push(sample);
