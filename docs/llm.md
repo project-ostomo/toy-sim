@@ -95,3 +95,23 @@ previously completed provider operation.
 Admission and completion logs contain the request ID, computer UUID, reservation
 or charge, and aggregate dollar totals. Provider failures log a safe failure
 category or HTTP status. API keys, prompts and response bodies are never logged.
+
+## NPC radio context
+
+The bundled chatter program reads up to 32 local messages every two seconds,
+including while a provider request is pending. Listening has its own cadence;
+paid replies retain the interval in the ship's chatter profile. A new prompt
+waits until the current inbox backlog has been read.
+
+Durable memory retains the receive cursor, up to 32 recent excerpts of at most
+512 UTF-8 bytes each, and 128 message IDs for duplicate suppression. Prompts
+report omitted history. Context is bounded, so a sufficiently busy channel can
+still displace older dialogue. Prompts remain within 32 KiB and the complete
+program memory remains within 64 KiB. Optional context is trimmed before flight
+data or a pending request is affected. A request that cannot fit in durable
+memory is never submitted.
+
+The program saves each request's identity and exact payload before submission.
+Its versioned private chatter state is checkpointed alongside the exact WASM
+program. Existing saved ships keep their saved firmware; fresh NPCs use the
+current bundled program.

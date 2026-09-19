@@ -1,8 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 use toy_sim_model::{
-    chat::{ChatMessage, ChatPage},
+    chat::{ChatMessage, ChatPage, MAX_HISTORY_MESSAGES, MAX_PAGE_MESSAGES},
     firmware::{ChatterProfile, ProgramMemory},
-    llm::{LlmRequest, LlmStatus, LlmSubmission},
+    llm::{LlmRequest, LlmStatus, LlmSubmission, MAX_PROMPT_BYTES},
 };
 use toy_sim_ship_api::abi;
 use toy_sim_ship_wasm::{
@@ -10,21 +13,74 @@ use toy_sim_ship_wasm::{
     Observation, ProgramServices, Request,
 };
 
-#[derive(Default)]
-struct State {
-    requests: Vec<LlmRequest>,
-    ready: Option<String>,
-    sent: Vec<(u64, String)>,
-    reads: usize,
+#[derive(Debug)]
+struct Read {
+    after: u64,
+    limit: u32,
+    page: ChatPage,
 }
 
 #[derive(Default)]
+struct State {
+    requests: Vec<LlmRequest>,
+    statuses: BTreeMap<u64, LlmStatus>,
+    sent: Vec<(u64, String)>,
+    send_attempts: Vec<(u64, String)>,
+    inbox: VecDeque<ChatMessage>,
+    sequence: u64,
+    reads: Vec<Read>,
+}
+
 struct Fake(Mutex<State>);
+
+impl Default for Fake {
+    fn default() -> Self {
+        let fake = Self(Mutex::new(State::default()));
+        fake.receive("Local pilot", "How is the anchorage today?");
+        fake
+    }
+}
+
+impl Fake {
+    fn receive(&self, sender: &str, text: &str) -> u64 {
+        assert!(toy_sim_model::chat::valid_text(text));
+        assert!(sender.len() <= toy_sim_model::chat::MAX_SENDER_BYTES);
+        let mut state = self.0.lock().unwrap();
+        state.sequence += 1;
+        let sequence = state.sequence;
+        state.inbox.push_back(ChatMessage {
+            id: toy_sim_model::Id(u128::from(sequence).to_le_bytes()),
+            sequence,
+            tick: sequence,
+            calendar_unix_ms: sequence as i64 * 100,
+            sender_name: sender.to_owned(),
+            advertised_owner: None,
+            advertised_organization: None,
+            text: text.to_owned(),
+        });
+        while state.inbox.len() > MAX_HISTORY_MESSAGES {
+            state.inbox.pop_front();
+        }
+        sequence
+    }
+
+    fn ready(&self, id: u64, text: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .statuses
+            .insert(id, LlmStatus::Ready { text: text.into() });
+    }
+}
 
 impl ProgramServices for Fake {
     fn llm_submit(&self, request: LlmRequest) -> LlmSubmission {
+        if !request.valid() {
+            return LlmSubmission::InvalidRequest;
+        }
         let mut state = self.0.lock().unwrap();
-        if state.requests.iter().any(|known| known.id == request.id) {
+        if let Some(known) = state.requests.iter().find(|known| known.id == request.id) {
+            assert_eq!(known, &request, "pending request changed during retry");
             return LlmSubmission::AlreadyKnown;
         }
         state.requests.push(request);
@@ -37,9 +93,10 @@ impl ProgramServices for Fake {
             return LlmStatus::Unknown;
         }
         state
-            .ready
-            .clone()
-            .map_or(LlmStatus::Pending, |text| LlmStatus::Ready { text })
+            .statuses
+            .get(&id)
+            .cloned()
+            .unwrap_or(LlmStatus::Pending)
     }
 
     fn llm_cancel(&self, _: u64) -> bool {
@@ -48,6 +105,7 @@ impl ProgramServices for Fake {
 
     fn chat_send(&self, id: u64, text: &str) -> Result<(), i32> {
         let mut state = self.0.lock().unwrap();
+        state.send_attempts.push((id, text.to_owned()));
         if !state.sent.iter().any(|(known, _)| *known == id) {
             state.sent.push((id, text.to_owned()));
         }
@@ -58,26 +116,32 @@ impl ProgramServices for Fake {
         1_000
     }
 
-    fn chat_read(&self, after: u64, _: u32) -> Result<ChatPage, i32> {
-        self.0.lock().unwrap().reads += 1;
-        Ok(ChatPage {
-            messages: if after == 0 {
-                vec![ChatMessage {
-                    id: toy_sim_model::Id([7; 16]),
-                    sequence: 1,
-                    tick: 1,
-                    calendar_unix_ms: 0,
-                    sender_name: "Local pilot".into(),
-                    advertised_owner: None,
-                    advertised_organization: None,
-                    text: "How is the anchorage today?".into(),
-                }]
-            } else {
-                Vec::new()
-            },
-            next_sequence: 1,
-            missed: 0,
-        })
+    fn chat_read(&self, after: u64, limit: u32) -> Result<ChatPage, i32> {
+        let mut state = self.0.lock().unwrap();
+        if !(1..=MAX_PAGE_MESSAGES as u32).contains(&limit) || after > state.sequence {
+            return Err(abi::ERR_ARGUMENT);
+        }
+        let missed = state.inbox.front().map_or(0, |first| {
+            first.sequence.saturating_sub(after.saturating_add(1))
+        });
+        let messages: Vec<_> = state
+            .inbox
+            .iter()
+            .filter(|message| message.sequence > after)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        let page = ChatPage {
+            next_sequence: messages.last().map_or(after, |message| message.sequence),
+            messages,
+            missed,
+        };
+        state.reads.push(Read {
+            after,
+            limit,
+            page: page.clone(),
+        });
+        Ok(page)
     }
 }
 
@@ -205,7 +269,7 @@ fn poll_cpu_gas_tracks_reply_bytes_and_missile_and_display_callbacks_can_call_se
         .run_slice(input(1), None, 100_000, FUEL_PER_TICK)
         .unwrap();
     let short = computer.last_gas_used;
-    service.0.lock().unwrap().ready = Some("x".repeat(8_000));
+    service.ready(1, &"x".repeat(8_000));
     computer
         .run_callback_slice(
             toy_sim_ship_wasm::CallbackKind::Missile(7),
@@ -297,8 +361,7 @@ fn chatter_uses_delayed_llm_result_survives_restart_and_preserves_flight_memory(
     let mut computer = runtime.restore(&saved).unwrap();
     boot(&mut computer);
     computer.set_services(Some(service.clone()));
-    service.0.lock().unwrap().ready =
-        Some("The instruments are ready for your next survey.".into());
+    service.ready(1, "The instruments are ready for your next survey.");
     for tick in 160..260 {
         computer
             .run_slice(input(tick), None, FUEL_PER_TICK / 2, FUEL_PER_TICK)
@@ -310,7 +373,12 @@ fn chatter_uses_delayed_llm_result_survives_restart_and_preserves_flight_memory(
         state.sent,
         vec![(1, "The instruments are ready for your next survey.".into())]
     );
-    assert!(state.reads <= 2, "chatter polled chat every tick");
+    assert!(
+        (8..=16).contains(&state.reads.len()),
+        "unexpected intake cadence: {} reads",
+        state.reads.len()
+    );
+    assert_eq!(state.send_attempts, state.sent);
     let envelope: ProgramMemory =
         postcard::from_bytes(&computer.checkpoint().persistent_data).unwrap();
     assert_eq!(envelope.flight, memory.flight);
@@ -348,6 +416,257 @@ fn chatter_does_not_submit_until_its_request_id_fits_in_durable_storage() {
     assert!(service.0.lock().unwrap().requests.is_empty());
     assert!(service.0.lock().unwrap().sent.is_empty());
     assert_eq!(computer.checkpoint().persistent_data, bytes);
+}
+
+fn chatter_tick(computer: &mut Controller, tick: &mut u64) -> bool {
+    *tick += 1;
+    computer
+        .run_slice(input(*tick), None, FUEL_PER_TICK / 2, FUEL_PER_TICK)
+        .unwrap()
+        .callback_completed
+}
+
+fn saved_memory(computer: &Controller, flight: &[u8]) -> ProgramMemory {
+    let saved = computer.checkpoint();
+    assert!(saved.persistent_data.len() <= 65_536);
+    let memory: ProgramMemory = postcard::from_bytes(&saved.persistent_data).unwrap();
+    assert_eq!(memory.flight, flight);
+    memory
+}
+
+#[test]
+fn chatter_drains_busy_radio_during_pending_reply_and_resumes_after_checkpoint() {
+    let memory = ProgramMemory {
+        flight: b"flight-state-during-radio-backlog".to_vec(),
+        chatter: Some(ChatterProfile {
+            name: "Anchorage watch".into(),
+            personality: "Patient and precise".into(),
+            context: "Answers local pilots using received public radio messages".into(),
+            interval_seconds: 300,
+        }),
+        chatter_state: Vec::new(),
+    };
+    let mut runtime = ControllerRuntime::new().unwrap();
+    let mut computer = runtime
+        .restore(&ControllerCheckpoint {
+            program: toy_sim_ships::CHATTER_CONTROLLER.to_vec(),
+            persistent_data: postcard::to_stdvec(&memory).unwrap(),
+        })
+        .unwrap();
+    boot(&mut computer);
+    let service = Arc::new(Fake::default());
+    computer.set_services(Some(service.clone()));
+    let mut tick = 0;
+    assert!(
+        (0..200).any(|_| {
+            let complete = chatter_tick(&mut computer, &mut tick);
+            complete && service.0.lock().unwrap().requests.len() == 1
+        }),
+        "first paid request was never submitted"
+    );
+
+    let question = "Player question: which public berth handles the cobalt survey launch?";
+    let mut latest = 0;
+    for line in 1..=90 {
+        latest = service.receive(
+            if line == 85 {
+                "Player surveyor"
+            } else {
+                "Passing pilot"
+            },
+            &if line == 85 {
+                question.to_owned()
+            } else {
+                format!("Public traffic report number {line}")
+            },
+        );
+    }
+    assert!(
+        (0..200).any(|_| {
+            let complete = chatter_tick(&mut computer, &mut tick);
+            let state = service.0.lock().unwrap();
+            complete
+                && state.reads.last().is_some_and(|read| {
+                    read.page.messages.len() == MAX_PAGE_MESSAGES
+                        && read.page.next_sequence > 1
+                        && read.page.next_sequence < latest
+                })
+        }),
+        "pending chatter did not begin draining the radio backlog"
+    );
+    let (cursor, previous_reads) = {
+        let state = service.0.lock().unwrap();
+        assert_eq!(state.requests.len(), 1);
+        assert!(state.sent.is_empty());
+        assert!(!state.requests[0].prompt.contains(question));
+        (
+            state.reads.last().unwrap().page.next_sequence,
+            state.reads.len(),
+        )
+    };
+    assert!(
+        cursor < 85,
+        "checkpoint must precede the late player question"
+    );
+    saved_memory(&computer, &memory.flight);
+    let checkpoint = computer.checkpoint();
+    let mut computer = runtime.restore(&checkpoint).unwrap();
+    boot(&mut computer);
+    computer.set_services(Some(service.clone()));
+
+    assert!(
+        (0..300).any(|_| {
+            let complete = chatter_tick(&mut computer, &mut tick);
+            let state = service.0.lock().unwrap();
+            complete
+                && state
+                    .reads
+                    .last()
+                    .is_some_and(|read| read.page.next_sequence == latest)
+        }),
+        "restored chatter did not catch up while the provider stayed pending"
+    );
+    {
+        let state = service.0.lock().unwrap();
+        assert_eq!(state.reads[previous_reads].after, cursor);
+        assert!(
+            state
+                .reads
+                .iter()
+                .all(|read| read.limit == MAX_PAGE_MESSAGES as u32)
+        );
+        assert!(
+            state
+                .reads
+                .iter()
+                .all(|read| read.page.messages.len() <= MAX_PAGE_MESSAGES)
+        );
+        assert_eq!(
+            state.requests.len(),
+            1,
+            "intake created another paid request"
+        );
+        assert!(state.sent.is_empty());
+    }
+    saved_memory(&computer, &memory.flight);
+    service.ready(1, "The first watch report is complete.");
+    assert!(
+        (0..200).any(|_| {
+            chatter_tick(&mut computer, &mut tick);
+            service.0.lock().unwrap().sent.len() == 1
+        }),
+        "completed provider result was never broadcast"
+    );
+    let sent_tick = tick;
+
+    while tick < sent_tick + 2_990 {
+        chatter_tick(&mut computer, &mut tick);
+        assert_eq!(
+            service.0.lock().unwrap().requests.len(),
+            1,
+            "paid cadence accelerated"
+        );
+    }
+    assert!(
+        (0..160).any(|_| {
+            chatter_tick(&mut computer, &mut tick);
+            service.0.lock().unwrap().requests.len() == 2
+        }),
+        "next paid cadence never submitted its updated context"
+    );
+    for _ in 0..40 {
+        chatter_tick(&mut computer, &mut tick);
+    }
+    {
+        let state = service.0.lock().unwrap();
+        assert_eq!(
+            state
+                .requests
+                .iter()
+                .map(|request| request.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(state.requests[1].prompt.contains(question));
+        assert!(
+            state
+                .requests
+                .iter()
+                .all(|request| request.prompt.len() <= MAX_PROMPT_BYTES)
+        );
+        assert_eq!(
+            state.sent,
+            vec![(1, "The first watch report is complete.".into())]
+        );
+        assert_eq!(
+            state.send_attempts, state.sent,
+            "a broadcast was retried unnecessarily"
+        );
+        assert!(
+            state.reads.len() < tick as usize / 10,
+            "radio intake ran every tick"
+        );
+    }
+    saved_memory(&computer, &memory.flight);
+}
+
+#[test]
+fn chatter_bounds_unicode_radio_context_and_maximum_profile_during_history_loss() {
+    let profile = ChatterProfile {
+        name: "船".repeat(42),
+        personality: "界".repeat(1365),
+        context: "🌌".repeat(2048),
+        interval_seconds: 300,
+    };
+    assert!(profile.valid());
+    let memory = ProgramMemory {
+        flight: vec![23; 1_024],
+        chatter: Some(profile),
+        chatter_state: Vec::new(),
+    };
+    let service = Arc::new(Fake::default());
+    let sender = "航".repeat(42);
+    for line in 1..=160 {
+        let prefix = format!("最新の公開通信 {line}: ");
+        let text = format!("{prefix}{}", "🚀".repeat((1024 - prefix.len()) / 4));
+        service.receive(&sender, &text);
+    }
+    assert_eq!(service.0.lock().unwrap().inbox.len(), MAX_HISTORY_MESSAGES);
+    let mut runtime = ControllerRuntime::new().unwrap();
+    let mut computer = runtime
+        .restore(&ControllerCheckpoint {
+            program: toy_sim_ships::CHATTER_CONTROLLER.to_vec(),
+            persistent_data: postcard::to_stdvec(&memory).unwrap(),
+        })
+        .unwrap();
+    boot(&mut computer);
+    computer.set_services(Some(service.clone()));
+    let mut tick = 0;
+    assert!(
+        (0..400).any(|_| {
+            let complete = chatter_tick(&mut computer, &mut tick);
+            if complete {
+                saved_memory(&computer, &memory.flight);
+            }
+            !service.0.lock().unwrap().requests.is_empty()
+        }),
+        "bounded Unicode context did not produce a paid request"
+    );
+    let state = service.0.lock().unwrap();
+    assert_eq!(state.requests.len(), 1);
+    assert!(state.requests[0].valid());
+    assert!(state.requests[0].prompt.len() <= 32 * 1024);
+    assert!(state.requests[0].prompt.contains("最新の公開通信 160:"));
+    assert!(state.reads[0].page.missed > 0);
+    assert!(
+        state
+            .reads
+            .iter()
+            .all(|read| read.page.messages.len() <= MAX_PAGE_MESSAGES)
+    );
+    assert!(state.sent.is_empty());
+    drop(state);
+    saved_memory(&computer, &memory.flight);
 }
 
 #[test]

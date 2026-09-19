@@ -1668,3 +1668,51 @@ Evidence is in `/tmp/toy-sequential-playtests/`: `products-docked.png`,
 `/tmp/sequential-product-default-inventory.log`, `/tmp/sequential-product-ships.log`,
 and `/tmp/sequential-product-other-tests.log` (the last also records earlier,
 subsequently corrected fixture failures). The next piece is NPC radio intake.
+
+### Current piece: keeping NPC radio context current
+
+The radio guest will receive a bounded page every two seconds independently of
+the existing paid response interval. It will retain recent dialogue within the
+prompt and persistent-memory budgets, continue listening while a request is
+pending, and wait for its backlog to drain before composing a new prompt.
+The acceptance fixture uses the actual chatter WASM with a busy bounded inbox
+and checkpoints during a pending request. It checks the later player question,
+request identity, response cadence and preservation of flight data.
+
+The new private chatter-state encoding has an explicit version. The shared
+ProgramMemory envelope and host ABI remain unchanged. World snapshots already
+retain the exact program bytes alongside their durable data, so previously
+saved computers retain matching firmware and state. Fresh NPCs receive the new
+bundled firmware.
+
+### Workspace moved to persistent storage — 2026-09-19
+
+At the user's request, development now takes place directly in
+`/home/miyuruasuka/develop/toy-sim`. Both checkouts were at `e310691`; the pending
+DEVLOG and chatter test changes were copied and verified byte for byte before
+agents resumed. The temporary checkout is no longer used for development.
+Existing test worlds, screenshots, logs and the native input harness were copied
+to `~/.local/state/toy-sim-mvp-sprint`. Earlier evidence paths under
+`/tmp/toy-sequential-playtests` now have matching files in that directory's
+`playtests` subdirectory. New verification artifacts will use persistent storage.
+
+### NPC radio intake verified — 2026-09-19
+
+The bundled firmware now receives up to 32 messages every two seconds while
+keeping paid response cadence independent. Eight real-WASM service tests pass,
+including a 90-message backlog with a later player question, a checkpoint during
+the pending reply, exact retry payloads, Unicode bounds, omitted history and
+refusal to submit a request that cannot fit in durable memory. The tests also
+verify that flight data survives unchanged and no reply or paid request repeats.
+Firmware was rebuilt from the actual repository before testing.
+
+A fresh native world with the real provider enabled displayed organization
+broadcasts and accepted a player radio message through keyboard input. The
+session exited normally and saved. No computer faults or rendering errors were
+reported. This brief native pass verifies the interface and service path; the
+deterministic WASM tests cover backlog draining and response timing. Evidence:
+`~/.local/state/toy-sim-mvp-sprint/playtests/chatter-player-message.png` and
+`chatter-native-session.log`; build and test logs are in the parent directory.
+
+The next piece is a shared authorized-inventory directory pager, so opening
+Inventory alone can reach endpoints beyond the first page.
