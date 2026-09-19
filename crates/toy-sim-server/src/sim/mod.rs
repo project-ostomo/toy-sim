@@ -15,6 +15,7 @@ pub use bootstrap::{ScenarioConfig, apply_debug_requests, provision};
 pub mod identity;
 pub mod intelligence;
 pub mod orrery;
+pub mod ownership;
 pub mod physics;
 pub mod precision;
 pub mod scenario;

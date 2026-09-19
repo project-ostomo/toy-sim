@@ -324,7 +324,7 @@ Views with a focused ship, instrument subscriptions and screen subscriptions tog
 | `ShipCommand` | Effect |
 | --- | --- |
 | `SetTransponderEnabled(bool)` | Switches the IFF transponder |
-| `SetIff(IffIdentity)` | `owner` must be the controlling account. `faction` must be one of the account's factions (no code path adds factions, so only `None` succeeds). Range is at most 1e8 m. |
+| `SetIff(IffIdentity)` | `owner` must identify the requesting controller. Configure permission is required; `faction` must be an organization the account belongs to or administers. Range is at most 1e8 m. |
 | `SetGroup(key)` | Sends the ship's future reports to another information group, creating it if needed |
 | `Flight(FlightCommand)` | `HoldAttitude`, `StopGuidance`, `AimDirection`, `SelectTarget(ContactRef)` or `EngageNavigation { throttle_limit, stand_off_m }`, queued to the flight computer as requests. `SelectTarget` resolves its contact like `Aim`. |
 | `MarkTarget { group, track, maximum_flight_time_s }`, `Aim { group, track }` | `group` must be both the ship's reporting group and a group the session belongs to, and the track must exist in that group's snapshot. The track becomes a contact handle ([Contact handles](#contact-handles)) and is queued as a request. |
@@ -405,9 +405,9 @@ Grouping in step 2 uses the server's true entity identity. Clients never see tha
 
 ### IFF
 
-`IffIdentity` has `owner` (account), optional `faction`, up to 16 advertised `labels`, `enabled` and `range_m`. A new ship starts with its owner, no faction, no labels, transponder enabled and a range of 1e8 m. The transponder is the only way for an observer outside the ship's group to learn its UUID and owner.
+`IffIdentity` has `owner` (account), optional `faction`, up to 16 advertised `labels`, `enabled` and `range_m`. A new ship starts with its owner and current organization, with the transponder enabled and a range of 1e8 m. The transponder is the only way for an observer outside the ship's group to learn its UUID and owner.
 
-A ship's IFF identity and group are separate from control. Control is the `Control { account, revision }` component, and commands must carry the current revision. If control changes, the ship keeps its IFF identity and its information-group key until the new controller sends `SetIff` and `SetGroup`. No protocol action or server system transfers control; the session tests change `Control` directly to check that commands with the old revision fail and IFF is unchanged.
+A ship's advertised IFF identity remains separate from actual ownership and control. Control is the `Control { account, revision }` component, and commands carry its current revision. The server capture operation changes ownership, controller, and information group, clears prior access grants, and preserves IFF. It does not expose a player-facing capture action. Organization ownership can retain an assigned controller. Configure permission is required to reprogram IFF or change the information group.
 
 ## Metered queries
 
@@ -517,7 +517,7 @@ A bay belongs to a host ship. It has a centre and rotation in host axes, a radiu
 
 - **`reserve_bay`** requires:
   - the ship is not the host, both are in space, and the ship's containment tree is less than 8 deep with no cycles
-  - access: the bay is public, the host has the same owner, or the ship's owner is on the allow list
+  - access: the bay is public, the visiting ship's current owning principal has access through ownership or a Dock grant, or the ship's current player owner is on the bay allow list
   - a bay that fits the ship's radius and mass
   - no unexpired reservation by another ship
 
@@ -534,7 +534,7 @@ A gate is fixed navigation infrastructure with a `Gate` record paired to another
 
 The collision solver detects inward crossings of the aperture boundary along each body's swept trajectory, including projectiles created during the tick. The object's centre crossing the boundary triggers the interaction immediately. Relative speed above 100 m/s destroys the object at that time, even if it would cross the entire aperture between ticks.
 
-At speeds up to 100 m/s, transfer requires both mouths to be enabled, reciprocally paired, and accessible to the owner. The body's bounding radius must fit both mouths, and its exit must be clear of other simulated collision bodies. An unavailable, denied, undersized, or obstructed exit reflects the approach velocity at the entry boundary.
+At speeds up to 100 m/s, transfer requires both mouths to be enabled and reciprocally paired. The body's bounding radius must fit both mouths, and its exit must be clear of other simulated collision bodies. An unavailable, undersized, or obstructed exit reflects the approach velocity at the entry boundary. Gates have no ownership or transit-permission checks. Territorial control must be enforced physically by in-game ships, turrets, missiles, and drones.
 
 The exit is placed along the rotated relative velocity, at exit aperture radius + body radius + 2 m from the exit centre. Velocity relative to the mouth, orientation, and angular momentum rotate into the exit frame. The remaining part of the physics tick runs there. This places the object fully outside the exit and moving away from it.
 
@@ -602,7 +602,7 @@ The stock firmware's planner ([world.rs](../crates/toy-sim-example-controller/sr
 - **Dock.** The planner picks the lowest-numbered bay the beacon reports as usable and reserves it. It approaches the station from the ship’s current side, brakes to match station velocity, and requests capture when it is within docking range and below the relative-speed limit. The approach stays outside the hull; bay orientation does not constrain arrival.
 - **Errors.** If a query or command fails while travel is active, the planner sends `Block` with "Routing query failed (code); retrying" and plans again 50 ticks later. It also retries from a `Blocked` state.
 
-The planner estimates transfer time from straight-line distances, acceleration and propellant weighting. Gate access and bay availability come from the beacon replies; enablement, obstruction and curvature are checked only by the server when the action is applied.
+The planner estimates transfer time from straight-line distances, acceleration and propellant weighting. Gate connections and authorized bay availability come from the beacon replies; enablement, obstruction and curvature are checked by the server when the action is applied.
 
 ## Client playback
 
@@ -659,7 +659,7 @@ The launcher opens or closes Overview, Selected Item, Ship Status and Navigation
 
 The location indicator uses the subscribed celestial definitions. It names the brightest star and the body with the strongest local gravitational acceleration, and shows altitude above that body's surface. The Overview combines tracks from the selected view with its orrery bodies. It never obtains planets from sensors. Rows show name, type, center-to-center distance and speed relative to the controlled ship, with sorting, text search and All/Ships/Celestials filters. Stable track or celestial identities resolve sort ties. Distances, relative speeds and alignment vectors use interpolated poses from the same presentation time.
 
-Click an Overview row or a HUD contact to select it. Double-click an Overview row to center the camera; a row’s context menu also offers camera and flight actions. Selection is shared with the HUD even when filters hide the selected row. Selected Item provides Align, Approach, Keep range, Look at and Stop guidance. Keep range runs until interrupted; Approach finishes on arrival and Align finishes after orienting. Stop guidance cancels navigation without braking away velocity. Separate Mark target, Unmark target, Start firing and Stop firing buttons control weapons. The authoritative marked target and firing latch remain visible when another item is selected. Navigation commands never enable firing. Celestials support Align and Look at; contact pursuit and weapons controls are disabled for them. There is no universal hostile/friendly classification inferred from IFF ownership.
+Click an Overview row or a HUD contact to select it. Double-click an Overview row to center the camera; a row’s context menu also offers camera and flight actions. Selection is shared with the HUD even when filters hide the selected row. Selected Item provides Align, Approach, Keep range, Look at and Stop guidance. Keep range runs until interrupted; Approach finishes on arrival and Align finishes after orienting. Stop guidance cancels navigation without braking away velocity. Separate Mark target, Unmark target, Start firing and Stop firing buttons control weapons. The authoritative marked target and firing latch remain visible when another item is selected. Navigation commands never enable firing. Celestials support Align and Look at; contact pursuit and weapons controls are disabled for them. Overview rows and HUD markers show friendly, neutral, hostile, or unknown standings derived from advertised IFF and the observing player's relationship hierarchy. Personal overrides do not change NPC orders or grant permissions.
 
 Ship Status shows hull integrity, shield reserve, battery, heat, temperature, power, resource inventory and flight-computer state. It can toggle IFF broadcasts. Navigation shows published guidance telemetry and existing travel orders, with attitude hold, guidance cancellation and route pause/resume controls. Route planning remains the flight computer's responsibility. MFD, universe browser and debug-command panels are not part of this shell.
 
@@ -802,3 +802,17 @@ Protocol 16 accompanies ABI 23 and adds planning preferences and propulsion fuel
 Protocol 13 publishes per-tick computer gas usage, reserve balance and capacity, plus boot/reboot countdowns. CPU percentage uses gas spent by the callback and host services divided by the normal simulation-tick allowance. Sleeping ticks report zero; bursts may exceed 100% by spending reserves. Accounting records consumption before a fault discards the remaining balance.
 
 A computer reset clears pending requests, instruments, marks, firing state and forecasts. The server also clears the autopilot toggle, orders, ETA, staged world actions, slip preparation and docking reservations, and advances the travel revision. Successful reboot starts with idle navigation. Commands explicitly submitted after the reset may be queued during startup. Fault messages remain visible until boot succeeds. The countdown pauses without computer power and follows simulation time on the client.
+
+Protocol 17 adds the society snapshot and ownership commands. Sovereignties,
+organizations, player affiliations, private personal standings, and authorized
+asset permissions use stable UUIDs. The Society window exposes the hierarchy,
+organization membership and officer management, standing overrides, asset grants,
+and transfers between principals the player administers. Ownership and IFF are
+separate. Delegated flight control does not grant configuration or access
+management rights.
+
+Private docking uses the ship's current owning principal and Dock permission.
+Automatic station resupply requires ownership or a TransferCargo grant. Historical
+controller assignment does not preserve either right after a transfer. Known
+information-group secrets remain bearer credentials until the group changes;
+revoking an asset grant does not erase a secret somebody already learned.

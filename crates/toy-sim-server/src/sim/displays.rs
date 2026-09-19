@@ -44,7 +44,7 @@ pub fn update(world: &mut World) {
 
     for session in sessions.iter(world) {
         for (&(id, slot), &hz) in &session.screens {
-            let Ok(ship) = super::session::control(world, session.account, id, None) else {
+            let Ok(ship) = super::session::observe(world, session.account, id) else {
                 continue;
             };
             if world.get::<super::travel::Dormant>(ship).is_some()
@@ -321,7 +321,7 @@ pub fn definitions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::{identity, session};
+    use crate::sim::{identity, ownership, session};
     use toy_sim_model::{Id, drawing::ScreenImage};
     use toy_sim_ships::Catalogue;
 
@@ -340,6 +340,8 @@ mod tests {
         let ship = world
             .spawn((
                 ShipDesign(design),
+                ownership::AssetOwner(toy_sim_model::ownership::Principal::Player(account)),
+                ownership::AssetAccess::default(),
                 Control {
                     account,
                     revision: 1,
@@ -429,7 +431,8 @@ mod tests {
             )
             .is_ok()
         );
-        world.get_mut::<Control>(ship).unwrap().revision += 1;
+        let new_owner = Id::new();
+        ownership::capture_control(&mut world, ship, new_owner).unwrap();
         assert!(frame(&world, ship, 0).is_none());
         assert!(
             input(
@@ -445,6 +448,14 @@ mod tests {
             )
             .is_err()
         );
+        update(&mut world);
+        assert!(world.get::<Display>(ship).is_none());
+        let new_session = session::connect(&mut world, new_owner).unwrap();
+        world
+            .get_mut::<Session>(new_session)
+            .unwrap()
+            .screens
+            .insert((id, 0), 10);
         update(&mut world);
         let next = world.get::<Display>(ship).unwrap().revision;
         assert_ne!(revision, next);

@@ -3,6 +3,7 @@ mod console;
 mod scene;
 mod selection;
 mod shell;
+mod standing;
 
 use crate::{Endpoint, state};
 use bevy::prelude::*;

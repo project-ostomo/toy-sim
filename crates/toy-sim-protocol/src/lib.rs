@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 16;
+pub const VERSION: u16 = 17;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -77,6 +77,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
             section(&mut body, 6, &frame.events)?;
             section(&mut body, 7, &frame.results)?;
             section(&mut body, 8, &frame.presentation)?;
+            section(&mut body, 9, &frame.society)?;
             1
         }
         Message::Input(input) => {
@@ -105,7 +106,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
     let kind = u16::from_le_bytes(bytes[6..8].try_into()?);
     let mut sections = BTreeMap::new();
     let mut body = &bytes[HEADER_SIZE..];
-    let known = if kind == 1 { 8 } else { 1 };
+    let known = if kind == 1 { 9 } else { 1 };
     let mut count = 0;
     while !body.is_empty() {
         count += 1;
@@ -130,6 +131,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         1 => {
             let clock: Clock = read(&sections, 1)?;
             let frame = Frame {
+                society: read(&sections, 9)?,
                 presentation: read(&sections, 8)?,
                 world: clock.world,
                 sequence: clock.sequence,
@@ -209,6 +211,7 @@ fn pose_valid(pose: &Pose) -> bool {
 }
 
 pub fn validate_frame(frame: &Frame) -> Result<()> {
+    ensure!(frame.society.valid(), "invalid society snapshot");
     presentation::validate(&frame.presentation)?;
     for system in &frame.presentation.celestial_systems {
         ensure!(
@@ -375,6 +378,17 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
     for (id, action) in &input.actions {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
+            Action::Society(ownership::SocietyCommand::CreateOrganization { name }) => {
+                ensure!(
+                    !name.trim().is_empty()
+                        && name.len() <= 128
+                        && !name.chars().any(char::is_control),
+                    "invalid organization name"
+                );
+            }
+            Action::Society(ownership::SocietyCommand::SetAssetAccess { policy, .. }) => {
+                ensure!(policy.valid(), "invalid asset access policy");
+            }
             Action::Subscribe(view) => validate_query(&view.query)?,
             Action::ScreenSubscribe { slot, hz, .. } => ensure!(
                 *slot < 8 && (1..=10).contains(hz),
@@ -573,6 +587,7 @@ mod tests {
 
     fn empty_frame() -> Frame {
         Frame {
+            society: Default::default(),
             presentation: PresentationFrame::default(),
             world: Id([1; 16]),
             sequence: 1,

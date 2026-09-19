@@ -93,6 +93,7 @@ pub(super) fn apply(
     info.diagnostics = frame.presentation.diagnostics.clone();
     info.universe = frame.presentation.universe.clone();
     info.navigation = frame.presentation.navigation.clone();
+    info.society = frame.society.clone();
     info.events.extend(publications.events);
     let excess = info.events.len().saturating_sub(128);
     info.events.drain(..excess);
@@ -277,6 +278,7 @@ mod tests {
 
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {
+            society: Default::default(),
             presentation: PresentationFrame::default(),
             world: Id([1; 16]),
             sequence,

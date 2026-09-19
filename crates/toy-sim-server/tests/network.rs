@@ -325,6 +325,286 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
     server.shutdown().await;
 }
 
+async fn submit_action(
+    client: &mut toy_sim_client::Endpoint,
+    world: Id,
+    sequence: u64,
+    action: Action,
+) -> std::sync::Arc<Frame> {
+    let id = Id::new();
+    client
+        .input
+        .send(InputFrame {
+            world,
+            sequence,
+            actions: vec![(id, action)],
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = client.state.recv().await.unwrap();
+            if frame.results.iter().any(|result| result.id == id) {
+                return frame;
+            }
+        }
+    })
+    .await
+    .expect("action response timed out")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn society_changes_cross_the_protocol_and_preserve_permission_boundaries() {
+    use ownership::{AccessGrant, AccessPolicy, Permission, Principal, SocietyCommand, Standing};
+    use std::collections::BTreeSet;
+
+    let alice = Id([11; 16]);
+    let bob = Id([12; 16]);
+    let alice_key = SigningKey::from_bytes(&[21; 32]);
+    let bob_key = SigningKey::from_bytes(&[22; 32]);
+    let server_key = SigningKey::from_bytes(&[23; 32]);
+    let mut server =
+        ServerProcess::start(&server_key, &[(alice, &alice_key), (bob, &bob_key)], None);
+    let address = server.ready().await;
+    let mut a = toy_sim_client::connect(&address, server_key.verifying_key(), alice, &alice_key)
+        .await
+        .unwrap();
+    let mut b = toy_sim_client::connect(&address, server_key.verifying_key(), bob, &bob_key)
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), a.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let other = tokio::time::timeout(Duration::from_secs(10), b.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let world = first.world;
+    let ship = first.ships[0].ship;
+    assert_eq!(first.society.account, alice);
+    assert_eq!(other.society.account, bob);
+    assert!(
+        !other
+            .society
+            .assets
+            .iter()
+            .any(|asset| asset.entity == ship)
+    );
+
+    let created = submit_action(
+        &mut a,
+        world,
+        1,
+        Action::Society(SocietyCommand::CreateOrganization {
+            name: "Network Test Cooperative".into(),
+        }),
+    )
+    .await;
+    assert!(
+        created.results.iter().all(|result| result.error.is_none()),
+        "{:?}",
+        created.results
+    );
+    let organization = created.society.directory.players[&alice]
+        .organization
+        .unwrap();
+    assert!(
+        created.society.directory.organizations[&organization]
+            .officers
+            .contains(&alice)
+    );
+
+    let marked = submit_action(
+        &mut a,
+        world,
+        2,
+        Action::Society(SocietyCommand::SetStanding {
+            target: Principal::Player(bob),
+            standing: Some(Standing::Hostile),
+        }),
+    )
+    .await;
+    assert_eq!(
+        marked
+            .society
+            .directory
+            .standing(Principal::Player(alice), Principal::Player(bob)),
+        Standing::Hostile
+    );
+    let other_view = submit_action(
+        &mut b,
+        world,
+        1,
+        Action::Society(SocietyCommand::SetStanding {
+            target: Principal::Player(alice),
+            standing: Some(Standing::Neutral),
+        }),
+    )
+    .await;
+    assert!(
+        !other_view
+            .society
+            .directory
+            .standings
+            .contains_key(&(Principal::Player(alice), Principal::Player(bob)))
+    );
+
+    let transferred = submit_action(
+        &mut a,
+        world,
+        3,
+        Action::Society(SocietyCommand::TransferAsset {
+            asset: ship,
+            owner: Principal::Organization(organization),
+        }),
+    )
+    .await;
+    assert!(
+        transferred
+            .results
+            .iter()
+            .all(|result| result.error.is_none()),
+        "{:?}",
+        transferred.results
+    );
+    assert_eq!(
+        transferred
+            .society
+            .assets
+            .iter()
+            .find(|asset| asset.entity == ship)
+            .unwrap()
+            .owner,
+        Principal::Organization(organization)
+    );
+    assert_eq!(
+        transferred
+            .ships
+            .iter()
+            .find(|item| item.ship == ship)
+            .unwrap()
+            .iff,
+        first.ships[0].iff
+    );
+
+    let granted = submit_action(
+        &mut a,
+        world,
+        4,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: ship,
+            policy: AccessPolicy {
+                public: BTreeSet::new(),
+                grants: vec![AccessGrant {
+                    principal: Principal::Player(bob),
+                    permissions: BTreeSet::from([Permission::Control]),
+                }],
+            },
+        }),
+    )
+    .await;
+    assert!(granted.results.iter().all(|result| result.error.is_none()));
+    let revision = granted
+        .ships
+        .iter()
+        .find(|item| item.ship == ship)
+        .unwrap()
+        .authority_revision;
+    let subscribed = submit_action(&mut b, world, 2, Action::InstrumentSubscribe { ship }).await;
+    assert!(
+        subscribed
+            .results
+            .iter()
+            .all(|result| result.error.is_none())
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = b.state.recv().await.unwrap();
+            if frame.presentation.ships.iter().any(|item| {
+                item.ship == ship && matches!(item.computer, ComputerStatus::Running { .. })
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("delegated ship computer did not finish booting");
+    let controlled = submit_action(
+        &mut b,
+        world,
+        3,
+        Action::Ship {
+            ship,
+            authority_revision: revision,
+            command: ShipCommand::SetThrottle(0.),
+        },
+    )
+    .await;
+    assert!(
+        controlled
+            .results
+            .iter()
+            .all(|result| result.error.is_none()),
+        "{:?}",
+        controlled.results
+    );
+    assert!(controlled.ships.iter().any(|item| item.ship == ship));
+
+    let denied = submit_action(
+        &mut b,
+        world,
+        4,
+        Action::Ship {
+            ship,
+            authority_revision: revision,
+            command: ShipCommand::SetTransponderEnabled(false),
+        },
+    )
+    .await;
+    assert!(denied.results.iter().any(|result| result.error.is_some()));
+    let denied = submit_action(
+        &mut b,
+        world,
+        5,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: ship,
+            policy: AccessPolicy::default(),
+        }),
+    )
+    .await;
+    assert!(denied.results.iter().any(|result| result.error.is_some()));
+
+    let revoked = submit_action(
+        &mut a,
+        world,
+        5,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: ship,
+            policy: AccessPolicy::default(),
+        }),
+    )
+    .await;
+    assert!(revoked.results.iter().all(|result| result.error.is_none()));
+    let denied = submit_action(
+        &mut b,
+        world,
+        6,
+        Action::Ship {
+            ship,
+            authority_revision: revision,
+            command: ShipCommand::SetThrottle(0.),
+        },
+    )
+    .await;
+    assert!(denied.results.iter().any(|result| result.error.is_some()));
+    assert!(!denied.ships.iter().any(|item| item.ship == ship));
+
+    drop(a);
+    drop(b);
+    server.shutdown().await;
+}
+
 struct ServerProcess {
     child: Child,
     directory: PathBuf,

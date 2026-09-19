@@ -1,5 +1,6 @@
 pub mod drawing;
 pub mod navigation;
+pub mod ownership;
 pub mod presentation;
 pub mod transfer;
 pub mod travel;
@@ -244,6 +245,7 @@ pub struct CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    pub society: ownership::SocietySnapshot,
     pub presentation: PresentationFrame,
     pub world: Id,
     pub sequence: u64,
@@ -260,6 +262,7 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
+    Society(ownership::SocietyCommand),
     InstrumentSubscribe {
         ship: EntityId,
     },

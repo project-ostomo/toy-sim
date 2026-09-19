@@ -83,6 +83,8 @@ pub fn enforce_exclusion(world: &mut World) {
 
 pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
     let owner = Id::new();
+    let organization = super::ownership::organization_id("Helion Flight Cooperative");
+    super::ownership::affiliate(world, owner, Some(organization))?;
     let player_pose = *world.get::<precision::PreciseTransform>(player).unwrap();
     let velocity = world.get::<physics::Velocity>(player).unwrap().0;
     let universe = world
@@ -107,6 +109,11 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         "Neris Anchorage".into(),
     )?;
     identity::attach_ship(world, station, owner)?;
+    world
+        .entity_mut(station)
+        .insert(super::ownership::AssetOwner(
+            ownership::Principal::Organization(organization),
+        ));
     world.entity_mut(station).insert((
         identity::BeaconEmitter,
         Landmark {
@@ -225,9 +232,11 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
                         account: owner,
                         revision: 1,
                     },
+                    super::ownership::AssetOwner(ownership::Principal::Organization(organization)),
+                    super::ownership::AssetAccess::default(),
                     identity::Transponder(IffIdentity {
                         owner,
-                        faction: None,
+                        faction: Some(organization),
                         labels: [name.clone()].into(),
                         enabled: true,
                         range_m: 1e12,
@@ -245,8 +254,6 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
                         radius_m: 220.,
                         exclusion_m: 1e7,
                         enabled: true,
-                        public: true,
-                        allowed: Default::default(),
                     },
                     Landmark {
                         system: registry::system_identity(&system.solver.name),
@@ -320,7 +327,7 @@ pub fn catalogue(world: &mut World) -> NavigationCatalogue {
                 ),
                 pose: super::intelligence::pose(pose, velocity, angular),
                 radius_m: gate.map_or(spatial.radius_m, |g| g.radius_m),
-                gate_exit: gate.filter(|g| g.enabled && g.public).map(|g| g.paired),
+                gate_exit: gate.filter(|g| g.enabled).map(|g| g.paired),
                 docking: bays.is_some(),
             },
         )

@@ -10,7 +10,11 @@ pub(super) fn selected_item(
     intents: &mut Vec<Intent>,
 ) {
     ui.horizontal(|ui| {
-        ui.label(row.map_or(Icon::Target, Row::icon).text(24.).color(ACCENT));
+        ui.label(
+            row.map_or(Icon::Target, Row::icon)
+                .text(24.)
+                .color(row.map_or(ACCENT, |row| super::super::standing::color(row.standing))),
+        );
         ui.vertical(|ui| {
             let name = row.map_or("No object selected", |row| row.name.as_str());
             ui.add(egui::Label::new(egui::RichText::new(name).size(16.).strong()).truncate())
@@ -25,7 +29,23 @@ pub(super) fn selected_item(
             );
         });
     });
+    if let Some(row) = row.filter(|row| matches!(row.target, SelectedTarget::Contact(_))) {
+        ui.colored_label(
+            super::super::standing::color(row.standing),
+            format!(
+                "{} {}",
+                super::super::standing::symbol(row.standing),
+                super::super::standing::label(row.standing)
+            ),
+        )
+        .on_hover_text("Standing follows the identity broadcast by IFF.");
+    }
     ui.separator();
+    if let Some(principal) = row.and_then(|row| row.affiliation) {
+        if ui.small_button("Show affiliation").clicked() {
+            intents.push(Intent::InspectAffiliation(principal));
+        }
+    }
     let target = row.map(|row| row.target);
     let contact = target.and_then(|target| match target {
         SelectedTarget::Contact(reference) => Some(reference),
@@ -297,8 +317,19 @@ pub(super) fn overview_row(
         egui::Align2::CENTER_CENTER,
         row.icon().glyph(),
         Icon::font(14.),
-        if targeted { THREAT } else { ACCENT },
+        super::super::standing::color(row.standing),
     );
+    if targeted {
+        ui.painter().rect_stroke(
+            egui::Rect::from_center_size(
+                rect.left_center() + egui::vec2(11., 0.),
+                egui::vec2(19., 19.),
+            ),
+            0.,
+            egui::Stroke::new(1., THREAT),
+            egui::StrokeKind::Inside,
+        );
+    }
     for (start, end, text) in [
         (0.07, 0.43, row.name.clone()),
         (0.43, 0.61, row.kind.clone()),
@@ -309,9 +340,16 @@ pub(super) fn overview_row(
             egui::pos2(rect.left() + rect.width() * start, rect.top()),
             egui::pos2(rect.left() + rect.width() * end - 5., rect.bottom()),
         );
-        let galley =
-            ui.painter()
-                .layout(text, egui::FontId::proportional(11.), TEXT, f32::INFINITY);
+        let galley = ui.painter().layout(
+            text,
+            egui::FontId::proportional(11.),
+            if start == 0.07 {
+                super::super::standing::color(row.standing)
+            } else {
+                TEXT
+            },
+            f32::INFINITY,
+        );
         ui.painter()
             .with_clip_rect(cell.intersect(ui.clip_rect()))
             .galley(
@@ -321,10 +359,11 @@ pub(super) fn overview_row(
             );
     }
     response.on_hover_text(format!(
-        "{}\n{} · {}\n{}\nRelative speed: {:.1} m/s",
+        "{}\n{} · {}\n{} · {}\nRelative speed: {:.1} m/s",
         row.name,
         row.kind,
         distance(row.distance),
+        super::super::standing::label(row.standing),
         row.detail,
         row.speed
     ))

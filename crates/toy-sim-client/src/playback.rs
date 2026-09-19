@@ -191,6 +191,7 @@ mod tests {
 
     fn frame(sequence: u64) -> Frame {
         Frame {
+            society: Default::default(),
             world: Id([1; 16]),
             sequence,
             tick: sequence,

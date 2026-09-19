@@ -86,6 +86,7 @@ pub(super) struct SessionInfo {
     pub diagnostics: Option<Diagnostics>,
     pub universe: Option<UniverseStatus>,
     pub navigation: NavigationCatalogue,
+    pub society: ownership::SocietySnapshot,
     pub results: Vec<CommandResult>,
     pub events: Vec<toy_sim_model::Event>,
     pub target_frames: usize,

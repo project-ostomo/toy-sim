@@ -4,6 +4,7 @@ mod map;
 mod model;
 mod overview;
 mod panels;
+mod society;
 
 use super::{SelectedTarget, Selection, scene};
 use crate::state::*;
@@ -58,6 +59,15 @@ const MAP: WindowSpec = WindowSpec {
     offset: egui::Vec2::ZERO,
     open: false,
 };
+const SOCIETY: WindowSpec = WindowSpec {
+    id: "society",
+    title: "SOCIETY & OWNERSHIP",
+    size: egui::vec2(760., 560.),
+    min_size: egui::vec2(650., 420.),
+    anchor: egui::Align2::CENTER_CENTER,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
 const SETTINGS: WindowSpec = WindowSpec {
     id: "settings",
     title: "INTERFACE",
@@ -89,6 +99,7 @@ struct Shell {
     desktop: Desktop,
     inventory: inventory::State,
     map: map::State,
+    society: society::State,
     filter: Filter,
     sort: Sort,
     descending: bool,
@@ -126,6 +137,7 @@ impl Default for Shell {
             desktop: Desktop::default(),
             inventory: inventory::State::default(),
             map: map::State::default(),
+            society: society::State::default(),
             filter: Filter::default(),
             sort: Sort::default(),
             descending: false,
@@ -137,6 +149,8 @@ impl Default for Shell {
 }
 
 enum Intent {
+    InspectAffiliation(ownership::Principal),
+    Society(ownership::SocietyCommand, &'static str),
     Select(SelectedTarget),
     Look(Option<SelectedTarget>),
     Align(SelectedTarget),
@@ -163,6 +177,7 @@ pub(super) fn install(app: &mut App) {
 
 fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.feedback = None;
+    shell.society = society::State::default();
 }
 
 fn draw(
@@ -245,6 +260,11 @@ fn draw(
                 speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
                 radius: track.radius_m.unwrap_or(0.),
                 own,
+                affiliation: super::standing::advertised_principal(&track.tags),
+                standing: session
+                    .society
+                    .directory
+                    .track_standing(session.society.account, &track.tags),
                 detail: format!(
                     "{:?} · position uncertainty {}",
                     track.provenance,
@@ -289,6 +309,8 @@ fn draw(
                 distance: pose.0.position.relative_to(origin).length(),
                 speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
                 radius: body.0.radius_m,
+                affiliation: None,
+                standing: None,
                 detail: "Orrery ephemeris".into(),
                 own: false,
             });
@@ -313,12 +335,26 @@ fn draw(
             distance: offset.length(),
             speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
             radius: beacon.radius_m,
+            affiliation: contacts
+                .iter()
+                .find(|(contact, _)| contact.0.entity == Some(beacon.id))
+                .and_then(|(contact, _)| super::standing::advertised_principal(&contact.0.tags)),
+            standing: contacts
+                .iter()
+                .find(|(contact, _)| contact.0.entity == Some(beacon.id))
+                .and_then(|(contact, _)| {
+                    session
+                        .society
+                        .directory
+                        .track_standing(session.society.account, &contact.0.tags)
+                }),
             detail: "Subspace beacon".into(),
             own: false,
         });
     }
     let model = FrameModel {
         navigation: &session.navigation,
+        society: &session.society,
         rows,
         ship: telemetry,
         details,
@@ -346,6 +382,21 @@ fn draw(
             _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
         };
         match intent {
+            Intent::InspectAffiliation(principal) => {
+                shell.society.inspect(principal);
+                shell.desktop.open(SOCIETY);
+            }
+            Intent::Society(command, label) => {
+                if model.connected {
+                    let id = outgoing.push(Action::Society(command));
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: label.into(),
+                        last_tick: 0,
+                        error: None,
+                    });
+                }
+            }
             Intent::EditQueue(orders) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     outgoing.ship(

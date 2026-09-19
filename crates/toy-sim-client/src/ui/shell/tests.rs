@@ -14,6 +14,8 @@ fn row(id: u8, x: f64) -> Row {
         radius: 50.,
         detail: String::new(),
         own: false,
+        standing: None,
+        affiliation: None,
     }
 }
 
@@ -29,6 +31,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
         navigation: &navigation,
+        society: &ownership::SocietySnapshot::default(),
         ships: vec![],
         rows: vec![Row {
             target: SelectedTarget::Beacon(Id([9; 16])),
@@ -300,6 +303,7 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
         navigation: &navigation,
+        society: &ownership::SocietySnapshot::default(),
         ships: vec![&ship],
         rows: vec![],
         ship: Some(&ship),

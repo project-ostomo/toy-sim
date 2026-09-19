@@ -29,6 +29,11 @@ pub fn provision(
         .query_filtered::<Entity, With<vessel::ControlledVessel>>()
         .single(world)?;
     let hostile_account = Id::new();
+    super::ownership::affiliate(
+        world,
+        hostile_account,
+        Some(super::ownership::organization_id("Terminus Privateers")),
+    )?;
     let owner = accounts.first().copied().unwrap_or_else(Id::new);
     identity::attach_ship(world, player, owner)?;
     let design = world.get::<vessel::ShipDesign>(player).unwrap().0.clone();
@@ -54,6 +59,11 @@ pub fn provision(
         .collect::<Vec<_>>();
     for &ship in &unowned {
         identity::attach_ship(world, ship, hostile_account)?;
+        world.entity_mut(ship).insert(super::ownership::AssetOwner(
+            toy_sim_model::ownership::Principal::Organization(super::ownership::organization_id(
+                "Terminus Privateers",
+            )),
+        ));
         world
             .get_mut::<identity::Transponder>(ship)
             .unwrap()

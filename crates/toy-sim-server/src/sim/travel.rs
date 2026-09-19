@@ -68,8 +68,6 @@ pub struct Gate {
     pub radius_m: f64,
     pub exclusion_m: f64,
     pub enabled: bool,
-    pub public: bool,
-    pub allowed: BTreeSet<AccountId>,
 }
 
 #[derive(Component, Clone, Debug)]
@@ -133,11 +131,11 @@ fn id(world: &World, entity: Entity) -> Result<Id> {
 fn entity(world: &World, id: Id) -> Result<Entity> {
     identity::lookup(world, id)
 }
-fn owner(world: &World, entity: Entity) -> Result<Id> {
+fn owner(world: &World, entity: Entity) -> Result<toy_sim_model::ownership::Principal> {
     Ok(world
-        .get::<Control>(entity)
-        .ok_or_else(|| anyhow::anyhow!("control unavailable"))?
-        .account)
+        .get::<super::ownership::AssetOwner>(entity)
+        .ok_or_else(|| anyhow::anyhow!("owner unavailable"))?
+        .0)
 }
 fn radius(world: &World, entity: Entity) -> Result<f64> {
     Ok(world
@@ -275,7 +273,12 @@ pub fn reserve_bay(world: &mut World, ship: Entity, host: Entity, bay_id: u32) -
     );
     let ship_id = id(world, ship)?;
     let account = owner(world, ship)?;
-    let host_owner = owner(world, host)?;
+    let has_access = super::ownership::principal_access(
+        world,
+        account,
+        host,
+        toy_sim_model::ownership::Permission::Dock,
+    );
     let ship_radius = radius(world, ship)?;
     let mass = world
         .get::<MassProps>(ship)
@@ -291,7 +294,9 @@ pub fn reserve_bay(world: &mut World, ship: Entity, host: Entity, bay_id: u32) -
         .get_mut(bay_id as usize)
         .ok_or_else(|| anyhow::anyhow!("bay unavailable"))?;
     ensure!(
-        bay.public || account == host_owner || bay.allowed.contains(&account),
+        bay.public
+            || has_access
+            || matches!(account, toy_sim_model::ownership::Principal::Player(account) if bay.allowed.contains(&account)),
         "docking denied"
     );
     ensure!(
@@ -376,9 +381,14 @@ pub fn undock(world: &mut World, ship: Entity) -> Result<()> {
         .0[bay as usize];
     let account = owner(world, ship)?;
     ensure!(
-        docking_bay.public
-            || account == owner(world, host)?
-            || docking_bay.allowed.contains(&account),
+        super::ownership::port_access(
+            world,
+            account,
+            host,
+            toy_sim_model::ownership::Permission::Dock,
+            docking_bay.public,
+            &docking_bay.allowed
+        ),
         "departure denied"
     );
     let mut target = ship_pose(world, host)?;
@@ -1024,10 +1034,12 @@ mod tests {
         let mut world = World::new();
         world.init_resource::<SimulationCounters>();
         world.init_resource::<identity::IdentityIndex>();
+        crate::sim::ownership::initialize(&mut world);
         world
     }
 
     fn ship(world: &mut World, position: DVec3, account: Id) -> Entity {
+        crate::sim::ownership::add_account(world, account);
         let design = Arc::new(
             toy_sim_ships::armed_starter()
                 .compile(&toy_sim_ships::Catalogue::builtin())
@@ -1037,6 +1049,9 @@ mod tests {
         let entity = world
             .spawn((
                 ShipDesign(design),
+                crate::sim::ownership::AssetOwner(toy_sim_model::ownership::Principal::Player(
+                    account,
+                )),
                 PreciseTransform {
                     translation_um: GalacticPosition::default().offset_by(position),
                     rotation: DQuat::IDENTITY,
@@ -1061,6 +1076,33 @@ mod tests {
             .id();
         identity::register(world, entity, Id::new());
         entity
+    }
+
+    #[test]
+    fn station_transfer_revokes_private_docking_despite_unchanged_controller() {
+        use toy_sim_model::ownership::{AccessPolicy, Permission, Principal};
+        let mut world = world();
+        let account = Id::new();
+        let station = ship(&mut world, DVec3::ZERO, account);
+        let guest = ship(&mut world, DVec3::Z * 100., account);
+        let mut private = bay();
+        private.public = false;
+        world.entity_mut(station).insert(DockingBays(vec![private]));
+        assert!(reserve_bay(&mut world, guest, station, 0).is_ok());
+        world
+            .entity_mut(station)
+            .insert(crate::sim::ownership::AssetOwner(Principal::Organization(
+                crate::sim::ownership::organization_id("Unifleet Station Services"),
+            )));
+        assert_eq!(world.get::<Control>(station).unwrap().account, account);
+        assert!(reserve_bay(&mut world, guest, station, 0).is_err());
+        world
+            .entity_mut(station)
+            .insert(crate::sim::ownership::AssetAccess(AccessPolicy {
+                public: [Permission::Dock].into(),
+                grants: Vec::new(),
+            }));
+        assert!(reserve_bay(&mut world, guest, station, 0).is_ok());
     }
 
     fn bay() -> Bay {
@@ -1191,7 +1233,11 @@ mod tests {
         world.entity_mut(host).insert(DockingBays(vec![private]));
         let child = ship(&mut world, DVec3::Z * 100., account);
         dock(&mut world, child, host, 0).unwrap();
-        world.get_mut::<Control>(child).unwrap().account = Id::new();
+        world
+            .entity_mut(child)
+            .insert(crate::sim::ownership::AssetOwner(
+                toy_sim_model::ownership::Principal::Player(Id::new()),
+            ));
         assert!(undock(&mut world, child).is_err());
         destroy(&mut world, host);
         assert!(matches!(
@@ -1356,7 +1402,10 @@ mod tests {
         destroy(&mut world, child);
         debug_recover(&mut world, child).unwrap();
         assert_eq!(id(&world, child).unwrap(), child_id);
-        assert_eq!(owner(&world, child).unwrap(), account);
+        assert_eq!(
+            owner(&world, child).unwrap(),
+            toy_sim_model::ownership::Principal::Player(account)
+        );
         assert!(world.get::<Dormant>(child).is_none());
         assert!(
             world

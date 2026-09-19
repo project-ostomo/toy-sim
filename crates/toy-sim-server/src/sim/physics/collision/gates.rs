@@ -1,12 +1,11 @@
 use super::*;
 use crate::sim::{
-    identity::{Control, Identity},
+    identity::Identity,
     physics::Velocity,
     precision::PreciseTransform,
     travel::{Dormant, Gate},
 };
-use bevy::prelude::{With, Without, World};
-use std::collections::HashSet;
+use bevy::prelude::{Without, World};
 use toy_sim_model::travel::GATE_ENTRY_SPEED_M_S;
 
 pub(super) struct Mouth {
@@ -19,8 +18,6 @@ pub(super) struct Mouth {
     pub exit_radius: f64,
     pub rotation: DQuat,
     pub enabled: bool,
-    pub public: bool,
-    pub permitted: HashSet<Entity>,
 }
 
 pub(super) fn gather(world: &mut World) -> Vec<Mouth> {
@@ -31,42 +28,23 @@ pub(super) fn gather(world: &mut World) -> Vec<Mouth> {
             &Gate,
             &PreciseTransform,
             &Velocity,
-            &Control,
         ), Without<Dormant>>()
         .iter(world)
-        .map(|(entity, id, gate, pose, velocity, control)| {
+        .map(|(entity, id, gate, pose, velocity)| {
             (
                 entity,
                 id.0,
                 gate.clone(),
                 *pose,
                 velocity.0,
-                control.account,
             )
         })
         .collect();
-    let controls: Vec<_> = world
-        .query_filtered::<(Entity, &Control), With<super::super::RigidBody>>()
-        .iter(world)
-        .map(|(entity, control)| (entity, control.account))
-        .collect();
-
     gates
         .iter()
-        .filter_map(|(entity, id, gate, pose, velocity, owner)| {
-            let (_, _, exit, end, end_velocity, exit_owner) = gates
-                .iter()
-                .find(|(_, id, _, _, _, _)| *id == gate.paired)?;
-            let permitted = controls
-                .iter()
-                .filter_map(|(entity, account)| {
-                    let entry_access =
-                        gate.public || gate.allowed.contains(account) || account == owner;
-                    let exit_access =
-                        exit.public || exit.allowed.contains(account) || account == exit_owner;
-                    (entry_access && exit_access).then_some(*entity)
-                })
-                .collect();
+        .filter_map(|(entity, id, gate, pose, velocity)| {
+            let (_, _, exit, end, end_velocity) =
+                gates.iter().find(|(_, id, _, _, _)| *id == gate.paired)?;
             Some(Mouth {
                 entity: *entity,
                 position: pose.translation_um,
@@ -77,8 +55,6 @@ pub(super) fn gather(world: &mut World) -> Vec<Mouth> {
                 exit_radius: exit.radius_m,
                 rotation: end.rotation * pose.rotation.inverse(),
                 enabled: gate.enabled && exit.enabled && exit.paired == *id,
-                public: gate.public && exit.public,
-                permitted,
             })
         })
         .collect()
@@ -119,10 +95,6 @@ pub(super) fn cross(bodies: &mut [Body], id: usize, gate: &Mouth, time: f64, rep
     let exit = gate
         .exit_position
         .offset_by(gate.exit_velocity * time + outward * (gate.exit_radius + body.radius + 2.0));
-    let access = gate.public
-        || gate
-            .permitted
-            .contains(&body.launch_owner.unwrap_or(body.entity));
     let fits = body.radius < gate.radius && body.radius < gate.exit_radius;
     let clear = bodies.iter().enumerate().all(|(other, candidate)| {
         other == id
@@ -144,7 +116,7 @@ pub(super) fn cross(bodies: &mut [Body], id: usize, gate: &Mouth, time: f64, rep
             member.hull = 0.0;
         }
         record_deaths(body, time, report);
-    } else if gate.enabled && access && fits && clear {
+    } else if gate.enabled && fits && clear {
         body.position = exit;
         body.velocity = gate.exit_velocity + gate.rotation * relative_velocity;
         body.rotation = gate.rotation * body.rotation;
@@ -181,8 +153,6 @@ mod tests {
             exit_radius: 10.0,
             rotation: DQuat::IDENTITY,
             enabled: true,
-            public: true,
-            permitted: HashSet::new(),
         }
     }
 
@@ -264,6 +234,27 @@ mod tests {
     }
 
     #[test]
+    fn gate_passage_is_physical_and_independent_of_ownership() {
+        use crate::sim::ownership::AssetOwner;
+        use toy_sim_model::{Id, ownership::Principal};
+        for owner in [
+            Principal::Player(Id([1; 16])),
+            Principal::Organization(Id([2; 16])),
+        ] {
+            let mut world = World::new();
+            let gate = mouth(&mut world, 0.0, 10000.0);
+            world
+                .entity_mut(gate.entity)
+                .insert(AssetOwner(Principal::Sovereignty(Id([3; 16]))));
+            let body = traveller(&mut world, 50.0);
+            world.entity_mut(body.entity).insert(AssetOwner(owner));
+            let report = run(&mut vec![body], vec![gate], 0.1);
+            assert_eq!(report.gate_transfers.len(), 1);
+            assert!(report.destroyed.is_empty());
+        }
+    }
+
+    #[test]
     fn a_grazing_trajectory_does_not_enter() {
         let mut world = World::new();
         let gate = mouth(&mut world, 0.0, 10000.0);
@@ -276,16 +267,15 @@ mod tests {
     }
 
     #[test]
-    fn disabled_denied_oversized_or_obstructed_crossings_reflect_the_approach() {
-        for case in 0..4 {
+    fn disabled_oversized_or_obstructed_crossings_reflect_the_approach() {
+        for case in 0..3 {
             let mut world = World::new();
             let mut gate = mouth(&mut world, 0.0, 10000.0);
             let mut bodies = vec![traveller(&mut world, 50.0)];
             match case {
                 0 => gate.enabled = false,
-                1 => gate.public = false,
-                2 => gate.exit_radius = 0.5,
-                3 => {
+                1 => gate.exit_radius = 0.5,
+                2 => {
                     let mut blocker = traveller(&mut world, 0.0);
                     blocker.position = GalacticPosition::from_meters(DVec3::X * 9987.0);
                     bodies.push(blocker);

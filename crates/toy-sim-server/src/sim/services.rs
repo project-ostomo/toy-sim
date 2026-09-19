@@ -119,20 +119,22 @@ pub struct PublishedWorld {
     public: Arc<toy_sim_intel::Snapshot>,
     apertures: Arc<ApertureTree>,
     universe: Option<Arc<UniverseApertures>>,
+    directory: Arc<ownership::OwnershipDirectory>,
 }
 
 #[derive(Clone)]
 struct PublishedBeacon {
     beacon: Beacon,
-    owner: AccountId,
+    owner: ownership::Principal,
+    access: ownership::AccessPolicy,
     bays: Vec<super::travel::Bay>,
-    gate_access: Option<(bool, std::collections::BTreeSet<AccountId>)>,
 }
 
 struct FusedScan {
     universe: Option<Arc<UniverseApertures>>,
     epoch: hifitime::Epoch,
-    account: AccountId,
+    owner: ownership::Principal,
+    directory: Arc<ownership::OwnershipDirectory>,
     radius: f64,
     mass: f64,
     physical: Entity,
@@ -355,18 +357,20 @@ struct Aperture {
 impl FusedScan {
     fn beacon(&self, publication: &PublishedBeacon) -> Beacon {
         let mut beacon = publication.beacon.clone();
-        if publication
-            .gate_access
-            .as_ref()
-            .is_some_and(|(public, allowed)| {
-                !public && publication.owner != self.account && !allowed.contains(&self.account)
-            })
-        {
-            beacon.gate_exit = None;
-        }
+        let permitted = |permission, public, allowed: &BTreeSet<AccountId>| {
+            public
+                || matches!(self.owner, ownership::Principal::Player(account) if allowed.contains(&account))
+                || super::ownership::permits_principal(
+                    &self.directory,
+                    publication.owner,
+                    Some(&publication.access),
+                    self.owner,
+                    permission,
+                )
+        };
         beacon.bays.retain(|id, _| {
             let bay = &publication.bays[*id as usize];
-            (bay.public || publication.owner == self.account || bay.allowed.contains(&self.account))
+            permitted(ownership::Permission::Dock, bay.public, &bay.allowed)
                 && bay
                     .reservation
                     .is_none_or(|(ship, until)| ship == self.own || until < self.snapshot.tick)
@@ -406,6 +410,7 @@ impl FusedScan {
 }
 
 pub fn publish_indexes(
+    directory: Res<super::ownership::Directory>,
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
     groups: Query<&Group>,
@@ -429,7 +434,8 @@ pub fn publish_indexes(
             Option<&Velocity>,
             Option<&AngularVelocity>,
             &super::identity::Transponder,
-            &super::identity::Control,
+            &super::ownership::AssetOwner,
+            Option<&super::ownership::AssetAccess>,
             &super::spatial::SpatialBody,
             Option<&super::travel::DockingBays>,
             Option<&super::travel::Gate>,
@@ -473,11 +479,12 @@ pub fn publish_indexes(
     }
     publication.celestial = Arc::new(celestial);
     publication.apertures = Arc::new(ApertureTree::build(apertures));
+    publication.directory = Arc::new(directory.0.clone());
     publication.beacons = Arc::new(
         beacons
             .iter()
             .map(
-                |(id, transform, velocity, angular, iff, control, design, bays, gate)| {
+                |(id, transform, velocity, angular, iff, owner, access, design, bays, gate)| {
                     let pose = super::intelligence::pose(transform, velocity, angular);
                     let bays = bays.map_or_else(Vec::new, |bays| bays.0.clone());
                     let publication = PublishedBeacon {
@@ -496,8 +503,8 @@ pub fn publish_indexes(
                             gate_exit: gate.filter(|gate| gate.enabled).map(|gate| gate.paired),
                             exclusion_m: gate.map_or(0., |gate| gate.exclusion_m),
                         },
-                        owner: control.account,
-                        gate_access: gate.map(|gate| (gate.public, gate.allowed.clone())),
+                        owner: owner.0,
+                        access: access.map(|access| access.0.clone()).unwrap_or_default(),
                         bays,
                     };
                     (id.0, publication)
@@ -517,7 +524,7 @@ pub fn prepare_sources(
             Entity,
             &Identity,
             &Membership,
-            &super::identity::Control,
+            &super::ownership::AssetOwner,
             &PreciseTransform,
             &Velocity,
             &AngularVelocity,
@@ -535,7 +542,7 @@ pub fn prepare_sources(
         entity,
         id,
         membership,
-        control,
+        owner,
         transform,
         velocity,
         angular,
@@ -568,7 +575,8 @@ pub fn prepare_sources(
                 + hifitime::Duration::from_seconds(clock.ticks as f64 * 0.1),
             own: id.0,
             physical: entity,
-            account: control.account,
+            owner: owner.0,
+            directory: publication.directory.clone(),
             radius: design.0.radius,
             mass: mass.mass,
             group: group.id,
@@ -867,7 +875,8 @@ mod tests {
         FusedScan {
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),
-            account: Id::new(),
+            owner: ownership::Principal::Player(Id::new()),
+            directory: Arc::default(),
             radius: 1.0,
             mass: 1.0,
             physical: Entity::PLACEHOLDER,
@@ -1003,7 +1012,7 @@ mod tests {
         small.radius_m = 1.0;
         let mut reserved = bay.clone();
         reserved.reservation = Some((Id::new(), 600));
-        let publication = PublishedBeacon {
+        let mut publication = PublishedBeacon {
             beacon: Beacon {
                 entity: Id::new(),
                 radius_m: 10.0,
@@ -1016,15 +1025,26 @@ mod tests {
                     range_m: 1e8,
                 },
                 bays: (0..4).map(|id| (id, Pose::default())).collect(),
-                gate_exit: None,
+                gate_exit: Some(Id([7; 16])),
                 exclusion_m: 0.,
             },
-            owner: Id::new(),
-            gate_access: None,
+            owner: ownership::Principal::Player(Id::new()),
+            access: Default::default(),
             bays: vec![bay, denied, small, reserved],
         };
         let beacon = source.beacon(&publication);
         assert_eq!(beacon.bays.keys().copied().collect::<Vec<_>>(), vec![0]);
+        assert_eq!(beacon.gate_exit, Some(Id([7; 16])));
+        publication.owner = source.owner;
+        assert!(source.beacon(&publication).bays.contains_key(&1));
+        publication.owner = ownership::Principal::Organization(Id::new());
+        assert!(!source.beacon(&publication).bays.contains_key(&1));
+        publication
+            .access
+            .public
+            .insert(ownership::Permission::Dock);
+        assert!(source.beacon(&publication).bays.contains_key(&1));
+        assert_eq!(source.beacon(&publication).gate_exit, Some(Id([7; 16])));
     }
 
     #[test]

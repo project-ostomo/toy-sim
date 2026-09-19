@@ -3,7 +3,7 @@ use crate::ui::SelectedTarget;
 use crate::ui::{
     Selection,
     state::{
-        Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, ShipDetails,
+        Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, SessionInfo, ShipDetails,
         SystemSubscription, ViewObservation,
     },
 };
@@ -20,6 +20,7 @@ pub(super) fn install(app: &mut App) {
 fn overlay(
     mut contexts: EguiContexts,
     mut active: ResMut<Selection>,
+    session: Res<SessionInfo>,
     mut cameras: Query<(
         Entity,
         &Camera,
@@ -154,19 +155,12 @@ fn overlay(
             }
             let selected = active.contact() == Some(contact.1);
             let targeted = marked == Some(contact.1);
-            let color = if targeted {
-                THREAT
-            } else if selected {
-                egui::Color32::WHITE
-            } else if track
-                .tags
-                .iter()
-                .any(|tag| matches!(tag, Tag::Kind(kind) if kind == "celestial"))
-            {
-                egui::Color32::from_rgb(255, 210, 125)
-            } else {
-                egui::Color32::from_rgb(125, 220, 255)
-            };
+            let color = crate::ui::standing::color(
+                session
+                    .society
+                    .directory
+                    .track_standing(session.society.account, &track.tags),
+            );
             let square = egui::Rect::from_center_size(center, egui::vec2(14.0, 14.0));
             painter.rect_stroke(
                 square,
@@ -174,7 +168,15 @@ fn overlay(
                 egui::Stroke::new(if selected || targeted { 2.0 } else { 1.0 }, color),
                 egui::StrokeKind::Inside,
             );
-            if selected && targeted {
+            if targeted {
+                painter.rect_stroke(
+                    square.expand(4.),
+                    0.,
+                    egui::Stroke::new(1., THREAT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if selected {
                 painter.rect_stroke(
                     egui::Rect::from_center_size(center, egui::vec2(8.0, 8.0)),
                     0.0,

@@ -1,6 +1,7 @@
 use super::*;
 use crate::sim::{
     identity::BeaconEmitter,
+    ownership::{self, AssetAccess, AssetOwner, Directory},
     travel::{Bay, DockingBays, Dormant},
 };
 use toy_sim_ships::utilities::UtilityDef;
@@ -210,34 +211,41 @@ fn consume(inventory: &mut Inventory, cat: &Catalogue, resource: &str, mass: f64
 
 pub fn service_docked(
     time: Res<Time<Fixed>>,
+    directory: Option<Res<Directory>>,
     cat: Res<ShipCatalogue>,
     hosts: Query<
         (
             Entity,
             &DockServices,
             &crate::sim::travel::StoredShips,
-            &crate::sim::identity::Control,
+            &AssetOwner,
+            Option<&AssetAccess>,
         ),
         Without<Dormant>,
     >,
-    ships: Query<(
-        &ShipDesign,
-        &crate::sim::identity::Control,
-        &DockServiceRequest,
-    )>,
+    ships: Query<(&ShipDesign, &AssetOwner, &DockServiceRequest)>,
     mut inventories: Query<&mut ShipInventory>,
     mut stored: Query<&mut crate::sim::travel::StoredMass>,
     mut masses: Query<&mut MassProps>,
 ) {
+    let Some(directory) = directory else {
+        return;
+    };
     let dt = time.delta_secs_f64();
-    for (host, services, guests, owner) in &hosts {
+    for (host, services, guests, owner, access) in &hosts {
         let mut cargo_budget = services.cargo_kg_s * dt;
         let mut power_budget = (services.power_w * dt).stochastic_round();
         for guest in guests.iter() {
-            let Ok((design, control, request)) = ships.get(guest) else {
+            let Ok((design, guest_owner, request)) = ships.get(guest) else {
                 continue;
             };
-            if control.account != owner.account {
+            if !ownership::permits_principal(
+                &directory.0,
+                owner.0,
+                access.map(|access| &access.0),
+                guest_owner.0,
+                toy_sim_model::ownership::Permission::TransferCargo,
+            ) {
                 continue;
             }
             let Ok([mut source, mut target]) = inventories.get_many_mut([host, guest]) else {
@@ -518,12 +526,14 @@ mod tests {
         let mut target = Inventory::empty(&cat);
         target.tank_capacities_m3[0] = 1.;
         let owner = Id::new();
+        crate::sim::identity::initialize(fixture.app.world_mut(), &[owner]);
         let guest_id = Id::new();
         let guest = fixture
             .app
             .world_mut()
             .spawn((
                 ShipDesign(fixture.design.clone()),
+                AssetOwner(toy_sim_model::ownership::Principal::Player(owner)),
                 Control {
                     account: owner,
                     revision: 1,
@@ -538,6 +548,7 @@ mod tests {
             ))
             .id();
         fixture.app.world_mut().entity_mut(fixture.ship).insert((
+            AssetOwner(toy_sim_model::ownership::Principal::Player(owner)),
             Control {
                 account: owner,
                 revision: 1,
@@ -620,5 +631,45 @@ mod tests {
                 .0,
             1010.
         );
+        let world = fixture.app.world_mut();
+        let organization = ownership::organization_id("Helion Flight Cooperative");
+        world.entity_mut(fixture.ship).insert(AssetOwner(
+            toy_sim_model::ownership::Principal::Organization(organization),
+        ));
+        world
+            .resource_mut::<Directory>()
+            .0
+            .organizations
+            .get_mut(&organization)
+            .unwrap()
+            .officers
+            .insert(owner);
+        ownership::affiliate(world, owner, None).unwrap();
+        world
+            .resource_mut::<Directory>()
+            .0
+            .organizations
+            .get_mut(&organization)
+            .unwrap()
+            .officers
+            .remove(&owner);
+        let before = world.get::<ShipInventory>(guest).unwrap().0.clone();
+        world.run_system_once(service_docked).unwrap();
+        assert_eq!(
+            world.get::<ShipInventory>(guest).unwrap().0.cargo,
+            before.cargo
+        );
+        assert_eq!(
+            world.get::<ShipInventory>(guest).unwrap().0.energy_j,
+            before.energy_j
+        );
+        world.entity_mut(fixture.ship).insert(AssetAccess(
+            toy_sim_model::ownership::AccessPolicy {
+                public: [toy_sim_model::ownership::Permission::TransferCargo].into(),
+                grants: Vec::new(),
+            },
+        ));
+        world.run_system_once(service_docked).unwrap();
+        assert!(world.get::<ShipInventory>(guest).unwrap().0.energy_j > before.energy_j);
     }
 }

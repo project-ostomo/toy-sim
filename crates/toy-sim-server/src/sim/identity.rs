@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use toy_sim_model::{AccountId, Id, IffIdentity, InfoGroupKey};
 
 #[derive(Component, Clone, Copy)]
@@ -39,7 +39,6 @@ pub struct GroupShips(Vec<Entity>);
 #[derive(Component)]
 pub struct Account {
     pub group: Entity,
-    pub factions: BTreeSet<Id>,
     pub debug: bool,
 }
 
@@ -101,12 +100,14 @@ pub fn initialize(world: &mut World, accounts: &[AccountId]) {
     world.insert_resource(WorldEpoch(Id::new()));
     world.insert_resource(SensorSeed(rand::random()));
     super::intelligence::initialize(world);
+    super::ownership::initialize(world);
     for &id in accounts {
         add_account(world, id, false);
     }
 }
 
 pub fn add_account(world: &mut World, id: Id, debug: bool) -> Entity {
+    super::ownership::add_account(world, id);
     if let Some(entity) = world.resource::<IdentityIndex>().0.get(&id).copied() {
         if debug && let Some(mut account) = world.get_mut::<Account>(entity) {
             account.debug = true;
@@ -115,14 +116,7 @@ pub fn add_account(world: &mut World, id: Id, debug: bool) -> Entity {
     }
     let group = super::intelligence::join(world, InfoGroupKey(rand::random()));
     let entity = world
-        .spawn((
-            Account {
-                group,
-                factions: BTreeSet::new(),
-                debug,
-            },
-            OwnedShips::default(),
-        ))
+        .spawn((Account { group, debug }, OwnedShips::default()))
         .id();
     register(world, entity, id);
     entity
@@ -151,16 +145,19 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
         .get::<super::vessel::Vessel>(ship)
         .map(|v| v.vessel_name.to_string())
         .filter(|n| !n.is_empty());
+    let faction = world.resource::<super::ownership::Directory>().0.players[&owner].organization;
     world.entity_mut(ship).insert((
         Control {
             account: owner,
             revision: 1,
         },
         ControlledBy(account),
+        super::ownership::AssetOwner(toy_sim_model::ownership::Principal::Player(owner)),
+        super::ownership::AssetAccess::default(),
         Membership(group),
         Transponder(IffIdentity {
             owner,
-            faction: None,
+            faction,
             labels: name.into_iter().collect(),
             enabled: true,
             range_m: 1e8,

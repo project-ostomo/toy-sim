@@ -21,6 +21,7 @@ pub(super) fn draw(
             (INVENTORY, Icon::Cargo, "Inventory"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
             (MAP, Icon::Planet, "Gate network map"),
+            (SOCIETY, Icon::Shield, "Society and ownership"),
         ] {
             if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
                 shell.desktop.toggle(spec);
@@ -293,6 +294,12 @@ pub(super) fn draw(
                         intents.push(Intent::Look(Some(row.target)));
                     }
                     response.context_menu(|ui| {
+                        if let Some(principal) = row.affiliation {
+                            if ui.button("Show affiliation").clicked() {
+                                intents.push(Intent::InspectAffiliation(principal));
+                                ui.close();
+                            }
+                        }
                         if ui.button("Look at").clicked() {
                             intents.push(Intent::Look(Some(row.target)));
                             ui.close();
@@ -344,6 +351,9 @@ pub(super) fn draw(
     shell
         .desktop
         .show(ctx, MAP, |ui| map::draw(ui, &mut shell.map, model, intents));
+    shell.desktop.show(ctx, SOCIETY, |ui| {
+        society::draw(ui, &mut shell.society, model, intents);
+    });
     let mut locked = shell.desktop.locked;
     let mut reset = false;
     shell.desktop.show(ctx, SETTINGS, |ui| {

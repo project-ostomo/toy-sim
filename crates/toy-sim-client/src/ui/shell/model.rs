@@ -10,6 +10,8 @@ pub(super) struct Row {
     pub radius: f64,
     pub detail: String,
     pub own: bool,
+    pub affiliation: Option<ownership::Principal>,
+    pub standing: Option<ownership::Standing>,
 }
 
 impl Row {
@@ -31,6 +33,7 @@ impl Row {
 }
 
 pub(super) struct FrameModel<'a> {
+    pub society: &'a ownership::SocietySnapshot,
     pub navigation: &'a NavigationCatalogue,
     pub ships: Vec<&'a ShipTelemetry>,
     pub rows: Vec<Row>,

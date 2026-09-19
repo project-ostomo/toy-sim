@@ -162,8 +162,6 @@ mod tests {
                     radius_m: 100.,
                     exclusion_m: 1e7,
                     enabled: true,
-                    public: true,
-                    allowed: Default::default(),
                 },
             ))
             .id();

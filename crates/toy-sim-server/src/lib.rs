@@ -418,6 +418,7 @@ mod asset_tests {
 
     fn empty_snapshot() -> Frame {
         Frame {
+            society: Default::default(),
             world: Id::new(),
             sequence: 1,
             tick: 1,
