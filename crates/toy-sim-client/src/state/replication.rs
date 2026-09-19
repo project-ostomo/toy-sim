@@ -715,6 +715,7 @@ mod tests {
         let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
         let ship = Id([4; 16]);
         first.ships.push(ShipTelemetry {
+            can_control: true,
             appearance: None,
             radius_m: 10.,
             dock_services: Default::default(),
@@ -829,26 +830,32 @@ mod tests {
         step(&mut app, 0.25, None);
         assert_eq!(app.world().resource::<RenderTime>().display_ns, 600_000_000);
 
-        let mut paused = accelerated.clone();
-        paused.sequence = 3;
-        paused.rate = 0.;
-        step(&mut app, 0.3, Some(paused.clone()));
+        let mut normal = accelerated.clone();
+        normal.sequence = 3;
+        normal.tick = 12;
+        normal.sim_time_ns = 1_200_000_000;
+        normal.rate = 1.;
+        step(&mut app, 0.3, Some(normal.clone()));
         step(&mut app, 0.35, None);
         assert_eq!(
             app.world().resource::<RenderTime>().display_ns,
-            1_100_000_000
+            1_150_000_000
         );
-        paused.sequence = 4;
+        normal.sequence = 4;
+        normal.tick = 13;
+        normal.sim_time_ns = 1_300_000_000;
         app.world_mut()
             .resource_mut::<BufferedPlayback>()
             .0
-            .receive(paused.clone())
+            .receive(normal.clone())
             .unwrap();
-        paused.sequence = 5;
+        normal.sequence = 5;
+        normal.tick = 14;
+        normal.sim_time_ns = 1_400_000_000;
         app.world_mut()
             .resource_mut::<BufferedPlayback>()
             .0
-            .receive(paused)
+            .receive(normal)
             .unwrap();
         step(&mut app, 0.55, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 5);

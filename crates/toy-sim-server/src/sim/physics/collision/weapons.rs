@@ -468,6 +468,9 @@ mod tests {
         assert_eq!(bodies[0].members[0].thermal.hull_energy_j, 1000.0);
         assert_eq!(bodies[1].members[0].thermal.hull_energy_j, 0.0);
         assert!(report.shots.is_empty());
+        assert_eq!(report.beam_hits.len(), 1);
+        assert_eq!(report.beam_hits[0].source, owner);
+        assert_eq!(report.beam_hits[0].target, bodies[0].members[0].entity);
     }
 
     fn armed(world: &mut World) -> (Body, WeaponShip) {
@@ -883,6 +886,12 @@ pub struct BeamEvent {
     pub divergence_rad: f64,
 }
 
+#[derive(Clone, Debug)]
+pub struct BeamHit {
+    pub source: Entity,
+    pub target: Entity,
+}
+
 pub fn resolve_beam(
     beam: BeamEvent,
     bodies: &mut [Body],
@@ -931,6 +940,10 @@ pub fn resolve_beam(
         normal: -beam.direction,
         shields: [false, shield],
         energy_j: energy,
+    });
+    report.beam_hits.push(BeamHit {
+        source: beam.owner,
+        target: member.entity,
     });
     report.impacts += 1;
     report.dissipated_j += energy;

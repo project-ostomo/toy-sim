@@ -5,12 +5,17 @@ use toy_sim_model::ownership::{
     SocietyCommand, SocietySnapshot, Standing,
 };
 
+use toy_sim_universe::organizations::{
+    self, LoreStanding, OrganizationProfile, OrganizationRole, RelationKind,
+};
+
 #[derive(Default, PartialEq, Eq)]
 enum Tab {
     #[default]
     Directory,
     Assets,
     ComputerGas,
+    Profiles,
 }
 
 #[derive(Default)]
@@ -19,6 +24,8 @@ pub(super) struct State {
     selected: Option<Principal>,
     search: String,
     organization_name: String,
+    profile: Option<Id>,
+    profile_search: String,
     asset: Option<Id>,
     draft: Option<AccessPolicy>,
     draft_owner: Option<Principal>,
@@ -74,6 +81,13 @@ pub(super) fn draw(
         ui.selectable_value(&mut state.tab, Tab::Directory, "Affiliations & standings");
         ui.selectable_value(&mut state.tab, Tab::Assets, "Asset permissions");
         ui.selectable_value(&mut state.tab, Tab::ComputerGas, "Computer gas");
+        if ui
+            .selectable_value(&mut state.tab, Tab::Profiles, "Organization profiles")
+            .clicked()
+        {
+            state.profile = selected_organization(snapshot, state.selected)
+                .or_else(|| selected_organization(snapshot, Some(me)));
+        }
     });
     if state.tab == Tab::Directory {
         ui.horizontal(|ui| {
@@ -107,7 +121,190 @@ pub(super) fn draw(
         Tab::Directory => directory_panel(ui, state, snapshot, intents),
         Tab::Assets => assets_panel(ui, state, snapshot, intents),
         Tab::ComputerGas => gas_accounts(ui, snapshot),
+        Tab::Profiles => profiles_panel(ui, state, snapshot),
     });
+}
+
+fn selected_organization(snapshot: &SocietySnapshot, principal: Option<Principal>) -> Option<Id> {
+    match principal? {
+        Principal::Organization(id) => Some(id),
+        Principal::Player(account) => snapshot.directory.players.get(&account)?.organization,
+        Principal::Sovereignty(_) => None,
+    }
+}
+
+fn profiles_panel(ui: &mut egui::Ui, state: &mut State, snapshot: &SocietySnapshot) {
+    let profiles = organizations::catalogue();
+    let membership = selected_organization(snapshot, Some(Principal::Player(snapshot.account)));
+    state.profile = state
+        .profile
+        .or(membership)
+        .or_else(|| profiles.first().map(|profile| Id(profile.id())));
+
+    ui.horizontal(|ui| {
+        ui.label(format!("{} public organization profiles", profiles.len()));
+        if ui
+            .add_enabled(membership.is_some(), egui::Button::new("My organization"))
+            .clicked()
+        {
+            state.profile = membership;
+            state.selected = membership.map(Principal::Organization);
+        }
+    });
+    ui.add(
+        egui::TextEdit::singleline(&mut state.profile_search)
+            .hint_text("Find an organization, sovereignty, home system, or role…")
+            .desired_width(f32::INFINITY),
+    );
+    ui.add_space(4.0);
+
+    let search = state.profile_search.trim().to_lowercase();
+    let matches: Vec<_> = profiles
+        .iter()
+        .filter(|profile| profile_matches(profile, &search))
+        .collect();
+    let height = ui.available_height().max(0.0);
+    ui.columns(2, |columns| {
+        egui::ScrollArea::vertical()
+            .id_salt("organization_profile_directory")
+            .auto_shrink([false, false])
+            .min_scrolled_height(0.0)
+            .max_height(height)
+            .show(&mut columns[0], |ui| {
+                if matches.is_empty() {
+                    ui.weak("No matching public organizations.");
+                }
+                for profile in matches {
+                    let id = Id(profile.id());
+                    if ui
+                        .selectable_label(state.profile == Some(id), &profile.name)
+                        .clicked()
+                    {
+                        state.profile = Some(id);
+                        state.selected = Some(Principal::Organization(id));
+                    }
+                }
+            });
+
+        egui::ScrollArea::vertical()
+            .id_salt(("organization_profile_record", state.profile))
+            .auto_shrink([false, false])
+            .min_scrolled_height(0.0)
+            .max_height(height)
+            .show(&mut columns[1], |ui| {
+                let Some(id) = state.profile else {
+                    ui.weak("Select an organization to read its public record.");
+                    return;
+                };
+                if Some(id) == membership {
+                    ui.colored_label(ACCENT, "YOUR ORGANIZATION");
+                }
+                if snapshot.directory.organizations.contains_key(&id)
+                    && ui.button("Affiliation & membership").clicked()
+                {
+                    state.inspect(Principal::Organization(id));
+                }
+                if let Some(profile) = organizations::profile(id.0) {
+                    profile_record(ui, state, profile);
+                } else {
+                    ui.heading(name(&snapshot.directory, Principal::Organization(id)));
+                    ui.weak("This organization has no published historical profile.");
+                }
+            });
+    });
+}
+
+fn profile_matches(profile: &OrganizationProfile, search: &str) -> bool {
+    profile.name.to_lowercase().contains(search)
+        || profile.sovereignty.to_lowercase().contains(search)
+        || profile.home_system.to_lowercase().contains(search)
+        || profile
+            .roles
+            .iter()
+            .any(|role| role_name(*role).to_lowercase().contains(search))
+}
+
+fn role_name(role: OrganizationRole) -> &'static str {
+    match role {
+        OrganizationRole::Trade => "Trade",
+        OrganizationRole::Industry => "Industry",
+        OrganizationRole::Defense => "Defense",
+        OrganizationRole::Research => "Research",
+        OrganizationRole::Relief => "Relief",
+        OrganizationRole::Salvage => "Salvage",
+        OrganizationRole::Mining => "Mining",
+        OrganizationRole::Patrol => "Patrol",
+        OrganizationRole::Broadcast => "Broadcast",
+    }
+}
+
+fn profile_record(ui: &mut egui::Ui, state: &mut State, profile: &OrganizationProfile) {
+    ui.heading(&profile.name);
+    ui.label(format!("{} · {}", profile.sovereignty, profile.home_system));
+    ui.weak(format!(
+        "Founded {} · Public record {}",
+        profile.founded_year,
+        organizations::REFERENCE_YEAR
+    ));
+    ui.label(
+        profile
+            .roles
+            .iter()
+            .map(|role| role_name(*role))
+            .collect::<Vec<_>>()
+            .join(" · "),
+    );
+
+    for (heading, text) in [
+        ("History", &profile.history),
+        ("Culture", &profile.culture),
+        ("Doctrine", &profile.doctrine),
+    ] {
+        ui.separator();
+        ui.strong(heading);
+        ui.add(egui::Label::new(text).wrap());
+    }
+
+    for (heading, items) in [
+        ("Public objectives", &profile.goals),
+        ("Resources & capabilities", &profile.resources),
+    ] {
+        ui.separator();
+        ui.strong(heading);
+        for item in items {
+            ui.add(egui::Label::new(format!("• {item}")).wrap());
+        }
+    }
+    ui.separator();
+    ui.strong("Public relationships");
+    profile_relationships(ui, state, profile);
+}
+
+fn profile_relationships(ui: &mut egui::Ui, state: &mut State, profile: &OrganizationProfile) {
+    for relation in &profile.relations {
+        let standing = match relation.standing {
+            LoreStanding::Friendly => Standing::Friendly,
+            LoreStanding::Neutral => Standing::Neutral,
+            LoreStanding::Hostile => Standing::Hostile,
+        };
+        let kind = match relation.kind {
+            RelationKind::Alliance => "Alliance",
+            RelationKind::Trade => "Trade",
+            RelationKind::Competition => "Competition",
+            RelationKind::Dispute => "Dispute",
+            RelationKind::ArmedConflict => "Armed conflict",
+        };
+        ui.horizontal_wrapped(|ui| {
+            if ui.link(&relation.organization).clicked() {
+                let id = Id(organizations::organization_id(&relation.organization));
+                state.profile = Some(id);
+                state.selected = Some(Principal::Organization(id));
+            }
+            ui.colored_label(super::super::standing::color(Some(standing)), kind);
+        });
+        ui.add(egui::Label::new(&relation.reason).wrap());
+        ui.add_space(4.0);
+    }
 }
 
 fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietySnapshot) {
@@ -214,6 +411,14 @@ fn directory_panel(
 
         if let Some(principal) = state.selected {
             principal_details(&mut columns[1], snapshot, principal, intents);
+            if let Some(organization) = selected_organization(snapshot, Some(principal)) {
+                if organizations::profile(organization.0).is_some()
+                    && columns[1].button("Read organization profile").clicked()
+                {
+                    state.profile = Some(organization);
+                    state.tab = Tab::Profiles;
+                }
+            }
         } else {
             columns[1].weak("Select an affiliation to inspect its hierarchy, adjust your standing, or manage membership.");
         }
@@ -746,6 +951,131 @@ fn principal_picker(
 mod tests {
     use super::*;
     use toy_sim_model::ownership::PlayerAffiliation;
+
+    #[test]
+    fn public_profiles_browse_all_organizations_and_return_to_real_membership_controls() {
+        use toy_sim_model::ownership::{Organization, Sovereignty};
+
+        let ctx = egui::Context::default();
+        toy_sim_ui::theme::install(&ctx);
+        let mut snapshot = snapshot(true);
+        let profile = organizations::catalogue()
+            .iter()
+            .find(|profile| profile.name == "Unifleet Defense")
+            .unwrap();
+        let id = Id(profile.id());
+        let sovereignty = Id([5; 16]);
+        snapshot.directory.sovereignties.insert(
+            sovereignty,
+            Sovereignty {
+                id: sovereignty,
+                name: profile.sovereignty.clone(),
+                bloc: Bloc::Union,
+                officers: BTreeSet::new(),
+            },
+        );
+        snapshot.directory.organizations.insert(
+            id,
+            Organization {
+                id,
+                name: profile.name.clone(),
+                sovereignty,
+                open_membership: false,
+                officers: BTreeSet::new(),
+            },
+        );
+        snapshot
+            .directory
+            .players
+            .get_mut(&snapshot.account)
+            .unwrap()
+            .organization = Some(id);
+        let mut state = State::default();
+        assert!(click(&ctx, &mut state, &snapshot, "Organization profiles").is_empty());
+        assert_eq!(state.profile, Some(id));
+        let labels = render(&ctx, &mut state, &snapshot, vec![], &mut Vec::new());
+        assert!(labels.iter().any(|(text, _)| text == "YOUR ORGANIZATION"));
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text.contains(&profile.history))
+        );
+
+        let last = organizations::catalogue().last().unwrap();
+        state.profile_search = last
+            .name
+            .chars()
+            .take(last.name.chars().count() - 1)
+            .collect();
+        assert_eq!(
+            organizations::catalogue()
+                .iter()
+                .filter(|profile| profile_matches(profile, &state.profile_search.to_lowercase()))
+                .count(),
+            1
+        );
+        assert!(click(&ctx, &mut state, &snapshot, &last.name).is_empty());
+        assert_eq!(state.profile, Some(Id(last.id())));
+        assert!(click(&ctx, &mut state, &snapshot, "My organization").is_empty());
+        assert_eq!(state.profile, Some(id));
+        assert!(click(&ctx, &mut state, &snapshot, "Affiliation & membership").is_empty());
+        assert!(matches!(state.tab, Tab::Directory));
+        assert_eq!(state.selected, Some(Principal::Organization(id)));
+        let labels = render(&ctx, &mut state, &snapshot, vec![], &mut Vec::new());
+        assert!(
+            labels
+                .iter()
+                .any(|(text, _)| text == "Your personal override")
+        );
+    }
+
+    #[test]
+    fn public_relationship_links_select_the_related_profile() {
+        let ctx = egui::Context::default();
+        toy_sim_ui::theme::install(&ctx);
+        let profile = organizations::catalogue().first().unwrap();
+        let relation = &profile.relations[0];
+        let mut state = State::default();
+        let mut target = None;
+        for frame in 0..5 {
+            let events = if frame >= 3 {
+                let point = target.unwrap();
+                vec![
+                    egui::Event::PointerMoved(point),
+                    egui::Event::PointerButton {
+                        pos: point,
+                        button: egui::PointerButton::Primary,
+                        pressed: frame == 3,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ]
+            } else {
+                Vec::new()
+            };
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(800., 1200.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| profile_relationships(ui, &mut state, profile),
+            );
+            output.textures_delta.clear();
+            for shape in output.shapes {
+                if let egui::Shape::Text(text) = shape.shape {
+                    if text.galley.job.text == relation.organization {
+                        target = Some(text.pos + text.galley.size() / 2.);
+                    }
+                }
+            }
+        }
+        let target = Id(organizations::organization_id(&relation.organization));
+        assert_eq!(state.profile, Some(target));
+        assert_eq!(state.selected, Some(Principal::Organization(target)));
+    }
 
     #[test]
     fn gas_tab_shows_only_authorized_accounts_with_exact_integer_balances() {

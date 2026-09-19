@@ -30,6 +30,7 @@ const MAX_RESULTS: usize = 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct LlmCaller {
+    pub world: Id,
     pub owner: Principal,
     pub computer: Id,
     pub program: [u8; 32],
@@ -421,3 +422,42 @@ async fn worker(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn scripted_test_service(
+    path: &Path,
+    responses: Vec<String>,
+) -> (LlmService, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::{collections::VecDeque, future::Future, pin::Pin, sync::atomic::AtomicUsize};
+
+    struct Scripted {
+        responses: Mutex<VecDeque<String>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl provider::Provider for Scripted {
+        fn complete(
+            &self,
+            _: LlmRequest,
+        ) -> Pin<Box<dyn Future<Output = provider::Outcome> + Send + '_>> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, Ordering::AcqRel);
+                let status = self.responses.lock().unwrap().pop_front().map_or_else(
+                    || failed("Scripted test provider has no remaining response"),
+                    |text| LlmStatus::Ready { text },
+                );
+                provider::Outcome {
+                    status,
+                    charged: Some(0),
+                }
+            })
+        }
+    }
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let provider = Arc::new(Scripted {
+        responses: Mutex::new(responses.into()),
+        calls: calls.clone(),
+    });
+    (LlmService::start(path, provider).unwrap(), calls)
+}

@@ -25,18 +25,20 @@ impl Services {
         ledger: GasLedger,
         llm: Option<LlmService>,
         chat: Option<ChatService>,
+        world: Id,
         owner: Principal,
         computer: Id,
         program: [u8; 32],
         display: bool,
     ) -> Self {
-        let scope = postcard::to_stdvec(&(owner, computer, program, display))
+        let scope = postcard::to_stdvec(&(world, owner, computer, program, display))
             .expect("serializable program identity");
         Self {
             ledger,
             llm,
             chat,
             caller: LlmCaller {
+                world,
                 owner,
                 computer,
                 program,
@@ -101,6 +103,7 @@ pub(crate) fn services_for(
         world.resource::<GasLedger>().clone(),
         world.get_resource::<LlmService>().cloned(),
         world.get_resource::<ChatService>().cloned(),
+        world.resource::<super::super::identity::WorldEpoch>().0,
         owner,
         computer,
         program,

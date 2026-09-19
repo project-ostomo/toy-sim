@@ -12,6 +12,7 @@ fn path() -> PathBuf {
 
 fn caller() -> LlmCaller {
     LlmCaller {
+        world: Id::new(),
         owner: Principal::Player(Id::new()),
         computer: Id::new(),
         program: [7; 32],
@@ -173,6 +174,38 @@ fn independent_connections_cannot_race_past_the_dollar_cap() {
 }
 
 #[test]
+fn fresh_world_request_ids_are_independent_under_one_spending_cap() {
+    let provider = FakeProvider::new(false);
+    let service = LlmService::start(&path(), provider.clone()).unwrap();
+    let original = caller();
+    let fresh = LlmCaller {
+        world: Id::new(),
+        ..original
+    };
+    let gas = GasLedger::default();
+    gas.ensure_account(original.owner, 1_000_000_000);
+
+    assert_eq!(
+        service.submit(original, request(1), &gas),
+        LlmSubmission::Accepted
+    );
+    let mut next_world_request = request(1);
+    next_world_request.prompt = "A different world's observation".into();
+    assert_eq!(
+        service.submit(fresh, next_world_request, &gas),
+        LlmSubmission::Accepted
+    );
+    wait(|| provider.calls.load(Ordering::Acquire) == 2);
+    provider.gate.add_permits(2);
+    wait(|| {
+        matches!(service.poll(original, 1), LlmStatus::Ready { .. })
+            && matches!(service.poll(fresh, 1), LlmStatus::Ready { .. })
+    });
+    assert_eq!(service.spending().settled_microdollars, 30);
+    assert_eq!(service.spending().reserved_microdollars, 0);
+}
+
+#[test]
 fn asynchronous_admission_settles_gas_and_isolates_program_scopes() {
     let provider = FakeProvider::new(false);
     let path = path();
@@ -199,6 +232,10 @@ fn asynchronous_admission_settles_gas_and_isolates_program_scopes() {
     );
     assert_eq!(gas.snapshot().unwrap().accounts[&caller.owner].spent, quote);
     for other in [
+        LlmCaller {
+            world: Id::new(),
+            ..caller
+        },
         LlmCaller {
             display: true,
             ..caller

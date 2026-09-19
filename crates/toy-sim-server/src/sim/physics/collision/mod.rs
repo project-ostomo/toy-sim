@@ -898,6 +898,7 @@ pub struct Report {
     pub gate_transfers: Vec<(Entity, Entity)>,
     pub shots: Vec<weapons::ShotEvent>,
     pub beams: Vec<weapons::BeamEvent>,
+    pub beam_hits: Vec<weapons::BeamHit>,
     pub impact_events: Vec<ImpactEvent>,
     pub motion: Vec<MotionSegment>,
     traced: std::collections::HashSet<Entity>,

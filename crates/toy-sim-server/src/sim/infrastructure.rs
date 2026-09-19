@@ -734,6 +734,19 @@ mod tests {
             toy_sim_universe::civilization::map().links.len() * 2
         );
         let network = toy_sim_model::navigation::GateNetwork::from_catalogue(&catalogue);
+        let neighbors: std::collections::HashMap<_, _> = network
+            .regions
+            .iter()
+            .map(|region| (region.id, &region.gates))
+            .collect();
+        let mut reachable = std::collections::HashSet::new();
+        let mut pending = vec![catalogue.systems[0].id];
+        while let Some(system) = pending.pop() {
+            if reachable.insert(system) {
+                pending.extend(neighbors[&system].iter().map(|gate| gate.destination));
+            }
+        }
+        assert_eq!(reachable.len(), catalogue.systems.len());
         for system in &catalogue.systems {
             let mouths: Vec<_> = catalogue
                 .beacons
@@ -753,7 +766,6 @@ mod tests {
                         > 2e7
                 );
             }
-            assert!(network.route(catalogue.systems[0].id, system.id).is_some());
         }
         let gates: Vec<_> = world
             .query_filtered::<Entity, With<travel::Gate>>()

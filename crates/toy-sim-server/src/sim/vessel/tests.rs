@@ -6,11 +6,11 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v29" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v29" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v29" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v29" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v29" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v30" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v30" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v30" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v30" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -591,7 +591,7 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
 fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v29" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
         (memory (export "memory") 1)
         (func (export "ship_api_version") (result i32) i32.const {})
         (func (export "ship_tick") (local $remaining i32)
@@ -678,8 +678,8 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
 fn shared_missile_callbacks_resume_and_rotate_within_the_parent_account_budget() {
     let program = wat::parse_str(format!(
         r#"(module
-            (import "ship_v29" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
+            (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+            (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (global $ship_calls (mut i32) (i32.const 0))
             (func (export "ship_api_version") (result i32) i32.const {})

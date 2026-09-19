@@ -653,6 +653,10 @@ pub struct CallbackSchedule {
     remaining: f64,
 }
 impl CallbackSchedule {
+    pub fn wake(&mut self) {
+        self.remaining = 0.;
+    }
+
     pub fn advance(&mut self, dt: f64) {
         self.remaining = (self.remaining - dt).max(0.);
     }

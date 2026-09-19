@@ -568,6 +568,9 @@ pub fn query_work(query: &toy_sim_model::ProgramQuery) -> u64 {
     use toy_sim_model::ProgramQuery;
 
     match query {
+        ProgramQuery::LocalSpace { .. } => toy_sim_model::local_space::QUERY_GAS,
+        ProgramQuery::RouteRequest(_) => toy_sim_model::routing::REQUEST_GAS,
+        ProgramQuery::RoutePoll { .. } => toy_sim_model::routing::POLL_GAS,
         ProgramQuery::Navigation { limit, .. } => {
             abi::NAVIGATION_GAS_BASE + abi::NAVIGATION_GAS_PER_GATE * u64::from((*limit).min(128))
         }

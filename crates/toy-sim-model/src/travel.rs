@@ -182,6 +182,31 @@ pub struct TravelState {
     pub estimated_arrival_tick: Option<u64>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct CurrentOrder {
+    pub autopilot_enabled: bool,
+    pub preferences: PlanningPreferences,
+    pub revision: u64,
+    pub index: usize,
+    pub order: Option<QueuedOrder>,
+    pub status: Status,
+    pub estimated_arrival_tick: Option<u64>,
+}
+
+impl From<&TravelState> for CurrentOrder {
+    fn from(state: &TravelState) -> Self {
+        Self {
+            autopilot_enabled: state.autopilot_enabled,
+            preferences: state.preferences,
+            revision: state.revision,
+            index: state.order,
+            order: state.orders.get(state.order).cloned(),
+            status: state.status.clone(),
+            estimated_arrival_tick: state.estimated_arrival_tick,
+        }
+    }
+}
+
 impl TravelState {
     pub fn stage_arrivals(&self, now: u64) -> Vec<Option<u64>> {
         let mut arrival = Some(now);

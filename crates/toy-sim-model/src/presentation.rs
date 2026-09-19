@@ -342,7 +342,6 @@ pub enum DebugCommand {
         joules: f64,
     },
     SetRate(f64),
-    Step,
     Reset,
     Relocate {
         ship: EntityId,
@@ -365,7 +364,7 @@ impl DebugCommand {
             Self::InspectBody { .. } => DebugCapability::Inspect,
             Self::RelocateToBody { .. } => DebugCapability::Relocate,
             Self::InjectShieldHeat { .. } => DebugCapability::InjectHeat,
-            Self::SetRate(_) | Self::Step => DebugCapability::Clock,
+            Self::SetRate(_) => DebugCapability::Clock,
             Self::Reset => DebugCapability::Reset,
             Self::Relocate { .. } => DebugCapability::Relocate,
             Self::Recover { .. } => DebugCapability::Recover,

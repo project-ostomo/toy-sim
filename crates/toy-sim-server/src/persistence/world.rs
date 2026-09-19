@@ -1,6 +1,6 @@
 use crate::sim::{
-    gas, hardware, identity, industry, infrastructure, intelligence, missiles, orrery, ownership,
-    physics, precision, registry, simulation, spatial, travel, vessel,
+    defense, gas, hardware, identity, industry, infrastructure, intelligence, missiles, npc,
+    orrery, ownership, physics, precision, registry, simulation, spatial, travel, vessel,
 };
 use anyhow::{Context, Result, ensure};
 use bevy::{
@@ -27,6 +27,7 @@ struct WorldRecord {
     tick: u64,
     groups: Vec<GroupRecord>,
     accounts: Vec<AccountRecord>,
+    npc_organizations: Vec<npc::state::NpcOrganization>,
     ships: Vec<ShipRecord>,
     gates: Vec<GateRecord>,
     tracks: Vec<TrackRecord>,
@@ -83,6 +84,8 @@ struct ShipRecord {
     retained_computer: bool,
     industry: Option<industry::IndustryFacility>,
     mine: Option<industry::MineSource>,
+    defense: Option<defense::DefenseDuty>,
+    hauling: Option<npc::logistics::HaulDuty>,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
     group: Option<Id>,
@@ -207,6 +210,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         tick: world.resource::<simulation::SimulationCounters>().ticks,
         groups: Vec::new(),
         accounts: Vec::new(),
+        npc_organizations: Vec::new(),
         ships: Vec::new(),
         gates: Vec::new(),
         tracks: Vec::new(),
@@ -220,6 +224,13 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         .collect::<Vec<_>>();
     identities.sort_unstable_by_key(|(id, _)| **id);
     for (&stable_id, &entity) in identities {
+        if let Some(organization) = world.get::<npc::state::NpcOrganization>(entity) {
+            ensure!(
+                organization.organization == stable_id,
+                "NPC organization identity mismatch"
+            );
+            record.npc_organizations.push(organization.clone());
+        }
         if let Some(group) = world.get::<intelligence::Group>(entity) {
             record.groups.push(GroupRecord {
                 id: stable_id,
@@ -312,6 +323,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                 retained_computer: world.get::<missiles::RetainedComputer>(entity).is_some(),
                 industry: facility,
                 mine,
+                defense: world.get::<defense::DefenseDuty>(entity).cloned(),
+                hauling: world.get::<npc::logistics::HaulDuty>(entity).cloned(),
                 control: control(world, entity),
                 iff: world
                     .get::<identity::Transponder>(entity)
@@ -420,6 +433,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
     let ships = record.ships.iter().map(|ship| (ship.id, ship)).collect();
     validate_missiles(&record.ships, &ships)?;
     validate_industry_ids(&record)?;
+    validate_npc(world, &record)?;
     Ok(postcard::to_stdvec(&record)?)
 }
 
@@ -437,7 +451,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         "gas account principal unavailable"
     );
     ensure!(
-        record.rate.is_finite() && (0.0..=100.0).contains(&record.rate),
+        record.rate.is_finite() && record.rate > 0.0 && record.rate <= 100.0,
         "invalid saved clock rate"
     );
     let mut identities = BTreeSet::new();
@@ -448,10 +462,17 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         .chain(record.accounts.iter().map(|record| record.id))
         .chain(record.ships.iter().map(|record| record.id))
         .chain(record.gates.iter().map(|record| record.id))
+        .chain(
+            record
+                .npc_organizations
+                .iter()
+                .map(|record| record.organization),
+        )
     {
         ensure!(identities.insert(value), "duplicate persistent identity");
     }
     validate_industry_ids(record)?;
+    validate_npc(world, record)?;
     let groups: BTreeSet<_> = record.groups.iter().map(|group| group.id).collect();
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
@@ -783,6 +804,68 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     Ok(())
 }
 
+fn validate_npc(world: &World, record: &WorldRecord) -> Result<()> {
+    use std::collections::BTreeSet;
+    use toy_sim_model::ownership::Principal;
+
+    let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
+    let systems: BTreeSet<_> = world
+        .resource::<registry::UniverseRegistry>()
+        .definitions
+        .iter()
+        .map(|(id, _)| *id)
+        .collect();
+    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
+    let mut organizations = BTreeSet::new();
+
+    for organization in &record.npc_organizations {
+        organization.validate(record.tick)?;
+        ensure!(
+            organizations.insert(organization.organization)
+                && record
+                    .directory
+                    .organizations
+                    .contains_key(&organization.organization)
+                && record.directory.players.contains_key(&organization.officer)
+                && accounts.contains(&organization.officer)
+                && systems.contains(&organization.home_system)
+                && record
+                    .gas
+                    .accounts
+                    .contains_key(&Principal::Organization(organization.organization)),
+            "saved NPC organization references an unavailable identity, system or gas account"
+        );
+    }
+
+    for ship in &record.ships {
+        if let Some(duty) = &ship.defense {
+            ensure!(
+                duty.valid()
+                    && accounts.contains(&duty.account)
+                    && record.directory.players.contains_key(&duty.account)
+                    && record
+                        .directory
+                        .organizations
+                        .contains_key(&duty.organization)
+                    && duty.installation.is_none_or(|id| id != Id::default()),
+                "invalid saved defense duty"
+            );
+        }
+        if let Some(duty) = &ship.hauling {
+            duty.validate()?;
+            ensure!(
+                accounts.contains(&duty.account)
+                    && record.directory.players.contains_key(&duty.account)
+                    && duty.source != Id::default()
+                    && duty.destination != Id::default(),
+                "invalid saved freight duty"
+            );
+            toy_sim_ships::industry::item_mass_kg(&duty.item, catalogue)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
     let mut identities: std::collections::BTreeSet<_> = record
         .groups
@@ -902,6 +985,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     validate(world, &record)?;
     toy_sim_protocol::navigation::decode_catalogue(&record.navigation)?;
     let ledger = gas::GasLedger::from_snapshot(record.gas)?;
+    crate::sim::route_service::reset(world);
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
     let entities = world
         .query_filtered::<Entity, Without<bevy::ecs::resource::IsResource>>()
@@ -937,6 +1021,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.insert_resource(crate::sim::services::PublishedWorld::default());
     world.insert_resource(crate::sim::combat::CombatHistory::default());
     world.insert_resource(missiles::Callbacks::default());
+    defense::reset_transient(world);
     world.insert_resource(spatial::SpatialIndex::default());
     world.insert_resource(identity::SensorSeed(record.sensor_seed));
     world.resource_mut::<simulation::SimulationCounters>().ticks = record.tick;
@@ -989,9 +1074,21 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let mut relationships = Vec::new();
     let mut drives = Vec::new();
     let mut thermal_parts = Vec::new();
+    let mut designs = BTreeMap::new();
     for mut ship in record.ships {
-        let mut blueprint: toy_sim_ships::ShipBlueprint =
-            toml::from_str(&ship.blueprint).context("decode saved ship blueprint")?;
+        let design = match designs.entry((ship.blueprint.clone(), ship.program)) {
+            std::collections::btree_map::Entry::Occupied(entry) => Arc::clone(entry.get()),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let mut blueprint: toy_sim_ships::ShipBlueprint =
+                    toml::from_str(&ship.blueprint).context("decode saved ship blueprint")?;
+                blueprint.firmware =
+                    toy_sim_ships::Firmware::Custom(record.programs[&ship.program].clone());
+                let design =
+                    Arc::new(blueprint.compile(&world.resource::<vessel::ShipCatalogue>().0)?);
+                entry.insert(design.clone());
+                design
+            }
+        };
         let checkpoint = ship
             .software
             .as_ref()
@@ -1011,9 +1108,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 })
             })
             .transpose()?;
-        blueprint.firmware =
-            toy_sim_ships::Firmware::Custom(record.programs[&ship.program].clone());
-        let design = Arc::new(blueprint.compile(&world.resource::<vessel::ShipCatalogue>().0)?);
         let mut controller = if let Some(checkpoint) = &checkpoint {
             world
                 .resource_mut::<vessel::WasmRuntime>()
@@ -1035,7 +1129,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         if ship.software.is_some() {
             ship.hardware.reset_commands(&design);
             ship.travel.estimated_arrival_tick = None;
-            ship.travel.fuel_budget = None;
         }
         if let Some(bays) = &mut ship.bays {
             for bay in bays {
@@ -1140,6 +1233,12 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         if let Some(mine) = ship.mine {
             world.entity_mut(entity).insert(mine);
         }
+        if let Some(duty) = ship.defense {
+            world.entity_mut(entity).insert(duty);
+        }
+        if let Some(duty) = ship.hauling {
+            world.entity_mut(entity).insert(duty);
+        }
         relationships.push((
             entity,
             ship.presence,
@@ -1239,6 +1338,11 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             world.entity_mut(entity).insert(orbit);
         }
     }
+    for organization in record.npc_organizations {
+        let id = organization.organization;
+        let entity = world.spawn(organization).id();
+        identity::register(world, entity, id);
+    }
     for projectile in record.projectiles {
         let inertia = bevy::math::DMat3::from_cols_array(&projectile.inertia);
         let launch_owner = projectile
@@ -1302,6 +1406,14 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 #[path = "industry_tests.rs"]
 mod industry_tests;
+
+#[cfg(test)]
+#[path = "npc_tests.rs"]
+mod npc_tests;
+
+#[cfg(test)]
+#[path = "route_tests.rs"]
+mod route_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1637,7 +1749,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_restore_rebuilds_optical_visibility_without_advancing_or_expiring_tracks() {
+    fn restore_rebuilds_optical_visibility_before_the_next_simulation_tick() {
         let account = Id::new();
         let mut app = crate::scenario(&[account], Some(account), None).unwrap();
         for _ in 0..3 {
@@ -1649,7 +1761,6 @@ mod tests {
             .single(world)
             .unwrap();
         let ship_id = id(world, ship).unwrap();
-        world.resource_mut::<crate::sim::session::Clock>().rate = 0.0;
         let tick = world.resource::<simulation::SimulationCounters>().ticks;
         let tracks = world.resource::<intelligence::AssociationIndex>().0.len();
         let bytes = capture(world).unwrap();
@@ -1665,7 +1776,7 @@ mod tests {
                 .iter()
                 .any(|&id| id != ship_index)
         );
-        assert_eq!(world.resource::<crate::sim::session::Clock>().rate, 0.0);
+        assert_eq!(world.resource::<crate::sim::session::Clock>().rate, 1.0);
         assert_eq!(
             world.resource::<simulation::SimulationCounters>().ticks,
             tick

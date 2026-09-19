@@ -101,7 +101,7 @@ After spawning, bootstrap runs identity, acquisition, coasting, fusion and publi
 2. Applies up to 4 queued input frames per session. A frame that fails validation, or a closed input channel, disconnects that session. Valid frames for another world are discarded before checking session sequence numbers.
 3. If a debug reset was requested, rebuilds the scenario from the same configuration and reconnects every existing connection to the new world.
 4. Applies queued debug requests ([Debug accounts](#debug-accounts)).
-5. Runs simulation ticks. At a clock rate of 0, it runs one queued single step if there is one. Otherwise it adds the rate to a tick credit and runs the whole number of ticks in the credit, so a rate of 10 runs 10 ticks in one loop iteration. Each tick is one `App::update`, and its wall-clock duration is recorded for diagnostics.
+5. Runs simulation ticks. It adds the positive rate to a tick credit and runs the whole number of ticks in the credit, so a rate of 10 runs 10 ticks in one loop iteration. Each tick is one `App::update`, and its wall-clock duration is recorded for diagnostics.
 6. Updates display instances once ([Display instances](#display-instances)).
 7. Builds and validates one `Frame` per session and queues the complete encoded frame in a FIFO. Each connection has a 64 MiB outbound byte budget, including the frame currently being written. Exhausting that budget disconnects the slow connection. Invalid server-generated frames panic and abort the server.
 8. Collects completed checkpoint writes and captures a requested or due checkpoint for the bounded background writer. Then it sleeps until the next 100 ms deadline. If it is already late, the next deadline starts from now.
@@ -259,7 +259,7 @@ A reader ignores unknown optional sections. It rejects unknown required sections
 | `State` | 13 | `Option<ChatUpdate>` |
 | `Input` | 1 | `InputFrame` |
 
-All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 23 adds local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
+All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 24 adds server route requests, polling and plan commits. Protocol 23 added local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
 
 `PresentationFrame.navigation` is an `Arc<NavigationSnapshot>` containing an optional catalogue hash, currently relevant live beacons and system-definition references needed by queued celestial destinations. `Arc` shares immutable data inside a process; Postcard serializes the value. Presentation state is a complete snapshot of its relevant live state; the separate industry section carries subscribed changes as described below. The navigation catalogue downloads separately through the existing asset stream and changes when topology or structural metadata changes. Ordinary orbital motion updates live beacon poses without replacing the catalogue.
 
@@ -267,7 +267,7 @@ This division keeps the map outside the continuous snapshot compression window. 
 
 **State frame limits.**
 
-- `rate` is finite and from 0 to 100.
+- `rate` is finite, greater than zero and at most 100.
 - At most 8 views, 16 track groups, 64 ship telemetry records and 64 screen updates.
 - At most 8192 tracks in total, and at most 8192 track IDs per view. View IDs are unique.
 - At most 16,384 events and 4096 command results.
@@ -300,7 +300,7 @@ This division keeps the map outside the continuous snapshot compression window. 
 - `SetIff`: at most 16 valid labels, and range from 0 to 1e12 m.
 - `SetTravel`: at most 256 orders. Galactic and relative destinations need valid positions.
 - `ScreenInput`: slot below 8, kind at most 7, text at most 64 bytes, and coordinates at most 1e6 in magnitude.
-- Debug commands: `SetRate` finite from 0 to 100, `ConfigureSensor` range from 0 to 1e22 m, `Relocate` a valid pose, and heat injections from 0 to 1e30 J.
+- Debug commands: `SetRate` finite, greater than zero and at most 100, `ConfigureSensor` range from 0 to 1e22 m, `Relocate` a valid pose, and heat injections from 0 to 1e30 J.
 
 ## Sessions
 
@@ -337,6 +337,23 @@ A session can request detailed data for at most eight distinct ships across focu
 | `Ship { ship, authority_revision, command }` | The account must control the ship, and `authority_revision` must equal the ship's current revision |
 
 Views with a focused ship, instrument subscriptions and screen subscriptions together may name at most 8 distinct ships ("detailed ship subscription limit").
+
+Player commands and NPC officer tools call the same `sim::commands::execute`
+function. It validates command payloads, checks the account's current permission
+and authority revision, and queues ordinary ship-computer requests. Network
+sessions also enforce their joined information groups and display subscriptions.
+Target commands resolve a `TrackId` only in the controlled ship's actual sensor
+group; knowing a physical entity UUID does not authorize a target. Two-request
+autopilot changes reserve both queue slots before changing pending travel state.
+Accepted external navigation commands wake the flight computer and pause any
+standing freight assignment.
+
+Director observation tools use the same owned-ship telemetry and hardware
+presentation as clients. Their `ScanSource` is rebuilt from the ship's current
+state, including its host-relative pose while docked, and exposes the existing
+fused sensor snapshot and public navigation queries. Each new observation and
+command checks the officer account's authority; no network session or global
+entity-lookup tool is required.
 
 | `ShipCommand` | Effect |
 | --- | --- |
@@ -404,7 +421,7 @@ A session frame contains:
 - **Events and results**, as described above.
 - **Presentation** ([Presentation](#presentation)), plus per-view **optical observations** ([Optical replication](#optical-replication)).
 - **Society.** Ownership hierarchy, standing overrides and permitted asset access information.
-- **Calendar.** Authoritative real UTC plus 400 Gregorian years, independent of paused or accelerated simulation time.
+- **Calendar.** Authoritative real UTC plus 400 Gregorian years, independent of accelerated simulation time.
 
 Network views have no continuation. Each frame runs a fresh query, so a view that stops at `WorkLimit` or `ResultLimit` shows only its first page.
 
@@ -575,8 +592,7 @@ A debug account is a configured account named by `debug_account`. It has no sepa
 
 | `DebugCommand` | Effect |
 | --- | --- |
-| `SetRate(rate)` | Sets the clock rate from 0 to 100 ticks per 100 ms loop. 0 pauses. |
-| `Step` | Requires a rate of 0 ("pause before stepping"). Queues one tick, up to 100 queued. |
+| `SetRate(rate)` | Sets a finite positive clock rate of at most 100 ticks per 100 ms loop. |
 | `Reset` | Rebuilds the scenario on the next loop, with a new world ID |
 | `Inspect(enabled)` | Switches server diagnostics on or off for all debug sessions |
 | `Relocate { ship, pose }` | Writes the pose and velocities, clears force accumulators, renews the spatial instance and queues `StopGuidance` |
@@ -709,60 +725,111 @@ The ship can coast during preparation. The queued order keeps its typed destinat
 
 **Arrival** places the ship at the destination if the destination is still admissible, returns it to space, and emits `slip-arrived`. A ship whose hull has failed is destroyed instead. Otherwise the ship stays in transit, retries every 10 ticks, and reports `Blocked("Arrival obstructed")`.
 
-### Travel orders and firmware planning
+### Travel orders and server planning
 
-Player orders are `TravelTo(Destination)`, `Sublight(Destination)`, `Slip { destination: Destination }`, `Jump(entry_gate)`, `Dock(station)`, `Undock`, `WaitUntil(tick)` and `Guidance { mode, target, range_m }`. Guidance modes are align, approach and keep range. Keep range remains active until interrupted or removed. Targets are destinations, authorized fused contacts, or finite nonzero galactic directions. Direction targets support Align only; their stand-off has no effect. A destination is a beacon, a galactic position, or an offset from a celestial body or beacon in galactic or body-fixed axes. Body-fixed offsets add ω × r to the resolved velocity. Queued slip orders retain these references so the computer can predict a moving destination before departure. Coordinate bounds apply to travel orders in both client input and authoritative snapshots.
+Player requests contain a complete order queue. Orders include
+`TravelTo(Destination)`, `Sublight(Destination)`, `Slip { destination }`,
+`Jump(entry_gate)`, `Dock(station)`, `Undock`, `WaitUntil(tick)` and guidance.
+Destinations may refer to public beacons, galactic positions, or offsets from
+beacons and celestial bodies. Guidance contact targets must belong to the
+ship's authorized fused picture. Gate transit has no political permission check.
 
-The Gate Network planner exposes a logarithmic fuel-priority control from 0.1× to 1000×, defaulting to 1×. The objective is seconds plus propellant kilograms multiplied by `3600 × fuel_priority / ship_mass_kg`. The UI shows the equivalent minutes per tonne. The preference is sent atomically with `SetTravel` and used by routing, guidance and the trajectory forecast. Draft changes apply when Set destination or Add waypoint is used; setting the destination again replans from the current state.
+The server owns the queue, its revision, active index and route search. The
+standard WASM flight program receives only `CurrentOrder` and executes that
+single strategic command. It does not load the navigation graph, expand later
+orders or publish replacement routes. The client receives the complete queue
+for route and waypoint displays.
 
-Each stage also carries an optional propulsion fuel estimate. The stock computer publishes required and available mass by propulsion resource after planning, then refreshes remaining requirements with its active-stage estimate once per second. Tank balances use integer resource quantities from the host. Requirements for different resources are checked separately; spare hydrogen cannot cover missing pulse charges. Unknown or continuous stages make the budget partial. The Navigation and Gate Network windows show requirements and shortages, and the location HUD flags exhaustion risk. Budgets are advisory estimates: steering, gravity, changing mass and reactor fuel need additional allowance. Slip preserves departure velocity; estimates include matching the destination's motion after arrival.
+Fine manoeuvres belong to command execution. The ship program generates local
+waypoints, avoids known obstacles, escapes slip-exclusion volumes and corrects
+its course without adding these manoeuvres to the server queue. The public
+`LocalSpace` observation query supplies nearby known volumes; it does not choose
+waypoints or steering directions for the program.
 
-Each queued stage contains its action and an optional estimated duration in simulation ticks. The firmware publishes route estimates and refreshes the active guidance estimate once per second, accounting for relative motion and turning. Slip preparation updates its ETA from delivered charging power; transit uses the scheduled arrival tick. The client accumulates stage durations after the current stage's completion estimate. Delays shift later arrivals; paused, blocked and unknown stages show no numeric ETA, and keep-range guidance is labelled continuous.
+Protocol 24 exposes route preview through
+`RouteRequest { ship, authority_revision, request }` and
+`RoutePoll { ship, authority_revision, id }`. A request carries a nonzero caller
+ID, all requested orders and `PlanningPreferences`. Both actions return
+`Reply::Route { id, status }`: unknown, pending with progress, ready with a plan,
+or failed with a bounded explanation. The client polls and offers an explicit
+Engage action for a ready preview. `ShipCommand::UseRoute` commits it against the
+expected travel revision. Current authority is checked at every operation;
+changed ownership or control cannot inherit another caller's job.
 
-The server holds the authoritative travel shell: orders, revision, status and the current order index, and the operations that change presence. It does not plan routes. The ship's flight program does, through `world_query` and `world_command` ([ship-abi.md](ship-abi.md#world-services)).
+A ready plan contains its creation tick, travel and topology revisions, the
+strategic route queue, per-stage time and propellant estimates, and the
+whole-route fuel budget. Requests and plans contain at most 256 orders;
+serialized plans are limited to 48 KiB. Job enqueue and polling are bounded
+operations. Planning work runs separately from the ship callback and debits the
+owner's global gas account. A full requested queue is expanded before it is
+committed. The server checks current control and queue revisions when committing a plan.
+Its age, ordinary ship movement and changes elsewhere in global gate topology
+do not invalidate it. The topology revision records the planning context; it is
+not a commit expiry condition. The ship resolves current geometry while
+executing each strategic command, and the host checks physical admission when
+applying that command.
+
+The fuel-priority slider ranges from 0.1 to 1000, with a default of 1. The cost
+is time in seconds plus propellant kilograms multiplied by
+`3600 × fuel_priority / ship_mass_kg`. The server compares gate, local transfer
+and slip candidates using public navigation facts and the ship's own hardware.
+Search optimizes this candidate graph and its estimated edge costs; it does not
+prove an optimum over every physically possible trajectory. Estimates assume
+rated acceleration and drive power. Turning, gravity, changing mass and power
+shortages can add time or fuel consumption.
+
+Each stage retains an optional duration and propulsion fuel estimate. The flight
+program updates only the active stage's remaining time and propellant; the host
+combines it with later stages and current tank balances. Resource shortages are
+checked separately. Unknown and continuous stages make the budget partial.
+Slip preserves departure velocity, so estimates include matching destination
+motion after arrival. Budgets are advisory and require operating margin.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Contact(reference)` | Current fused pose, radius and opaque firmware handle; only the ship's group and public picture are accessible |
-| `Travel` | Travel state, own pose and whether the slipdrive is ready |
-| `Resolve { destination, after_seconds }` | The destination's predicted pose at an offset from the current query epoch. Celestials and orbiting gates use their shared ephemerides; other beacons extrapolate current linear and angular motion. Inactive celestial systems remain resolvable. |
-| `Beacon(id)`, `Beacons { after, limit }` | Beacons in UUID order, `limit` from 1 to 256. Each has pose, radius, IFF, the bays this ship could use now, and the paired exit of an enabled gate. Gate transit has no political permission check. |
-| `Navigation { after, limit, reference }` | Public enabled gate endpoints in UUID order, `limit` from 1 to 128. Replies contain a topology revision plus each mouth's system, current pose, paired exit and staging position outside its exclusion sphere. `slip_ready` means the ship has a fitted slipdrive with positive rated power and the staging position is spatially admissible; it excludes the drive's transient cooldown. `after` is exclusive. |
-| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds }` | Checks drive readiness and each aperture at its specified future epoch. Returns `ready`, remaining `preparation_s`, and `duration_s` for flight only. |
-| `Tracks(query)`, `Continue { cursor, work }` | Metered track queries on the ship's group snapshot |
+| `Travel` | Current order, revision, index, status, preferences, active arrival estimate, exact own pose and slip readiness. |
+| `RouteRequest(request)`, `RoutePoll { id }` | The same scoped asynchronous preview service available to clients. Each call admits 8192 work gas plus its normal call and copy costs. |
+| `Contact(reference)` | Authorized fused pose, radius and opaque firmware handle. |
+| `LocalSpace { destination, range_m, after_seconds }` | Up to 32 public or observed obstacle/exclusion volumes around the ship and destination, including enclosing volumes. An explicit truncation flag reports incomplete results. |
+| `Resolve { destination, after_seconds }` | Predicted public destination pose. |
+| `Beacon(id)`, `Beacons { after, limit }` | Public beacon facts and currently authorized docking bays. |
+| `Navigation { after, limit, reference }` | Paged public gate facts; still available to custom programs, unused by standard command execution. |
+| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds }` | Current drive readiness, future aperture eligibility, remaining preparation time and flight duration. |
+| `Tracks(query)`, `Continue { cursor, work }` | Metered queries of the ship's fused information group. |
 
-Prediction offsets must be finite, nonnegative and no greater than one Julian year (`365.25 × 86400` seconds). Slip arrival cannot precede departure. These queries supply public predictions; the server rechecks actual admission when executing travel.
+Local-space observations spend 262144 work gas per query, plus normal call and
+copy costs, with a hard 2048-unit index/ephemeris work budget. Query range is
+finite and at most 10¹² metres. The observations contain no undetected private
+objects, and a truncated reply cannot be treated as an empty or complete scene.
 
-World actions are applied after all ships have run, in ship ID order. If an action fails, travel becomes `Blocked(error)` and the ship's later actions in the same batch are skipped.
+Prediction offsets are finite, nonnegative and bounded to one Julian year.
+Slip arrival cannot precede departure. Orbital bodies and gates use their
+public ephemerides; other beacons extrapolate current motion. The host rechecks
+physical admission during charging, departure and arrival.
+
+World actions are committed after each successful execution slice. Every action
+that operates on an active stage carries both its travel revision and order
+index. The host checks these and the current command type, so a delayed
+suspended callback cannot dock, undock, launch slip or block a later stage.
+Stale actions are ignored; a real failure of the matching active command blocks
+that command.
 
 | `ProgramAction` | Server behaviour |
 | --- | --- |
-| `Block { revision, reason }` | Requires the current revision. Cancels unfinished slip preparation, clears its ETA, and sets `Blocked` with the first 256 characters of the reason. |
-| `PlanningProgress { revision, progress }` | Requires the current revision, enabled autopilot and `Planning` or `Blocked`. Reports `LoadingCatalogue`, `BuildingGraph` or `SearchingRoutes`, a completed count and an optional total. The top-left autopilot panel displays this progress. |
-| `Route { revision, orders, fuel_budget, search_limited }` | Requires the current revision, enabled autopilot and `Planning` or `Blocked`. Replaces the current order with a nonempty planned queue, preserves the other orders, increments the revision and sets `Active`. `search_limited` records whether the planner stopped at its search budget. The resulting queue is limited to 256 orders. An empty publication at the end of the queue marks it completed. |
-| `Estimate { revision, order, remaining_ticks, fuel_budget }` | Requires the active revision and order index. Sets the active completion tick to the current tick plus the estimate, or clears it for `None`. |
-| `CompleteOrder { revision, order }` | Requires the current revision and order index while `Active`. Advances to the next order in `Planning`, or `Completed` at the end. |
-| `Slip(position)` | Starts preparation or updates its candidate exit without resetting charging work or start time. Transit freezes the exit at departure. The server advances the order on arrival; gate entry is handled by physics. |
-| `ReserveBay`, `Dock`, `Undock` | The operations above. `Undock` also completes the order. |
+| `UseRoute { id, revision, engage }` | Commits a ready preview using the current travel revision. |
+| `Block { revision, order, reason }` | Blocks the matching command and cancels unfinished slip preparation. |
+| `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates only the matching active stage; future estimates remain server-owned. |
+| `CompleteOrder { revision, order }` | Advances the authoritative cursor after the current stage completes. |
+| `Slip { revision, order, destination }` | Updates the current slip command's concrete charging candidate without resetting work or start time. Departure freezes the exit. |
+| `ReserveBay`, `Dock`, `Undock` | Executes the corresponding current command with the same revision and index checks. |
 
-The stock firmware's planner ([world.rs](../crates/toy-sim-example-controller/src/world.rs), [graph.rs](../crates/toy-sim-example-controller/src/world/graph.rs)) runs inside `ship_tick`:
-
-- **Target.** Beacon destinations use a clearance outside the hull; gate destinations also include the mouth's exclusion radius. Docking approaches from the ship's current side.
-- **Gate scan.** Under ABI 28 (`ship_v28`), the planner reads bounded pages of public navigation endpoints. A page shorter than requested ends the scan. It retains topology and graph allocations across routes, prefetches while idle and periodically checks the topology revision. A changed revision invalidates the cache. Gate poses may advance between pages or after caching; execution resolves and validates current destinations. Detailed bay and IFF data come from separate beacon queries when needed.
-- **Route graph.** Dijkstra runs over the origin, target, mouths and admissible staging points outside exclusions. Graph preparation, search and path reconstruction advance in bounded steps across callbacks. The firmware checks its remaining slice gas and preserves headroom for flight control. Sublight adjacency is local to a system, with explicit paired-mouth edges and optional intersystem slip candidates. Sublight edges use the estimated duration of the weighted time/propellant transfer; paired-mouth crossings cost one tick. Eligible slip edges include charging, transit and matching the arrival destination's motion. Node velocities include the departure ship, target and moving gates. Edges are compared by time plus the weighted propulsion fuel cost. Estimates assume constant rated acceleration, mass and drive power; attitude, gravity and changing hardware output can increase actual cost.
-- **Review.** Before publishing a selected path, the planner refreshes its gate records through single-record `Navigation` pages, handling at most four records per callback. It resolves destinations at their estimated future epochs, updates departure motion, checks each chosen slip segment through `SlipEligibility`, and recomputes time and fuel estimates. Cumulative timing includes preceding legs, remaining preparation, flight and velocity matching. A changed topology restarts catalogue loading. Changed eligibility updates the cached gate facts and causes a retry. These checks finish before the route enters the authoritative order queue.
-- **Queue.** The chosen route expands the current destination into explicit sublight, gate and slip orders. Later queued destinations remain intact and are expanded when they become current. The autopilot panel, editable Navigation list and map all display this queue. Gate staging points move with their beacons. Slip preparation coasts without a galactic braking burn; subsequent sublight guidance matches arrival motion. Gate orders fly toward the mouth and physics performs the crossing. The server validates each operation at execution time.
-- **Sublight.** Resolved relative position and velocity form a synthetic contact (ID `u64::MAX`) for the economical navigation law. Arrival requires 2 m and 0.5 m/s ([rendezvous.md](rendezvous.md)).
-- **Dock.** The planner picks the lowest-numbered bay the beacon reports as usable and reserves it. It approaches the station from the ship’s current side, brakes to match station velocity, and requests capture when it is within docking range and below the relative-speed limit. The approach stays outside the hull; bay orientation does not constrain arrival.
-- **Errors.** If a query or command fails while travel is active, the planner sends `Block` with "Routing query failed (code); retrying" and plans again 50 ticks later. It also retries from a `Blocked` state. Exhausting the search frontier without a route follows this blocked/retry path instead of repeatedly searching an empty frontier.
-
-Search combines approximate costs with a bounded optimization policy. If search remains unfinished after 60 callbacks and the best candidate found so far contains slip transit, the planner reviews that candidate for publication; catalogue loading and graph construction do not count toward this limit. It sets `TravelState.search_limited`, and the autopilot panel displays **Estimated route · search budget reached**. A faster or more economical route may exist. Pure gate searches continue their sparse search.
-
-The graph retains all local gate-mouth choices and prunes slip candidates using optimistic acceleration/coast time and fuel estimates. It excludes staging-to-staging edges and consecutive slip legs. Unselected gate poses remain cached, so even a completed search compares approximate geometry. Reviewing the selected path rechecks gate facts and slip eligibility and refreshes estimates; it does not establish global optimality across all possible trajectories.
-
-The planner estimates transfer time from straight-line distances, acceleration and propellant weighting. Public navigation pages provide topology and staging facts; the ship computer owns graph search and cost selection. Those host queries read current server facts independently of the client's static map asset. Authorized bay availability comes from beacon replies. Drive readiness, enablement, obstruction and curvature are checked again by the server when an action is applied.
-
-Navigation queries pre-admit `100 + 4096 × requested_limit` work units, then charge `100 + 4096 × returned_count`, in addition to normal syscall and serialization costs. They return at most 128 records and use the existing 65,536-byte world-query buffers. The standard WASM runtime and bundled firmware have an 8 MiB linear-memory ceiling to hold the expanded routing graph. Per-tick gas limits still apply. Server and bundled firmware must use ABI 28 together.
+The standard executor resolves the current destination each callback. Sublight
+guidance uses relative position and velocity with the economical navigation
+law. Moving slip destinations are led through preparation and transit time,
+and their charging candidates are refreshed until departure. Bay requests use
+only bays reported as usable. Execution errors block the command for an explicit
+replan; the VM does not replace the queue itself. Server and firmware use ABI 30
+and must be rebuilt together.
 
 ## Client playback
 
@@ -789,7 +856,7 @@ Asset requests start independent transfers as they leave the request channel. A 
 - On an empty buffer, `underruns` increments once and the target grows by one, up to 10. Consumption resumes when the reserve has rebuilt. The previous and current ECS samples remain unchanged during this wait, so each fixed interval repeats the last movement. A new world restores the initial target and clears the underrun count.
 - Catch-up starts when queued depth exceeds the target by more than six frames. It consumes two frames per tick until depth returns to the target, then resumes one per tick. No queued snapshot is dropped.
 - In `Update`, the interpolation fraction is `Time<Fixed>::overstep_fraction_f64()`. Pose and hardware components interpolate from the preceding displayed snapshot to the final snapshot consumed in the tick; turret yaw follows the shortest arc. The first sample initializes both endpoints to the arrival pose.
-- `RenderTime` contains only `previous_ns`, `current_ns` and `display_ns`. The display timestamp interpolates the two snapshots' explicit `sim_time_ns` values using the same fraction. Celestial positions are evaluated analytically at that time. Accelerated simulation, paused snapshots and skipped publications use their actual timestamp intervals. The buffer does not synthesize snapshots or infer timestamps from the advertised clock rate.
+- `RenderTime` contains only `previous_ns`, `current_ns` and `display_ns`. The display timestamp interpolates the two snapshots' explicit `sim_time_ns` values using the same fraction. Celestial positions are evaluated analytically at that time. Accelerated simulation and skipped publications use their actual timestamp intervals. Repeated timestamps remain valid when no simulation tick elapsed between publications at a positive fractional rate. The buffer does not synthesize snapshots or infer timestamps from the advertised clock rate.
 
 **Spatial lifetimes.** Tracks and private ship telemetry carry a `spatial_instance` token. Relocation, departure and arrival replace this token while preserving the ship's UUID. A changed track token replaces its client observation entity and associated render instances; new samples start at the arrival pose. Controlled ships retain their telemetry entity, removing pose components while absent and initializing fresh samples on arrival. The token changes even when departure and arrival occur between two publications. Anonymous track tokens are scoped to the opaque track ID. Interpolation and tracer history use these lifetimes without travel-specific discontinuity events.
 
@@ -823,27 +890,31 @@ The default ship starts in sunlight. Its initial camera faces the illuminated hu
 
 ## The client UI
 
-The shared egui theme, embedded fonts, Phosphor icons and desktop toolkit come from [toy-sim-ui](../crates/toy-sim-ui/README.md). `toy_sim_client::ui::run` ([ui.rs](../crates/toy-sim-client/src/ui.rs)) is the Bevy/egui app used by both `toy-sim-client` and `toy-sim-debug`. The desktop follows the layout hierarchy of EVE Online's interface: a narrow launcher, location information at the upper left, and selected-item controls above the Overview at the right. The center remains available to the 3D scene and orbit HUD.
+The shared egui theme, embedded fonts, Phosphor icons and desktop toolkit come from [toy-sim-ui](../crates/toy-sim-ui/README.md). Both client launchers use the same [Bevy/egui app](../crates/toy-sim-client/src/ui.rs). A toolbar runs down the left edge, location and autopilot information sit at the upper left, and Selected Item controls sit above the Overview on the right. The bottom HUD displays the controlled ship's reserves and operating state.
 
-The launcher opens or closes Overview, Selected Item, Ship Status and Navigation. It also toggles orbital paths, returns the camera to the controlled ship, and opens Interface settings. Windows support dragging, edge resizing, close, snapping, layout locking and reset. Window arrangements last for the current application session. The footer displays interpolated simulation time and transport status.
+The toolbar opens Overview, Selected Item, Inventory, Industry, Local Chat, Navigation, Gate Network and Society & Ownership. It also toggles orbital paths, returns the camera to the controlled ship, and opens Interface settings. Windows can be dragged, resized, closed, snapped and locked; Interface can reset their layout. They do not collapse, and can overlap the bottom HUD. Layouts last for the application session. The footer shows the game calendar (real UTC plus 400 years), connection status, jitter-buffer depth and display FPS; its timestamp tooltip includes simulation T+ time.
 
-The location indicator uses the subscribed celestial definitions. It names the brightest star and the body with the strongest local gravitational acceleration, and shows altitude above that body's surface. The Overview combines tracks from the selected view with its orrery bodies. It never obtains planets from sensors. Rows show name, type, center-to-center distance and speed relative to the controlled ship, with sorting, text search and All/Ships/Celestials filters. Stable track or celestial identities resolve sort ties. Distances, relative speeds and alignment vectors use interpolated poses from the same presentation time.
+The location indicator names the subscribed system and nearby gravitational reference, shows altitude, and displays the remaining autopilot orders with stage ETAs. Docked ships get a hangar view, a selector for controlled ships at that station, and an Undock button. Changing ships updates the focused view and instrument subscriptions.
 
-Click an Overview row or a HUD contact to select it. Double-click an Overview row to center the camera; a row’s context menu also offers camera and flight actions. Selection is shared with the HUD even when filters hide the selected row. Selected Item provides Align, Approach, Keep range, Look at and Stop guidance. Keep range runs until interrupted; Approach finishes on arrival and Align finishes after orienting. Stop guidance cancels navigation without braking away velocity. Separate Mark target, Unmark target, Start firing and Stop firing buttons control weapons. The authoritative marked target and firing latch remain visible when another item is selected. Navigation commands never enable firing. Celestials support Align and Look at; contact pursuit and weapons controls are disabled for them. Overview rows and HUD markers show friendly, neutral, hostile, or unknown standings derived from advertised IFF and the observing player's relationship hierarchy. Personal overrides do not change NPC orders or grant permissions.
+Overview combines sensor contacts, public beacons and orrery bodies. Planets come from celestial definitions, never sensor detections. Rows support sorting, text search and All/Ships/Celestials filters, and show distance and relative speed at the displayed simulation time. Contact and HUD colors use friendly, neutral, hostile or unknown standings derived from advertised IFF and the observer's relationship hierarchy. Personal standing overrides neither grant permissions nor change NPC orders.
 
-Ship Status shows hull integrity, shield reserve, battery, heat, temperature, power, resource inventory and flight-computer state. It can toggle IFF broadcasts. Navigation shows published guidance telemetry and existing travel orders, with attitude hold, guidance cancellation and route pause/resume controls. Route planning remains the flight computer's responsibility. MFD, universe browser and debug-command panels are not part of this shell.
+Click a row or HUD marker to select it. Selected Item offers Align, Approach, Keep range and Stop guidance, plus beacon Jump/Dock actions where applicable. Mark/Unmark and Fire/Hold fire are separate weapon controls; selecting an object or issuing navigation does not start firing. Look at, including an Overview double-click, changes camera focus only when the object is eligible; remote ships require optical visibility and must be within 100 km. Right-drag orbits the camera with smoothing, scrolling zooms, and Escape returns to the controlled ship. With autopilot off, double-clicking unobstructed space aligns the ship along the camera ray while preserving throttle. This is disabled while docked or in slip transit. O toggles trajectories and +/− adjusts exposure.
 
-[shell.rs](../crates/toy-sim-client/src/ui/shell.rs) reads ECS presentation components and builds a temporary view model. Drawing produces intents; dispatch uses `Outgoing` and the current ship authority revision. It does not change authoritative ship state. Command feedback distinguishes pending requests, server acceptance and rejection, and retains errors across all commands in an action batch. Server acceptance does not mean a maneuver has completed.
+Gate Network provides a searchable, pannable map with sovereignty colors and route highlights. **Plan destination** requests a preview from the public server routing service; **Add waypoint** submits the remaining queue plus the new destination. The preview shows the returned strategic commands, estimated durations and fuel requirements, including exhaustion warnings. **Engage route** commits that plan. The ship's flight computer generates local maneuvers during execution. Preview guards prevent replacing a newer queue or commanding a different ship or authority; ordinary movement and map updates do not invalidate it. Navigation shows guidance telemetry and the current queue, with command removal/reordering and pause/resume controls. The scene HUD also marks queued waypoints and connects them with dotted lines.
 
-On the first applied frame, [selection.rs](../crates/toy-sim-client/src/ui/selection.rs) selects the controlled ship with the smallest UUID and subscribes view 1 in the first non-public information group. The view follows that ship with a 1e8 m sphere, a limit of 256 and a work budget of 300,000. It also subscribes to that ship's instrument data for the HUD. A world reset clears selection, subscriptions and command feedback, then the UI subscribes again.
+Inventory separates movable cargo stacks from installed consumable tanks. Cargo shows counts and reservations, with quantity selection and drag/drop between authorized, colocated inventories. Consumables show only installed storage, provide refill controls using colocated cargo, and include IFF and dock-service controls. Industry lists authorized facilities for remote inspection and operation, including capabilities, power, recipes, jobs and ship construction. Society & Ownership exposes affiliations, personal standings, asset permissions, authorized gas-account balances and searchable organization histories, objectives and relationships. Local Chat follows the focused controlled ship's 500 AU channel, with timestamps, advertised affiliation colors and a virtualized scrollback.
 
-The HUD draws the native coast estimate, published navigation paths and markers, contact boxes, celestial labels and distances. Clicking a celestial label selects it; Look at explicitly changes the camera focus. Escape returns the active view to its controlled ship. Right-drag orbits the camera, with a 40 ms exponential angular response, and scrolling zooms. Double-clicking unobstructed scene space points the ship along the camera ray while preserving manual throttle. Autopilot must be off. Scene gestures exclude egui windows; double-click alignment is disabled in docked and slip-transit views. O toggles trajectories, and +/− adjusts exposure in the active view.
+The bottom HUD shows pooled propulsion reserves, battery, reactor or charge fuel, shield reserve, delivered thrust and torque, power, hull integrity, stored heat and shield temperature/coverage. Its CPU meter reports the last tick's gas consumption against the physical computer budget, with distinct suspended, insufficient-gas, boot and fault states. Clicking the thrust meter sets throttle when manual control is available; holding Shift raises it and Ctrl lowers it. The display continues to show delivered forces under autopilot.
+
+[shell.rs](../crates/toy-sim-client/src/ui/shell.rs) builds a view model from ECS presentation components and turns UI interactions into outgoing intents. Commands carry the current authority revision; the UI does not mutate authoritative ship state. Feedback distinguishes pending, accepted and rejected requests. Acceptance does not mean a maneuver has completed. A world reset clears selection, subscriptions, previews and feedback before subscribing again.
+
+Initial focus uses the per-session `ShipTelemetry.can_control` permission flag and excludes destroyed hulls and ships stored in wrecks. The smallest UUID is only the tie-breaker among eligible living ships. Read-only access to Neris Anchorage does not make it the player's controlled ship. Explicit later inspection can keep a station focused. Under the 64-ship telemetry cap, explicitly subscribed objects retain priority, followed by living controllable ships and then other observable assets.
 
 ## Tests
 
 | Location | Covers |
 | --- | --- |
-| `toy-sim-protocol` unit tests | Round trips, skipped optional sections, rejected required sections, truncation at every length, oversized headers, non-finite input, paused clocks and debug capabilities, rejection of version 1 and of frames without the presentation section, invalid combat payloads, optical observations with missing views or contacts, duplicate optical IDs, anonymous optical observations and non-finite photometry, numeric limits of debug and flight commands |
+| `toy-sim-protocol` unit tests | Round trips, skipped optional sections, rejected required sections, truncation at every length, oversized headers, non-finite input, positive clock rates and debug capabilities, rejection of version 1 and of frames without the presentation section, invalid combat payloads, optical observations with missing views or contacts, duplicate optical IDs, anonymous optical observations and non-finite photometry, numeric limits of debug and flight commands |
 | `toy-sim-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, epoch rekeying |
 | `toy-sim-intel` unit tests | Measurements, noise stability, metered queries and cursors, snapshots |
 | `toy-sim-spatial` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, updates/deletion, cursor budgets and invalidation |
@@ -853,9 +924,9 @@ The HUD draws the native coast estimate, published navigation paths and markers,
 | [services.rs](../crates/toy-sim-server/src/sim/services.rs) tests | Scans exclude celestials and use stable opaque ship handles, handles differ between groups and after expiry and stay bounded, program and display cursors are separate, slip aperture checks, beacon pages hide inaccessible bays, celestial references resolve without active bodies |
 | [travel.rs](../crates/toy-sim-server/src/sim/travel.rs) tests | Docking and undocking motion, nested inventory surviving host destruction, capture not unlocking a private bay, blocked slip arrival and retry, slip energy and cancellation, inactive bodies blocking slip arrival, debug recovery rules, simultaneous arrivals |
 | [router_tests.rs](../crates/toy-sim-server/src/sim/travel/router_tests.rs) | `travel_order_runs_in_stock_wasm_and_brakes_at_destination` and other travel orders flown by the stock firmware |
-| [graph.rs](../crates/toy-sim-example-controller/src/world/graph.rs) tests | Multi-gate routes, no detour through distant gates, missing exits, bounded work per callback |
+| [routing](../crates/toy-sim-server/src/sim/routing) tests | Public server route search and full queue expansion |
 | [tests/network.rs](../crates/toy-sim-server/tests/network.rs) | Starts the real `toy-sim-server` binary with a ready file. A wrong server key and a wrong account key fail to connect. One account receives telemetry, a view with tracks, a stock MFD frame with at least five primitives and an appearance asset. A second account joins the first ship's group, sees its track and cannot command it. Reset keeps the connection usable, discards delayed inputs for the previous world and accepts a new view subscription. The server shuts down cleanly when standard input closes. |
-| `toy-sim-client` tests | Buffer ordering, reserve refill, skipped and paused timestamps, ordered publications during catch-up, command ordering and backpressure, concurrent asset transfers, shared Bevy asset handles, explicit retry and unloading; UI tests cover fixed scheduling, spatial lifetimes, celestial loading, orbital projection, effects and selection |
+| `toy-sim-client` tests | Buffer ordering, reserve refill, positive rate changes and repeated timestamps, ordered publications during catch-up, command ordering and backpressure, concurrent asset transfers, shared Bevy asset handles, explicit retry and unloading; UI tests cover fixed scheduling, spatial lifetimes, celestial loading, orbital projection, effects and selection |
 
 ```sh
 cargo test -p toy-sim-protocol -p toy-sim-net -p toy-sim-intel -p toy-sim-server -p toy-sim-client -p toy-sim-example-controller
@@ -950,7 +1021,7 @@ Unused information groups are collected periodically. Account defaults, ship mem
 
 ## Station and navigation expansion
 
-Protocol version 7 adds the public navigation catalogue and integer cargo/consumable telemetry. The client replicates moving beacons into ECS pose samples so their markers interpolate on the same clock as ships. Gate topology supports a subway-style map and shortest-hop route previews; selected destinations become `TravelTo` orders for the flight computer to compare gate and slip routes. Queue controls can remove, reorder, pause and resume commands. The location HUD lists all remaining stages without a scroll area, with estimated cumulative completion times. Amber numbered markers identify spatial waypoints, with dotted lines connecting them in queue order. Absolute and relative coordinates, slip arrivals, gates and docking destinations are supported. Offscreen destinations use edge markers; distances of at least 0.1 light-years use ly. Ship camera focus is limited to visible nearby contacts within 100 km.
+Protocol version 7 adds the public navigation catalogue and integer cargo/consumable telemetry. The client replicates moving beacons into ECS pose samples so their markers interpolate on the same clock as ships. Gate topology supports a subway-style map and shortest-hop route previews; selected destinations become `TravelTo` requests for the server to compare gate and slip routes. Queue controls can remove, reorder, pause and resume commands. The location HUD lists all remaining stages without a scroll area, with estimated cumulative completion times. Amber numbered markers identify spatial waypoints, with dotted lines connecting them in queue order. Absolute and relative coordinates, slip arrivals, gates and docking destinations are supported. Offscreen destinations use edge markers; distances of at least 0.1 light-years use ly. Ship camera focus is limited to visible nearby contacts within 100 km.
 
 Docked and transiting ships have private meshes independent of sensor contacts. Docking opens a client-rendered hangar with orbit-camera controls; slip transit uses a procedural streak tunnel. Neither view reactivates ship physics. Gates use a sparse GLB frame, an animated spherical distortion material and a shadow-casting point light. See [stations-navigation.md](stations-navigation.md) for the catalogue, controls and verification commands.
 
@@ -1003,7 +1074,7 @@ revoking an asset grant does not erase a secret somebody already learned.
 
 Protocol 18 adds a signed millisecond calendar timestamp. It represents real UTC
 plus 146097 days, exactly 400 Gregorian years. The calendar advances independently
-of simulation speed and pause. The client samples it at network reception, outside
+of simulation speed. The client samples it at network reception, outside
 the presentation jitter buffer. The bottom strip displays UTC date and time; its
 hover text retains simulation T+. See [Persistence](persistence.md) for saved
 worlds, debug identities, checkpoint configuration and recovery behavior.

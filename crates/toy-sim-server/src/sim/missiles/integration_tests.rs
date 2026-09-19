@@ -17,7 +17,7 @@ pub(super) struct Fixture {
 fn guidance_program() -> Vec<u8> {
     wat::parse_str(format!(
         r#"(module
-            (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
+            (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (global $ship_ticks (mut i32) (i32.const 0))
             (global $missile_ticks (mut i32) (i32.const 0))
@@ -492,7 +492,7 @@ fn actual_schedule_and_repeated_display_publication_share_one_tick_gas_allowance
 }
 
 #[test]
-fn docked_carrier_with_active_missiles_can_dispatch_undock() {
+fn shared_carrier_undock_checks_the_active_order_and_destroyed_hardware() {
     let mut fixture = Fixture::new();
     let missile = fixture.launch();
     let parent = fixture.parent;
@@ -515,11 +515,37 @@ fn docked_carrier_with_active_missiles_can_dispatch_undock() {
     travel::dock(world, parent, host, 0).unwrap();
     assert!(world.get::<Dormant>(parent).is_some());
     assert!(world.get::<Missile>(missile).unwrap().guidance_enabled);
+    let active_undock = |revision| {
+        travel::Travel(toy_sim_model::travel::TravelState {
+            autopilot_enabled: true,
+            revision,
+            orders: vec![toy_sim_model::travel::Order::Undock.into()],
+            status: toy_sim_model::travel::Status::Active,
+            ..Default::default()
+        })
+    };
+    world.entity_mut(parent).insert(active_undock(7));
+    for (revision, order) in [(6, 0), (7, 1)] {
+        assert!(
+            travel::dispatch(
+                world,
+                parent,
+                toy_sim_model::ProgramAction::Undock { revision, order }
+            )
+            .is_err()
+        );
+        assert!(world.get::<Dormant>(parent).is_some());
+        assert_eq!(world.get::<travel::DockedIn>(parent).unwrap().0, host);
+    }
+
     world
         .get_mut::<ShipSoftware>(parent)
         .unwrap()
         .world_actions
-        .push(toy_sim_model::ProgramAction::Undock);
+        .push(toy_sim_model::ProgramAction::Undock {
+            revision: 7,
+            order: 0,
+        });
     crate::sim::services::dispatch_actions(world);
     assert!(matches!(
         world.get::<PresenceState>(parent).unwrap().0,
@@ -527,6 +553,33 @@ fn docked_carrier_with_active_missiles_can_dispatch_undock() {
     ));
     assert!(world.get::<Dormant>(parent).is_none());
     assert!(world.get::<RigidBody>(parent).is_some());
+    assert_eq!(world.get::<travel::Travel>(parent).unwrap().0.order, 1);
+
+    travel::dock(world, parent, host, 0).unwrap();
+    world.entity_mut(parent).insert(active_undock(8));
+    world
+        .get_mut::<ShipSoftware>(parent)
+        .unwrap()
+        .world_actions
+        .push(toy_sim_model::ProgramAction::Undock {
+            revision: 8,
+            order: 0,
+        });
+    travel::destroy(world, parent);
+    assert!(world.get::<ShipSoftware>(parent).is_some());
+    assert!(world.get::<Missile>(missile).unwrap().guidance_enabled);
+
+    crate::sim::services::dispatch_actions(world);
+    assert_eq!(
+        world.get::<PresenceState>(parent).unwrap().0,
+        Presence::Destroyed
+    );
+    assert!(world.get::<RigidBody>(parent).is_none());
+    assert!(world.get::<Dormant>(parent).is_some());
+    assert!(matches!(
+        &world.get::<travel::Travel>(parent).unwrap().0.status,
+        toy_sim_model::travel::Status::Blocked(reason) if reason == "ship has no active physical hardware"
+    ));
 }
 
 #[test]

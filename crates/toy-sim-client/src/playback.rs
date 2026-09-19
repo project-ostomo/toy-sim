@@ -200,16 +200,17 @@ mod tests {
     }
 
     #[test]
-    fn buffered_duration_uses_simulation_timestamps_including_pauses() {
+    fn buffered_duration_uses_published_timestamps_at_fractional_rates() {
         let mut playback = Playback::new(true);
         playback.receive(frame(1)).unwrap();
         playback.tick().unwrap();
         let mut next = frame(2);
         next.sim_time_ns = 450_000_000;
         playback.receive(next).unwrap();
-        let mut paused = frame(3);
-        paused.sim_time_ns = 450_000_000;
-        playback.receive(paused).unwrap();
+        let mut same_tick = frame(3);
+        same_tick.sim_time_ns = 450_000_000;
+        same_tick.rate = 0.5;
+        playback.receive(same_tick).unwrap();
         assert_eq!(playback.queued_frames(), 2);
         assert!(!playback.catching_up());
         assert_eq!(playback.buffered_ns(), 350_000_000);
@@ -321,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn actual_simulation_timestamps_survive_skips_speed_changes_and_pause() {
+    fn actual_simulation_timestamps_survive_skips_and_positive_speed_changes() {
         let mut playback = Playback::new(true);
         playback.receive(frame(1)).unwrap();
         assert_eq!(playback.tick().unwrap().sim_time_ns, 100_000_000);
@@ -334,7 +335,9 @@ mod tests {
         playback.receive(accelerated.clone()).unwrap();
         assert_eq!(playback.tick(), Some(&accelerated));
         accelerated.sequence = 6;
-        accelerated.rate = 0.;
+        accelerated.tick = 501;
+        accelerated.sim_time_ns = 50_100_000_000;
+        accelerated.rate = 1.;
         playback.receive(accelerated.clone()).unwrap();
         assert_eq!(playback.tick(), Some(&accelerated));
         assert_eq!(playback.underruns, 0);

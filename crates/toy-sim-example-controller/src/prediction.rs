@@ -71,6 +71,7 @@ struct Rollout {
     force: f64,
     ceiling: f64,
     limit: f64,
+    speed_limit: f64,
     initial_fuel: f64,
     epoch: f64,
     frame_velocity: DVec3,
@@ -118,6 +119,7 @@ impl Rollout {
             force: b.thrust * nav.effectiveness * nav.throttle_ceiling,
             ceiling: nav.throttle_ceiling,
             limit: nav.limit,
+            speed_limit: nav.speed_limit,
             initial_fuel: fuel,
             epoch: obs.tick.time_s,
             frame_velocity: DVec3::from_array(obs.velocity) - nav.u,
@@ -145,6 +147,7 @@ impl Rollout {
         nav.target.as_ref().is_none_or(|t| t.id != self.target)
             || nav.offset != self.offset
             || nav.limit != self.limit
+            || nav.speed_limit != self.speed_limit
             || nav.preferences != self.preferences
             || nav.visible != self.visible
             || (nav.throttle_ceiling - self.ceiling).abs() > 0.01
@@ -165,6 +168,7 @@ impl Rollout {
             self.response(),
             self.bindings.propellant_rate * self.ceiling,
             self.preferences.cost(s.mass),
+            self.speed_limit,
         )
     }
 

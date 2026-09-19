@@ -282,7 +282,10 @@ impl OpticalSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::{hardware::SensorRange, precision::PreciseTransform, spatial::SpatialObject};
+    use crate::sim::{
+        hardware::SensorRange, identity::Transponder, precision::PreciseTransform,
+        spatial::SpatialObject,
+    };
     use bevy::math::DVec3;
 
     struct Fixture {

@@ -181,6 +181,12 @@ fn run_loop(
             .reset_requested
         {
             let config = app.world().resource::<sim::ScenarioConfig>().clone();
+            let populated = app
+                .world_mut()
+                .query::<&sim::npc::state::NpcOrganization>()
+                .iter(app.world())
+                .next()
+                .is_some();
             let sessions = app
                 .world_mut()
                 .query_filtered::<Entity, With<Connection>>()
@@ -196,6 +202,9 @@ fn run_loop(
             let llm = app.world_mut().remove_resource::<sim::llm::LlmService>();
             let assets = assets(app);
             *app = scenario(&config.accounts, config.debug_account, config.ship)?;
+            if populated {
+                sim::npc::seed::populate(app.world_mut())?;
+            }
             assets.extend(app.world().resource::<AppearanceAssets>().snapshot());
             app.insert_resource(assets);
             if let Some(llm) = llm {
@@ -213,19 +222,10 @@ fn run_loop(
         }
         sim::apply_debug_requests(app.world_mut())?;
         let ticks = {
-            let mut clock = app.world_mut().resource_mut::<sim::session::Clock>();
-            if clock.rate == 0.0 {
-                tick_credit = 0.0;
-                let ticks = clock.steps.min(1);
-                clock.steps -= ticks;
-                ticks
-            } else {
-                clock.steps = 0;
-                tick_credit += clock.rate;
-                let ticks = tick_credit.floor() as u32;
-                tick_credit -= ticks as f64;
-                ticks
-            }
+            tick_credit += app.world().resource::<sim::session::Clock>().rate;
+            let ticks = tick_credit.floor() as u32;
+            tick_credit -= ticks as f64;
+            ticks
         };
         for _ in 0..ticks {
             let started = Instant::now();

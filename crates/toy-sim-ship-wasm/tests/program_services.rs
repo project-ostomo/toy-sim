@@ -121,7 +121,7 @@ fn guest(body: &str, capacity: u32) -> Vec<u8> {
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     wat::parse_str(format!(
         r#"(module
-        (import "ship_v29" "llm_submit" (func $submit (param i32 i32 i32 i32) (result i32)))
+        (import "ship_v30" "llm_submit" (func $submit (param i32 i32 i32 i32) (result i32)))
         (memory (export "memory") 2)
         (data (i32.const 0) "{data}")
         (func (export "ship_api_version") (result i32) i32.const {version})
@@ -181,7 +181,7 @@ fn invalid_submit_output_buffer_never_admits_a_request() {
 fn poll_cpu_gas_tracks_reply_bytes_and_missile_and_display_callbacks_can_call_services() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v29" "llm_poll" (func $poll (param i64 i32 i32) (result i32)))
+        (import "ship_v30" "llm_poll" (func $poll (param i64 i32 i32) (result i32)))
         (memory (export "memory") 2)
         (func (export "ship_api_version") (result i32) i32.const {version})
         (func $read i64.const 1 i32.const 0 i32.const 65568 call $poll drop)
@@ -348,4 +348,41 @@ fn chatter_does_not_submit_until_its_request_id_fits_in_durable_storage() {
     assert!(service.0.lock().unwrap().requests.is_empty());
     assert!(service.0.lock().unwrap().sent.is_empty());
     assert_eq!(computer.checkpoint().persistent_data, bytes);
+}
+
+#[test]
+fn profile_installation_preserves_flight_and_pending_chatter_memory_atomically() {
+    let profile = ChatterProfile {
+        name: "Anchorage watch".into(),
+        personality: "Reserved".into(),
+        context: "A public station operator".into(),
+        interval_seconds: 60,
+    };
+    let memory = ProgramMemory {
+        flight: b"flight-state".to_vec(),
+        chatter: None,
+        chatter_state: b"pending-request-state".to_vec(),
+    };
+    let mut checkpoint = ControllerCheckpoint {
+        program: toy_sim_ships::CHATTER_CONTROLLER.to_vec(),
+        persistent_data: postcard::to_stdvec(&memory).unwrap(),
+    };
+    checkpoint.install_chatter_profile(profile.clone()).unwrap();
+    let updated: ProgramMemory = postcard::from_bytes(&checkpoint.persistent_data).unwrap();
+    assert_eq!(updated.flight, memory.flight);
+    assert_eq!(updated.chatter_state, memory.chatter_state);
+    assert_eq!(updated.chatter, Some(profile.clone()));
+
+    let before = checkpoint.persistent_data.clone();
+    let mut invalid = profile.clone();
+    invalid.interval_seconds = 0;
+    assert!(checkpoint.install_chatter_profile(invalid).is_err());
+    assert_eq!(checkpoint.persistent_data, before);
+
+    let mut runtime = ControllerRuntime::new().unwrap();
+    let controller = runtime
+        .instantiate_with_chatter(toy_sim_ships::CHATTER_CONTROLLER, profile)
+        .unwrap();
+    assert_eq!(controller.boot_remaining_gas(), toy_sim_ship_wasm::BOOT_GAS);
+    assert!(controller.is_booting());
 }

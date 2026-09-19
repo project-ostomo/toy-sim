@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 use toy_sim_model::{travel::*, *};
 use toy_sim_ship_api::abi;
 
+mod local_volumes;
+pub(crate) mod route_environment;
+
 #[derive(Default)]
 pub struct ContactHandles {
     entries: HashMap<(GroupId, TrackId), (u64, u64)>,
@@ -182,10 +185,15 @@ fn merged_page<'a, T>(
 }
 
 struct FusedScan {
+    routing: Option<(
+        super::route_service::RouteService,
+        super::route_service::Caller,
+    )>,
     navigation_revision: u64,
     gates: Arc<BTreeMap<EntityId, PublishedNavigationGate>>,
     universe: Option<Arc<UniverseApertures>>,
     epoch: hifitime::Epoch,
+    publication_tick: u64,
     owner: ownership::Principal,
     directory: Arc<ownership::OwnershipDirectory>,
     radius: f64,
@@ -198,7 +206,7 @@ struct FusedScan {
     group: GroupId,
     handles: Arc<Mutex<ContactHandles>>,
     pose: Pose,
-    travel: TravelState,
+    travel: CurrentOrder,
     slip_ready: bool,
     slip_power_w: f64,
     slip_preparation: Option<super::travel::Preparation>,
@@ -233,6 +241,18 @@ fn check_reply_capacity(reply: &ProgramReply, capacity: usize) -> Result<()> {
 
 impl toy_sim_ship_wasm::ScanSource for FusedScan {
     fn query_work(&self, query: &ProgramQuery) -> Result<u64> {
+        if let ProgramQuery::LocalSpace {
+            destination,
+            range_m,
+            after_seconds,
+        } = query
+        {
+            toy_sim_protocol::local_space::validate_request(
+                *destination,
+                *range_m,
+                *after_seconds,
+            )?;
+        }
         let bays = match query {
             ProgramQuery::Beacon(id) => self
                 .beacons
@@ -274,6 +294,32 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             &self.queries
         };
         let reply = match query {
+            ProgramQuery::LocalSpace {
+                destination,
+                range_m,
+                after_seconds,
+            } => ProgramReply::LocalSpace(self.local_space(destination, range_m, after_seconds)?),
+            ProgramQuery::RouteRequest(request) => {
+                toy_sim_protocol::routing::validate_request(&request)?;
+                let (service, caller) = self
+                    .routing
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("route service unavailable"))?;
+                let id = request.id;
+                let status = service.submit(*caller, request, reply_capacity)?;
+                ProgramReply::Route { id, status }
+            }
+            ProgramQuery::RoutePoll { id } => {
+                ensure!(id != 0, "invalid route request id");
+                let (service, caller) = self
+                    .routing
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("route service unavailable"))?;
+                ProgramReply::Route {
+                    id,
+                    status: service.poll(*caller, id),
+                }
+            }
             ProgramQuery::SlipEligibility {
                 origin,
                 destination,
@@ -482,6 +528,7 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
 
 #[derive(Clone)]
 struct Aperture {
+    reference: Option<Reference>,
     entity: Entity,
     position: GalacticPosition,
     velocity: DVec3,
@@ -520,7 +567,7 @@ impl FusedScan {
             pose.position = position;
             pose.velocity = velocity.to_array();
         } else {
-            let seconds = (epoch - self.epoch).to_seconds();
+            let seconds = self.publication_age_seconds() + (epoch - self.epoch).to_seconds();
             pose.position = pose
                 .position
                 .offset_by(DVec3::from_array(pose.velocity) * seconds);
@@ -539,6 +586,10 @@ impl FusedScan {
         orbit: Option<&super::infrastructure::GateOrbit>,
     ) -> Pose {
         self.pose_at(initial, orbit, self.epoch)
+    }
+
+    fn publication_age_seconds(&self) -> f64 {
+        self.tick.saturating_sub(self.publication_tick) as f64 * 0.1
     }
 
     fn beacon_pose_at(&self, id: Id, epoch: hifitime::Epoch) -> Result<Pose> {
@@ -633,7 +684,7 @@ impl FusedScan {
             self.physical,
             self.radius,
             epoch,
-            (epoch - self.epoch).to_seconds(),
+            self.publication_age_seconds() + (epoch - self.epoch).to_seconds(),
         )
     }
 }
@@ -884,6 +935,7 @@ pub fn publish_indexes(
             let universe = &registry.as_ref().expect("orbital beacon universe").universe;
             let (position, envelope_m) = orbit.envelope(universe).expect("valid gate envelope");
             apertures.push(Aperture {
+                reference: Some(Reference::Beacon(data.id.0)),
                 entity: data.entity,
                 position,
                 velocity: DVec3::ZERO,
@@ -924,6 +976,11 @@ pub fn publish_indexes(
         }
         if let Some(spatial) = spatial.filter(|_| body.is_none() || registry.is_none()) {
             let aperture = Aperture {
+                reference: Some(if body.is_some() {
+                    Reference::Celestial(id.0)
+                } else {
+                    Reference::Beacon(id.0)
+                }),
                 entity,
                 position: pose.position,
                 velocity: DVec3::from_array(pose.velocity),
@@ -960,13 +1017,17 @@ pub fn publish_indexes(
 }
 
 struct SourceContext {
+    routing: Option<(
+        super::route_service::RouteService,
+        super::route_service::Caller,
+    )>,
     entity: Entity,
     id: EntityId,
     owner: ownership::Principal,
     radius: f64,
     mass: f64,
     pose: Pose,
-    travel: TravelState,
+    travel: CurrentOrder,
     slip: Option<super::travel::SlipDrive>,
 }
 
@@ -976,17 +1037,19 @@ fn fused_source(
     group: &Group,
     state: &ServiceState,
     context: SourceContext,
-) -> Arc<dyn toy_sim_ship_wasm::ScanSource> {
+) -> Arc<FusedScan> {
     state.handles.lock().unwrap().expire(tick);
     state.queries.lock().unwrap().expire(tick);
     state.display_queries.lock().unwrap().expire(tick);
     let slip = context.slip.as_ref();
     Arc::new(FusedScan {
+        routing: context.routing,
         navigation_revision: publication.navigation_revision,
         gates: publication.gates.clone(),
         universe: publication.universe.clone(),
         epoch: hifitime::Epoch::from_mjd_utc(0.0)
             + hifitime::Duration::from_seconds(tick as f64 * 0.1),
+        publication_tick: publication.tick,
         own: context.id,
         physical: context.entity,
         owner: context.owner,
@@ -1014,6 +1077,60 @@ fn fused_source(
     })
 }
 
+pub(crate) fn current_source(
+    world: &mut World,
+    ship: Entity,
+) -> Option<Arc<dyn toy_sim_ship_wasm::ScanSource>> {
+    current_fused_source(world, ship).map(|source| source as Arc<dyn toy_sim_ship_wasm::ScanSource>)
+}
+
+fn current_fused_source(world: &mut World, ship: Entity) -> Option<Arc<FusedScan>> {
+    let membership = world.get::<Membership>(ship)?.0;
+    let group_id = world.get::<Group>(membership)?.id;
+    if world
+        .get::<ServiceState>(ship)
+        .is_none_or(|state| state.group != Some(group_id))
+    {
+        world.entity_mut(ship).insert(ServiceState {
+            group: Some(group_id),
+            ..Default::default()
+        });
+    }
+    let routing = world
+        .get_resource::<super::route_service::RouteService>()
+        .cloned()
+        .and_then(|service| {
+            super::route_service::caller(world, ship)
+                .ok()
+                .map(|caller| (service, caller))
+        });
+    let context = SourceContext {
+        routing,
+        entity: ship,
+        id: world.get::<Identity>(ship)?.0,
+        owner: world.get::<super::ownership::AssetOwner>(ship)?.0,
+        radius: world.get::<super::vessel::ShipDesign>(ship)?.0.radius,
+        mass: world.get::<super::physics::MassProps>(ship)?.mass,
+        pose: super::session::ship_pose(world, ship)?,
+        travel: world
+            .get::<super::travel::Travel>(ship)
+            .map_or_else(CurrentOrder::default, |travel| {
+                CurrentOrder::from(&travel.0)
+            }),
+        slip: world
+            .get::<super::travel::SlipDrive>(ship)
+            .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
+            .cloned(),
+    };
+    Some(fused_source(
+        world.get_resource::<PublishedWorld>()?,
+        world.get_resource::<SimulationCounters>()?.ticks,
+        world.get::<Group>(membership)?,
+        world.get::<ServiceState>(ship)?,
+        context,
+    ))
+}
+
 pub(crate) fn retained_source(
     world: &mut World,
     parent: Entity,
@@ -1035,6 +1152,7 @@ pub(crate) fn retained_source(
     // intelligence. It creates no sensor measurements or physical observer.
     let pose = super::intelligence::pose(world.get::<PreciseTransform>(parent)?, None, None);
     let context = SourceContext {
+        routing: None,
         entity: parent,
         id: world.get::<Identity>(parent)?.0,
         owner: world.get::<super::ownership::AssetOwner>(parent)?.0,
@@ -1043,7 +1161,9 @@ pub(crate) fn retained_source(
         pose,
         travel: world
             .get::<super::travel::Travel>(parent)
-            .map_or_else(TravelState::default, |travel| travel.0.clone()),
+            .map_or_else(CurrentOrder::default, |travel| {
+                CurrentOrder::from(&travel.0)
+            }),
         slip: None,
     };
     Some(fused_source(
@@ -1059,6 +1179,8 @@ pub fn prepare_sources(
     mut commands: Commands,
     publication: Res<PublishedWorld>,
     clock: Res<SimulationCounters>,
+    world_epoch: Res<super::identity::WorldEpoch>,
+    routing: Option<Res<super::route_service::RouteService>>,
     groups: Query<&Group>,
     mut ships: Query<
         (
@@ -1066,6 +1188,7 @@ pub fn prepare_sources(
             &Identity,
             &Membership,
             &super::ownership::AssetOwner,
+            Option<&super::identity::Control>,
             &PreciseTransform,
             &Velocity,
             &AngularVelocity,
@@ -1084,6 +1207,7 @@ pub fn prepare_sources(
         id,
         membership,
         owner,
+        authority,
         transform,
         velocity,
         angular,
@@ -1113,13 +1237,29 @@ pub fn prepare_sources(
             group,
             state,
             SourceContext {
+                routing: routing.as_ref().zip(authority).map(|(service, authority)| {
+                    (
+                        (**service).clone(),
+                        super::route_service::Caller {
+                            world: world_epoch.0,
+                            ship: id.0,
+                            owner: owner.0,
+                            authority_revision: authority.revision,
+                            travel_revision: travel.map_or(0, |state| state.0.revision),
+                            topology_revision: publication.navigation_revision,
+                            origin: super::route_service::Origin::Explicit,
+                        },
+                    )
+                }),
                 entity,
                 id: id.0,
                 owner: owner.0,
                 radius: design.0.radius,
                 mass: mass.mass,
                 pose,
-                travel: travel.map_or_else(TravelState::default, |travel| travel.0.clone()),
+                travel: travel.map_or_else(CurrentOrder::default, |travel| {
+                    CurrentOrder::from(&travel.0)
+                }),
                 slip: slip.cloned(),
             },
         ));
@@ -1152,6 +1292,9 @@ pub fn dispatch_actions(world: &mut World) {
                 super::travel::dispatch(world, entity, action)
             };
             if let Err(error) = result {
+                if error.is::<super::travel::StaleOrder>() {
+                    continue;
+                }
                 if let Some(mut travel) = world.get_mut::<super::travel::Travel>(entity) {
                     travel.0.status = Status::Blocked(error.to_string());
                     travel.0.planning = None;
@@ -1352,7 +1495,64 @@ mod tests {
     use super::*;
     use toy_sim_ship_wasm::ScanSource;
 
-    fn track(id: Id, position: DVec3, celestial: bool) -> Track {
+    #[test]
+    fn delayed_callback_actions_do_not_block_or_replace_the_next_order() {
+        let account = Id::new();
+        let mut app = crate::sim::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let now = world.resource::<SimulationCounters>().ticks;
+        let ship = world
+            .query::<(Entity, &super::super::identity::Control)>()
+            .iter(world)
+            .find(|(_, control)| control.account == account)
+            .unwrap()
+            .0;
+        world
+            .get_mut::<super::super::travel::Travel>(ship)
+            .unwrap()
+            .0 = TravelState {
+            autopilot_enabled: true,
+            revision: 8,
+            order: 1,
+            orders: vec![Order::WaitUntil(5).into(), Order::WaitUntil(20).into()],
+            status: Status::Active,
+            ..Default::default()
+        };
+        world.get_mut::<ShipSoftware>(ship).unwrap().world_actions = vec![
+            ProgramAction::Block {
+                revision: 8,
+                order: 0,
+                reason: "late error from previous stage".into(),
+            },
+            ProgramAction::Undock {
+                revision: 7,
+                order: 1,
+            },
+            ProgramAction::Estimate {
+                revision: 8,
+                order: 1,
+                remaining_ticks: Some(15),
+                remaining_propellant_kg: Some(0.),
+            },
+        ];
+
+        dispatch_actions(world);
+
+        let state = &world.get::<super::super::travel::Travel>(ship).unwrap().0;
+        assert_eq!(state.status, Status::Active);
+        assert_eq!((state.revision, state.order), (8, 1));
+        assert_eq!(state.orders.len(), 2);
+        assert_eq!(state.estimated_arrival_tick, Some(now + 15));
+        assert!(
+            world
+                .get::<ShipSoftware>(ship)
+                .unwrap()
+                .world_actions
+                .is_empty()
+        );
+    }
+
+    pub(super) fn track(id: Id, position: DVec3, celestial: bool) -> Track {
         Track {
             spatial_instance: Id::new(),
             id,
@@ -1380,12 +1580,14 @@ mod tests {
         }
     }
 
-    fn source() -> FusedScan {
+    pub(super) fn source() -> FusedScan {
         FusedScan {
+            routing: None,
             navigation_revision: 0,
             gates: Arc::default(),
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),
+            publication_tick: 0,
             owner: ownership::Principal::Player(Id::new()),
             directory: Arc::default(),
             radius: 1.0,
@@ -1398,7 +1600,7 @@ mod tests {
             group: Id::new(),
             handles: Arc::default(),
             pose: Pose::default(),
-            travel: TravelState::default(),
+            travel: CurrentOrder::default(),
             slip_ready: true,
             slip_power_w: 100e6,
             slip_preparation: None,
@@ -1418,6 +1620,7 @@ mod tests {
         use toy_sim_ship_wasm::ScanSource;
         let mut source = source();
         source.apertures = Arc::new(ApertureIndex::build(vec![Aperture {
+            reference: None,
             entity: Entity::from_bits(99),
             position: GalacticPosition::from_meters(DVec3::X * 1000.0),
             velocity: DVec3::NEG_X * 100.0,
@@ -1883,6 +2086,7 @@ mod tests {
     fn aperture_index_prunes_large_distant_fleets() {
         let bodies = (0..10_000)
             .map(|index| Aperture {
+                reference: None,
                 velocity: DVec3::ZERO,
                 entity: Entity::PLACEHOLDER,
                 position: GalacticPosition::from_meters(DVec3::new(1e12, index as f64, 0.0)),
@@ -1901,6 +2105,7 @@ mod tests {
     #[test]
     fn aperture_index_rejects_exclusion_and_curvature() {
         let gate = Aperture {
+            reference: None,
             velocity: DVec3::ZERO,
             entity: Entity::PLACEHOLDER,
             position: GalacticPosition::from_meters(DVec3::X * 100.0),
@@ -1917,6 +2122,7 @@ mod tests {
             1.0,
         ));
         let body = Aperture {
+            reference: None,
             velocity: DVec3::ZERO,
             entity: Entity::PLACEHOLDER,
             position: GalacticPosition::from_meters(DVec3::X * 1000.0),
@@ -1945,6 +2151,7 @@ mod tests {
         };
         let bodies: Vec<_> = (0..160)
             .map(|i| Aperture {
+                reference: None,
                 velocity: DVec3::ZERO,
                 entity: world.spawn_empty().id(),
                 position: anchor.offset_by(DVec3::new(
@@ -1994,6 +2201,7 @@ mod tests {
         let index = ApertureIndex::build(
             (0..5000)
                 .map(|_| Aperture {
+                    reference: None,
                     velocity: DVec3::ZERO,
                     entity: Entity::PLACEHOLDER,
                     position: GalacticPosition::ZERO,
@@ -2291,7 +2499,7 @@ mod tests {
         assert!(handles.expiry.is_empty());
     }
 
-    fn universe_source() -> FusedScan {
+    pub(super) fn universe_source() -> FusedScan {
         let mut source = source();
         let universe = Arc::new(
             toy_sim_universe::universe::Universe::init(toy_sim_universe::example_config()).unwrap(),
@@ -2369,6 +2577,7 @@ impl UniverseApertures {
             .iter()
             .enumerate()
             .map(|(index, system)| Aperture {
+                reference: None,
                 velocity: DVec3::ZERO,
                 entity: Entity::PLACEHOLDER,
                 position: system.solver.anchor,

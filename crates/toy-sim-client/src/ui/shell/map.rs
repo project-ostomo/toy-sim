@@ -4,6 +4,7 @@ use toy_sim_model::ownership::Bloc;
 
 mod canvas;
 mod layout;
+mod planner;
 use layout::{ActiveRoute, Cache};
 
 #[derive(Default)]
@@ -17,20 +18,8 @@ pub(super) struct State {
     cache: Cache,
     catalogue_hash: Option<[u8; 32]>,
     active: ActiveRoute,
-    preview_key: Option<(Id, Id)>,
-    preview: Option<Vec<Id>>,
-    preview_gates: BTreeSet<Id>,
-}
-
-impl State {
-    fn preview(&mut self, origin: Option<Id>) {
-        let key = origin.zip(self.selected.or(origin));
-        if self.preview_key != key {
-            self.preview_key = key;
-            self.preview = key.and_then(|(start, end)| self.cache.network.route(start, end));
-            self.preview_gates = self.preview.iter().flatten().copied().collect();
-        }
-    }
+    pub(super) route: planner::Preview,
+    suggested: ActiveRoute,
 }
 
 fn polity_color(bloc: Option<Bloc>) -> egui::Color32 {
@@ -52,9 +41,7 @@ pub(super) fn draw(
         state.catalogue_hash = model.navigation_hash;
         state.cache = Cache::default();
         state.active = ActiveRoute::default();
-        state.preview_key = None;
-        state.preview = None;
-        state.preview_gates.clear();
+        state.suggested = ActiveRoute::default();
         state.selected = None;
         state.pan = egui::Vec2::ZERO;
         state.zoom = 0.;
@@ -84,16 +71,17 @@ pub(super) fn draw(
         }
         NavigationStatus::Ready => {}
     }
+    ui.set_min_height(680.);
+
     let catalogue = model.navigation;
     if state.cache.update(catalogue) {
-        state.preview_key = None;
         state.active = ActiveRoute::default();
+        state.suggested = ActiveRoute::default();
         state.selected = state
             .selected
             .filter(|id| state.cache.systems.contains_key(id));
     }
     let preference = preferences(ui, state, model);
-    instruments::fuel_budget(ui, model);
     ui.separator();
 
     let origin = model
@@ -141,16 +129,33 @@ pub(super) fn draw(
         }
     });
     search(ui, state, model, &mut focus);
-    state.preview(origin);
+    state.suggested.update(
+        &state.cache,
+        catalogue,
+        &model.celestial_systems,
+        origin,
+        state
+            .route
+            .plan()
+            .map_or(&[], |plan| plan.orders.as_slice()),
+    );
     egui::Panel::bottom(ui.id().with("map_footer"))
+        .exact_size(200.)
+        .resizable(false)
         .frame(egui::Frame::NONE)
         .show_separator_line(false)
         .show(ui, |ui| {
-            canvas::legend(ui);
-            selected_system(ui, state, model, origin, preference, intents);
+            egui::ScrollArea::vertical()
+                .id_salt("map_route_details")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    canvas::legend(ui);
+                    selected_system(ui, state, model, origin, preference, intents);
+                    planner::draw(ui, &state.route, model, intents);
+                    instruments::fuel_budget(ui, model);
+                });
         });
     canvas::draw(ui, state, model, origin, focus, fit);
-    state.preview(origin);
 }
 
 fn preferences(
@@ -172,8 +177,9 @@ fn preferences(
         );
         if response.changed() {
             state.preference = Some(preference);
+            state.route = planner::Preview::default();
         }
-        response.on_hover_text("Higher priority spends longer coasting to save propulsion fuel. Used when you set a destination or add a waypoint.");
+        response.on_hover_text("Higher priority spends longer coasting to save propulsion fuel. Used when the server previews a destination or added waypoint.");
     });
     if let (Some(ship), Some(details)) = (model.ship, model.details) {
         let seconds = preference.cost(details.mass_kg).seconds_per_kg * 1000.;
@@ -182,7 +188,7 @@ fn preferences(
             seconds / 60.
         ));
         if preference != ship.travel.preferences && !ship.travel.orders.is_empty() {
-            ui.weak("Set destination again to replan with this preference.");
+            ui.weak("Preview the destination again to use this preference.");
         }
     }
     preference
@@ -278,16 +284,6 @@ fn selected_system(
         );
         ui.weak(format!("Population {}", population(system.population)));
     });
-    ui.weak(state.preview.as_ref().map_or_else(
-        || "No gate connection".into(),
-        |route| {
-            format!(
-                "{} gate hops · computer compares fuel, time and slip",
-                route.len()
-            )
-        },
-    ));
-
     let destination = catalogue
         .beacons
         .iter()
@@ -296,7 +292,7 @@ fn selected_system(
     ui.horizontal(|ui| {
         let available = model.connected && model.ship.is_some() && destination.is_some();
         if ui
-            .add_enabled(available, egui::Button::new("Set destination"))
+            .add_enabled(available, egui::Button::new("Plan destination"))
             .clicked()
         {
             intents.push(Intent::PlanRoute(

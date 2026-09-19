@@ -60,7 +60,7 @@ pub fn update(world: &mut World) {
 
     for session in sessions.iter(world) {
         for (&(id, slot), &hz) in &session.screens {
-            let Ok(ship) = super::session::observe(world, session.account, id) else {
+            let Ok(ship) = super::commands::observe(world, session.account, id) else {
                 continue;
             };
             if world.get::<super::travel::Dormant>(ship).is_some()

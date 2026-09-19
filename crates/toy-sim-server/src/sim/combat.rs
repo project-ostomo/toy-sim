@@ -63,6 +63,7 @@ fn nanoseconds(seconds: f64) -> u64 {
 }
 
 pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
+    super::defense::record(world, report);
     let mut pending = Vec::new();
     for shot in &report.shots {
         let Some(source) = world.get::<Identity>(shot.owner).map(|id| id.0) else {

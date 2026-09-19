@@ -48,6 +48,7 @@ pub struct ShipSoftware {
     pub callback_dt: f64,
     pub schedule: toy_sim_ship_wasm::CallbackSchedule,
     pub request_id: u64,
+    pub(crate) last_weapon_request_id: u64,
     pub world_source: Option<Arc<dyn toy_sim_ship_wasm::ScanSource>>,
     pub world_actions: Vec<toy_sim_model::ProgramAction>,
     pub missile_controls: Vec<(u64, abi::MissileControl)>,
@@ -76,6 +77,7 @@ impl ShipSoftware {
             callback_dt: 0.,
             schedule: default(),
             request_id: 0,
+            last_weapon_request_id: 0,
             world_source: None,
             world_actions: Vec::new(),
             missile_controls: Vec::new(),
@@ -107,6 +109,15 @@ impl ShipSoftware {
     pub fn command(&mut self, command: Command) {
         if self.inbox.len() < 255 {
             self.request_id += 1;
+            if matches!(
+                command,
+                Command::MarkTarget { .. }
+                    | Command::StartFiring
+                    | Command::StopFiring
+                    | Command::UnmarkTarget
+            ) {
+                self.last_weapon_request_id = self.request_id;
+            }
             self.inbox.push(Request {
                 id: self.request_id,
                 command,
@@ -138,7 +149,7 @@ impl Plugin for VesselsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (retaliation, run, clear_computer_resets)
+                (run, clear_computer_resets)
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),
@@ -285,6 +296,7 @@ pub(crate) fn run(
     ledger: Res<super::gas::GasLedger>,
     llm: Option<Res<super::llm::LlmService>>,
     chat: Option<Res<super::chat::ChatService>>,
+    epoch: Res<super::identity::WorldEpoch>,
     time: Res<Time<Fixed>>,
     callbacks: Option<Res<super::missiles::Callbacks>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
@@ -576,6 +588,7 @@ pub(crate) fn run(
                         ledger.clone(),
                         llm.as_ref().map(|service| (**service).clone()),
                         chat.as_ref().map(|service| (**service).clone()),
+                        epoch.0,
                         owner.0,
                         identity.0,
                         software.program_hash,
@@ -720,45 +733,6 @@ fn clear_computer_resets(
             }
         }
     }
-}
-
-/// Demo behavior uses the public engagement contract, independent of firmware internals.
-#[derive(Resource, Default)]
-struct LastRetaliation(Option<(Entity, Entity)>);
-
-fn retaliation(world: &mut World) {
-    let mut ships = world.query::<(Entity, Option<&ControlledVessel>, &ShipSoftware)>();
-    let engagement = ships
-        .iter(world)
-        .find_map(|(entity, controlled, software)| {
-            controlled?;
-            let state = software.controller.state.weapons.as_ref()?;
-            (state.mode == abi::WEAPONS_FIRING).then_some((entity, state.target_contact))
-        });
-    let Some((player, handle)) = engagement else {
-        return;
-    };
-    let Some(target) = super::services::resolve_handle(world, player, handle) else {
-        return;
-    };
-    world.init_resource::<LastRetaliation>();
-    if world.resource::<LastRetaliation>().0 == Some((player, target))
-        || world.get::<ControlledVessel>(target).is_some()
-    {
-        return;
-    }
-    let Ok(contact) = super::services::handle_for_entity(world, target, player) else {
-        return;
-    };
-    let Some(mut software) = world.get_mut::<ShipSoftware>(target) else {
-        return;
-    };
-    software.command(Command::MarkTarget {
-        contact,
-        maximum_flight_time_s: 2.0,
-    });
-    software.command(Command::StartFiring);
-    world.resource_mut::<LastRetaliation>().0 = Some((player, target));
 }
 
 pub fn ship_bundle(

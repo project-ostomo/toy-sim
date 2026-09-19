@@ -2,9 +2,9 @@ use anyhow::{Result, ensure};
 use bevy::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use toy_sim_model::*;
-use toy_sim_ship_wasm::Command;
 
-use super::identity::{self, Account, Control, Identity, Membership, Transponder, WorldEpoch};
+use super::commands::{authorize as ship_authority, observe};
+use super::identity::{self, Account, Control, Identity, WorldEpoch};
 use super::intelligence::Group;
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
@@ -16,7 +16,6 @@ mod optical;
 #[derive(Resource)]
 pub struct Clock {
     pub rate: f64,
-    pub steps: u32,
     pub reset_requested: bool,
     pub inspect: bool,
     pub requests: VecDeque<DebugCommand>,
@@ -26,7 +25,6 @@ impl Default for Clock {
     fn default() -> Self {
         Self {
             rate: 1.,
-            steps: 0,
             reset_requested: false,
             inspect: false,
             requests: VecDeque::new(),
@@ -114,51 +112,6 @@ pub fn prune_events(world: &mut World) {
     super::combat::prune(world, published);
 }
 
-fn ship_authority(
-    world: &World,
-    account: Id,
-    ship: Id,
-    revision: Option<u64>,
-    permission: ownership::Permission,
-) -> Result<Entity> {
-    let entity = identity::lookup(world, ship)?;
-    let authority = world
-        .get::<Control>(entity)
-        .ok_or_else(|| anyhow::anyhow!("ship unavailable"))?;
-    super::ownership::authorize(world, account, entity, permission)?;
-    ensure!(
-        revision.is_none_or(|revision| revision == authority.revision),
-        "control authority changed"
-    );
-    Ok(entity)
-}
-
-pub fn observe(world: &World, account: Id, ship: Id) -> Result<Entity> {
-    ship_authority(world, account, ship, None, ownership::Permission::View)
-        .or_else(|_| ship_authority(world, account, ship, None, ownership::Permission::Control))
-}
-
-fn command_permission(command: &ShipCommand) -> ownership::Permission {
-    match command {
-        ShipCommand::SetTransponderEnabled(_)
-        | ShipCommand::SetGroup(_)
-        | ShipCommand::SetIff(_)
-        | ShipCommand::SetDockServices { .. } => ownership::Permission::Configure,
-        ShipCommand::Flight(_)
-        | ShipCommand::MarkTarget { .. }
-        | ShipCommand::StopFiring
-        | ShipCommand::UnmarkTarget
-        | ShipCommand::StartFiring
-        | ShipCommand::Aim { .. }
-        | ShipCommand::SetTravel { .. }
-        | ShipCommand::SetAutopilot(_)
-        | ShipCommand::SetThrottle(_)
-        | ShipCommand::Undock
-        | ShipCommand::Dock { .. }
-        | ShipCommand::ScreenInput { .. } => ownership::Permission::Control,
-    }
-}
-
 pub fn input(world: &mut World, entity: Entity, input: InputFrame) -> Result<()> {
     let mut session = world
         .entity_mut(entity)
@@ -207,6 +160,13 @@ impl Session {
             "replayed input frame"
         );
         self.input_sequence = Some(input.sequence);
+        let mut reply_bytes = self
+            .results
+            .iter()
+            .filter_map(|result| result.reply.as_ref())
+            .try_fold(0usize, |total, reply| -> Result<usize> {
+                Ok(total.saturating_add(postcard::experimental::serialized_size(reply)?))
+            })?;
         for (id, action) in input.actions {
             if self.seen.contains(&id) {
                 continue;
@@ -217,7 +177,19 @@ impl Session {
             );
             ensure!(self.results.len() < 4096, "command results backlogged");
             self.seen.insert(id);
-            let (reply, error) = match self.apply(world, action) {
+            let (reply, error) = match self.apply(world, action).and_then(|reply| {
+                let size = reply
+                    .as_ref()
+                    .map(postcard::experimental::serialized_size)
+                    .transpose()?
+                    .unwrap_or(0);
+                ensure!(
+                    reply_bytes.saturating_add(size) <= 512 * 1024,
+                    "command reply budget exceeded; retry after publication"
+                );
+                reply_bytes += size;
+                Ok(reply)
+            }) {
                 Ok(reply) => (reply, None),
                 Err(error) => (None, Some(error.to_string())),
             };
@@ -231,41 +203,39 @@ impl Session {
         Ok(())
     }
 
-    fn target(&self, world: &mut World, ship: Entity, group: Id, track: Id) -> Result<u64> {
-        let member = world
-            .get::<Membership>(ship)
-            .ok_or_else(|| anyhow::anyhow!("ship group unavailable"))?
-            .0;
-        ensure!(
-            world
-                .get::<Group>(member)
-                .is_some_and(|item| item.id == group)
-                && self.groups.contains(&group),
-            "target group access denied"
-        );
-        ensure!(
-            world
-                .get::<Group>(member)
-                .unwrap()
-                .snapshot
-                .tracks
-                .contains_key(&track),
-            "target track unavailable"
-        );
-        super::services::contact_handle(world, ship, group, track)
-    }
-
-    fn command(&self, world: &mut World, ship: Entity, command: Command) -> Result<()> {
-        let mut software = world
-            .get_mut::<ShipSoftware>(ship)
-            .ok_or_else(|| anyhow::anyhow!("ship computer unavailable"))?;
-        ensure!(software.inbox.len() < 255, "ship command queue full");
-        software.command(command);
-        Ok(())
-    }
-
     fn apply(&mut self, world: &mut World, action: Action) -> Result<Option<Reply>> {
         match action {
+            Action::RouteRequest {
+                ship,
+                authority_revision,
+                request,
+            } => {
+                let ship = super::commands::authorize(
+                    world,
+                    self.account,
+                    ship,
+                    Some(authority_revision),
+                    ownership::Permission::Control,
+                )?;
+                let id = request.id;
+                let status = super::route_service::submit(world, ship, request)?;
+                return Ok(Some(Reply::Route { id, status }));
+            }
+            Action::RoutePoll {
+                ship,
+                authority_revision,
+                id,
+            } => {
+                let ship = super::commands::authorize(
+                    world,
+                    self.account,
+                    ship,
+                    Some(authority_revision),
+                    ownership::Permission::Control,
+                )?;
+                let status = super::route_service::poll(world, ship, id)?;
+                return Ok(Some(Reply::Route { id, status }));
+            }
             Action::ChatSubscribe(subscription) => {
                 super::chat::refresh(world);
                 self.chat
@@ -352,10 +322,6 @@ impl Session {
                 let mut clock = world.resource_mut::<Clock>();
                 match command {
                     DebugCommand::SetRate(rate) => clock.rate = rate,
-                    DebugCommand::Step => {
-                        ensure!(clock.rate == 0., "pause before stepping");
-                        clock.steps = clock.steps.saturating_add(1).min(100);
-                    }
                     DebugCommand::Reset => clock.reset_requested = true,
                     DebugCommand::Inspect(enabled) => clock.inspect = enabled,
                     command => {
@@ -369,200 +335,31 @@ impl Session {
                 authority_revision,
                 command,
             } => {
-                let entity = ship_authority(
+                super::commands::authorize(
                     world,
                     self.account,
                     ship,
                     Some(authority_revision),
-                    command_permission(&command),
+                    super::commands::permission(&command),
                 )?;
-                match command {
-                    ShipCommand::SetTransponderEnabled(enabled) => {
-                        world.get_mut::<Transponder>(entity).unwrap().0.enabled = enabled
+                let target_group = match &command {
+                    ShipCommand::Aim { group, .. } | ShipCommand::MarkTarget { group, .. } => {
+                        Some(*group)
                     }
-                    ShipCommand::SetGroup(key) => {
-                        let group = super::intelligence::join(world, key);
-                        world.entity_mut(entity).insert(Membership(group));
-                    }
-                    ShipCommand::SetIff(iff) => {
-                        ensure!(
-                            iff.owner == self.account,
-                            "IFF owner must identify current controller"
-                        );
-                        ensure!(
-                            world
-                                .resource::<super::ownership::Directory>()
-                                .0
-                                .can_advertise(self.account, iff.faction),
-                            "IFF faction access denied"
-                        );
-                        ensure!(iff.range_m <= 1e8, "transponder range exceeds hardware");
-                        world.entity_mut(entity).insert(Transponder(iff));
-                    }
-                    ShipCommand::SetTravel {
-                        preferences,
-                        engage,
-                        expected_revision,
-                        orders,
-                    } => {
-                        ensure!(
-                            !matches!(
-                                world
-                                    .get::<super::travel::PresenceState>(entity)
-                                    .map(|p| &p.0),
-                                Some(travel::Presence::SlipTransit(_))
-                            ),
-                            "wait for slip arrival before changing the queue"
-                        );
-                        ensure!(
-                            world
-                                .get::<super::travel::Travel>(entity)
-                                .is_some_and(|state| state.0.revision == expected_revision),
-                            "stale travel revision"
-                        );
-                        ensure!(preferences.valid(), "invalid planning preference");
-                        super::travel::cancel_pending(world, entity);
-                        if engage {
-                            self.command(
-                                world,
-                                entity,
-                                Command::Manual {
-                                    throttle: 0.,
-                                    steering: [0.; 3],
-                                },
-                            )?;
-                            self.command(world, entity, Command::HoldAttitude)?;
-                        }
-                        let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
-                        let enabled = engage || state.0.autopilot_enabled;
-                        state.0 = travel::TravelState {
-                            autopilot_enabled: enabled,
-                            preferences,
-                            revision: state.0.revision + 1,
-                            orders: orders.into_iter().map(Into::into).collect(),
-                            status: if enabled {
-                                travel::Status::Planning
-                            } else {
-                                travel::Status::Paused
-                            },
-                            ..Default::default()
-                        };
-                    }
-                    ShipCommand::SetAutopilot(enabled) => {
-                        ensure!(
-                            world
-                                .get::<super::travel::PresenceState>(entity)
-                                .is_some_and(|p| p.0 == travel::Presence::Space),
-                            "ship is not in space"
-                        );
-                        super::travel::cancel_pending(world, entity);
-                        self.command(
-                            world,
-                            entity,
-                            Command::Manual {
-                                throttle: 0.,
-                                steering: [0.; 3],
-                            },
-                        )?;
-                        self.command(world, entity, Command::HoldAttitude)?;
-                        let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
-                        state.0.revision += 1;
-                        state.0.autopilot_enabled = enabled;
-                        state.0.planning = None;
-                        state.0.status = if enabled {
-                            travel::Status::Planning
-                        } else {
-                            travel::Status::Paused
-                        };
-                    }
-                    ShipCommand::SetThrottle(throttle) => {
-                        ensure_manual_control(world, entity)?;
-                        self.command(world, entity, Command::SetThrottle(throttle))?;
-                    }
-                    ShipCommand::Dock { station, bay } => {
-                        let station = identity::lookup(world, station)?;
-                        super::travel::dock(world, entity, station, bay)?;
-                    }
-                    ShipCommand::SetDockServices { cargo, power } => {
-                        ensure!(
-                            matches!(
-                                world
-                                    .get::<super::travel::PresenceState>(entity)
-                                    .map(|p| &p.0),
-                                Some(travel::Presence::Docked { .. })
-                            ),
-                            "ship must be docked to request services"
-                        );
-                        world.entity_mut(entity).insert(
-                            super::hardware::utilities::DockServiceRequest { cargo, power },
-                        );
-                    }
-                    ShipCommand::Undock => super::travel::undock(world, entity)?,
-                    ShipCommand::UnmarkTarget => {
-                        self.command(world, entity, Command::UnmarkTarget)?
-                    }
-                    ShipCommand::StartFiring => {
-                        self.command(world, entity, Command::StartFiring)?
-                    }
-                    ShipCommand::StopFiring => self.command(world, entity, Command::StopFiring)?,
-                    ShipCommand::Aim { group, track } => {
-                        let handle = self.target(world, entity, group, track)?;
-                        self.command(world, entity, Command::AimContact(handle))?;
-                    }
-                    ShipCommand::MarkTarget {
-                        group,
-                        track,
-                        maximum_flight_time_s,
-                    } => {
-                        let handle = self.target(world, entity, group, track)?;
-                        self.command(
-                            world,
-                            entity,
-                            Command::MarkTarget {
-                                contact: handle,
-                                maximum_flight_time_s,
-                            },
-                        )?;
-                    }
-                    ShipCommand::Flight(command) => {
-                        ensure_manual_control(world, entity)?;
-                        let command = match command {
-                            FlightCommand::HoldAttitude => Command::HoldAttitude,
-                            FlightCommand::StopGuidance => Command::StopGuidance,
-                            FlightCommand::AimDirection(direction) => {
-                                Command::AimDirection(direction)
-                            }
-                            FlightCommand::SelectTarget(target) => Command::SelectTarget(
-                                self.target(world, entity, target.group, target.track)?,
-                            ),
-                            FlightCommand::EngageNavigation {
-                                throttle_limit,
-                                stand_off_m,
-                            } => Command::EngageNavigation {
-                                throttle_limit,
-                                stand_off_m,
-                            },
-                        };
-                        self.command(world, entity, command)?;
-                    }
-                    ShipCommand::ScreenInput {
-                        slot,
-                        revision,
-                        kind,
-                        code,
-                        modifiers,
-                        xy,
-                        text,
-                    } => {
-                        ensure!(
-                            self.screens.contains_key(&(ship, slot)),
-                            "display is not subscribed"
-                        );
-                        super::displays::input(
-                            world, entity, slot, revision, kind, code, modifiers, xy, &text,
-                        )?;
-                    }
+                    ShipCommand::Flight(FlightCommand::SelectTarget(target)) => Some(target.group),
+                    _ => None,
+                };
+                ensure!(
+                    target_group.is_none_or(|group| self.groups.contains(&group)),
+                    "target group access denied"
+                );
+                if let ShipCommand::ScreenInput { slot, .. } = &command {
+                    ensure!(
+                        self.screens.contains_key(&(ship, *slot)),
+                        "display is not subscribed"
+                    );
                 }
+                super::commands::execute(world, self.account, ship, authority_revision, command)?;
             }
         }
         Ok(None)
@@ -646,15 +443,6 @@ impl Session {
             .back()
             .map_or(self.sent_event, |event| event.sequence);
         self.sequence += 1;
-        let mut owned: Vec<_> = world
-            .query_filtered::<(Entity, &Identity), With<super::vessel::Vessel>>()
-            .iter(world)
-            .filter_map(|(entity, id)| {
-                observe(world, self.account, id.0)
-                    .is_ok()
-                    .then_some((id.0, entity))
-            })
-            .collect();
         let focused: BTreeSet<_> = self
             .views
             .values()
@@ -662,11 +450,10 @@ impl Session {
             .chain(self.screens.keys().map(|(ship, _)| *ship))
             .chain(self.instruments.iter().copied())
             .collect();
-        owned.sort_by_key(|(id, _)| (!focused.contains(id), *id));
-        owned.truncate(64);
+        let owned = observable_ships(world, self.account, &focused);
         let ships = owned
             .iter()
-            .filter_map(|(_, entity)| telemetry(world, *entity))
+            .filter_map(|(_, entity)| super::commands::ship_telemetry(world, *entity, self.account))
             .collect();
         let mut presentation = PresentationFrame::default();
         presentation.navigation = super::infrastructure::navigation_snapshot(
@@ -893,59 +680,46 @@ pub fn ship_pose(world: &World, entity: Entity) -> Option<Pose> {
     ))
 }
 
-fn telemetry(world: &World, entity: Entity) -> Option<ShipTelemetry> {
-    let inventory = &world.get::<super::hardware::ShipInventory>(entity)?.0;
-    let thermal = &world.get::<super::hardware::ShipThermal>(entity)?.0;
-    let design = &world.get::<super::vessel::ShipDesign>(entity)?.0;
-    let authority = world.get::<Control>(entity)?;
-    let group = world.get::<Membership>(entity)?.0;
-    Some(ShipTelemetry {
-        appearance: world
-            .get::<super::identity::Appearance>(entity)
-            .map(|appearance| appearance.0),
-        radius_m: design.radius,
-        dock_services: world
-            .get::<super::hardware::utilities::DockServiceRequest>(entity)
-            .map_or_else(DockServiceSettings::default, |request| {
-                DockServiceSettings {
-                    cargo: request.cargo,
-                    power: request.power,
-                }
-            }),
-        spatial_instance: world.get::<super::identity::SpatialInstance>(entity)?.0,
-        info_group: world.get::<Group>(group)?.key?,
-        iff: world.get::<Transponder>(entity)?.0.clone(),
-        ship: world.get::<Identity>(entity)?.0,
-        authority_revision: authority.revision,
-        presence: world
-            .get::<super::travel::PresenceState>(entity)
-            .map(|presence| presence.0.clone())
-            .unwrap_or(travel::Presence::Space),
-        pose: world
-            .get::<super::travel::PresenceState>(entity)
-            .is_none_or(|presence| {
-                matches!(
-                    presence.0,
-                    travel::Presence::Space
-                        | travel::Presence::Docked { .. }
-                        | travel::Presence::SlipTransit(_)
-                )
-            })
-            .then(|| ship_pose(world, entity))
-            .flatten(),
-        battery_j: inventory.energy_j,
-        hull_heat_j: thermal.hull_energy_j,
-        shield_temperature_k: thermal.shield_temperature(design.as_ref().into()),
-        coolant_reserve_kg: thermal.shield_reserve_kg(),
-        travel: world
-            .get::<super::travel::Travel>(entity)
-            .map(|travel| travel.0.clone())
-            .unwrap_or_default(),
-    })
+fn observable_ships(
+    world: &mut World,
+    account: AccountId,
+    focused: &BTreeSet<Id>,
+) -> Vec<(Id, Entity)> {
+    let mut ships: Vec<_> = world
+        .query_filtered::<(Entity, &Identity), With<super::vessel::Vessel>>()
+        .iter(world)
+        .filter_map(|(entity, id)| {
+            observe(world, account, id.0).ok()?;
+            let living = world
+                .get::<super::travel::PresenceState>(entity)
+                .is_none_or(|presence| {
+                    !matches!(
+                        presence.0,
+                        travel::Presence::Destroyed | travel::Presence::StoredInWreck(_)
+                    )
+                });
+            let controllable = living
+                && super::ownership::can_access(
+                    world,
+                    account,
+                    entity,
+                    ownership::Permission::Control,
+                );
+            Some(((!focused.contains(&id.0), !controllable, id.0), entity))
+        })
+        .collect();
+
+    ships.sort_unstable_by_key(|(priority, _)| *priority);
+    ships.truncate(64);
+    ships
+        .into_iter()
+        .map(|((_, _, id), entity)| (id, entity))
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::identity::Transponder;
     use super::*;
 
     fn fixture() -> (World, Entity, Id, Id, Entity) {
@@ -983,6 +757,121 @@ mod tests {
             sequence,
             actions: vec![(id, action)],
         }
+    }
+
+    #[test]
+    fn publication_keeps_controllable_living_ship_ahead_of_more_than_64_view_only_assets() {
+        let (mut world, _, account, _, _) = fixture();
+        let owner = Id::new();
+        identity::add_account(&mut world, owner, false);
+        let mut last_view_only = Id([0; 16]);
+        for index in 1..=80 {
+            let id = Id([index; 16]);
+            let entity = world
+                .spawn((
+                    super::super::vessel::Vessel {
+                        vessel_name: "View-only station".into(),
+                    },
+                    Control {
+                        account: owner,
+                        revision: 1,
+                    },
+                    super::super::ownership::AssetOwner(ownership::Principal::Player(owner)),
+                    super::super::ownership::AssetAccess(ownership::AccessPolicy {
+                        public: BTreeSet::from([ownership::Permission::View]),
+                        grants: Vec::new(),
+                    }),
+                ))
+                .id();
+            identity::register(&mut world, entity, id);
+            last_view_only = id;
+        }
+        for (id, presence) in [
+            (Id([90; 16]), travel::Presence::Destroyed),
+            (Id([91; 16]), travel::Presence::StoredInWreck(Id([99; 16]))),
+            (Id([250; 16]), travel::Presence::Space),
+        ] {
+            let entity = world
+                .spawn((
+                    super::super::vessel::Vessel {
+                        vessel_name: "Player hull".into(),
+                    },
+                    Control {
+                        account,
+                        revision: 1,
+                    },
+                    super::super::ownership::AssetOwner(ownership::Principal::Player(account)),
+                    super::super::travel::PresenceState(presence),
+                ))
+                .id();
+            identity::register(&mut world, entity, id);
+        }
+
+        let ships = observable_ships(&mut world, account, &BTreeSet::new());
+        assert_eq!(ships.len(), 64);
+        assert_eq!(ships[0].0, Id([250; 16]));
+        assert!(!ships.iter().any(|(id, _)| *id == last_view_only));
+        assert!(
+            !ships
+                .iter()
+                .any(|(id, _)| *id == Id([90; 16]) || *id == Id([91; 16]))
+        );
+
+        let ships = observable_ships(&mut world, account, &BTreeSet::from([last_view_only]));
+        assert_eq!(ships.len(), 64);
+        assert_eq!(ships[0].0, last_view_only);
+        assert_eq!(ships[1].0, Id([250; 16]));
+    }
+
+    #[test]
+    fn telemetry_control_fact_is_per_account_and_tracks_acl_changes() {
+        let owner = Id::new();
+        let viewer = Id::new();
+        let mut app = super::super::provision(&[owner, viewer], None, None).unwrap();
+        app.update();
+        let world = app.world_mut();
+        let ship = world
+            .query::<(Entity, &super::super::ownership::AssetOwner)>()
+            .iter(world)
+            .find(|(_, asset)| asset.0 == ownership::Principal::Player(owner))
+            .unwrap()
+            .0;
+        world
+            .entity_mut(ship)
+            .insert(super::super::ownership::AssetAccess(
+                ownership::AccessPolicy {
+                    public: BTreeSet::from([ownership::Permission::View]),
+                    grants: Vec::new(),
+                },
+            ));
+        let own = super::super::commands::ship_telemetry(world, ship, owner).unwrap();
+        let shared = super::super::commands::ship_telemetry(world, ship, viewer).unwrap();
+        assert!(own.can_control);
+        assert!(!shared.can_control);
+        assert_eq!(own.authority_revision, shared.authority_revision);
+
+        world
+            .get_mut::<super::super::ownership::AssetAccess>(ship)
+            .unwrap()
+            .0
+            .public
+            .insert(ownership::Permission::Control);
+        assert!(
+            super::super::commands::ship_telemetry(world, ship, viewer)
+                .unwrap()
+                .can_control
+        );
+        world
+            .get_mut::<super::super::ownership::AssetAccess>(ship)
+            .unwrap()
+            .0
+            .public
+            .remove(&ownership::Permission::Control);
+        assert!(
+            !super::super::commands::ship_telemetry(world, ship, viewer)
+                .unwrap()
+                .can_control
+        );
     }
 
     #[test]
@@ -1061,7 +950,7 @@ mod tests {
                 delegate,
                 ship_id,
                 Some(1),
-                command_permission(&ShipCommand::SetThrottle(1.))
+                super::super::commands::permission(&ShipCommand::SetThrottle(1.))
             )
             .is_ok()
         );
@@ -1105,7 +994,7 @@ mod tests {
         input(
             world,
             first,
-            batch(world, 1, command, Action::Debug(DebugCommand::Step)),
+            batch(world, 1, command, Action::Debug(DebugCommand::SetRate(2.))),
         )
         .unwrap();
         world
@@ -1132,7 +1021,12 @@ mod tests {
         let next = frame(world, first).unwrap();
         assert!(next.events.is_empty());
         assert!(next.results.is_empty());
-        let input_frame = batch(world, 2, Id::new(), Action::Debug(DebugCommand::Step));
+        let input_frame = batch(
+            world,
+            2,
+            Id::new(),
+            Action::Debug(DebugCommand::SetRate(2.)),
+        );
         input(world, first, input_frame).unwrap();
         assert_eq!(frame(world, first).unwrap().results.len(), 1);
     }
@@ -1213,7 +1107,7 @@ mod tests {
             &world,
             1,
             Id::new(),
-            Action::Debug(DebugCommand::SetRate(0.)),
+            Action::Debug(DebugCommand::SetRate(2.)),
         );
         input(&mut world, session, command).unwrap();
         assert_eq!(world.resource::<Clock>().rate, 1.);
@@ -1228,10 +1122,10 @@ mod tests {
             &world,
             2,
             Id::new(),
-            Action::Debug(DebugCommand::SetRate(0.)),
+            Action::Debug(DebugCommand::SetRate(2.)),
         );
         input(&mut world, session, command).unwrap();
-        assert_eq!(world.resource::<Clock>().rate, 0.);
+        assert_eq!(world.resource::<Clock>().rate, 2.);
     }
 
     #[test]
@@ -1239,44 +1133,13 @@ mod tests {
         let (mut world, session, account, _, _) = fixture();
         let owner = identity::lookup(&world, account).unwrap();
         world.get_mut::<Account>(owner).unwrap().debug = true;
-        world.resource_mut::<Clock>().rate = 0.;
         let id = Id::new();
-        let first = batch(&world, 1, id, Action::Debug(DebugCommand::Step));
+        let first = batch(&world, 1, id, Action::Debug(DebugCommand::SetRate(2.)));
         input(&mut world, session, first.clone()).unwrap();
         assert!(input(&mut world, session, first).is_err());
-        let second = batch(&world, 2, id, Action::Debug(DebugCommand::Step));
+        let second = batch(&world, 2, id, Action::Debug(DebugCommand::SetRate(3.)));
         input(&mut world, session, second).unwrap();
-        assert_eq!(world.resource::<Clock>().steps, 1);
+        assert_eq!(world.resource::<Clock>().rate, 2.);
         assert_eq!(world.get::<Session>(session).unwrap().results.len(), 1);
     }
-}
-
-fn ensure_manual_control(world: &World, entity: Entity) -> anyhow::Result<()> {
-    ensure!(
-        world
-            .get::<ShipSoftware>(entity)
-            .is_some_and(|s| !s.controller.is_booting() && s.controller.fault.is_none())
-            && world
-                .get::<super::hardware::Avionics>(entity)
-                .is_some_and(|a| a.0.operational && a.0.powered)
-            && world
-                .get::<super::hardware::Hull>(entity)
-                .is_some_and(|h| h.0 > 0.),
-        "flight computer unavailable"
-    );
-    ensure!(
-        !world
-            .get::<super::travel::Travel>(entity)
-            .unwrap()
-            .0
-            .autopilot_enabled,
-        "manual controls locked by autopilot"
-    );
-    ensure!(
-        world
-            .get::<super::travel::PresenceState>(entity)
-            .is_some_and(|p| p.0 == travel::Presence::Space),
-        "ship is not in space"
-    );
-    Ok(())
 }

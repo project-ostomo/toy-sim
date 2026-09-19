@@ -1,6 +1,14 @@
-# Ship controller ABI (version 28)
+# Ship controller ABI (version 30)
 
-A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host only through the imports of module `ship_v28`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host only through the imports of module `ship_v30`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 30 moves route search and the full order queue to the server. `Travel` now
+returns `CurrentOrder`, containing the current order, its revision and index,
+autopilot status, preferences and active arrival estimate. Programs can request a
+server route preview and poll its asynchronous job, then commit it with
+`UseRoute`. Physical actions carry both the revision and order index, so a
+suspended callback cannot act on a later command. The changed Postcard enums and
+import namespace require rebuilding programs and bindings together.
 
 ABI 28 adds an optional `missile_tick(handle: u64)` export and the
 `missile_read` and `missile_control` imports. Missile callbacks run in their
@@ -20,10 +28,11 @@ arrival offsets and returns remaining preparation time separately from flight
 duration. Programs using older ABI exports or import namespaces are rejected;
 rebuild them and their language bindings together.
 
-The public `Navigation` query pages gate facts for firmware route planning.
-Planning progress and the `search_limited` flag are published through the host
-travel state. The standard runtime permits 8 MiB of guest linear memory while
-metering both guest execution and native host work.
+The public `Navigation` query remains available for programs that inspect gate
+facts. The standard flight program executes one strategic command at a time and does not
+load the navigation graph or search it. It generates local waypoints, collision
+avoidance and slip-exclusion escape manoeuvres within that command's execution. The runtime permits 8 MiB of guest linear
+memory while metering both guest execution and native host work.
 
 ABI 24 adds a persistent byte store for each computer. `persistent_read(out, capacity)`
 returns its length and copies the current data, or returns `ERR_BUFFER` if the
@@ -37,7 +46,11 @@ Server recovery creates a fresh VM from the saved program and restores this byte
 store. Native execution stacks and guest linear memory are not checkpointed.
 Programs must use the persistent store for state that must survive a restart.
 
-ABI 23 adds planning preferences and propulsion fuel budgets to the shared travel order queue. `QueuedOrder` contains an `action`, optional `estimated_duration_ticks` and optional `estimated_propellant_kg`. `Route` and `Estimate` publish a `FuelBudget` with required and available kilograms per resource and a completeness flag. `TravelState.preferences.fuel_priority` controls the time/propellant objective. `Sublight` and `Slip` are explicit orders, `Route` expands the current order, and `CompleteOrder` advances its cursor. The separate leg list is removed. Rebuild firmware and generated bindings for the changed postcard payloads.
+Travel preferences and propulsion fuel estimates are shared model values.
+`QueuedOrder` contains an `action`, optional `estimated_duration_ticks` and
+optional `estimated_propellant_kg`. The server computes the full `FuelBudget`;
+the flight program reports only the active command's remaining time and
+propellant. `CompleteOrder` advances the server's cursor.
 
 ABI 19 adds request code 11, `REQUEST_THROTTLE`, with an eight-byte `ThrottleRequest { throttle: f64 }` payload. It changes manual throttle without replacing the direction target. Direction alignment preserves manual throttle.
 
@@ -64,7 +77,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v28` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v30` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 28; end`, allowing the host to verify the ABI without running guest code.
@@ -292,7 +305,10 @@ without silently truncating its bay lists.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Travel` | `Travel { state, pose, slip_ready }`: the ship's travel state, its exact galactic pose, and whether its slipdrive is ready |
+| `Travel` | `Travel { state, pose, slip_ready }`: `CurrentOrder` with the active stage only, the ship's exact galactic pose, and whether its slipdrive is ready |
+| `RouteRequest(Request)` | Enqueues an idempotent server planning job and returns `Route { id, status }`. The request contains a nonzero ID, the complete requested order list and planning preferences. |
+| `RoutePoll { id }` | Returns the scoped job's `Unknown`, `Pending { progress }`, `Ready { plan }` or `Failed { reason }` status. |
+| `LocalSpace { destination, range_m, after_seconds }` | `LocalSpace { obstacles, truncated }`: bounded known obstacle and slip-exclusion observations around the ship and destination. |
 | `Tracks(TrackQuery)` | `Tracks(QueryPage)` from the ship's information group snapshot. Work is bounded by the physical tick ceiling after its call/copy envelope; other fields use the network limits. |
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
@@ -300,6 +316,31 @@ without silently truncating its bay lists.
 | `Navigation { after, limit, reference }` | Public enabled gate endpoints in entity ID order, with `limit` from 1 to 128 and an exclusive `after` cursor. Returns a topology revision, current poses, paired exits, systems, staging positions and spatial slip eligibility. |
 | `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds }` | `SlipEligibility { ready, preparation_s, duration_s }`: current drive readiness and predicted aperture eligibility at the two future epochs, remaining preparation time, and flight duration alone. |
 | `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials and orbital gates use ephemerides; other beacons extrapolate current linear and angular motion. |
+
+`LocalSpace` admits 262144 work gas plus the normal call and copy envelope. It
+examines at most 2048 weighted index/ephemeris work units and returns at most 32
+obstacles. Range is finite and between zero and 10¹² metres; prediction time is
+between zero and one Julian year. Volumes containing either query position are
+included even when their centres lie beyond the range. A result carries an
+observed or public reference, predicted pose, physical radius and slip-exclusion
+radius. Observed contacts use the ship's fused information; public bodies use
+catalogue ephemerides. Undetected private objects are not exposed.
+
+The `truncated` flag reports either work exhaustion or result overflow. A program
+must treat it as incomplete knowledge when choosing a safe manoeuvre. The
+service supplies observations only: local waypoints and steering decisions
+remain in the ship program. It does not append manoeuvres to the server queue.
+
+Route request and polling each admit 8192 work gas in addition to the normal
+call and serialization costs. Search runs outside the non-preemptible syscall;
+its work is charged separately to the ship owner's account. Requests and ready
+plans are bounded to 256 orders, and serialized plans to 48 KiB. Submission
+checks reply capacity before accepting or changing a job. Jobs are scoped to the
+current world, ship, owner and control revision. Commit also requires the
+expected queue revision. Preview age, ordinary movement and unrelated global
+topology changes do not expire the plan. Its topology revision records the
+planning context. The executor resolves current geometry within each strategic
+command. Jobs do not reveal another ship's route or observations.
 
 Prediction offsets are relative to the current query epoch and must be finite,
 nonnegative and at most one Julian year (`365.25 × 86400` seconds). A slip arrival
@@ -315,17 +356,16 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 
 **Limits.** Input is at most 65,536 bytes, and a callback can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. It returns `ERR_ARGUMENT` for undecodable input, for a display instance, or when the limit is reached.
 
-**Application.** Staged actions are applied only after a successful slice commit. The world applies them after every ship's slice has run, grouped by ship ID and in staging order. A rejected action does not fault the computer. It sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
+**Application.** Staged actions are applied only after a successful slice commit. The world applies them after every ship's slice has run, grouped by ship ID and in staging order. A stale revision or order index is ignored without changing the current queue. Other rejected actions do not fault the computer; an active-command failure sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
 
 | `ProgramAction` | Effect |
 | --- | --- |
-| `Block { revision, reason }` | Cancels unfinished slip preparation, clears its ETA, and sets `Blocked` for the current travel revision, retaining the first 256 characters of `reason`. |
-| `PlanningProgress { revision, progress }` | Reports catalogue loading, graph construction or route search, with a completed count and optional total. |
-| `Route { revision, orders, fuel_budget, search_limited }` | Replaces the current order with the planned queue, preserves later orders, and increments the travel revision. The resulting queue must contain at most 256 orders. `search_limited` marks a candidate published after reaching the planner's search budget. |
-| `Estimate { revision, order, remaining_ticks, fuel_budget }` | Updates the active stage completion estimate; requires the current revision and order index. `None` clears the estimate. |
-| `CompleteOrder { revision, order }` | Advances travel progress |
-| `Slip(position)` | Starts preparation or updates a charging candidate while preserving the original start time and accumulated work. The concrete exit freezes when transit starts. |
-| `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Bay operations |
+| `UseRoute { id, revision, engage }` | Commits an authorized ready server plan against the current travel revision. |
+| `Block { revision, order, reason }` | Blocks only the matching active command, cancels unfinished slip preparation and clears its ETA. |
+| `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates the matching active stage. The server combines its remaining fuel estimate with later stages. |
+| `CompleteOrder { revision, order }` | Completes the matching active stage and advances the server's cursor. |
+| `Slip { revision, order, destination }` | Starts or updates the matching slip command's charging candidate, preserving work and start time; departure freezes the endpoint. |
+| `ReserveBay { revision, order, station, bay }`, `Dock { revision, order, station, bay }`, `Undock { revision, order }` | Performs the bay operation only for the matching active command. |
 
 The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
 
@@ -461,7 +501,7 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 Depend on `toy-sim-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. It also exports a drawing-only `ship_display` that draws a "Ship status" text screen (simulation time, speed, mass and battery energy) on every requested slot; it ignores screen events and does not call world services. On `wasm32` its `Computer` also runs the travel planner in [world.rs](../crates/toy-sim-example-controller/src/world.rs), which uses `world_query` and `world_command` through postcard ([server-client.md](server-client.md#travel-orders-and-firmware-planning)).
+The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. It also exports a drawing-only `ship_display` that draws a "Ship status" text screen (simulation time, speed, mass and battery energy) on every requested slot; it ignores screen events and does not call world services. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/toy-sim-example-controller/src/world.rs). It uses `world_query` to read the active host-owned command and `world_command` to report estimates, completion, or physical actions guarded by the queue revision and order index. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
 
 [examples/custom_screen.rs](../crates/toy-sim-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 
@@ -486,7 +526,7 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v28", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v30", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 

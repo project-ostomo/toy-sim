@@ -60,7 +60,7 @@ Optional constraints, arrival time and predicted fuel come from firmware. The cl
 
 Only the controlled vessel's visible overlay predicts trajectories. The event and
 encounter model refreshes with presentation time so estimated target and ship
-geometry agree during interpolation; paused frames reuse it. Published paths use celestial ephemerides to translate their vertices into the display frame.
+geometry agree during interpolation; unchanged presentation times reuse it. Published paths use celestial ephemerides to translate their vertices into the display frame.
 
 Own and same-primary target coasts render as exact rational quadratic conic arcs.
 The client clips those arcs against the near plane and viewport in homogeneous

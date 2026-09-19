@@ -1,0 +1,161 @@
+use super::*;
+use crate::sim::{gas::STARTING_GAS, precision::PreciseTransform, vessel};
+use bevy::math::DVec3;
+use toy_sim_model::travel::{Destination, Order, PlanningPreferences};
+
+fn identity() -> Caller {
+    Caller {
+        world: Id::new(),
+        ship: Id::new(),
+        owner: Principal::Player(Id::new()),
+        authority_revision: 1,
+        travel_revision: 1,
+        topology_revision: 7,
+        origin: Origin::Explicit,
+    }
+}
+
+fn request(id: u64) -> Request {
+    Request {
+        id,
+        orders: vec![Order::WaitUntil(500)],
+        preferences: PlanningPreferences::default(),
+    }
+}
+
+#[test]
+fn enqueue_capacity_idempotence_namespace_and_revision_checks_precede_mutation() {
+    let service = RouteService::default();
+    let caller = identity();
+    let error = service.submit(caller, request(1), 0).unwrap_err();
+    assert!(error.is::<toy_sim_ship_wasm::WorldQueryError>());
+    assert!(matches!(service.poll(caller, 1), Status::Unknown));
+    assert!(service.0.lock().unwrap().queue.is_empty());
+
+    service.submit(caller, request(1), 65_536).unwrap();
+    service.submit(caller, request(1), 65_536).unwrap();
+    assert_eq!(service.0.lock().unwrap().queue.len(), 1);
+    let mut conflict = request(1);
+    conflict.orders = vec![Order::WaitUntil(700)];
+    assert!(service.submit(caller, conflict, 65_536).is_err());
+
+    let mut automatic = caller;
+    automatic.origin = Origin::Automatic;
+    service.submit(automatic, request(1), 65_536).unwrap();
+    assert_eq!(service.0.lock().unwrap().queue.len(), 2);
+    let mut stale = caller;
+    stale.travel_revision += 1;
+    assert!(matches!(service.poll(stale, 1), Status::Failed { .. }));
+    stale.owner = Principal::Organization(Id::new());
+    assert!(matches!(service.poll(stale, 1), Status::Unknown));
+    stale = caller;
+    stale.authority_revision += 1;
+    assert!(matches!(service.poll(stale, 1), Status::Unknown));
+
+    let mut changed_catalogue = caller;
+    changed_catalogue.topology_revision += 1;
+    assert!(matches!(
+        service.poll(changed_catalogue, 1),
+        Status::Pending { .. }
+    ));
+}
+
+#[test]
+fn prepaid_background_work_is_snapshot_safe_and_refunds_exactly_once() {
+    let ledger = GasLedger::default();
+    let owner = Principal::Organization(Id::new());
+    ledger.ensure_account(owner, 1000);
+    let payment = ledger.prepay(owner, 600).unwrap();
+    let checkpoint = ledger.snapshot().unwrap();
+    let saved = checkpoint.accounts[&owner];
+    assert_eq!(
+        (saved.available, saved.spent, saved.reserved),
+        (400, 600, 0)
+    );
+
+    ledger.reserve(owner, 50).unwrap().settle(50).unwrap();
+    payment.settle(123).unwrap();
+    let account = ledger.account(owner).unwrap();
+    assert_eq!(
+        (account.available, account.spent, account.reserved),
+        (827, 173, 0)
+    );
+    assert_eq!(account.available + account.spent, 1000);
+    assert_eq!(
+        checkpoint.accounts[&owner].spent, 600,
+        "a checkpoint retains its own prepaid cost"
+    );
+
+    let payment = ledger.prepay(owner, 200).unwrap();
+    assert!(payment.settle(201).is_err());
+    assert_eq!(ledger.account(owner).unwrap().spent, 373);
+    drop(ledger.prepay(owner, 100).unwrap());
+    assert_eq!(
+        ledger.account(owner).unwrap().spent,
+        473,
+        "interrupted work retains its bounded charge"
+    );
+    assert!(ledger.snapshot().is_ok());
+}
+
+fn completed(world: &mut World, ship: Entity, id: u64) -> Plan {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        advance(world);
+        assert!(world.resource::<GasLedger>().snapshot().is_ok());
+        match poll(world, ship, id).unwrap() {
+            Status::Ready { plan } => return plan,
+            Status::Failed { reason } => panic!("route failed: {reason}"),
+            _ => {}
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "route worker did not complete"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn worker_uses_public_inputs_and_pays_gas() {
+    let player = Id::new();
+    let mut app = crate::sim::provision(&[player], None, None).unwrap();
+    app.update();
+    let world = app.world_mut();
+    let ship = world
+        .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+        .single(world)
+        .unwrap();
+    let current = caller(world, ship).unwrap();
+    let initial = world
+        .resource::<GasLedger>()
+        .account(current.owner)
+        .unwrap();
+    let origin = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+    submit(
+        world,
+        ship,
+        Request {
+            id: 19,
+            orders: vec![Order::Sublight(Destination::Galactic(
+                origin.offset_by(DVec3::Z * 10_000.0),
+            ))],
+            preferences: PlanningPreferences::default(),
+        },
+    )
+    .unwrap();
+    let plan = completed(world, ship, 19);
+    assert_eq!(plan.travel_revision, current.travel_revision);
+    assert_eq!(plan.topology_revision, current.topology_revision);
+    assert!(!plan.orders.is_empty());
+    assert!(ready(world, ship, 19, current.travel_revision).is_ok());
+    let paid = world
+        .resource::<GasLedger>()
+        .account(current.owner)
+        .unwrap();
+    assert!(paid.spent > initial.spent && paid.spent - initial.spent < 100_000_000);
+    assert_eq!(paid.available + paid.spent, STARTING_GAS);
+
+    reset(world);
+    assert!(matches!(poll(world, ship, 19).unwrap(), Status::Unknown));
+}

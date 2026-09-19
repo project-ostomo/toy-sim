@@ -2,7 +2,6 @@ use toy_sim_ship_api::abi;
 
 const REFERENCE_SLICE: u64 = 1_000_000;
 const FLIGHT_ALLOWANCE: u64 = 700_000;
-const PLANNING_ALLOWANCE: u64 = 300_000;
 const PUBLICATION_ALLOWANCE: u64 = 230_000;
 
 fn headroom(budget: abi::BudgetInfo, allowance: u64) -> u64 {
@@ -53,22 +52,9 @@ pub fn forecast_allowed(budget: abi::BudgetInfo) -> bool {
     budget.gas_remaining > headroom(budget, PUBLICATION_ALLOWANCE)
 }
 
-pub fn planning_allowed(budget: abi::BudgetInfo) -> bool {
-    budget.gas_remaining > headroom(budget, PLANNING_ALLOWANCE)
-}
-
 pub fn allocation_allowed(budget: abi::BudgetInfo, handles: usize) -> bool {
     let allowance = 60_000_u64.saturating_add((handles as u64).saturating_mul(180));
     budget.gas_remaining > headroom(budget, allowance)
-}
-
-pub fn navigation_limit(budget: abi::BudgetInfo, maximum: u16) -> u16 {
-    let affordable = budget
-        .gas_remaining
-        .saturating_sub(headroom(budget, PLANNING_ALLOWANCE))
-        .saturating_sub(abi::NAVIGATION_GAS_BASE)
-        / abi::NAVIGATION_GAS_PER_GATE;
-    affordable.min(u64::from(maximum)) as u16
 }
 
 #[cfg(test)]
@@ -111,13 +97,9 @@ mod tests {
     fn optional_work_uses_the_current_grant_and_yields_for_control_and_publication() {
         for granted in [REFERENCE_SLICE, 250_000, 50_000] {
             let slice = budget(granted, granted);
-            let planning = headroom(slice, PLANNING_ALLOWANCE);
             let publication = headroom(slice, PUBLICATION_ALLOWANCE);
             let allocation = headroom(slice, 60_000 + 32 * 180);
-            assert!(planning_allowed(slice));
             assert!(forecast_allowed(slice));
-            assert!(!planning_allowed(budget(granted, planning)));
-            assert!(planning_allowed(budget(granted, planning + 1)));
             assert!(!forecast_allowed(budget(granted, publication)));
             assert!(forecast_allowed(budget(granted, publication + 1)));
             assert!(!allocation_allowed(budget(granted, allocation), 32));
@@ -128,28 +110,6 @@ mod tests {
             );
         }
         assert!(!forecast_allowed(budget(0, 0)));
-        assert!(!planning_allowed(budget(0, 0)));
         assert!(!allocation_allowed(budget(0, 0), 32));
-    }
-
-    #[test]
-    fn catalogue_pages_fit_the_available_slice_and_do_not_need_accumulated_gas() {
-        for granted in [REFERENCE_SLICE, 250_000, 50_000] {
-            let slice = budget(granted, granted);
-            let limit = navigation_limit(slice, 96);
-            assert!((1..=96).contains(&limit));
-            assert!(
-                abi::NAVIGATION_GAS_BASE
-                    + u64::from(limit) * abi::NAVIGATION_GAS_PER_GATE
-                    + headroom(slice, PLANNING_ALLOWANCE)
-                    <= slice.gas_remaining
-            );
-            assert_eq!(
-                navigation_limit(budget(granted, headroom(slice, PLANNING_ALLOWANCE)), 96),
-                0
-            );
-            assert_eq!(navigation_limit(slice, 1), 1);
-        }
-        assert_eq!(navigation_limit(budget(0, 0), 96), 0);
     }
 }

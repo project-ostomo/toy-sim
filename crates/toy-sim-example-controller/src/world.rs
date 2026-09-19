@@ -1,4 +1,3 @@
-use crate::world_graph::{Gate, Graph};
 use glam::DVec3;
 use toy_sim_model::{travel::*, *};
 use toy_sim_ship_api::{abi, sdk};
@@ -29,37 +28,14 @@ fn command(action: ProgramAction) -> Result<(), i32> {
     sdk::check(unsafe { abi::raw::world_command(bytes.as_ptr(), bytes.len() as u32) })
 }
 
-const GATES_PER_TICK: u16 = 96;
-const MAX_GATES: usize = 16_384;
-const RETRY_TICKS: u64 = 50;
-
-struct Search {
-    destination: Destination,
-    target: Pose,
-    origin: Pose,
-    graph: Option<Graph>,
-    slip_endpoints: [bool; 2],
-    slip_base_s: f64,
-    review: Option<RouteReview>,
-}
-
-struct RouteReview {
-    path: Vec<usize>,
-    slip_durations: Vec<Option<f64>>,
-    refreshed: usize,
-    validated: usize,
-    elapsed_s: f64,
-}
-
 #[derive(Default)]
-pub struct Planner {
+pub struct Executor {
     revision: Option<(u64, usize)>,
     pub active: bool,
     state_revision: u64,
+    state_index: usize,
     pub aim_direction: Option<[f64; 3]>,
     pub reference_changed: bool,
-    search: Option<Search>,
-    retry_at: u64,
     bay: Option<(EntityId, u32)>,
     reserve_at: u64,
     acceleration: f64,
@@ -67,35 +43,16 @@ pub struct Planner {
     mass: f64,
     next_estimate: u64,
     turn_s: f64,
+    own_radius: f64,
+    avoidance: crate::local_guidance::Avoidance,
+    gate: crate::local_guidance::GateApproach,
+    slip_clearance: f64,
+    slip_attempts: u8,
+    pub speed_limit: f64,
     pub preferences: PlanningPreferences,
-    fuel_rates: Vec<(u64, f64)>,
-    catalogue: Vec<Gate>,
-    cached_graph: Option<Graph>,
-    planned_search_limited: bool,
-    catalogue_after: Option<EntityId>,
-    catalogue_revision: Option<u64>,
-    catalogue_complete: bool,
-    catalogue_checked_at: u64,
 }
 
-fn arrival_order(order: &Order, destination: Destination) -> Order {
-    match order {
-        Order::Dock(station) => Order::Dock(*station),
-        Order::TravelTo(Destination::Beacon(id)) => {
-            let Destination::Relative { offset, .. } = destination else {
-                unreachable!("beacon route has a physical stand-off endpoint");
-            };
-            Order::Guidance(Guidance {
-                mode: GuidanceMode::Approach,
-                target: Target::Destination(Destination::Beacon(*id)),
-                range_m: offset.relative_to(GalacticPosition::ZERO).length(),
-            })
-        }
-        _ => Order::Sublight(destination),
-    }
-}
-
-impl Planner {
+impl Executor {
     pub fn update(
         &mut self,
         tick: u64,
@@ -106,30 +63,8 @@ impl Planner {
         let bindings = crate::Bindings::new(hardware);
         self.acceleration = (bindings.thrust / sample.mass_kg.max(1.)).max(1e-6);
         self.flow = bindings.propellant_rate;
-        self.fuel_rates.clear();
-        for column in &bindings.layout.columns {
-            let projection = column.force.dot(bindings.engine_axis);
-            if (column.axis.is_none() && projection <= 0.) || projection.abs() < 1e-8 {
-                continue;
-            }
-            let resource = match hardware.get(column.handle).map(|device| &device.capability) {
-                Some(crate::hardware::Capability::Engine(spec)) => spec.propellant_resource,
-                Some(crate::hardware::Capability::Rcs(spec)) => spec.propellant_resource,
-                _ => continue,
-            };
-            if resource == 0 || column.propellant_rate <= 0. {
-                continue;
-            }
-            if let Some((_, rate)) = self.fuel_rates.iter_mut().find(|(id, _)| *id == resource) {
-                *rate += column.propellant_rate;
-            } else {
-                self.fuel_rates.push((resource, column.propellant_rate));
-            }
-        }
-        if self.flow <= 0. {
-            self.flow = self.fuel_rates.iter().map(|(_, rate)| rate).sum();
-        }
         self.mass = sample.mass_kg;
+        self.own_radius = sample.radius_m;
         self.turn_s = crate::attitude::turn_allowance(
             glam::DMat3::from_cols_array(&sample.inertia),
             &bindings,
@@ -137,498 +72,15 @@ impl Planner {
         let result = self.step(tick);
         if let Err(error) = result {
             if self.active {
-                self.reset_search();
-                self.retry_at = tick.saturating_add(RETRY_TICKS);
                 self.active = false;
                 command(ProgramAction::Block {
                     revision: self.state_revision,
-                    reason: format!("Routing query failed ({error}); retrying"),
+                    order: self.state_index,
+                    reason: format!("Command execution failed ({error})"),
                 })?;
             }
         }
         result
-    }
-
-    fn reset_search(&mut self) {
-        if let Some(mut search) = self.search.take()
-            && let Some(graph) = search.graph.take()
-        {
-            self.cached_graph = Some(graph);
-            self.catalogue_complete = true;
-        }
-    }
-
-    fn load_catalogue(&mut self, pose: &Pose, tick: u64) -> Result<bool, i32> {
-        if self.catalogue_complete && tick < self.catalogue_checked_at.saturating_add(50) {
-            return Ok(true);
-        }
-        let checking = self.catalogue_complete;
-        if !checking {
-            if let Some(graph) = self.cached_graph.as_mut() {
-                if !graph.release_groups() {
-                    return Ok(false);
-                }
-                self.catalogue = std::mem::take(&mut graph.gates);
-                self.catalogue.clear();
-                self.cached_graph = None;
-            }
-            if self.catalogue.capacity() < MAX_GATES {
-                self.catalogue
-                    .reserve_exact(MAX_GATES - self.catalogue.len());
-            }
-        }
-        let limit = crate::budget::navigation_limit(
-            sdk::budget()?,
-            if checking { 1 } else { GATES_PER_TICK },
-        );
-        if limit == 0 {
-            return Ok(false);
-        }
-        let ProgramReply::Navigation { revision, gates } = query(&ProgramQuery::Navigation {
-            after: if checking { None } else { self.catalogue_after },
-            limit,
-            reference: pose.position,
-        })?
-        else {
-            return Err(abi::ERR_ARGUMENT);
-        };
-        self.catalogue_checked_at = tick;
-        if self.catalogue_revision.is_some_and(|old| old != revision) {
-            self.catalogue.clear();
-            self.catalogue_after = None;
-            self.catalogue_complete = false;
-            self.catalogue_revision = Some(revision);
-            return Ok(false);
-        }
-        self.catalogue_revision = Some(revision);
-        if checking {
-            return Ok(true);
-        }
-        self.catalogue_complete = gates.len() < usize::from(limit);
-        for gate in gates {
-            if self
-                .catalogue_after
-                .is_some_and(|after| gate.entity <= after)
-            {
-                return Err(abi::ERR_ARGUMENT);
-            }
-            self.catalogue_after = Some(gate.entity);
-            if self.catalogue.len() == MAX_GATES {
-                return Err(abi::ERR_UNAVAILABLE);
-            }
-            self.catalogue.push(Gate {
-                entity: gate.entity,
-                system: gate.system,
-                position: gate.pose.position,
-                velocity: DVec3::from_array(gate.pose.velocity),
-                exit: gate.exit,
-                staging: gate.staging,
-                slip_allowed: gate.slip_ready,
-            });
-        }
-        Ok(self.catalogue_complete)
-    }
-
-    fn escape_after_jump(
-        &self,
-        state: &TravelState,
-        pose: &Pose,
-        order: &Order,
-    ) -> Result<Option<QueuedOrder>, i32> {
-        let Some(Order::Jump(entry)) = state
-            .order
-            .checked_sub(1)
-            .and_then(|index| state.orders.get(index))
-            .map(|stage| &stage.action)
-        else {
-            return Ok(None);
-        };
-        let Order::Sublight(Destination::Relative {
-            reference: Reference::Beacon(exit),
-            axes: Axes::Galactic,
-            ..
-        }) = order
-        else {
-            return Ok(None);
-        };
-        if !state
-            .orders
-            .get(state.order + 1)
-            .is_some_and(|stage| matches!(stage.action, Order::Slip { .. }))
-        {
-            return Ok(None);
-        }
-        let mouth = navigation_gate(*exit, pose.position)?;
-        if mouth.exit != *entry {
-            return Ok(None);
-        }
-        let gate = navigation_gate(*exit, outward_reference(pose, &mouth.pose))?;
-        if !gate.slip_ready {
-            return Err(abi::ERR_UNAVAILABLE);
-        }
-        let mut target = gate.pose.clone();
-        target.position = gate.staging;
-        let (seconds, fuel) = self.transfer_estimate(&contact(pose, &target));
-        Ok(Some(
-            QueuedOrder::estimated(
-                Order::Sublight(Destination::Relative {
-                    reference: Reference::Beacon(*exit),
-                    offset: GalacticPosition::from_meters(
-                        gate.staging.relative_to(gate.pose.position),
-                    ),
-                    axes: Axes::Galactic,
-                }),
-                seconds,
-            )
-            .with_propellant(fuel),
-        ))
-    }
-
-    fn plan(
-        &mut self,
-        tick: u64,
-        state: &TravelState,
-        pose: Pose,
-    ) -> Result<Option<Vec<QueuedOrder>>, i32> {
-        if self.search.is_none() {
-            self.planned_search_limited = state.search_limited;
-        }
-        let Some(order) = state.orders.get(state.order).map(|stage| &stage.action) else {
-            return Ok(Some(Vec::new()));
-        };
-        if let Some(escape) = self.escape_after_jump(state, &pose, order)? {
-            return Ok(Some(vec![escape]));
-        }
-        let destination = match order {
-            Order::TravelTo(destination) => destination.clone(),
-            Order::Dock(station) => Destination::Beacon(*station),
-            Order::Undock => {
-                return Ok(Some(vec![
-                    QueuedOrder::estimated(Order::Undock, 0.1).with_propellant(0.),
-                ]));
-            }
-            _ => return Ok(Some(vec![state.orders[state.order].clone()])),
-        };
-        if self.search.is_none() {
-            let destination = if let Destination::Beacon(id) = destination {
-                let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacon(id))? else {
-                    return Err(abi::ERR_ARGUMENT);
-                };
-                let beacon = beacons
-                    .iter()
-                    .find(|beacon| beacon.entity == id)
-                    .ok_or(abi::ERR_UNAVAILABLE)?;
-                if matches!(order, Order::Dock(_))
-                    && beacon.pose.position.relative_to(pose.position).length() < 1e7
-                {
-                    return Ok(Some(vec![
-                        QueuedOrder::estimated(
-                            Order::Dock(id),
-                            self.transfer_estimate(&contact(&pose, &beacon.pose)).0,
-                        )
-                        .with_propellant(self.transfer_estimate(&contact(&pose, &beacon.pose)).1),
-                    ]));
-                }
-                let clearance = beacon.radius_m + sdk::flight()?.radius_m + 100.;
-                Destination::Relative {
-                    reference: Reference::Beacon(id),
-                    offset: GalacticPosition::from_meters(
-                        pose.position
-                            .relative_to(beacon.pose.position)
-                            .try_normalize()
-                            .unwrap_or(DVec3::Z)
-                            * clearance,
-                    ),
-                    axes: Axes::Galactic,
-                }
-            } else {
-                destination
-            };
-            let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
-                destination: destination.clone(),
-                after_seconds: 0.,
-            })?
-            else {
-                return Err(abi::ERR_ARGUMENT);
-            };
-            if target.position.relative_to(pose.position).length() < 100. {
-                return Ok(Some(vec![
-                    QueuedOrder::estimated(
-                        arrival_order(order, destination),
-                        self.transfer_estimate(&contact(&pose, &target)).0,
-                    )
-                    .with_propellant(self.transfer_estimate(&contact(&pose, &target)).1),
-                ]));
-            }
-            let endpoint = |position| -> Result<(bool, f64), i32> {
-                let ProgramReply::SlipEligibility {
-                    ready,
-                    preparation_s,
-                    duration_s,
-                } = query(&ProgramQuery::SlipEligibility {
-                    origin: position,
-                    destination: position,
-                    departure_after_seconds: 0.,
-                    arrival_after_seconds: 0.,
-                })?
-                else {
-                    return Err(abi::ERR_ARGUMENT);
-                };
-                Ok((ready, preparation_s + duration_s))
-            };
-            let (origin_slip, slip_base_s) = endpoint(pose.position)?;
-            let (target_slip, _) = endpoint(target.position)?;
-            self.search = Some(Search {
-                destination,
-                target,
-                origin: pose.clone(),
-                graph: None,
-                slip_endpoints: [origin_slip, target_slip],
-                slip_base_s,
-                review: None,
-            });
-            return Ok(None);
-        }
-        if self
-            .search
-            .as_ref()
-            .is_some_and(|search| search.graph.is_none())
-            && !self.load_catalogue(&pose, tick)?
-        {
-            command(ProgramAction::PlanningProgress {
-                revision: state.revision,
-                progress: PlanningProgress {
-                    stage: PlanningStage::LoadingCatalogue,
-                    completed: self.catalogue.len() as u32,
-                    total: None,
-                },
-            })?;
-            return Ok(None);
-        }
-        let search = self.search.as_mut().unwrap();
-        if search.graph.is_none() {
-            let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
-                destination: search.destination.clone(),
-                after_seconds: 0.,
-            })?
-            else {
-                return Err(abi::ERR_ARGUMENT);
-            };
-            search.origin = pose.clone();
-            search.target = target;
-            let endpoint_velocities = [
-                DVec3::from_array(search.origin.velocity),
-                DVec3::from_array(search.target.velocity),
-            ];
-            search.graph = Some(if let Some(mut graph) = self.cached_graph.take() {
-                graph.restart(
-                    search.origin.position,
-                    search.target.position,
-                    self.acceleration,
-                    self.flow,
-                    search.slip_base_s,
-                    search.slip_endpoints,
-                    endpoint_velocities,
-                );
-                graph
-            } else {
-                Graph::new(
-                    search.origin.position,
-                    search.target.position,
-                    std::mem::take(&mut self.catalogue),
-                    self.acceleration,
-                    self.flow,
-                    search.slip_base_s,
-                    search.slip_endpoints,
-                    endpoint_velocities,
-                )
-            });
-            search.graph.as_mut().unwrap().weights = self.preferences.cost(self.mass);
-            return Ok(None);
-        }
-        let graph = search.graph.as_mut().unwrap();
-        if search.review.is_none() {
-            let Some(path) = graph.advance() else {
-                if graph.exhausted {
-                    return Err(abi::ERR_UNAVAILABLE);
-                }
-                command(ProgramAction::PlanningProgress {
-                    revision: state.revision,
-                    progress: graph.progress(),
-                })?;
-                return Ok(None);
-            };
-            search.review = Some(RouteReview {
-                slip_durations: vec![None; path.len() - 1],
-                path,
-                refreshed: 0,
-                validated: 0,
-                elapsed_s: 0.,
-            });
-            return Ok(None);
-        }
-        let review = search.review.as_mut().unwrap();
-        let refresh_end = (review.refreshed + 4).min(review.path.len());
-        for &node in &review.path[review.refreshed..refresh_end] {
-            if node < 2 {
-                continue;
-            }
-            let index = (node - 2) % graph.gates.len();
-            let after = index
-                .checked_sub(1)
-                .map(|previous| graph.gates[previous].entity);
-            let ProgramReply::Navigation { revision, gates } = query(&ProgramQuery::Navigation {
-                after,
-                limit: 1,
-                reference: pose.position,
-            })?
-            else {
-                return Err(abi::ERR_ARGUMENT);
-            };
-            if Some(revision) != self.catalogue_revision {
-                self.reset_search();
-                self.catalogue_complete = false;
-                self.catalogue_after = None;
-                self.catalogue_revision = Some(revision);
-                return Ok(None);
-            }
-            let gate = gates.into_iter().next().ok_or(abi::ERR_UNAVAILABLE)?;
-            let cached = &graph.gates[index];
-            if gate.entity != cached.entity
-                || gate.system != cached.system
-                || gate.exit != cached.exit
-            {
-                return Err(abi::ERR_UNAVAILABLE);
-            }
-            graph.refresh_gate(
-                index,
-                Gate {
-                    entity: gate.entity,
-                    system: gate.system,
-                    position: gate.pose.position,
-                    velocity: DVec3::from_array(gate.pose.velocity),
-                    exit: gate.exit,
-                    staging: gate.staging,
-                    slip_allowed: gate.slip_ready,
-                },
-            );
-        }
-        review.refreshed = refresh_end;
-        if review.refreshed < review.path.len() {
-            return Ok(None);
-        }
-        let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
-            destination: search.destination.clone(),
-            after_seconds: 0.,
-        })?
-        else {
-            return Err(abi::ERR_ARGUMENT);
-        };
-        graph.refresh_motion(
-            &pose,
-            &target,
-            self.acceleration,
-            self.flow,
-            self.preferences.cost(self.mass),
-        );
-        let validation_end = (review.validated + 1).min(review.path.len() - 1);
-        for (offset, pair) in review.path[review.validated..=validation_end]
-            .windows(2)
-            .enumerate()
-        {
-            if graph.is_slip(pair[0], pair[1]) {
-                let origin = if pair[0] == 0 {
-                    None
-                } else {
-                    Some(graph.destination(pair[0]))
-                };
-                let destination = if pair[1] == 1 {
-                    search.destination.clone()
-                } else {
-                    graph.destination(pair[1])
-                };
-                let departure = review.elapsed_s;
-                let solution = solve_slip(
-                    |after| match &origin {
-                        Some(destination) => Ok(resolve_at(destination, after)?.position),
-                        None => Ok(pose
-                            .position
-                            .offset_by(DVec3::from_array(pose.velocity) * after)),
-                    },
-                    &destination,
-                    departure,
-                )?;
-                review.slip_durations[review.validated + offset] = Some(solution.seconds);
-                review.elapsed_s += solution.seconds + graph.arrival_adjustment(pair[0], pair[1]).0;
-            } else if graph.exits[pair[0]] == Some(pair[1]) {
-                review.elapsed_s += 0.1;
-            } else {
-                review.elapsed_s += graph.transfer(pair[0], pair[1]).0;
-            }
-        }
-        review.validated = validation_end;
-        if review.validated < review.path.len() - 1 {
-            return Ok(None);
-        }
-        let path = &review.path;
-        let mut orders: Vec<QueuedOrder> = Vec::new();
-        let mut transfer_s = 0.;
-        let mut transfer_kg = 0.;
-        for (edge, pair) in path.windows(2).enumerate() {
-            let (from, to) = (pair[0], pair[1]);
-            if graph.exits[from] == Some(to) {
-                let entry = &graph.gates[from - 2];
-                orders.push(
-                    QueuedOrder::estimated(Order::Jump(entry.entity), transfer_s + 0.1)
-                        .with_propellant(transfer_kg),
-                );
-                transfer_s = 0.;
-                transfer_kg = 0.;
-            } else if graph.is_slip(from, to) {
-                orders.push(
-                    QueuedOrder::estimated(
-                        Order::Slip {
-                            destination: if to == 1 {
-                                search.destination.clone()
-                            } else {
-                                graph.destination(to)
-                            },
-                        },
-                        review.slip_durations[edge].unwrap(),
-                    )
-                    .with_propellant(0.),
-                );
-                (transfer_s, transfer_kg) = graph.arrival_adjustment(from, to);
-                if to != 1 {
-                    orders.push(
-                        QueuedOrder::estimated(Order::Sublight(graph.destination(to)), transfer_s)
-                            .with_propellant(transfer_kg),
-                    );
-                    transfer_s = 0.;
-                    transfer_kg = 0.;
-                }
-            } else {
-                let (time, fuel) = graph.transfer(from, to);
-                transfer_s += time;
-                transfer_kg += fuel;
-                if to != 1 && graph.exits[to].is_none() {
-                    orders.push(
-                        QueuedOrder::estimated(Order::Sublight(graph.destination(to)), transfer_s)
-                            .with_propellant(transfer_kg),
-                    );
-                    transfer_s = 0.;
-                    transfer_kg = 0.;
-                }
-            }
-        }
-        let final_order = arrival_order(order, search.destination.clone());
-        orders.push(QueuedOrder::estimated(final_order, transfer_s).with_propellant(transfer_kg));
-        if orders.len() > 256 {
-            return Err(abi::ERR_UNAVAILABLE);
-        }
-        self.planned_search_limited |= graph.search_limited;
-        self.reset_search();
-        Ok(Some(orders))
     }
 
     fn transfer_estimate(&self, relative: &abi::Contact) -> (f64, f64) {
@@ -650,62 +102,34 @@ impl Planner {
         )
     }
 
-    fn fuel_budget(&self, estimates: impl Iterator<Item = Option<f64>>) -> Result<FuelBudget, i32> {
-        let mut required = 0.;
-        let mut complete = true;
-        for estimate in estimates {
-            match estimate.filter(|kg| kg.is_finite() && *kg >= 0.) {
-                Some(kg) => required += kg,
-                None => complete = false,
-            }
-        }
-        let flow: f64 = self.fuel_rates.iter().map(|(_, rate)| rate).sum();
-        let mut resources = Vec::new();
-        for &(id, rate) in &self.fuel_rates {
-            let info = sdk::resource_info((id - 1) as u32)?;
-            let amount = sdk::resource(id)?;
-            resources.push(FuelRequirement {
-                resource: info.key.as_str().ok_or(abi::ERR_ARGUMENT)?.into(),
-                required_kg: required * rate / flow,
-                available_kg: amount.units as f64 * info.unit_mass_kg,
-            });
-        }
-        Ok(FuelBudget {
-            resources,
-            complete: complete && (flow > 0. || required == 0.),
-        })
-    }
-
     fn estimate(
         &mut self,
         tick: u64,
-        state: &TravelState,
+        state: &CurrentOrder,
         estimate: Option<(f64, f64)>,
     ) -> Result<(), i32> {
         if tick < self.next_estimate {
             return Ok(());
         }
         self.next_estimate = tick.saturating_add(10);
-        let future = state
-            .orders
-            .iter()
-            .skip(state.order + 1)
-            .map(|stage| stage.estimated_propellant_kg);
-        let fuel_budget =
-            self.fuel_budget(std::iter::once(estimate.map(|(_, fuel)| fuel)).chain(future))?;
+
         command(ProgramAction::Estimate {
             revision: state.revision,
-            order: state.order,
+            order: state.index,
             remaining_ticks: estimate
                 .map(|(seconds, _)| seconds)
                 .filter(|seconds| seconds.is_finite() && *seconds >= 0.)
                 .map(|seconds| (seconds * 10.).ceil() as u64),
-            fuel_budget,
+            remaining_propellant_kg: estimate
+                .map(|(_, kg)| kg)
+                .filter(|kg| kg.is_finite() && *kg >= 0.),
         })
     }
 
     fn step(&mut self, tick: u64) -> Result<Option<abi::Contact>, i32> {
         self.aim_direction = None;
+        self.active = false;
+        self.speed_limit = f64::INFINITY;
         let ProgramReply::Travel {
             state,
             pose,
@@ -715,69 +139,32 @@ impl Planner {
             return Err(abi::ERR_ARGUMENT);
         };
         self.state_revision = state.revision;
+        self.state_index = state.index;
         self.preferences = state.preferences;
-        if self.revision != Some((state.revision, state.order)) {
-            self.revision = Some((state.revision, state.order));
+        if self.revision != Some((state.revision, state.index)) {
+            self.revision = Some((state.revision, state.index));
             self.reference_changed = true;
-            self.reset_search();
             self.bay = None;
-            self.retry_at = tick;
             self.next_estimate = tick;
+            self.avoidance.reset();
+            self.gate = Default::default();
+            self.slip_clearance = 0.;
+            self.slip_attempts = 0;
         }
-        self.active = state.autopilot_enabled
-            && matches!(
-                state.status,
-                Status::Planning | Status::Active | Status::Blocked(_)
-            );
+
+        self.active =
+            state.autopilot_enabled && state.status == Status::Active && state.order.is_some();
         if !self.active {
-            self.reset_search();
-            if self.load_catalogue(&pose, tick)? {
-                if let Some(graph) = self.cached_graph.as_mut() {
-                    graph.prepare();
-                } else {
-                    self.cached_graph = Some(Graph::new(
-                        pose.position,
-                        pose.position,
-                        std::mem::take(&mut self.catalogue),
-                        self.acceleration,
-                        self.flow,
-                        f64::INFINITY,
-                        [false; 2],
-                        [DVec3::from_array(pose.velocity); 2],
-                    ));
-                }
-            }
             return Ok(None);
         }
-        if state.status == Status::Planning || matches!(state.status, Status::Blocked(_)) {
-            if tick < self.retry_at {
-                return Ok(None);
-            }
-            if let Some(orders) = self.plan(tick, &state, pose)? {
-                let fuel_budget = self.fuel_budget(
-                    orders
-                        .iter()
-                        .chain(state.orders.iter().skip(state.order + 1))
-                        .map(|stage| stage.estimated_propellant_kg),
-                )?;
-                command(ProgramAction::Route {
-                    revision: state.revision,
-                    search_limited: self.planned_search_limited,
-                    orders,
-                    fuel_budget,
-                })?;
-            }
+        let Some(order) = state.order.as_ref().map(|queued| &queued.action) else {
             return Ok(None);
-        }
+        };
         let complete = || {
             command(ProgramAction::CompleteOrder {
                 revision: state.revision,
-                order: state.order,
+                order: state.index,
             })
-        };
-        let Some(order) = state.orders.get(state.order).map(|stage| &stage.action) else {
-            complete()?;
-            return Ok(None);
         };
         match order {
             Order::TravelTo(_) => Err(abi::ERR_ARGUMENT),
@@ -864,7 +251,7 @@ impl Planner {
                     }
                     return Ok(None);
                 }
-                let range = guidance.range_m.max(radius + sdk::flight()?.radius_m + 2.);
+                let range = guidance.range_m.max(radius + self.own_radius + 10.);
                 relative.position_m = (offset - offset.normalize_or_zero() * range).to_array();
                 if guidance.mode == GuidanceMode::Approach
                     && DVec3::from_array(relative.position_m).length() < 5.
@@ -882,16 +269,14 @@ impl Planner {
                         Some(self.transfer_estimate(&relative))
                     },
                 )?;
-                Ok(Some(relative))
+                let mut destination = target;
+                destination.position = pose
+                    .position
+                    .offset_by(DVec3::from_array(relative.position_m));
+                self.steer(&pose, &destination, None).map(Some)
             }
             Order::Sublight(destination) => {
-                let ProgramReply::Pose(target) = query(&ProgramQuery::Resolve {
-                    destination: destination.clone(),
-                    after_seconds: 0.,
-                })?
-                else {
-                    return Err(abi::ERR_ARGUMENT);
-                };
+                let target = self.sublight_target(destination, &pose)?;
                 let contact = contact(&pose, &target);
                 if DVec3::from_array(contact.position_m).length() <= 2.
                     && DVec3::from_array(contact.velocity_m_s).length() <= 0.5
@@ -900,21 +285,87 @@ impl Planner {
                     return Ok(None);
                 }
                 self.estimate(tick, &state, Some(self.transfer_estimate(&contact)))?;
-                Ok(Some(contact))
+                self.steer(&pose, &target, None).map(Some)
             }
             Order::Slip { destination } => {
+                let target = resolve_at(destination, 0.)?;
+                let space = self.local_space(&pose, &target, 0.)?;
+                let departure = crate::local_guidance::outside_exclusions(
+                    pose.position,
+                    target.position.relative_to(pose.position),
+                    &space,
+                    self.own_radius + self.slip_clearance,
+                );
+                let Some(departure) = departure else {
+                    return self.steer(&pose, &pose, None).map(Some);
+                };
+                if departure.relative_to(pose.position).length() > 1. {
+                    let mut local = pose.clone();
+                    local.position = departure;
+                    if let Some(obstacle) = space.obstacles.iter().find(|obstacle| {
+                        obstacle.slip_exclusion_m > 0.
+                            && pose.position.relative_to(obstacle.pose.position).length()
+                                < obstacle.slip_exclusion_m
+                                    + self.own_radius
+                                    + self.slip_clearance
+                                    + 10.
+                    }) {
+                        local.velocity = obstacle.pose.velocity;
+                    }
+                    let relative = contact(&pose, &local);
+                    self.estimate(tick, &state, Some(self.transfer_estimate(&relative)))?;
+                    return self.steer(&pose, &local, None).map(Some);
+                }
+
                 if slip_ready {
+                    let anchor = space
+                        .obstacles
+                        .iter()
+                        .find(|obstacle| {
+                            obstacle.reference == Target::Destination(destination.clone())
+                        })
+                        .map_or(target.position, |obstacle| obstacle.pose.position);
+                    let arrival = crate::local_guidance::outside_exclusions(
+                        anchor,
+                        pose.position.relative_to(anchor),
+                        &space,
+                        self.own_radius + self.slip_clearance,
+                    )
+                    .ok_or(abi::ERR_UNAVAILABLE)?;
+                    let arrival_offset = arrival.relative_to(anchor);
                     let solution = solve_slip(
                         |after| {
                             Ok(pose
                                 .position
                                 .offset_by(DVec3::from_array(pose.velocity) * after))
                         },
-                        destination,
-                        0.,
-                    )?;
+                        |after| {
+                            let target = resolve_at(destination, after)?;
+                            Ok(target.position.offset_by(arrival_offset))
+                        },
+                    );
+                    let solution = match solution {
+                        Ok(solution) => solution,
+                        Err(abi::ERR_UNAVAILABLE) if self.slip_attempts < 8 => {
+                            self.slip_attempts += 1;
+                            let volume_margin = space
+                                .obstacles
+                                .iter()
+                                .map(|obstacle| obstacle.slip_exclusion_m * 0.1)
+                                .fold(1000., f64::max);
+                            self.slip_clearance = (self.slip_clearance * 2.)
+                                .max(volume_margin)
+                                .min(toy_sim_model::local_space::MAX_RANGE_M);
+                            return Ok(None);
+                        }
+                        Err(error) => return Err(error),
+                    };
                     self.estimate(tick, &state, Some((solution.seconds, 0.)))?;
-                    command(ProgramAction::Slip(solution.destination))?;
+                    command(ProgramAction::Slip {
+                        revision: state.revision,
+                        order: state.index,
+                        destination: solution.destination,
+                    })?;
                 } else {
                     let seconds = state
                         .estimated_arrival_tick
@@ -933,18 +384,29 @@ impl Planner {
                     .iter()
                     .find(|beacon| beacon.entity == *entry && beacon.gate_exit.is_some())
                     .ok_or(abi::ERR_UNAVAILABLE)?;
-                let own_radius = sdk::flight()?.radius_m;
+                let own_radius = self.own_radius;
                 let clearance = beacon.radius_m - own_radius - 2.;
                 if clearance <= 0. {
                     return Err(abi::ERR_UNAVAILABLE);
                 }
-                let relative = contact(&pose, &beacon.pose);
+                let stand_off = beacon.radius_m + own_radius + 100.;
+                let target = self.gate.guide(&pose, &beacon.pose, stand_off);
+                self.reference_changed |= target.changed;
+                let relative = contact(&pose, &target.pose);
                 let (time, fuel) = self.transfer_estimate(&relative);
                 self.estimate(tick, &state, Some((time + 0.1, fuel)))?;
-                Ok(Some(relative))
+                let ignored = target
+                    .crossing
+                    .then_some(Target::Destination(Destination::Beacon(*entry)));
+                let result = self.steer(&pose, &target.pose, ignored.as_ref())?;
+                self.speed_limit = self.speed_limit.min(target.speed_limit);
+                Ok(Some(result))
             }
             Order::Undock => {
-                command(ProgramAction::Undock)?;
+                command(ProgramAction::Undock {
+                    revision: state.revision,
+                    order: state.index,
+                })?;
                 Ok(None)
             }
             Order::WaitUntil(until) => {
@@ -975,13 +437,15 @@ impl Planner {
                     .ok_or(abi::ERR_UNAVAILABLE)?;
                 if selected.is_none() || tick >= self.reserve_at {
                     command(ProgramAction::ReserveBay {
+                        revision: state.revision,
+                        order: state.index,
                         station: *station,
                         bay,
                     })?;
                     self.bay = Some((*station, bay));
                     self.reserve_at = tick.saturating_add(100);
                 }
-                let ship_radius = sdk::flight()?.radius_m;
+                let ship_radius = self.own_radius;
                 let delta = pose.position.relative_to(beacon.pose.position);
                 let surface_gap = delta.length() - beacon.radius_m - ship_radius;
                 let relative_speed = (DVec3::from_array(pose.velocity)
@@ -995,9 +459,11 @@ impl Planner {
                     );
                     let relative = contact(&pose, &target);
                     self.estimate(tick, &state, Some(self.transfer_estimate(&relative)))?;
-                    return Ok(Some(relative));
+                    return self.steer(&pose, &target, None).map(Some);
                 }
                 command(ProgramAction::Dock {
+                    revision: state.revision,
+                    order: state.index,
                     station: *station,
                     bay,
                 })?;
@@ -1005,36 +471,86 @@ impl Planner {
             }
         }
     }
-}
 
-fn navigation_gate(entity: EntityId, reference: GalacticPosition) -> Result<NavigationGate, i32> {
-    let after = u128::from_be_bytes(entity.0)
-        .checked_sub(1)
-        .map(|value| Id(value.to_be_bytes()));
-    let ProgramReply::Navigation { gates, .. } = query(&ProgramQuery::Navigation {
-        after,
-        limit: 1,
-        reference,
-    })?
-    else {
-        return Err(abi::ERR_ARGUMENT);
-    };
-    gates
-        .into_iter()
-        .find(|gate| gate.entity == entity)
-        .ok_or(abi::ERR_UNAVAILABLE)
-}
+    fn sublight_target(&self, destination: &Destination, pose: &Pose) -> Result<Pose, i32> {
+        if let Destination::Beacon(id) = destination {
+            let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacon(*id))? else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            let beacon = beacons
+                .into_iter()
+                .find(|beacon| beacon.entity == *id)
+                .ok_or(abi::ERR_UNAVAILABLE)?;
+            let direction = pose
+                .position
+                .relative_to(beacon.pose.position)
+                .try_normalize()
+                .unwrap_or(DVec3::Z);
+            return Ok(crate::local_guidance::offset_pose(
+                &beacon.pose,
+                direction * (beacon.radius_m + self.own_radius + 50.),
+            ));
+        }
+        resolve_at(destination, 0.)
+    }
 
-fn outward_reference(ship: &Pose, gate: &Pose) -> GalacticPosition {
-    let direction = ship
-        .position
-        .relative_to(gate.position)
-        .try_normalize()
-        .or_else(|| {
-            (DVec3::from_array(ship.velocity) - DVec3::from_array(gate.velocity)).try_normalize()
-        })
-        .unwrap_or(DVec3::Z);
-    gate.position.offset_by(-direction * 1e6)
+    fn local_space(
+        &self,
+        pose: &Pose,
+        target: &Pose,
+        after_seconds: f64,
+    ) -> Result<LocalSpace, i32> {
+        let relative_speed =
+            (DVec3::from_array(pose.velocity) - DVec3::from_array(target.velocity)).length();
+        let response = 2. * self.turn_s + 2.;
+        let range_m = (relative_speed * relative_speed / self.acceleration
+            + relative_speed * response
+            + 1000.)
+            .clamp(1000., toy_sim_model::local_space::MAX_RANGE_M);
+        let ProgramReply::LocalSpace(space) = query(&ProgramQuery::LocalSpace {
+            destination: target.position,
+            range_m,
+            after_seconds,
+        })?
+        else {
+            return Err(abi::ERR_ARGUMENT);
+        };
+        Ok(space)
+    }
+
+    fn steer(
+        &mut self,
+        pose: &Pose,
+        target: &Pose,
+        ignored: Option<&Target>,
+    ) -> Result<abi::Contact, i32> {
+        let space = self.local_space(pose, target, 0.)?;
+        let steering = self
+            .avoidance
+            .steer(pose, target, &space, self.own_radius, ignored);
+        self.reference_changed |= steering.changed;
+        if steering.detouring {
+            let clearance = space
+                .obstacles
+                .iter()
+                .filter(|obstacle| ignored != Some(&obstacle.reference))
+                .map(|obstacle| {
+                    pose.position.relative_to(obstacle.pose.position).length()
+                        - obstacle.radius_m
+                        - self.own_radius
+                })
+                .fold(f64::INFINITY, f64::min)
+                .max(0.);
+            let local_speed = crate::navigation::arrival_speed(
+                clearance,
+                self.acceleration,
+                2. * self.turn_s + 2.,
+            )
+            .max(40.);
+            self.speed_limit = self.speed_limit.min(local_speed);
+        }
+        Ok(contact(pose, &steering.target))
+    }
 }
 
 fn contact(pose: &Pose, target: &Pose) -> abi::Contact {
@@ -1061,12 +577,11 @@ fn resolve_at(destination: &Destination, after_seconds: f64) -> Result<Pose, i32
 
 fn solve_slip(
     origin_at: impl FnMut(f64) -> Result<GalacticPosition, i32>,
-    destination: &Destination,
-    start_after_seconds: f64,
+    destination_at: impl FnMut(f64) -> Result<GalacticPosition, i32>,
 ) -> Result<crate::slip_guidance::Solution, i32> {
     crate::slip_guidance::intercept(
         origin_at,
-        |after| Ok(resolve_at(destination, after)?.position),
+        destination_at,
         |origin, destination, departure_after_seconds, arrival_after_seconds| {
             let ProgramReply::SlipEligibility {
                 ready,
@@ -1083,6 +598,5 @@ fn solve_slip(
             };
             Ok((ready, preparation_s, duration_s))
         },
-        start_after_seconds,
     )
 }

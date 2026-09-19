@@ -13,18 +13,32 @@ use selection::{SelectedTarget, Selection};
 pub fn run(endpoint: Endpoint, local: bool) {
     let mut app = App::new();
     crate::assets::register_source(&mut app, endpoint.assets.clone());
-    app.add_plugins(DefaultPlugins.set(AssetPlugin {
+    let plugins = DefaultPlugins.set(AssetPlugin {
         file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(),
         ..default()
-    }))
-    .add_plugins(toy_sim_ui::UiPlugin)
-    .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
-    .add_plugins((
-        toy_sim_ship_view::plume::PlumePlugin,
-        toy_sim_ship_view::thermal::ThermalPlugin,
-    ))
-    .init_resource::<selection::Subscriptions>()
-    .init_resource::<Selection>();
+    });
+    #[cfg(feature = "profile")]
+    let plugins = if std::env::var("TOY_SIM_UNCAPPED").as_deref() == Ok("1") {
+        plugins.set(WindowPlugin {
+            primary_window: Some(Window {
+                present_mode: bevy::window::PresentMode::AutoNoVsync,
+                ..default()
+            }),
+            ..default()
+        })
+    } else {
+        plugins
+    };
+
+    app.add_plugins(plugins)
+        .add_plugins(toy_sim_ui::UiPlugin)
+        .add_plugins(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+        .add_plugins((
+            toy_sim_ship_view::plume::PlumePlugin,
+            toy_sim_ship_view::thermal::ThermalPlugin,
+        ))
+        .init_resource::<selection::Subscriptions>()
+        .init_resource::<Selection>();
     #[cfg(feature = "profile")]
     app.add_plugins((
         bevy::diagnostic::LogDiagnosticsPlugin::default(),
@@ -64,6 +78,7 @@ mod tests {
 
     pub(super) fn ship(id: Id) -> OwnedShip {
         OwnedShip(ShipTelemetry {
+            can_control: true,
             appearance: None,
             radius_m: 10.,
             dock_services: Default::default(),
@@ -114,6 +129,42 @@ mod tests {
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(second));
         assert_eq!(world.resource::<Outgoing>().pending().len(), 3);
+    }
+
+    #[test]
+    fn initial_focus_skips_view_only_anchorage_and_dead_hulls_but_allows_inspection() {
+        let mut world = World::new();
+        world.init_resource::<selection::Subscriptions>();
+        world.init_resource::<Selection>();
+        world.init_resource::<Outgoing>();
+        world.init_resource::<SessionInfo>();
+
+        let station_id = Id([1; 16]);
+        let mut station = ship(station_id);
+        station.0.can_control = false;
+        world.spawn(station);
+        let mut destroyed = ship(Id([2; 16]));
+        destroyed.0.presence = travel::Presence::Destroyed;
+        world.spawn(destroyed);
+        let mut stored = ship(Id([3; 16]));
+        stored.0.presence = travel::Presence::StoredInWreck(Id([9; 16]));
+        world.spawn(stored);
+        let patrol_id = Id([4; 16]);
+        let patrol = world.spawn(ship(patrol_id)).id();
+
+        world.run_system_once(selection::synchronize).unwrap();
+        assert_eq!(world.resource::<Selection>().ship, Some(patrol_id));
+        assert!(matches!(world.resource::<Outgoing>().pending(),
+            [(_, Action::InstrumentSubscribe { ship })] if *ship == patrol_id));
+
+        world.resource_mut::<Selection>().ship = Some(station_id);
+        world.run_system_once(selection::synchronize).unwrap();
+        assert_eq!(world.resource::<Selection>().ship, Some(station_id));
+
+        world.despawn(patrol);
+        world.resource_mut::<Selection>().ship = None;
+        world.run_system_once(selection::synchronize).unwrap();
+        assert_eq!(world.resource::<Selection>().ship, None);
     }
 
     #[test]

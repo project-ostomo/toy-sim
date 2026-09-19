@@ -14,7 +14,7 @@ const ARRIVAL_MARKER: u64 = 4;
 #[derive(Default)]
 pub struct Computer {
     pilot: Pilot,
-    planner: crate::world::Planner,
+    executor: crate::world::Executor,
     hardware: Hardware,
     weapons: crate::weapons::WeaponsController,
     scan_window: crate::budget::ScanWindow,
@@ -25,6 +25,7 @@ impl Computer {
         let tick = sdk::tick()?;
 
         if !self.hardware.discover(&tick)? {
+            sdk::interval(0.)?;
             return Ok(tick);
         }
 
@@ -49,11 +50,11 @@ impl Computer {
             .unwrap_or(0);
         self.scan_window.observed(scan_limit, count);
         let travel_contact = self
-            .planner
+            .executor
             .update(tick.tick, &sample, &self.hardware)
             .ok()
             .flatten();
-        if self.planner.reference_changed
+        if self.executor.reference_changed
             && self
                 .pilot
                 .navigation
@@ -90,8 +91,9 @@ impl Computer {
         {
             self.pilot.navigation.abort();
         }
-        self.pilot.navigation.preferences = self.planner.preferences;
-        if let Some(direction) = self.planner.aim_direction {
+        self.pilot.navigation.preferences = self.executor.preferences;
+        self.pilot.navigation.speed_limit = self.executor.speed_limit;
+        if let Some(direction) = self.executor.aim_direction {
             let request = abi::DirectionRequest { direction };
             let _ = self.pilot.request(
                 abi::REQUEST_AIM_DIRECTION,
@@ -114,7 +116,17 @@ impl Computer {
             sdk::request_reply(request.id, status, message)?;
         }
 
-        for actuation in self.pilot.control(&sample, &self.hardware) {
+        let actuations = self.pilot.control(&sample, &self.hardware);
+        let actuating = actuations.iter().any(|actuation| match actuation {
+            crate::hardware::Actuation::Throttle { value, .. } => value.fraction != 0.,
+            crate::hardware::Actuation::Torque { value, .. } => {
+                value.torque_nm.iter().any(|torque| *torque != 0.)
+            }
+            crate::hardware::Actuation::Rcs { value, .. } => {
+                value.thrust_n.iter().any(|thrust| *thrust != 0.)
+            }
+        });
+        for actuation in actuations {
             actuation.apply()?;
         }
 
@@ -131,7 +143,15 @@ impl Computer {
         sdk::weapons(&weapons.state, &weapons.rows)?;
 
         self.publish(&sample)?;
-        sdk::interval(0.)?;
+        let active = self.executor.active
+            || self.pilot.navigation.phase.active()
+            || self.pilot.manual_throttle != 0.
+            || self.pilot.steering != glam::DVec3::ZERO
+            || self.pilot.aim.is_some()
+            || self.pilot.contact.is_some()
+            || weapons.state.target_contact != 0
+            || actuating;
+        sdk::interval(if active { 0. } else { 1. })?;
         Ok(tick)
     }
 

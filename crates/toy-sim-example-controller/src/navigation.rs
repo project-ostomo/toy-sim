@@ -34,6 +34,7 @@ pub struct Pursuit {
     pub offset: DVec3,
     pub turn_allowance: f64,
     pub allowed_speed: f64,
+    pub speed_limit: f64,
     pub stopping_distance: f64,
     /// Target minus ship position; ship minus target velocity.
     pub r: DVec3,
@@ -63,6 +64,7 @@ impl Default for Pursuit {
             offset: DVec3::ZERO,
             turn_allowance: 0.,
             allowed_speed: 0.,
+            speed_limit: f64::INFINITY,
             stopping_distance: 0.,
             r: DVec3::ZERO,
             u: DVec3::ZERO,
@@ -91,6 +93,7 @@ pub fn economical_rendezvous(
     response: f64,
     flow_kg_s: f64,
     cost: toy_sim_model::transfer::TransferCost,
+    speed_limit: f64,
 ) -> (DVec3, f64) {
     let direction = error.normalize_or_zero();
     let speed = cost
@@ -100,7 +103,8 @@ pub fn economical_rendezvous(
             acceleration,
             flow_kg_s,
         )
-        .min(arrival_speed(error.length(), acceleration, response));
+        .min(arrival_speed(error.length(), acceleration, response))
+        .min(speed_limit);
     let requested = (direction * speed - velocity) / response - disturbance;
     (requested.clamp_length_max(acceleration), speed)
 }
@@ -302,6 +306,7 @@ impl Pursuit {
             response,
             b.propellant_rate * self.throttle_ceiling,
             self.preferences.cost(obs.mass_kg),
+            self.speed_limit,
         );
         self.allowed_speed = speed;
         self.stopping_distance = self.u.length_squared() / (2. * a) + self.u.length() * response;
@@ -366,6 +371,7 @@ mod tests {
             2.,
             1.,
             toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+            f64::INFINITY,
         )
         .0;
         assert!(braking.x < 0.);
@@ -385,6 +391,7 @@ mod tests {
                 2.,
                 1.,
                 toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+                f64::INFINITY,
             )
             .0 * 0.1;
             position += velocity * 0.1;
@@ -438,6 +445,7 @@ mod tests {
             2.,
             5.,
             toy_sim_model::transfer::TransferCost::default(),
+            f64::INFINITY,
         );
         assert!(coast.length() < 1e-9);
         let (brake, _) = economical_rendezvous(
@@ -448,7 +456,35 @@ mod tests {
             2.,
             5.,
             toy_sim_model::transfer::TransferCost::default(),
+            f64::INFINITY,
         );
         assert!(brake.x < 0.);
+    }
+
+    #[test]
+    fn local_gate_speed_limit_brakes_an_inbound_ship_and_bounds_its_cruise() {
+        let mut distance = 100_000.;
+        let mut velocity = DVec3::Z * 120.;
+        let cost = toy_sim_model::transfer::TransferCost::default();
+        for _ in 0..1000 {
+            let (acceleration, allowed) = economical_rendezvous(
+                DVec3::Z * distance,
+                velocity,
+                DVec3::ZERO,
+                10.,
+                2.,
+                1.,
+                cost,
+                40.,
+            );
+            assert!(allowed <= 40.);
+            if velocity.z > 40. {
+                assert!(acceleration.z < 0.);
+            }
+            velocity += acceleration * 0.1;
+            distance -= velocity.z * 0.1;
+        }
+        assert!((velocity.z - 40.).abs() < 1e-6);
+        assert!(distance > 90_000.);
     }
 }

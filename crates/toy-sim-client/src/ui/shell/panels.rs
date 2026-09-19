@@ -60,7 +60,7 @@ pub(super) fn draw(
         );
         ui.label(egui::RichText::new(timestamp).monospace().size(12.))
             .on_hover_text(format!(
-                "Simulation T+{:02}:{:02}:{:02}.{}\nThe calendar follows real UTC + 400 years, including while simulation is paused.",
+                "Simulation T+{:02}:{:02}:{:02}.{}\nThe calendar follows real UTC + 400 years, independently of simulation speed.",
                 seconds / 3600,
                 (seconds / 60) % 60,
                 seconds % 60,

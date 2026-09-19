@@ -188,6 +188,8 @@ enum Intent {
     KeepRange(ContactRef, f64),
     Queue(Vec<travel::Order>, bool),
     PlanRoute(Vec<travel::Order>, bool, travel::PlanningPreferences),
+    RetryRoute,
+    CommitRoute,
     EditQueue(Vec<travel::Order>),
     Command(ShipCommand, &'static str),
     Orbits(bool),
@@ -419,6 +421,12 @@ fn draw(
     };
     let mut intents = Vec::new();
     shell.chat.receive(&session.results);
+    shell.map.route.update(
+        telemetry.filter(|_| model.connected),
+        &session.results,
+        &mut outgoing,
+        real_time.elapsed(),
+    );
     panels::draw(
         ctx,
         &mut shell,
@@ -429,10 +437,6 @@ fn draw(
         &mut intents,
     );
     for intent in intents {
-        let preferences = match &intent {
-            Intent::PlanRoute(_, _, preferences) => *preferences,
-            _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
-        };
         match intent {
             Intent::Chat(text) => {
                 if let Some(id) = session.chat.transmit(text.clone(), &mut outgoing) {
@@ -499,7 +503,34 @@ fn draw(
                     );
                 }
             }
-            Intent::Queue(orders, append) | Intent::PlanRoute(orders, append, _) => {
+            Intent::PlanRoute(orders, append, preferences) => {
+                if let Some(ship) = telemetry.filter(|_| model.connected) {
+                    shell
+                        .map
+                        .route
+                        .begin(ship, orders, append, preferences, &mut outgoing);
+                }
+            }
+            Intent::RetryRoute => {
+                if let Some(ship) = telemetry.filter(|_| model.connected) {
+                    shell.map.route.retry(ship, &mut outgoing);
+                }
+            }
+            Intent::CommitRoute => {
+                if let Some(ship) = telemetry.filter(|_| model.connected) {
+                    if let Some(command) = shell.map.route.commit(ship) {
+                        let id = outgoing.ship(ship, command);
+                        shell.map.route.sent_commit(id);
+                        shell.feedback = Some(Feedback {
+                            pending: vec![id],
+                            label: "Engage planned route".into(),
+                            last_tick: 0,
+                            error: None,
+                        });
+                    }
+                }
+            }
+            Intent::Queue(orders, append) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     let mut queue = if append {
                         ship.travel
@@ -518,7 +549,7 @@ fn draw(
                     let id = outgoing.ship(
                         ship,
                         ShipCommand::SetTravel {
-                            preferences,
+                            preferences: ship.travel.preferences,
                             engage: true,
                             expected_revision: ship.travel.revision,
                             orders: queue,

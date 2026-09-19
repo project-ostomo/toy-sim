@@ -1,6 +1,8 @@
 pub mod bootstrap;
 pub mod chat;
 pub mod combat;
+pub mod commands;
+pub mod defense;
 pub mod diagnostics;
 pub mod displays;
 #[cfg(test)]
@@ -11,8 +13,11 @@ pub mod industry;
 pub mod infrastructure;
 pub mod llm;
 pub mod missiles;
+pub mod npc;
 pub mod presentation;
 pub mod registry;
+pub mod route_service;
+pub mod routing;
 pub mod services;
 pub mod session;
 pub mod travel;
@@ -62,6 +67,9 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
             vessel::VesselsPlugin,
         ));
     missiles::install(&mut app);
+    defense::install(&mut app);
+    npc::install(&mut app);
+    route_service::install(&mut app);
     registry::initialize(app.world_mut()).expect("valid universe catalogue");
     app.add_systems(
         FixedUpdate,
@@ -85,7 +93,9 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     );
     app.add_systems(
         FixedFirst,
-        travel::advance.run_if(in_state(GameState::Game)),
+        (travel::advance, travel::plan_orders)
+            .chain()
+            .run_if(in_state(GameState::Game)),
     );
     app.add_systems(
         FixedLast,

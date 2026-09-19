@@ -79,7 +79,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_advances_during_simulation_pause_and_ignores_simulation_speed() {
+    fn calendar_ignores_positive_simulation_speed_changes() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
             .init_resource::<CalendarClock>()
@@ -89,14 +89,18 @@ mod tests {
         app.world_mut()
             .resource_mut::<CalendarClock>()
             .observe(epoch, Duration::ZERO);
-        app.world_mut().resource_mut::<Time<Virtual>>().pause();
+        {
+            let mut virtual_time = app.world_mut().resource_mut::<Time<Virtual>>();
+            virtual_time.set_relative_speed(0.5);
+            virtual_time.set_max_delta(Duration::from_secs(2));
+        }
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
             1250,
         )));
         app.update();
         assert_eq!(
             app.world().resource::<Time<Virtual>>().elapsed(),
-            Duration::ZERO
+            Duration::from_millis(625)
         );
         let elapsed = app.world().resource::<Time<Real>>().elapsed();
         assert_eq!(
@@ -105,7 +109,6 @@ mod tests {
         );
 
         let mut virtual_time = app.world_mut().resource_mut::<Time<Virtual>>();
-        virtual_time.unpause();
         virtual_time.set_relative_speed(10.);
         virtual_time.set_max_delta(Duration::from_secs(1));
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
@@ -114,7 +117,7 @@ mod tests {
         app.update();
         assert_eq!(
             app.world().resource::<Time<Virtual>>().elapsed(),
-            Duration::from_secs(5)
+            Duration::from_millis(5625)
         );
         let elapsed = app.world().resource::<Time<Real>>().elapsed();
         assert_eq!(

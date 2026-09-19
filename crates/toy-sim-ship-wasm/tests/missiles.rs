@@ -55,9 +55,9 @@ fn observation(handle: u64) -> abi::MissileObservation {
 #[test]
 fn missile_and_ship_share_memory_while_suspended_callbacks_keep_their_identity() {
     let imports = r#"
-        (import "ship_v29" "missile_read" (func $read (param i32 i32) (result i32)))
-        (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
-        (import "ship_v29" "persistent_write" (func $save (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_read" (func $read (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
+        (import "ship_v30" "persistent_write" (func $save (param i32 i32) (result i32)))
     "#;
     let control = abi::MissileControl {
         direction: [1., 0., 0.],
@@ -175,8 +175,8 @@ fn missile_and_ship_share_memory_while_suspended_callbacks_keep_their_identity()
 #[test]
 fn missile_control_is_prepaid_and_observations_refresh_before_resuming() {
     let imports = r#"
-        (import "ship_v29" "missile_read" (func $read (param i32 i32) (result i32)))
-        (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_read" (func $read (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
     "#;
     let control = abi::MissileControl {
         direction: [0., 1., 0.],
@@ -227,8 +227,8 @@ fn missile_control_is_prepaid_and_observations_refresh_before_resuming() {
 #[test]
 fn invalid_missile_memory_access_reboots_the_shared_computer_without_publishing_controls() {
     let imports = r#"
-        (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
-        (import "ship_v29" "missile_read" (func $read (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_read" (func $read (param i32 i32) (result i32)))
     "#;
     let control = abi::MissileControl {
         direction: [1., 0., 0.],
@@ -255,8 +255,8 @@ fn invalid_missile_memory_access_reboots_the_shared_computer_without_publishing_
 #[test]
 fn missile_imports_are_unavailable_outside_their_callback_and_reject_invalid_controls() {
     let imports = r#"
-        (import "ship_v29" "missile_read" (func $read (param i32 i32) (result i32)))
-        (import "ship_v29" "missile_control" (func $control (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_read" (func $read (param i32 i32) (result i32)))
+        (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
     "#;
     let ship = "i32.const 256 i32.const 192 call $read i32.const -4 i32.ne if unreachable end i32.const 0 i32.const 32 call $control i32.const -4 i32.ne if unreachable end";
     for control in [
@@ -325,7 +325,7 @@ fn optional_missile_export_requires_the_declared_signature() {
 fn retained_computer_rejects_writes_to_absent_parent_hardware() {
     use toy_sim_ships::{DeviceDescriptor, DeviceHandle, DeviceKind};
     let imports =
-        r#"(import "ship_v29" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#;
+        r#"(import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#;
     let body = format!(
         "i64.const 1 i64.const {} i32.const 0 i32.const 8 call $write i32.const -4 i32.ne if unreachable end",
         abi::SET_THROTTLE,

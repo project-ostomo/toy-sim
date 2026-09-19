@@ -15,12 +15,29 @@ pub struct Snapshot {
     spatial_ids: Vec<Option<TrackId>>,
     free_slots: Vec<u32>,
     reply_sizes: BTreeMap<usize, usize>,
+    speeds: BTreeMap<u64, usize>,
     tags: BTreeMap<Tag, BTreeSet<TrackId>>,
+}
+
+pub struct VolumeCandidates {
+    pub tracks: Vec<Arc<Track>>,
+    pub work: usize,
+    pub complete: bool,
+}
+
+fn track_speed(track: &Track) -> f64 {
+    DVec3::from_array(track.pose.velocity).length() + 3.0 * track.velocity_sigma_m_s
 }
 
 impl Snapshot {
     fn remove(&mut self, id: TrackId) {
         if let Some(track) = self.tracks.remove(&id) {
+            let speed = track_speed(&track).to_bits();
+            let count = self.speeds.get_mut(&speed).expect("indexed track speed");
+            *count -= 1;
+            if *count == 0 {
+                self.speeds.remove(&speed);
+            }
             let bytes = postcard::experimental::serialized_size(track.as_ref())
                 .expect("sensor track serializes");
             let count = self
@@ -52,6 +69,39 @@ impl Snapshot {
             .map_or(0, |(&bytes, _)| bytes)
     }
 
+    pub fn nearby_volumes(
+        &self,
+        centre: GalacticPosition,
+        radius_m: f64,
+        after_seconds: f64,
+        maximum_work: usize,
+    ) -> VolumeCandidates {
+        let maximum_speed = self
+            .speeds
+            .last_key_value()
+            .map_or(0.0, |(&bits, _)| f64::from_bits(bits));
+        let mut cursor =
+            self.spatial
+                .range_cursor(centre, radius_m + maximum_speed * after_seconds, true);
+        // Leave room for the caller to extrapolate and classify every match.
+        let batch = self
+            .spatial
+            .advance_range(&mut cursor, maximum_work / 5, maximum_work / 5);
+        let work = batch.stats.work() + 4 * batch.ids.len();
+        let tracks = batch
+            .ids
+            .into_iter()
+            .map(|slot| {
+                self.tracks[&self.spatial_ids[slot as usize].expect("indexed track")].clone()
+            })
+            .collect();
+        VolumeCandidates {
+            tracks,
+            work,
+            complete: batch.complete && !batch.invalidated,
+        }
+    }
+
     pub fn put(&mut self, track: Track) {
         self.remove(track.id);
         let slot = self.free_slots.pop().unwrap_or_else(|| {
@@ -63,7 +113,7 @@ impl Snapshot {
             slot,
             Entry {
                 position: track.pose.position,
-                radius_m: 0.0,
+                radius_m: track.radius_m.unwrap_or(1.0) + 3.0 * track.position_sigma_m,
                 luminosity: 0.0,
             },
         );
@@ -75,6 +125,10 @@ impl Snapshot {
         let bytes =
             postcard::experimental::serialized_size(&track).expect("sensor track serializes");
         *self.reply_sizes.entry(bytes).or_default() += 1;
+        *self
+            .speeds
+            .entry(track_speed(&track).to_bits())
+            .or_default() += 1;
         self.tracks.insert(track.id, Arc::new(track));
     }
 }

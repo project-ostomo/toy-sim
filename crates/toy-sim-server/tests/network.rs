@@ -6,6 +6,41 @@ use std::{
 };
 use toy_sim_model::*;
 
+fn initial_patrol(frame: &Frame, account: Id) -> &ShipTelemetry {
+    use ownership::{Permission, Principal};
+
+    let mut controlled = frame.ships.iter().filter(|ship| ship.can_control);
+    let patrol = controlled
+        .next()
+        .expect("account has a controllable patrol");
+    assert!(
+        controlled.next().is_none(),
+        "initial account controls one patrol"
+    );
+    let directory = &frame.society.directory;
+    for ship in &frame.ships {
+        let asset = frame
+            .society
+            .assets
+            .iter()
+            .find(|asset| asset.entity == ship.ship)
+            .expect("published ship has an authorized affiliation");
+        if ship.ship == patrol.ship {
+            assert_eq!(asset.owner, Principal::Player(account));
+        } else {
+            assert!(!ship.can_control);
+            assert!(!directory.administers(account, asset.owner));
+            assert!(asset.access.permits(directory, account, Permission::View));
+            assert!(
+                !asset
+                    .access
+                    .permits(directory, account, Permission::Control)
+            );
+        }
+    }
+    patrol
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
     let account = Id::new();
@@ -42,7 +77,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(first.ships.len(), 1);
+    let own = initial_patrol(&first, account);
     let catalogue_hash = first.presentation.navigation.catalogue.unwrap();
     let catalogue_bytes =
         tokio::time::timeout(Duration::from_secs(10), client.assets.fetch(catalogue_hash))
@@ -78,16 +113,11 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             world: first.world,
             sequence: 1,
             actions: vec![
-                (
-                    Id::new(),
-                    Action::InstrumentSubscribe {
-                        ship: first.ships[0].ship,
-                    },
-                ),
+                (Id::new(), Action::InstrumentSubscribe { ship: own.ship }),
                 (
                     Id::new(),
                     Action::ScreenSubscribe {
-                        ship: first.ships[0].ship,
+                        ship: own.ship,
                         slot: 0,
                         hz: 10,
                     },
@@ -98,7 +128,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                         id: 1,
                         revision: 1,
                         group,
-                        focused_ship: Some(first.ships[0].ship),
+                        focused_ship: Some(own.ship),
                         query: TrackQuery {
                             limit: 64,
                             work: 100_000,
@@ -140,7 +170,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
     let own_optical = observed
         .optical
         .iter()
-        .find(|observation| observation.known_entity == Some(first.ships[0].ship))
+        .find(|observation| observation.known_entity == Some(own.ship))
         .expect("focused ship must arrive through the optical snapshot");
     assert_eq!(own_optical.view, observed.views[0].id);
     let appearance = own_optical.appearance.unwrap();
@@ -162,8 +192,8 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(other_first.ships.len(), 1);
-    assert_ne!(other_first.ships[0].ship, first.ships[0].ship);
+    let other_own = initial_patrol(&other_first, other_account);
+    assert_ne!(other_own.ship, own.ship);
     let join = Id::new();
     let view = Id::new();
     let forbidden = Id::new();
@@ -173,7 +203,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             world: first.world,
             sequence: 1,
             actions: vec![
-                (join, Action::JoinGroup(first.ships[0].info_group)),
+                (join, Action::JoinGroup(own.info_group)),
                 (
                     view,
                     Action::Subscribe(ViewSubscription {
@@ -191,8 +221,8 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                 (
                     forbidden,
                     Action::Ship {
-                        ship: first.ships[0].ship,
-                        authority_revision: first.ships[0].authority_revision,
+                        ship: own.ship,
+                        authority_revision: own.authority_revision,
                         command: ShipCommand::StartFiring,
                     },
                 ),
@@ -240,9 +270,9 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
     assert!(
         shared.tracks[&group]
             .iter()
-            .any(|track| track.entity == Some(first.ships[0].ship))
+            .any(|track| track.entity == Some(own.ship))
     );
-    assert_eq!(shared.ships.len(), 1);
+    assert_eq!(initial_patrol(&shared, other_account).ship, other_own.ship);
     assert!(
         shared.optical.is_empty(),
         "a radio-only view has no optical vantage"
@@ -311,7 +341,7 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
             .send(InputFrame {
                 world: first.world,
                 sequence: 2,
-                actions: vec![(stale_action, Action::Debug(DebugCommand::SetRate(0.)))],
+                actions: vec![(stale_action, Action::Debug(DebugCommand::SetRate(2.)))],
             })
             .await
             .unwrap();
@@ -371,6 +401,7 @@ async fn submit_action(
     action: Action,
 ) -> std::sync::Arc<Frame> {
     let id = Id::new();
+    let description = format!("{action:?}").chars().take(200).collect::<String>();
     client
         .input
         .send(InputFrame {
@@ -380,16 +411,23 @@ async fn submit_action(
         })
         .await
         .unwrap();
+    let mut last_frame = None;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let frame = client.state.recv().await.unwrap();
+            last_frame = Some((frame.world, frame.tick, frame.sequence, frame.results.len()));
             if frame.results.iter().any(|result| result.id == id) {
                 return frame;
             }
         }
     })
     .await
-    .expect("action response timed out")
+    .unwrap_or_else(|_| {
+        panic!(
+            "action response timed out: sequence={sequence}, action={description}, last_frame={last_frame:?}, connection={:?}",
+            client.status.borrow()
+        )
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -799,7 +837,7 @@ async fn society_changes_cross_the_protocol_and_preserve_permission_boundaries()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn process_restart_restores_paused_world_and_advances_real_calendar() {
+async fn process_restart_restores_running_world_and_advances_real_calendar() {
     use ownership::{AccessPolicy, Permission, Principal, SocietyCommand, Standing};
     use std::collections::BTreeSet;
 
@@ -816,20 +854,13 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
         .await
         .unwrap()
         .unwrap();
-    let ship = first.ships[0].ship;
+    let own = initial_patrol(&first, account);
+    let ship = own.ship;
     let world = first.world;
-    let paused = submit_action(
-        &mut client,
-        world,
-        1,
-        Action::Debug(DebugCommand::SetRate(0.)),
-    )
-    .await;
-    assert!(paused.results.iter().all(|result| result.error.is_none()));
     let created = submit_action(
         &mut client,
         world,
-        2,
+        1,
         Action::Society(SocietyCommand::CreateOrganization {
             name: "Persistent Cooperative".into(),
         }),
@@ -841,7 +872,7 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
     let transfer = submit_action(
         &mut client,
         world,
-        3,
+        2,
         Action::Society(SocietyCommand::TransferAsset {
             asset: ship,
             owner: Principal::Organization(organization),
@@ -856,7 +887,7 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
     let granted = submit_action(
         &mut client,
         world,
-        4,
+        3,
         Action::Society(SocietyCommand::SetAssetAccess {
             asset: ship,
             policy: policy.clone(),
@@ -874,7 +905,7 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
     let standing = submit_action(
         &mut client,
         world,
-        5,
+        4,
         Action::Society(SocietyCommand::SetStanding {
             target: Principal::Organization(target),
             standing: Some(Standing::Hostile),
@@ -882,16 +913,21 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
     )
     .await;
     assert!(standing.results.iter().all(|result| result.error.is_none()));
-    let mut iff = first.ships[0].iff.clone();
+    let mut iff = own.iff.clone();
     iff.faction = Some(organization);
     iff.labels.insert("restart-tested".into());
     let renamed = submit_action(
         &mut client,
         world,
-        6,
+        5,
         Action::Ship {
             ship,
-            authority_revision: granted.ships[0].authority_revision,
+            authority_revision: granted
+                .ships
+                .iter()
+                .find(|item| item.ship == ship)
+                .unwrap()
+                .authority_revision,
             command: ShipCommand::SetIff(iff.clone()),
         },
     )
@@ -901,12 +937,14 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
         "{:?}",
         renamed.results
     );
-    let mut pose = paused.ships[0].pose.clone().unwrap();
+    let mut pose = own.pose.clone().unwrap();
     pose.position.x += 123_000_000_000;
+    pose.velocity = [0.; 3];
+    pose.angular_velocity = [0.; 3];
     let relocated = submit_action(
         &mut client,
         world,
-        7,
+        6,
         Action::Debug(DebugCommand::Relocate {
             ship,
             pose: pose.clone(),
@@ -919,8 +957,8 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
             .iter()
             .all(|result| result.error.is_none())
     );
-    let saved = submit_action(&mut client, world, 8, Action::InstrumentSubscribe { ship }).await;
-    assert_eq!(saved.ships[0].pose, Some(pose.clone()));
+    let saved = submit_action(&mut client, world, 7, Action::InstrumentSubscribe { ship }).await;
+    let saved_ship = saved.ships.iter().find(|item| item.ship == ship).unwrap();
     let inventory = saved
         .presentation
         .ships
@@ -959,9 +997,9 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
         .unwrap()
         .unwrap();
     assert_eq!(restored.world, saved.world);
-    assert_eq!(restored.tick, saved.tick);
-    assert_eq!(restored.sim_time_ns, saved.sim_time_ns);
-    assert_eq!(restored.rate, 0.);
+    assert!(restored.tick >= saved.tick);
+    assert!(restored.sim_time_ns >= saved.sim_time_ns);
+    assert_eq!(restored.rate, 1.);
     assert!(restored.calendar_unix_ms > saved.calendar_unix_ms);
     assert_eq!(restored.society.directory, saved.society.directory);
     let asset = restored
@@ -977,39 +1015,43 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
         .iter()
         .find(|item| item.ship == ship)
         .unwrap();
-    assert_eq!(telemetry.pose, Some(pose));
+    let restored_pose = telemetry.pose.as_ref().unwrap();
+    let displacement_m = [
+        restored_pose.position.x - pose.position.x,
+        restored_pose.position.y - pose.position.y,
+        restored_pose.position.z - pose.position.z,
+    ]
+    .map(|distance| distance as f64 / 1_000_000.);
+    assert!(
+        displacement_m.iter().map(|axis| axis * axis).sum::<f64>() < 100.0_f64.powi(2),
+        "restored pose must continue near the saved relocation: {displacement_m:?}"
+    );
     assert_eq!(telemetry.iff, iff);
-    assert_eq!(telemetry.battery_j, saved.ships[0].battery_j);
-    assert_eq!(telemetry.hull_heat_j, saved.ships[0].hull_heat_j);
-    assert_eq!(
-        telemetry.shield_temperature_k,
-        saved.ships[0].shield_temperature_k
-    );
-    assert_eq!(telemetry.info_group, saved.ships[0].info_group);
-    assert_eq!(
-        telemetry.authority_revision,
-        saved.ships[0].authority_revision
-    );
+    assert_eq!(telemetry.info_group, saved_ship.info_group);
+    assert_eq!(telemetry.authority_revision, saved_ship.authority_revision);
     let instruments =
         submit_action(&mut client, world, 1, Action::InstrumentSubscribe { ship }).await;
-    assert_eq!(
+    assert!(
         instruments
-            .presentation
-            .ships
+            .results
             .iter()
-            .find(|item| item.ship == ship)
-            .unwrap()
-            .inventory,
-        inventory
+            .all(|result| result.error.is_none())
     );
-    let resumed = submit_action(
-        &mut client,
-        world,
-        2,
-        Action::Debug(DebugCommand::SetRate(1.)),
-    )
-    .await;
-    assert!(resumed.results.iter().all(|result| result.error.is_none()));
+    let restored_inventory = &instruments
+        .presentation
+        .ships
+        .iter()
+        .find(|item| item.ship == ship)
+        .unwrap()
+        .inventory;
+    assert_eq!(restored_inventory.len(), inventory.len());
+    for (restored, saved) in restored_inventory.iter().zip(&inventory) {
+        assert_eq!(restored.resource, saved.resource);
+        assert_eq!(restored.capacity_kg, saved.capacity_kg);
+        assert_eq!(restored.unit_mass_kg, saved.unit_mass_kg);
+        assert_eq!(restored.unit_volume_m3, saved.unit_volume_m3);
+        assert!(restored.amount_kg <= restored.capacity_kg);
+    }
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let frame = client.state.recv().await.unwrap();
@@ -1023,7 +1065,7 @@ async fn process_restart_restores_paused_world_and_advances_real_calendar() {
         }
     })
     .await
-    .expect("restored world did not resume");
+    .expect("restored world stopped advancing or its computer did not boot");
     drop(client);
     server.shutdown().await;
 }

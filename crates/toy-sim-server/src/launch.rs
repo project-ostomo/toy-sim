@@ -88,12 +88,12 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
         .name("simulation".into())
         .spawn(move || {
             let prepared = crate::persistence::prepare(&persistence, &config_directory)?;
-            let bootstrap_ship = if prepared.as_ref().is_some_and(|saved| saved.has_snapshot()) {
-                None
-            } else {
-                ship
-            };
+            let restoring = prepared.as_ref().is_some_and(|saved| saved.has_snapshot());
+            let bootstrap_ship = if restoring { None } else { ship };
             let mut simulation = crate::scenario(&account_ids, debug_account, bootstrap_ship)?;
+            if !restoring {
+                crate::sim::npc::seed::populate(simulation.world_mut())?;
+            }
             if let Some(prepared) = prepared {
                 prepared.initialize(simulation.world_mut())?;
             }

@@ -78,13 +78,13 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
         "Fuel priority: {:.1}×",
         ship.travel.preferences.fuel_priority
     ));
-    ui.small("Change the preference in Gate Network and set the destination to replan.");
+    ui.small("Change the preference in Gate Network and preview the destination to replan.");
     fuel_budget(ui, model);
     ui.separator();
     ui.label(egui::RichText::new("Travel orders").color(ACCENT).strong());
     ui.label(travel_status(&ship.travel.status));
     if ship.travel.orders.is_empty() {
-        ui.weak("No route programmed by the flight computer.");
+        ui.weak("No route queued.");
     }
     let now = model.time_ns / 100_000_000;
     let arrivals = ship.travel.stage_arrivals(now);
@@ -319,7 +319,7 @@ pub(super) fn order_label(
     order_name(order)
 }
 
-fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: u64) -> String {
+pub(super) fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: u64) -> String {
     let Some(arrival) = arrival else {
         return if matches!(&stage.action, travel::Order::Guidance(g) if g.mode == travel::GuidanceMode::KeepRange)
         {
@@ -411,6 +411,15 @@ pub(super) fn fuel_budget(ui: &mut egui::Ui, model: &FrameModel) {
         ui.weak("Propulsion fuel estimate pending…");
         return;
     };
+    fuel_estimate(ui, budget, model, true);
+}
+
+pub(super) fn fuel_estimate(
+    ui: &mut egui::Ui,
+    budget: &travel::FuelBudget,
+    model: &FrameModel,
+    current_inventory: bool,
+) {
     for requirement in &budget.resources {
         let inventory = model.details.and_then(|details| {
             details
@@ -418,7 +427,11 @@ pub(super) fn fuel_budget(ui: &mut egui::Ui, model: &FrameModel) {
                 .iter()
                 .find(|resource| resource.resource == requirement.resource)
         });
-        let available = inventory.map_or(requirement.available_kg, |resource| resource.amount_kg);
+        let available = if current_inventory {
+            inventory.map_or(requirement.available_kg, |resource| resource.amount_kg)
+        } else {
+            requirement.available_kg
+        };
         let name = inventory.map_or(requirement.resource.as_str(), |resource| {
             resource.name.as_str()
         });

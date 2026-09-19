@@ -5,7 +5,7 @@ use std::{path::Path, time::Duration};
 use toy_sim_model::Id;
 
 pub const MAX_MICRODOLLARS: u64 = 100_000_000;
-const FORMAT: i64 = 1;
+const FORMAT: i64 = 2;
 const MAX_DURABLE_REQUESTS: u64 = 100_000;
 
 pub struct SpendLedger {
@@ -45,7 +45,7 @@ impl SpendLedger {
                  format INTEGER NOT NULL,
                  cap INTEGER NOT NULL CHECK (cap=100000000)
              );
-             INSERT OR IGNORE INTO llm_metadata VALUES (1,1,100000000);
+             INSERT OR IGNORE INTO llm_metadata VALUES (1,2,100000000);
              CREATE TABLE IF NOT EXISTS llm_requests (
                  key BLOB PRIMARY KEY,
                  fingerprint BLOB NOT NULL CHECK (length(fingerprint)=32),

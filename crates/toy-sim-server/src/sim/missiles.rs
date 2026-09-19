@@ -380,6 +380,7 @@ pub fn launch(
         .next_launch_s
         .insert(part_id, now + launcher.cycle_interval_s);
     world.entity_mut(parent).insert(launchers);
+    super::defense::record_launch(world, parent, missile);
     Ok(missile)
 }
 

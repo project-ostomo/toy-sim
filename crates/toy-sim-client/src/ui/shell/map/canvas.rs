@@ -9,7 +9,7 @@ pub(super) fn draw(
     fit: bool,
 ) {
     let (rect, response) = ui.allocate_exact_size(
-        ui.available_size().max(egui::Vec2::ZERO),
+        ui.available_size().max(egui::vec2(0., 220.)),
         egui::Sense::click_and_drag(),
     );
     if state.zoom == 0. || fit {
@@ -58,9 +58,11 @@ pub(super) fn draw(
         })
         .collect();
     let mut highlighted = state.active.systems.clone();
+    highlighted.extend(state.suggested.systems.iter().copied());
     for &(a, b, entry, exit) in &state.cache.links {
         let planned = state.active.gates.contains(&entry) || state.active.gates.contains(&exit);
-        let suggested = state.preview_gates.contains(&entry) || state.preview_gates.contains(&exit);
+        let suggested =
+            state.suggested.gates.contains(&entry) || state.suggested.gates.contains(&exit);
         if planned || suggested {
             highlighted.extend([a, b]);
         }
@@ -92,7 +94,7 @@ pub(super) fn draw(
             egui::Stroke::new(width, color),
         ));
     }
-    for &(a, b) in &state.active.slips {
+    for &(a, b) in state.active.slips.iter().chain(&state.suggested.slips) {
         let (a, b) = (positions[a], positions[b]);
         if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
             continue;

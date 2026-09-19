@@ -48,116 +48,78 @@ fn fixture() -> (App, Entity, Id) {
 }
 
 #[test]
-fn route_expansion_preserves_the_queue_and_rejects_stale_progress() {
-    let (mut app, ship, _) = fixture();
+fn computer_reads_only_the_current_order_and_cannot_complete_a_stale_queue() {
+    let (mut app, ship, account) = fixture();
     let world = app.world_mut();
     let destination = world.get::<PreciseTransform>(ship).unwrap().translation_um;
-    let goal = Order::TravelTo(Destination::Galactic(destination));
-    let expanded: Vec<QueuedOrder> = vec![
-        Order::Sublight(Destination::Galactic(destination)),
-        Order::Slip {
-            destination: toy_sim_model::travel::Destination::Galactic(destination),
-        },
-    ]
-    .into_iter()
-    .map(Into::into)
-    .collect();
-    let state = TravelState {
+    let current = QueuedOrder::estimated(Order::Sublight(Destination::Galactic(destination)), 100.)
+        .with_propellant(20.);
+    let future = QueuedOrder::estimated(Order::WaitUntil(9999), 200.);
+    world.entity_mut(ship).insert(Travel(TravelState {
         autopilot_enabled: true,
         revision: 7,
-        orders: vec![Order::WaitUntil(0), goal, Order::WaitUntil(9999)]
-            .into_iter()
-            .map(Into::into)
-            .collect(),
+        orders: vec![Order::WaitUntil(0).into(), current.clone(), future.clone()],
         order: 1,
-        status: Status::Planning,
+        status: Status::Active,
         ..Default::default()
+    }));
+
+    let ship_id = world.get::<Identity>(ship).unwrap().0;
+    let source = crate::sim::commands::source(world, account, ship_id).unwrap();
+    let toy_sim_model::ProgramReply::Travel { state, .. } = source
+        .query(toy_sim_model::ProgramQuery::Travel, false, 4096)
+        .unwrap()
+    else {
+        panic!("expected the active command");
     };
-    world.entity_mut(ship).insert(Travel(state));
-    let progress = PlanningProgress {
-        stage: PlanningStage::SearchingRoutes,
-        completed: 2,
-        total: Some(10),
-    };
-    dispatch(
-        world,
-        ship,
-        toy_sim_model::ProgramAction::PlanningProgress {
-            revision: 7,
-            progress,
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        world.get::<Travel>(ship).unwrap().0.planning,
-        Some(progress)
-    );
-    submit_route(world, ship, 7, expanded.clone()).unwrap();
-    assert!(world.get::<Travel>(ship).unwrap().0.planning.is_none());
-    assert!(
-        dispatch(
-            world,
-            ship,
-            toy_sim_model::ProgramAction::PlanningProgress {
-                revision: 7,
-                progress,
-            }
-        )
-        .is_err()
-    );
-    let queued = world.get::<Travel>(ship).unwrap().0.clone();
-    assert_eq!(
-        queued.orders,
-        vec![
-            Order::WaitUntil(0).into(),
-            expanded[0].clone(),
-            expanded[1].clone(),
-            Order::WaitUntil(9999).into()
-        ]
-    );
-    assert_eq!(queued.order, 1);
-    assert_eq!(queued.revision, 8);
-    assert!(submit_route(world, ship, 7, expanded).is_err());
-    assert!(
-        dispatch(
-            world,
-            ship,
-            toy_sim_model::ProgramAction::CompleteOrder {
-                revision: 7,
-                order: 1
-            }
-        )
-        .is_err()
-    );
-    assert_eq!(world.get::<Travel>(ship).unwrap().0, queued);
-    assert!(
-        dispatch(
-            world,
-            ship,
-            toy_sim_model::ProgramAction::Estimate {
-                revision: 7,
-                order: 1,
-                remaining_ticks: Some(100),
-                fuel_budget: Default::default(),
-            }
-        )
-        .is_err()
-    );
+    assert_eq!(state.index, 1);
+    assert_eq!(state.revision, 7);
+    assert_eq!(state.order, Some(current));
+    assert_eq!(state.status, Status::Active);
+
     dispatch(
         world,
         ship,
         toy_sim_model::ProgramAction::Estimate {
-            revision: 8,
+            revision: 7,
             order: 1,
             remaining_ticks: Some(100),
-            fuel_budget: Default::default(),
+            remaining_propellant_kg: Some(12.),
         },
     )
     .unwrap();
-    assert_eq!(
-        world.get::<Travel>(ship).unwrap().0.estimated_arrival_tick,
-        Some(tick(world) + 100)
-    );
+    let queue = &world.get::<Travel>(ship).unwrap().0;
+    assert_eq!(queue.estimated_arrival_tick, Some(tick(world) + 100));
+    assert_eq!(queue.orders[1].estimated_propellant_kg, Some(20.));
+    assert_eq!(queue.orders[2], future);
+
+    world.get_mut::<Travel>(ship).unwrap().0.revision = 8;
+    let replacement = world.get::<Travel>(ship).unwrap().0.clone();
+    for action in [
+        toy_sim_model::ProgramAction::CompleteOrder {
+            revision: 7,
+            order: 1,
+        },
+        toy_sim_model::ProgramAction::Estimate {
+            revision: 7,
+            order: 1,
+            remaining_ticks: Some(1),
+            remaining_propellant_kg: Some(0.),
+        },
+        toy_sim_model::ProgramAction::Block {
+            revision: 7,
+            order: 1,
+            reason: "obsolete flight callback".into(),
+        },
+        toy_sim_model::ProgramAction::Slip {
+            revision: 7,
+            order: 1,
+            destination,
+        },
+    ] {
+        assert!(dispatch(world, ship, action).is_err());
+        assert_eq!(world.get::<Travel>(ship).unwrap().0, replacement);
+    }
 
     dispatch(
         world,
@@ -169,21 +131,67 @@ fn route_expansion_preserves_the_queue_and_rejects_stale_progress() {
     )
     .unwrap();
     assert_eq!(world.get::<Travel>(ship).unwrap().0.order, 2);
+    assert_eq!(world.get::<Travel>(ship).unwrap().0.revision, 9);
     assert!(
         dispatch(
             world,
             ship,
             toy_sim_model::ProgramAction::CompleteOrder {
                 revision: 8,
-                order: 1
-            }
+                order: 1,
+            },
         )
         .is_err()
     );
+}
 
-    let before = world.get::<Travel>(ship).unwrap().0.clone();
-    assert!(submit_route(world, ship, 8, vec![Order::Undock.into(); 256]).is_err());
-    assert_eq!(world.get::<Travel>(ship).unwrap().0, before);
+#[test]
+fn completed_server_plan_atomically_replaces_the_queue_and_stale_results_are_rejected() {
+    let (mut app, ship, _) = fixture();
+    let world = app.world_mut();
+    let destination = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+    world.entity_mut(ship).insert(Travel(TravelState {
+        revision: 7,
+        orders: vec![Order::WaitUntil(1).into(), Order::WaitUntil(9999).into()],
+        order: 1,
+        status: Status::Paused,
+        ..Default::default()
+    }));
+    let orders = vec![
+        QueuedOrder::estimated(Order::Sublight(Destination::Galactic(destination)), 10.)
+            .with_propellant(1.),
+        Order::WaitUntil(500).into(),
+    ];
+    let plan = toy_sim_model::routing::Plan {
+        planned_tick: tick(world),
+        travel_revision: 7,
+        topology_revision: 0,
+        orders: orders.clone(),
+        fuel_budget: FuelBudget {
+            complete: true,
+            ..Default::default()
+        },
+    };
+    apply_plan(world, ship, 7, plan.clone(), Default::default(), false).unwrap();
+    let applied = world.get::<Travel>(ship).unwrap().0.clone();
+    assert_eq!(applied.orders, orders);
+    assert_eq!(applied.order, 0);
+    assert_eq!(applied.revision, 8);
+    assert_eq!(applied.status, Status::Paused);
+    assert_eq!(applied.fuel_budget, Some(plan.fuel_budget.clone()));
+
+    assert!(apply_plan(world, ship, 7, plan, Default::default(), true).is_err());
+    assert_eq!(world.get::<Travel>(ship).unwrap().0, applied);
+
+    let incomplete = toy_sim_model::routing::Plan {
+        planned_tick: tick(world),
+        travel_revision: 8,
+        topology_revision: 0,
+        orders: vec![Order::TravelTo(Destination::Galactic(destination)).into()],
+        fuel_budget: Default::default(),
+    };
+    assert!(apply_plan(world, ship, 8, incomplete, Default::default(), true).is_err());
+    assert_eq!(world.get::<Travel>(ship).unwrap().0, applied);
 }
 
 #[test]
@@ -248,6 +256,78 @@ fn travel_order_runs_in_stock_wasm_and_brakes_at_destination() {
     assert!(!software.controller.is_booting());
     assert!(pose.position.relative_to(destination).length() <= 2.);
     assert!(DVec3::from_array(pose.velocity).length() <= 0.5);
+}
+
+#[test]
+fn server_plans_the_whole_paused_queue_before_any_flight_computer_runs() {
+    let (mut app, ship, account) = fixture();
+    let origin = app
+        .world()
+        .get::<PreciseTransform>(ship)
+        .unwrap()
+        .translation_um;
+    let first = origin.offset_by(DVec3::NEG_Z * 100.);
+    let second = origin.offset_by(DVec3::NEG_Z * 200.);
+    app.world_mut()
+        .entity_mut(ship)
+        .remove::<vessel::ShipSoftware>();
+    submit_orders(
+        &mut app,
+        ship,
+        account,
+        vec![
+            Order::TravelTo(Destination::Galactic(first)),
+            Order::WaitUntil(9999),
+            Order::TravelTo(Destination::Galactic(second)),
+        ],
+        false,
+    );
+
+    app.update();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let world = app.world_mut();
+        crate::sim::route_service::advance(world);
+        plan_orders(world);
+        let queue = &world.get::<Travel>(ship).unwrap().0;
+        assert!(!queue.autopilot_enabled);
+        assert!(!matches!(queue.status, Status::Blocked(_)), "{queue:?}");
+        assert!(
+            world
+                .resource::<crate::sim::gas::GasLedger>()
+                .snapshot()
+                .is_ok(),
+            "background route planning must leave gas settled for checkpoints"
+        );
+        if queue.status == Status::Paused
+            && queue
+                .orders
+                .iter()
+                .all(|stage| !matches!(stage.action, Order::TravelTo(_)))
+        {
+            assert_eq!(
+                queue
+                    .orders
+                    .iter()
+                    .map(|stage| stage.action.clone())
+                    .collect::<Vec<_>>(),
+                vec![
+                    Order::Sublight(Destination::Galactic(first)),
+                    Order::WaitUntil(9999),
+                    Order::Sublight(Destination::Galactic(second)),
+                ]
+            );
+            assert_eq!(queue.order, 0);
+            assert!(queue.fuel_budget.is_some());
+            assert_eq!(
+                world.get::<PreciseTransform>(ship).unwrap().translation_um,
+                origin
+            );
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "{queue:?}");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 #[test]
@@ -619,10 +699,15 @@ fn nearby_gate_fixture() -> (App, Entity, Entity, Id, usize) {
 }
 
 fn submit_local_order(app: &mut App, ship: Entity, account: Id, order: Order) {
+    submit_orders(app, ship, account, vec![order], true);
+}
+
+fn submit_orders(app: &mut App, ship: Entity, account: Id, orders: Vec<Order>, engage: bool) {
     let world = app.world_mut();
     let ship_id = world.get::<Identity>(ship).unwrap().0;
     let connection = session::connect(world, account).unwrap();
     let epoch = world.resource::<identity::WorldEpoch>().0;
+    let expected_revision = world.get::<Travel>(ship).unwrap().0.revision;
     session::input(
         world,
         connection,
@@ -636,9 +721,9 @@ fn submit_local_order(app: &mut App, ship: Entity, account: Id, order: Order) {
                     authority_revision: 1,
                     command: ShipCommand::SetTravel {
                         preferences: Default::default(),
-                        engage: true,
-                        expected_revision: 0,
-                        orders: vec![order],
+                        engage,
+                        expected_revision,
+                        orders,
                     },
                 },
             )],
@@ -676,9 +761,14 @@ fn local_gate_approach_uses_ntr_fuel_to_close_range_inside_the_slip_exclusion_zo
         let world = app.world();
         let travel = &world.get::<Travel>(ship).unwrap().0;
         assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
-        assert!(
-            travel.planning.is_none(),
-            "local approach started a route graph search"
+        assert_eq!(travel.orders.len(), 1);
+        assert_eq!(
+            travel.orders[0].action,
+            Order::Guidance(Guidance {
+                mode: GuidanceMode::Approach,
+                target: Target::Destination(Destination::Beacon(gate_id)),
+                range_m: 400.,
+            })
         );
         if travel.status == Status::Active {
             first_active.get_or_insert(step);
@@ -739,6 +829,11 @@ fn travel_to_gate_finishes_at_the_physical_beacon_instead_of_the_slip_boundary()
         let travel = &app.world().get::<Travel>(ship).unwrap().0;
         assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
         if travel.status != Status::Planning {
+            assert_eq!(
+                travel.orders.len(),
+                1,
+                "local gate arrival must remain one strategic command"
+            );
             let Some(stage) = travel.orders.last() else {
                 panic!("route has no arrival stage");
             };

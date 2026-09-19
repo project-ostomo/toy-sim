@@ -65,7 +65,17 @@ pub(super) fn synchronize(
         .ship
         .is_none_or(|selected| !ships.iter().any(|ship| ship.0.ship == selected))
     {
-        selection.ship = ships.iter().map(|ship| ship.0.ship).min();
+        selection.ship = ships
+            .iter()
+            .filter(|ship| {
+                ship.0.can_control
+                    && !matches!(
+                        ship.0.presence,
+                        travel::Presence::Destroyed | travel::Presence::StoredInWreck(_)
+                    )
+            })
+            .map(|ship| ship.0.ship)
+            .min();
     }
     if selection
         .view

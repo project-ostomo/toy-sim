@@ -1,7 +1,9 @@
 mod chat;
 mod industry;
+pub mod local_space;
 pub mod navigation;
 mod presentation;
+pub mod routing;
 use anyhow::{Context, Result, bail, ensure};
 pub use industry::validate_snapshot_content as validate_industry_snapshot_content;
 pub use presentation::validate_catalogue;
@@ -9,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 23;
+pub const VERSION: u16 = 24;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -337,7 +339,7 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
     }
 
     ensure!(
-        frame.rate.is_finite() && frame.rate >= 0. && frame.rate <= 100.,
+        frame.rate.is_finite() && frame.rate > 0. && frame.rate <= 100.,
         "invalid clock rate"
     );
     ensure!(
@@ -447,6 +449,10 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
         );
     }
     for result in &frame.results {
+        if let Some(Reply::Route { id, status }) = &result.reply {
+            ensure!(*id != 0, "invalid route result id");
+            routing::validate_status(status)?;
+        }
         ensure!(
             result
                 .error
@@ -485,6 +491,8 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
     for (id, action) in &input.actions {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
+            Action::RouteRequest { request, .. } => routing::validate_request(request)?,
+            Action::RoutePoll { id, .. } => ensure!(*id != 0, "invalid route request id"),
             Action::ChatSubscribe(subscription) => ensure!(
                 subscription.revision > 0,
                 "invalid chat subscription revision"
@@ -523,7 +531,7 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                     "invalid sensor range"
                 ),
                 DebugCommand::SetRate(rate) => ensure!(
-                    rate.is_finite() && (0. ..=100.).contains(rate),
+                    rate.is_finite() && *rate > 0. && *rate <= 100.,
                     "invalid clock rate"
                 ),
                 DebugCommand::Relocate { pose, .. } => {
@@ -536,85 +544,90 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                 ),
                 _ => {}
             },
-            Action::Ship { command, .. } => match command {
-                ShipCommand::Flight(command) => match command {
-                    FlightCommand::AimDirection(direction) => ensure!(
-                        direction.iter().all(|v| v.is_finite())
-                            && direction.iter().map(|v| v * v).sum::<f64>() > 1e-12,
-                        "invalid aim direction"
-                    ),
-                    FlightCommand::EngageNavigation {
-                        throttle_limit,
-                        stand_off_m,
-                    } => ensure!(
-                        throttle_limit.is_finite()
-                            && (0. ..=1.).contains(throttle_limit)
-                            && stand_off_m.is_finite()
-                            && (0. ..=1e22).contains(stand_off_m),
-                        "invalid navigation command"
-                    ),
-                    _ => {}
-                },
-                ShipCommand::MarkTarget {
-                    maximum_flight_time_s,
-                    ..
-                } => {
-                    ensure!(
-                        maximum_flight_time_s.is_finite()
-                            && (0.01..=60.).contains(maximum_flight_time_s),
-                        "invalid weapon flight time"
-                    );
-                }
-                ShipCommand::SetIff(iff) => {
-                    ensure!(
-                        iff.labels.len() <= 16
-                            && iff
-                                .labels
-                                .iter()
-                                .all(|label| Tag::Advertised(label.clone()).valid()),
-                        "invalid IFF labels"
-                    );
-                    ensure!(
-                        iff.range_m.is_finite() && (0. ..=1e12).contains(&iff.range_m),
-                        "invalid transponder range"
-                    );
-                }
-                ShipCommand::SetThrottle(value) => {
-                    ensure!(
-                        value.is_finite() && (0.0..=1.0).contains(value),
-                        "invalid throttle"
-                    );
-                }
-                ShipCommand::SetTravel {
-                    orders,
-                    preferences,
-                    ..
-                } => {
-                    ensure!(preferences.valid(), "invalid planning preference");
-                    ensure!(orders.len() <= 256, "too many waypoints");
-                    for order in orders {
-                        validate_order(order)?;
-                    }
-                }
-                ShipCommand::ScreenInput {
-                    slot,
-                    kind,
-                    xy,
-                    text,
-                    ..
-                } => {
-                    ensure!(
-                        *slot < 8
-                            && *kind <= 7
-                            && text.len() <= 64
-                            && xy.iter().all(|x| x.is_finite() && x.abs() <= 1e6),
-                        "invalid display input"
-                    );
-                }
-                _ => {}
-            },
+            Action::Ship { command, .. } => validate_ship_command(command)?,
             _ => {}
         }
+    }
+    Ok(())
+}
+
+pub fn validate_ship_command(command: &ShipCommand) -> Result<()> {
+    match command {
+        ShipCommand::UseRoute { id, .. } => ensure!(*id != 0, "invalid route request id"),
+        ShipCommand::Flight(command) => match command {
+            FlightCommand::AimDirection(direction) => ensure!(
+                direction.iter().all(|v| v.is_finite())
+                    && direction.iter().map(|v| v * v).sum::<f64>() > 1e-12,
+                "invalid aim direction"
+            ),
+            FlightCommand::EngageNavigation {
+                throttle_limit,
+                stand_off_m,
+            } => ensure!(
+                throttle_limit.is_finite()
+                    && (0. ..=1.).contains(throttle_limit)
+                    && stand_off_m.is_finite()
+                    && (0. ..=1e22).contains(stand_off_m),
+                "invalid navigation command"
+            ),
+            _ => {}
+        },
+        ShipCommand::MarkTarget {
+            maximum_flight_time_s,
+            ..
+        } => {
+            ensure!(
+                maximum_flight_time_s.is_finite() && (0.01..=60.).contains(maximum_flight_time_s),
+                "invalid weapon flight time"
+            );
+        }
+        ShipCommand::SetIff(iff) => {
+            ensure!(
+                iff.labels.len() <= 16
+                    && iff
+                        .labels
+                        .iter()
+                        .all(|label| Tag::Advertised(label.clone()).valid()),
+                "invalid IFF labels"
+            );
+            ensure!(
+                iff.range_m.is_finite() && (0. ..=1e12).contains(&iff.range_m),
+                "invalid transponder range"
+            );
+        }
+        ShipCommand::SetThrottle(value) => {
+            ensure!(
+                value.is_finite() && (0.0..=1.0).contains(value),
+                "invalid throttle"
+            );
+        }
+        ShipCommand::SetTravel {
+            orders,
+            preferences,
+            ..
+        } => {
+            ensure!(preferences.valid(), "invalid planning preference");
+            ensure!(orders.len() <= 256, "too many waypoints");
+            for order in orders {
+                validate_order(order)?;
+            }
+        }
+        ShipCommand::ScreenInput {
+            slot,
+            kind,
+            xy,
+            text,
+            ..
+        } => {
+            ensure!(
+                *slot < 8
+                    && *kind <= 7
+                    && text.len() <= 64
+                    && xy.iter().all(|x| x.is_finite() && x.abs() <= 1e6),
+                "invalid display input"
+            );
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -679,7 +692,7 @@ mod tests {
             sequence: 1,
             tick: 0,
             sim_time_ns: 0,
-            rate: 0.,
+            rate: 1.,
             views: Vec::new(),
             tracks: BTreeMap::new(),
             ships: Vec::new(),
@@ -690,7 +703,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_clock_and_debug_capabilities_roundtrip() {
+    fn running_clock_and_debug_capabilities_roundtrip() {
         let mut frame = empty_frame();
         frame.presentation.capabilities = vec![DebugCapability::Clock, DebugCapability::Inspect];
         frame.presentation.diagnostics = Some(Diagnostics {
@@ -701,8 +714,15 @@ mod tests {
         let message = Message::State(frame.clone());
         assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
         frame.sequence += 1;
-        assert!(encode(&Message::State(frame)).is_ok());
-        assert_eq!(DebugCommand::Step.capability(), DebugCapability::Clock);
+        assert!(encode(&Message::State(frame.clone())).is_ok());
+        for rate in [0., -1., f64::NAN, f64::INFINITY, 101.] {
+            frame.rate = rate;
+            assert!(encode(&Message::State(frame.clone())).is_err());
+        }
+        assert_eq!(
+            DebugCommand::SetRate(2.).capability(),
+            DebugCapability::Clock
+        );
         assert_eq!(DebugCommand::Reset.capability(), DebugCapability::Reset);
     }
 
@@ -804,7 +824,7 @@ mod tests {
     }
 
     #[test]
-    fn calendar_roundtrips_beyond_signed_nanosecond_range_and_while_sim_paused() {
+    fn calendar_roundtrips_beyond_signed_nanosecond_range() {
         let mut frame = empty_frame();
         frame.calendar_unix_ms = toy_sim_model::calendar::from_real_unix_ms(1_789_689_600_000);
         assert!(frame.calendar_unix_ms > i64::MAX / 1_000_000);
@@ -812,13 +832,15 @@ mod tests {
         assert_eq!(decode(&encode(&first).unwrap()).unwrap(), first);
 
         frame.sequence += 1;
+        frame.tick += 10;
+        frame.sim_time_ns += 1_000_000_000;
         frame.calendar_unix_ms += 1000;
         let second = Message::State(frame);
         let Message::State(decoded) = decode(&encode(&second).unwrap()).unwrap() else {
             unreachable!()
         };
-        assert_eq!(decoded.rate, 0.);
-        assert_eq!(decoded.sim_time_ns, 0);
+        assert_eq!(decoded.rate, 1.);
+        assert_eq!(decoded.sim_time_ns, 1_000_000_000);
         assert_eq!(
             toy_sim_model::calendar::format_utc(decoded.calendar_unix_ms),
             "Fri 2426-09-18 00:00:01 UTC"
@@ -936,10 +958,12 @@ mod tests {
         };
         input
             .actions
-            .push((Id::new(), Action::Debug(DebugCommand::SetRate(0.))));
+            .push((Id::new(), Action::Debug(DebugCommand::SetRate(2.))));
         assert!(encode(&Message::Input(input.clone())).is_ok());
-        input.actions[0].1 = Action::Debug(DebugCommand::SetRate(f64::NAN));
-        assert!(encode(&Message::Input(input.clone())).is_err());
+        for rate in [0., -0., -1., f64::NAN, f64::INFINITY, 101.] {
+            input.actions[0].1 = Action::Debug(DebugCommand::SetRate(rate));
+            assert!(encode(&Message::Input(input.clone())).is_err());
+        }
         input.actions[0].1 = Action::Ship {
             ship: Id::new(),
             authority_revision: 0,
@@ -1046,6 +1070,7 @@ mod tests {
             });
             let mut frame = empty_frame();
             frame.ships.push(ShipTelemetry {
+                can_control: true,
                 appearance: None,
                 radius_m: 10.,
                 dock_services: Default::default(),

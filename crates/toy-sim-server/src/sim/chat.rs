@@ -174,14 +174,18 @@ fn physical_origin(world: &World, mut entity: Entity) -> Option<GalacticPosition
         {
             return None;
         }
-        if let Some(super::travel::PresenceState(toy_sim_model::travel::Presence::Docked {
-            host,
-            ..
-        })) = world.get::<super::travel::PresenceState>(entity)
+        match world
+            .get::<super::travel::PresenceState>(entity)
+            .map(|state| &state.0)
         {
-            entity = identity::lookup(world, *host).ok()?;
-        } else {
-            return super::session::ship_pose(world, entity).map(|pose| pose.position);
+            Some(
+                toy_sim_model::travel::Presence::Destroyed
+                | toy_sim_model::travel::Presence::StoredInWreck(_),
+            ) => return None,
+            Some(toy_sim_model::travel::Presence::Docked { host, .. }) => {
+                entity = identity::lookup(world, *host).ok()?;
+            }
+            _ => return super::session::ship_pose(world, entity).map(|pose| pose.position),
         }
     }
     None
@@ -439,9 +443,53 @@ mod tests {
             .id();
         assert_eq!(physical_origin(&world, ship), Some(host_position));
         world
+            .entity_mut(host)
+            .insert(PresenceState(toy_sim_model::travel::Presence::Destroyed));
+        assert_eq!(physical_origin(&world, ship), None);
+        world
+            .entity_mut(host)
+            .insert(PresenceState(toy_sim_model::travel::Presence::Space));
+        world
             .entity_mut(ship)
             .insert(super::super::missiles::RetainedComputer);
         assert_eq!(physical_origin(&world, ship), None);
+    }
+
+    #[test]
+    fn destroyed_ships_and_wreck_contents_lose_real_chat_endpoints() {
+        let owner = Id::new();
+        let mut app = crate::sim::provision(&[owner], None, None).unwrap();
+        app.update();
+        let world = app.world_mut();
+        let (ship, id) = world
+            .query_filtered::<(Entity, &identity::Identity), With<super::super::vessel::ControlledVessel>>()
+            .single(world)
+            .map(|(entity, id)| (entity, id.0))
+            .unwrap();
+        refresh(world);
+        world.resource::<ChatService>().latest(id).unwrap();
+
+        super::super::travel::destroy(world, ship);
+        assert!(
+            world
+                .get::<super::super::missiles::RetainedComputer>(ship)
+                .is_none()
+        );
+        refresh(world);
+        let service = world.resource::<ChatService>();
+        assert!(service.latest(id).is_err());
+        assert!(
+            service
+                .send(id, [0; 32], 1, "No transmitter remains")
+                .is_err()
+        );
+        assert!(service.read(id, 0, 4).is_err());
+
+        world.entity_mut(ship).insert(PresenceState(
+            toy_sim_model::travel::Presence::StoredInWreck(Id::new()),
+        ));
+        refresh(world);
+        assert!(world.resource::<ChatService>().latest(id).is_err());
     }
 
     #[test]

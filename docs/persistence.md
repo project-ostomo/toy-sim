@@ -23,9 +23,8 @@ source file is not needed.
 
 Snapshot capture runs between simulation updates. One background worker performs
 the SQLite writes, with at most one periodic checkpoint outstanding. Logs report
-capture time, write time, byte count and generation separately. The interval can
-be increased when a large world needs longer capture pauses. It is wall time,
-so paused debug worlds still save.
+capture time, write time, byte count and generation separately. The interval uses
+wall time and can be increased when a large world needs longer capture pauses.
 
 Ctrl-C, SIGTERM, and the debug launcher's stdin lifetime signal request graceful
 shutdown. The server takes a final checkpoint and waits for its commit. On Unix,
@@ -48,11 +47,18 @@ docking relationships, gates, slip transit, and the simulation clock. Ship progr
 are stored once per content hash, alongside each computer's explicit persistent
 data. Runtime execution stacks restart on recovery, including computers suspended
 inside a callback. Only explicitly committed durable guest data survives. The
-host navigation queue, current stage, autopilot toggle and slip charging work
-survive; actuator commands restart
-from their boot defaults while the computer comes online. A trapped program still
+host navigation queue, current stage, autopilot toggle, per-stage estimates, route
+fuel budget and slip charging work survive. The active arrival estimate is cleared
+until guidance reports a fresh value. Actuator commands restart from their boot
+defaults while the computer comes online. A trapped program still
 uses the normal fault/reset behavior. The durable guest API is
 described in [Ship controller ABI](ship-abi.md).
+
+Public route previews and background worker continuations are transient. Recovery
+cancels those workers and clears their result cache, even when restoring the same
+world epoch. Clients request previews again. A saved queue that is still planning
+retains its requested destinations and the server recomputes its complete route;
+this also works while autopilot is paused or the flight computer is booting.
 
 Gas balances are saved for their actual owner: a player, organization or
 sovereignty. Available and spent gas retain their exact integer values, together
@@ -117,7 +123,31 @@ simulation ticks; restarting does not produce material for the downtime. The
 facility's starter-grant flag is durable, preventing recovery from repeating the
 initial stock grant.
 
-Saved programs must implement the current ABI 28. Restore validates each
+NPC organization directors are ordinary ECS entities with stable organization
+IDs. Their checkpoints retain the officer, home system, primary facility, asset
+assignments, planning cadence, decision and action counters, bounded tool results,
+and the exact pending LLM request. The saved director-program digest remains part
+of that request's billing scope. Unsupported director versions stop recovery
+before world mutation.
+
+The separate [LLM spending ledger](llm.md) retains provider request identities
+across world recovery. A restored pending plan polls or resubmits the same scoped
+ID and payload; a request already dispatched is never billed again merely
+because the server restarted. A completed decision and its game actions are
+applied together within one exclusive simulation step, so checkpoints preserve
+their action counters alongside the resulting orders, inventories and jobs.
+
+Physical defense assignments and freight duties are saved with their ships.
+Defense threat observations are transient and must be acquired again after
+recovery. Freight stages, endpoints, item quantities, pause reasons and next-check
+times survive recovery. Captured ships and revoked officer permissions do not
+make the saved world invalid: each behavior checks current authority before
+acting. Historical asset and endpoint IDs may remain after destruction or
+despawning; ordinary lookups then report that the object is unavailable. Invalid
+account or organization references, scalar bounds and oversized planning context
+are rejected before replacing world entities.
+
+Saved programs must implement the current ABI 30. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
 
@@ -127,16 +157,16 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 5. SQLite’s table schema and the
+The current named `world` section has version 6. SQLite’s table schema and the
 outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.
 
 A world record stores both the public universe-catalogue hash and a BLAKE3
-fingerprint over the ordered system IDs and their complete definition asset
-hashes. Restore compares both against the loaded universe before mutating the
-world. The definition fingerprint catches orbital and physical changes that
-might leave the catalogue summary unchanged. The ship-resource catalogue and
+fingerprint over the public organization lore catalogue, ordered system IDs and
+their complete definition asset hashes. Restore compares both against the loaded
+universe before mutating the world. The definition fingerprint catches orbital
+and physical changes that might leave the catalogue summary unchanged. The ship-resource catalogue and
 persistent references are validated separately.
 
 The 3,000-system map therefore requires a new saved world when replacing the old
@@ -178,7 +208,7 @@ a fresh scenario and requests a checkpoint of that reset world.
 
 In-game UTC is real UTC plus exactly 146097 days. This advances the Gregorian year
 by 400 and preserves month, day and weekday, including leap days. It is separate
-from elapsed simulation time and continues through pauses, accelerated simulation,
+from elapsed simulation time and continues independently of accelerated simulation
 and server downtime. The wire representation uses signed milliseconds, which
 comfortably includes the year 2426. The bottom HUD shows the calendar and exposes
 elapsed simulation time in its tooltip.

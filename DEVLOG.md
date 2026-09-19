@@ -1288,3 +1288,183 @@ The next piece gives the organizations actual fleets and installations,
 permissioned tools for their directors, and physical economic and defensive
 orders. Client display performance remains below the requested 120 FPS and needs
 the final profiling pass.
+
+### Piece 9b: physical organization population
+
+Communications and public lore are committed as `b9688df` in both working trees.
+The next piece is in progress. Each of the 108 organizations receives a real
+officer account, a facility and support vessels. Most reserve vessels start
+docked. Their planners will use current ownership checks and the same fused
+sensor and public navigation queries as ship computers. Detailed public lore and
+objectives inform decisions; private state of unrelated ships is unavailable.
+
+The scheduler changes have passed seven runtime checks: idle stock firmware
+runs once per second, commands wake it immediately, active flight remains at
+10 Hz, and missile callbacks continue while the carrier computer sleeps.
+Installing a chatter profile preserves its flight state and durable pending
+request identity. Firmware binaries and fixtures have been rebuilt.
+
+A standing ore route is being connected between Neris Anchorage and Helion Fuel
+Mutual's facility 100 km away. The freighter docks, loads finite stock or the
+mine's bounded output, flies the route, unloads, and refuels from terminal stock.
+New player or director navigation commands pause that standing order. This route
+uses normal permissioned commands and physical cargo transfers.
+
+Defense automation is being changed to act on witnessed weapon impacts and
+advertised hostile contacts. Selecting a target or privately requesting fire
+will no longer reveal hostile intent to another ship. Laws and ownership do not
+supply an infallible gate barrier.
+
+### Population checks and a flight-path defect
+
+The combined server/client/protocol build succeeds. All three population checks
+pass, including 108 organizations, 324 real assets, finite stocks, private groups,
+docked reserves, and actual simulation ticks. Both new persistence checks pass:
+full fleets restore exactly, pending provider identities remain stable, invalid
+records are rejected before mutation, and destroyed historical assets do not
+break subsequent checkpoints. Nine command/session checks, nine defense checks,
+six director checks, nine LLM ledger checks and all 22 protocol checks pass.
+
+The physical freight regression found a real navigation defect. Its outward
+100 km leg used about 670 kg of water, close to the ideal estimate. The return
+leg undocked on the far side of the receiver and attempted to thrust through
+that station toward the source, wasting propellant against the hull. Clearance
+guidance is being corrected in the standard flight computer so ordinary player
+orders receive the same fix. Increasing the test's duration alone would not
+resolve this defect.
+
+The first native NPC/provider playtest is starting with the durable shared $100
+ledger enabled. No provider spend occurred before this run. The new LLM scope
+includes the saved world epoch, separating deterministic NPC identities across
+fresh worlds while preserving one spending cap.
+
+### Routing moved out of the flight computer
+
+The user corrected the navigation boundary during the NPC playtest. The host
+already stored travel queues, but the standard WASM program downloaded the gate
+catalogue, built a graph, searched it, and expanded each destination. That work
+is moving into a public server routing service. Clients and custom programs can
+request and poll plans, then commit a complete queue after checking fuel and
+travel estimates. The standard flight computer receives only the active command,
+its revision and index, and executes local guidance. Completing a command
+advances immediately to the next host-owned command.
+
+The firmware graph and catalogue caches have been removed. Physical command
+results carry revision and index guards, including docking and slip actions,
+so a callback suspended before a queue replacement cannot affect the new order.
+The map now requests server previews and displays their stages, ETAs and fuel
+budgets before engagement. Server search, departure clearance, persistence and
+physical transit checks are still being integrated and tested.
+
+The first native NPC test ran real provider requests under the shared budget.
+At shutdown the ledger recorded $0.718795 in settled charges and $1.050396 in
+outstanding reservations, across 371 request records. The cap remains $100.
+Those figures demonstrate provider operation and accounting; they do not yet
+establish that every director action or radio response behaved correctly.
+The client was still around 47 FPS in the captured populated scene, so the
+performance target remains open.
+
+### Strategic commands and local flight guidance
+
+The routing boundary received a further correction: the server chooses gates,
+slip transfers and destinations, while the ship computer chooses the maneuvers
+needed to execute each command. Server-generated clearance points, station
+detours and gate approach checkpoints have been removed. Internal staging
+positions contribute to route estimates without becoming queued commands.
+
+Preview acceptance now checks current authority and queue revision. Movement,
+elapsed time and unrelated map changes do not expire a route. The client follows
+the same rule. A bounded public observation query provides nearby solid volumes
+and slip exclusions to the computer; it never returns a flight path or reveals
+unobserved ships. Local guidance and physical freight tests are being integrated.
+
+The physical freight roundtrip now passes. The ship delivers 100 ore, returns
+to its starting dock, and consumes 2,210 kg of water across 200 km and 3,518
+simulated seconds. This includes its finite terminal refills; 7,280 kg remains
+aboard. The return path clears the station instead of grinding against its hull.
+All 14 strategic planner tests, 36 controller tests, four targeted WASM checks,
+25 protocol checks, 29 service checks and seven sensor-index checks pass.
+
+The populated-world geometry check found an observation timestamp defect:
+current ship positions were being compared with dynamic public beacon poses
+from the previous tick. Propagating those poses from their publication epoch
+fixes nearby station queries at orbital speeds. The full service checks include
+this case, moving destination predictions and complete observations near Neris.
+
+The same freight journey also passes with a shared 30 km/s velocity. It consumes
+2,243 kg of water in 3,525 simulated seconds, within about 1.5% of the stationary
+case, and delivers the same cargo. Guidance required no special moving-frame
+path. Two additional planner checks fix and verify the cost of braking and
+returning after a slip that preserves the ship's original velocity.
+
+Startup selection now uses an explicit per-session control permission. The
+previous UUID ordering could select Neris Anchorage through its viewing grant,
+leaving the camera on a station the player could not command. The patrol is
+prioritized while deliberate station inspection still works. The corresponding
+client and server checks pass. Native restart testing found a paused-world
+command-response failure, which is being investigated before this checkpoint.
+
+### World pause removed
+
+The user removed world pausing from the scope. Single-step commands and the
+zero-rate path have been deleted; debugging can still use a positive time scale.
+Per-ship autopilot pause and computer suspension remain independent controls.
+
+The apparent paused-restart failure was traced to the first simulation tick
+after restoration. Restored instances had separate copies of identical compiled
+designs, defeating the collision-geometry cache. Profiling found repeated voxel
+construction and tree insertion. Restoration is being changed to share identical
+designs again, which also benefits ordinary running-world restarts.
+
+
+The running-world restart and authentication integration tests now pass. Sharing
+identical restored designs reduces the first collision build to 1.19 seconds,
+matching fresh startup. The full fleet sharing and immediate optical visibility
+checks also pass. Protocol, playback, calendar and session checks pass with
+strictly positive simulation rates.
+
+### Native verification of the populated world
+
+The updated native client starts focused on the player patrol. The local channel
+receives live organization broadcasts, and a typed player message appears in the
+same channel. The map searches all 3,000 systems and returns strategic route
+previews with duration and fuel-exhaustion warnings. Preview content exposed a
+layout regression that squeezed the map canvas; a bounded preview area is being
+added. A separate access review found destroyed hulls could remain radio
+endpoints; actual destroyed and wreck presences now reject radio operations.
+
+The current native scene runs near the desktop's 60 Hz refresh rate. Initial GPU
+samples place the opaque pass around 1.2 ms and bloom around 1.1 ms at roughly
+2672 by 1670 rendered pixels. These figures do not establish 120 FPS capacity;
+an uncapped profiling run is still needed. No monitor settings are being changed.
+
+
+### Population and strategic routing verified
+
+The native patrol completed its Sol gate transit, arriving with about 52.8 tonnes
+of micropulse charges from 54 tonnes initially. Local approach and alignment
+made the journey longer than its first estimate, but the computer completed the
+single strategic gate order without an external maneuver queue.
+
+Read-only inspection of the saved SQLite world at tick 8,391 verifies actual
+director effects: 97 unique applied receipts across 54 organizations, comprising
+65 production orders, 13 refills, 10 physical cargo transfers, six weapons orders,
+two navigation queues and one ship build. All 108 organizations have completed
+decisions. Invalid transfers between separate docks and requests exceeding stock
+or tank capacity were rejected. The saved inventories and queues corroborate the
+receipts. The temporary inspection helper has been removed.
+
+The native provider ledger now records $3.356580 settled and $2.497896 reserved,
+across 1,300 request records. The global $100 cap remains in force. Further
+rendering measurements will run with provider calls disabled.
+
+All 12 map checks now pass, including a long preview that preserves the canvas
+and allows scrolling to its final stage. All six chat checks pass, including
+actual destroyed and wreck entities losing their radio endpoints. The running
+restart, physical freight journeys, route service and strategic planner checks
+reported above are also complete.
+
+Native travel exposed a rendering problem before the gate crossing: the visible
+gate disappeared and the camera briefly presented distant, overlapping markers.
+Escape restored the ship view in Sol. This remains the next integration issue;
+it is not being treated as a completed rendering check.

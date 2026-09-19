@@ -47,7 +47,7 @@ fn catalogue() -> NavigationCatalogue {
     catalogue
 }
 
-fn model<'a>(
+pub(super) fn model<'a>(
     catalogue: &'a NavigationCatalogue,
     society: &'a ownership::SocietySnapshot,
     ship: Option<&'a ShipTelemetry>,
@@ -75,7 +75,7 @@ fn model<'a>(
 }
 
 #[test]
-fn large_layout_is_stable_cached_and_routes_use_reciprocal_gates() {
+fn large_layout_is_stable_cached_and_contains_only_reciprocal_gate_links() {
     let mut catalogue = catalogue();
     let mut cache = Cache::default();
     let start = Instant::now();
@@ -106,28 +106,44 @@ fn large_layout_is_stable_cached_and_routes_use_reciprocal_gates() {
     for (index, system) in catalogue.systems.iter().enumerate() {
         assert_eq!(positions[&system.id], cache.positions[index]);
     }
-    let route = cache.network.route(id(0), id(2999)).unwrap();
-    assert_eq!(route.len(), 2999);
-    assert_eq!(cache.network.route(id(12), id(12)), Some(Vec::new()));
-    assert!(cache.network.route(id(0), id(99999)).is_none());
+    assert_eq!(cache.network.regions.len(), 3000);
+    assert_eq!(
+        cache
+            .network
+            .regions
+            .iter()
+            .map(|region| region.gates.len())
+            .sum::<usize>(),
+        5998
+    );
+    for &(a, b, entry, exit) in &cache.links {
+        let entry_beacon = &catalogue.beacons[cache.beacons[&entry]];
+        let exit_beacon = &catalogue.beacons[cache.beacons[&exit]];
+        assert_eq!(entry_beacon.gate_exit, Some(exit));
+        assert_eq!(exit_beacon.gate_exit, Some(entry));
+        assert_eq!(entry_beacon.system, catalogue.systems[a].id);
+        assert_eq!(exit_beacon.system, catalogue.systems[b].id);
+    }
 
-    let last_entry = *route.last().unwrap();
-    let exit = catalogue
-        .beacons
-        .iter()
-        .find(|gate| gate.id == last_entry)
-        .unwrap()
-        .gate_exit
-        .unwrap();
-    catalogue
-        .beacons
-        .iter_mut()
-        .find(|gate| gate.id == exit)
-        .unwrap()
-        .gate_exit = None;
+    let (_, _, entry, exit) = cache.links[0];
+    catalogue.beacons[cache.beacons[&exit]].gate_exit = None;
     catalogue.topology_revision += 1;
-    cache.update(&catalogue);
-    assert!(cache.network.route(id(0), id(2999)).is_none());
+    assert!(cache.update(&catalogue));
+    assert_eq!(cache.links.len(), 2998);
+    assert!(
+        cache
+            .links
+            .iter()
+            .all(|&(_, _, a, b)| a != entry && b != entry && a != exit && b != exit)
+    );
+    assert!(
+        cache
+            .network
+            .regions
+            .iter()
+            .flat_map(|region| &region.gates)
+            .all(|gate| gate.entry != entry && gate.entry != exit)
+    );
 }
 
 #[test]
@@ -338,7 +354,7 @@ fn desktop_map_keeps_its_height_across_frames_and_search_results() {
         output.textures_delta.clear();
         let size = desktop.rect(MAP).unwrap().size();
         if frame == 8 {
-            assert!(size.y < 650., "default map grew to {size:?}");
+            assert!(size.y < 760., "default map grew to {size:?}");
             settled_size = Some(size);
         } else if let Some(expected) = settled_size {
             assert!(
@@ -398,7 +414,7 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
         }
         values
     }
-    for text in ["System 2999  ·  Unclaimed", "Set destination"] {
+    for text in ["System 2999  ·  Unclaimed", "Plan destination"] {
         let mut values = Vec::new();
         for _ in 0..3 {
             values = render(&context, &mut state, &model, Vec::new(), &mut intents);
@@ -427,7 +443,7 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
         }
     }
     assert_eq!(state.selected, Some(id(2999)));
-    assert_eq!(state.preview.as_ref().unwrap().len(), 2999);
+    assert!(state.route.plan().is_none());
     assert!(intents.iter().any(|intent| matches!(intent,
         Intent::PlanRoute(orders, false, preference)
             if preference.fuel_priority == 42. && matches!(&orders[..],

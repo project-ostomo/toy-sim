@@ -18,9 +18,12 @@ to the ordinary authoritative APIs.
 The shared model defines `LlmRequest { id, prompt, max_tokens }`. IDs are positive
 integers; prompts contain at most 32 KiB of UTF-8 text; output limits range from
 1 to 2,048 tokens. Programs should retain their request counter in committed
-durable data. The server derives the caller's actual owner, computer UUID,
-program digest and flight/display distinction. These values scope every request
-ID and result. Missile callbacks share their parent flight program's scope.
+durable data. The server derives the persisted world epoch, caller's actual owner,
+computer UUID, program digest and flight/display distinction. These values scope
+every request ID and result. A restored world preserves its scope; a fresh world
+has a new epoch even when its NPC identities are deterministic. All worlds still
+share the same dollar cap. Missile callbacks share their parent flight program's
+scope.
 
 `llm_submit` returns a small admission status immediately. Programs use
 `llm_poll` to obtain `Pending`, `Ready`, `Failed`, `Cancelled`, `Indeterminate` or

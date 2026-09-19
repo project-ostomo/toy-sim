@@ -4,12 +4,15 @@ pub mod drawing;
 pub mod firmware;
 pub mod industry;
 pub mod llm;
+pub mod local_space;
 pub mod navigation;
 pub mod optical;
 pub mod ownership;
 pub mod presentation;
+pub mod routing;
 pub mod transfer;
 pub mod travel;
+pub use local_space::{LocalObstacle, LocalSpace};
 pub use presentation::*;
 
 use serde::{Deserialize, Serialize};
@@ -200,6 +203,7 @@ pub struct DockServiceSettings {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipTelemetry {
+    pub can_control: bool,
     pub appearance: Option<[u8; 32]>,
     pub radius_m: f64,
     pub dock_services: DockServiceSettings,
@@ -239,6 +243,7 @@ pub struct Event {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
     JoinedGroup(GroupId),
+    Route { id: u64, status: routing::Status },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -272,6 +277,16 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
+    RouteRequest {
+        ship: EntityId,
+        authority_revision: u64,
+        request: routing::Request,
+    },
+    RoutePoll {
+        ship: EntityId,
+        authority_revision: u64,
+        id: u64,
+    },
     ChatSubscribe(chat::ChatSubscription),
     ChatUnsubscribe,
     ChatSend {
@@ -310,6 +325,11 @@ pub enum Action {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ShipCommand {
+    UseRoute {
+        id: u64,
+        expected_revision: u64,
+        engage: bool,
+    },
     Flight(FlightCommand),
     SetTransponderEnabled(bool),
     MarkTarget {
@@ -363,6 +383,15 @@ pub struct InputFrame {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramQuery {
+    LocalSpace {
+        destination: GalacticPosition,
+        range_m: f64,
+        after_seconds: f64,
+    },
+    RouteRequest(routing::Request),
+    RoutePoll {
+        id: u64,
+    },
     Navigation {
         after: Option<EntityId>,
         limit: u16,
@@ -415,6 +444,11 @@ pub struct Beacon {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramReply {
+    LocalSpace(LocalSpace),
+    Route {
+        id: u64,
+        status: routing::Status,
+    },
     Navigation {
         revision: u64,
         gates: Vec<NavigationGate>,
@@ -430,7 +464,7 @@ pub enum ProgramReply {
         duration_s: f64,
     },
     Travel {
-        state: travel::TravelState,
+        state: travel::CurrentOrder,
         pose: Pose,
         slip_ready: bool,
     },
@@ -441,38 +475,45 @@ pub enum ProgramReply {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramAction {
-    PlanningProgress {
+    UseRoute {
+        id: u64,
         revision: u64,
-        progress: travel::PlanningProgress,
+        engage: bool,
     },
     Block {
         revision: u64,
+        order: usize,
         reason: String,
-    },
-    Route {
-        revision: u64,
-        search_limited: bool,
-        orders: Vec<travel::QueuedOrder>,
-        fuel_budget: travel::FuelBudget,
     },
     Estimate {
         revision: u64,
         order: usize,
         remaining_ticks: Option<u64>,
-        fuel_budget: travel::FuelBudget,
+        remaining_propellant_kg: Option<f64>,
     },
     CompleteOrder {
         revision: u64,
         order: usize,
     },
-    Slip(GalacticPosition),
+    Slip {
+        revision: u64,
+        order: usize,
+        destination: GalacticPosition,
+    },
     ReserveBay {
+        revision: u64,
+        order: usize,
         station: EntityId,
         bay: u32,
     },
     Dock {
+        revision: u64,
+        order: usize,
         station: EntityId,
         bay: u32,
     },
-    Undock,
+    Undock {
+        revision: u64,
+        order: usize,
+    },
 }

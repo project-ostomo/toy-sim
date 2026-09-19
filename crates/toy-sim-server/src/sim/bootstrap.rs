@@ -217,10 +217,7 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                     software.command(toy_sim_ship_wasm::Command::StopGuidance);
                 }
             }
-            DebugCommand::SetRate(_)
-            | DebugCommand::Step
-            | DebugCommand::Reset
-            | DebugCommand::Inspect(_) => {}
+            DebugCommand::SetRate(_) | DebugCommand::Reset | DebugCommand::Inspect(_) => {}
         }
     }
     Ok(())

@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn paused_camera_preserves_motion_estimate_until_the_camera_moves() {
+    fn stationary_camera_preserves_motion_estimate_until_the_camera_moves() {
         let mut history = CameraHistory::default();
         history.sample(key(), 0, GalacticPosition::ZERO);
         let position = GalacticPosition::ZERO.offset_by(DVec3::Y * 5.);

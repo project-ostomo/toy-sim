@@ -4,14 +4,14 @@ The standard firmware can fly a ship toward another ship on its own. The host ex
 
 The current guidance is a **braking rendezvous**. It flies to an aim point and slows down so that it arrives with near-zero relative velocity. The aim point is the target, or a point short of the target when a stand-off is requested. When the ship is within 2 m of the aim point and within 0.5 m/s of the target's velocity, guidance ends and returns to `Ready`. It does not keep station afterwards. [pursuit-trajectory-design.md](pursuit-trajectory-design.md) is an older design proposal written for the previous full-thrust pursuit law.
 
-The same guidance flies sublight legs of travel orders in the authoritative world. The travel planner feeds it a synthetic contact instead of a sensor contact ([Travel legs](#travel-legs)).
+The same guidance flies sublight legs of travel orders in the authoritative world. The current-command executor feeds it a synthetic contact instead of a sensor contact ([Travel legs](#travel-legs)).
 
 Source:
 
 - Requests and validation: `Pilot::request` in [lib.rs](../crates/toy-sim-example-controller/src/lib.rs)
 - Guidance state machine and control law: [navigation.rs](../crates/toy-sim-example-controller/src/navigation.rs)
 - Forecast: [prediction.rs](../crates/toy-sim-example-controller/src/prediction.rs)
-- Travel planner: [world.rs](../crates/toy-sim-example-controller/src/world.rs)
+- Current-command executor: [world.rs](../crates/toy-sim-example-controller/src/world.rs)
 - Instrument publication: [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs)
 - Closed-loop tests: [physics/rendezvous_tests.rs](../crates/toy-sim-server/src/sim/physics/rendezvous_tests.rs)
 
@@ -80,7 +80,25 @@ The forecast rolls the same law forward with the same response time and alignmen
 
 ### Travel legs
 
-In the authoritative world, the travel planner expands a destination into queued orders through `world_query`. For a sublight leg, it builds a contact with ID `u64::MAX` from the resolved destination's relative position and velocity. It appends this contact to the scan results, selects it, and engages with throttle limit 1 and stand-off 0. The contact is rebuilt every callback, so the aim point follows the destination. When the order reports arrival within 2 m and 0.5 m/s, the planner sends `CompleteOrder`. It aborts guidance when there is no travel contact but the synthetic target is still selected. During a docking approach, the planner also holds the bay's attitude. See [server-client.md](server-client.md#travel-orders-and-firmware-planning).
+The public server routing service expands destinations into a complete
+strategic queue stored in host-owned ship state. The flight computer reads only
+the active order. Within that order, it generates local manoeuvre points,
+avoids known obstacles, escapes slip-exclusion volumes and corrects its course.
+These intermediate points are private execution state and do not become server
+queue entries. `LocalSpace` supplies bounded public and fused observations with
+an explicit incomplete-result flag; it does not supply steering instructions.
+
+For a sublight manoeuvre, the executor builds a contact with ID `u64::MAX` from
+the current local target's relative position and velocity, appends it to the
+scan results, and engages guidance with throttle limit 1 and stand-off 0. The
+contact is rebuilt as the target moves or the local manoeuvre changes. Reaching
+an intermediate point advances local execution only. Reaching the strategic
+command's destination within 2 m and 0.5 m/s submits `CompleteOrder` with its
+queue revision and order index. The host checks those identifiers before
+advancing the queue; obsolete callback actions cannot alter the next command.
+Guidance stops when no active travel contact remains. Docking uses current
+station geometry and physical docking range. See
+[server planning](server-client.md#travel-orders-and-server-planning).
 
 The debug launcher uses the same server world services and planner as a remote client.
 
@@ -124,7 +142,7 @@ It also publishes a contacts instrument that names the selected target, and a `M
 
 ## In the simulator
 
-The client currently shows the scene HUD and one "Hello world" window. The orbit overlay still consumes published navigation instruments. Guidance, target selection and weapon commands remain available through the session protocol, while their former control windows have been removed during the UI rebuild. Selecting a HUD contact changes the local selection without issuing a guidance command.
+Select a contact in the Overview or scene HUD, then use Selected Item to Align, Approach or Keep range. Selection alone issues no guidance command, and Mark/Fire controls remain separate. Navigation displays guidance telemetry and queue controls; the upper-left autopilot panel and scene HUD show the route and stage ETAs. Gate Network requests strategic route previews from the public server service and commits them with **Engage route**; the flight computer generates the local maneuvers during flight. The bottom HUD shows thrust, torque, reserves, heat and computer state. Inventory, Industry, Local Chat and Society are available from the left toolbar. See [The client UI](server-client.md#the-client-ui) for the remaining controls.
 
 The startup scene includes an orbital traffic ship. Travel orders and target pursuit use the same session commands available to remote clients. Demo retaliation resolves targets through the ship's fused contact handles.
 
@@ -174,5 +192,5 @@ cargo test -p toy-sim-ship-wasm armed_starter_discovers_rcs_and_accepts_distant_
 - Guidance brakes to arrive, but it does not keep station. After arrival it returns to `Ready`, and a moving or accelerating target drifts away until guidance is engaged again.
 - The stand-off offset is fixed along the engagement line of sight. It is not maintained as a range.
 - The navigation instrument does not publish stand-off, approach speed limit or braking distance.
-- Guidance needs a visible target ship and a live accelerometer sample. Celestial bodies cannot be targets through `SelectTarget`. Travel orders reach destinations through the planner's synthetic contact.
+- Guidance needs a visible target ship and a live accelerometer sample. Celestial bodies cannot be targets through `SelectTarget`. Travel orders reach destinations through the executor's synthetic contact.
 - Sensor contacts are exact. The disturbance estimate compensates only for smooth differences in gravity and target acceleration.
