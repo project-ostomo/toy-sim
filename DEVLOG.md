@@ -192,3 +192,99 @@ and `/tmp/sequential-society-popup.log`. The feature is ready to commit.
 
 Next piece: SQLite snapshots, restart recovery, and the real UTC plus 400 years
 calendar. Later feature work remains deferred until that piece is verified.
+
+## Persistence and calendar
+
+Ownership and standings committed as `c29da36`. Work is confined to persistence
+and the calendar before any later feature integration.
+
+- SQLite stores versioned world blobs with a manifest and checksums, committing
+  all records in one transaction. The default interval is 15 minutes, with an
+  initial checkpoint and a final checkpoint on graceful shutdown. Three complete
+  generations are retained. Corrupt or unsupported newest snapshots fail startup
+  explicitly; rollback is an operator decision.
+- Capture happens at the simulation boundary; SQLite disk work runs on one
+  background worker. Capture and write durations are logged separately.
+- Saved identities, ownership/access policy, ship state, resources, motion,
+  docking, travel, and WASM programs are being covered by restart tests. Guest
+  programs receive a bounded explicit persistent-data API. Native VM execution
+  stacks restart after loading a world.
+- Debug launches will retain their account and world by default under
+  `$XDG_STATE_HOME/toy-sim/debug` or `~/.local/state/toy-sim/debug`. Use
+  `--state-dir PATH` for a separate world, or `--ephemeral` for a disposable run.
+- The calendar is real UTC plus exactly 146097 days (400 Gregorian years). It
+  advances while simulation time is paused or accelerated. The client uses the
+  server's calendar samples independently of the interpolation jitter buffer.
+  Simulation T+ remains available in the calendar tooltip.
+
+Six targeted calendar tests pass: leap days, century boundaries, weekday/date
+formatting, signed millisecond protocol round-trip, pause/speed independence,
+and delayed snapshot handling. Full restart verification remains in progress.
+
+### Recovery review
+
+The review found and corrected several concrete recovery errors before live
+playtesting: restore depended on the original `--ship` source still existing; a
+missing debug identity could silently generate new credentials for an existing
+world; identity replacement needed a parent-directory sync; and saved hardware
+needed the separate reactor/NTR thermal reservoirs. The launcher now refuses an
+incomplete saved identity and tightens secret-file permissions. Startup locks and
+loads the checkpoint before choosing a bootstrap design.
+
+Normal server recovery retains the host navigation queue and its current stage.
+The existing invalid-access fault path still resets navigation. VM stacks restart
+on recovery, while programs can restore their explicitly saved bytes.
+
+Ten storage/world tests pass, covering transaction failure, checksums, format
+errors, retention, exclusive locking, asynchronous write failure, and ship/docking/
+transit/program state. The calendar also now converges after small clock offsets
+and adopts larger authoritative corrections; all three focused correction tests
+pass. Native process restart verification is running next.
+
+### Persistence completed
+
+Verification finished successfully:
+
+- All four real-network tests pass, including a process restart with exact paused
+  tick/time, pose, inventory, battery/heat, IFF, group secret, authority revision,
+  ownership, standing overrides and access grants restored. The calendar advances
+  across downtime. The restarted computer reaches Running and simulation resumes.
+- Three world tests cover docking and wreck containment, thermal/program state,
+  rejected corrupt references/program hashes, and continued slip transit with
+  queued navigation orders. Nine storage/lifecycle tests cover atomic commits,
+  corruption, version checks, retention, locks and failure propagation.
+- All 16 WASM sandbox tests pass under ABI 24, including durable writes surviving
+  reboot/checkpoint and failed or out-of-bounds callbacks not committing writes.
+  Bundled firmware, C/Rust fixtures and generated bindings were rebuilt.
+- Both debug identity tests pass. Date/protocol tests and the three final client
+  clock correction tests pass. Server and native debug client builds succeed.
+
+The first restart test attempted to reprogram the old faction after joining a
+new organization; the server correctly rejected that credential claim. The test
+now advertises the authorized new organization. Its final computer check also
+needed to wait through the normal five-second cold boot instead of asserting at
+two seconds. No production behavior was weakened to satisfy either test.
+
+Interactive verification used actual keyboard/mouse input. Created Checkpoint
+Cooperative, requested a live SIGUSR1 checkpoint, closed the client normally,
+and moved the original ship source out of the way. Reopened using the same
+`--state-dir` and even the same now-missing `--ship` argument. Pilot identity and
+organization were unchanged, the calendar showed 2426, and the scene resumed.
+Clicking the thrust gauge produced 24% throttle and about 599 kN; the ship moved
+and consumed charges. Set throttle back to zero and closed normally again.
+Both GUI launches exited with status zero.
+
+Captures: `persistence-organization-created.png`, `persistence-reopened.png`,
+`persistence-resumed-control.png` under `/tmp/toy-sequential-playtests/`. The saved
+playtest world remains in that directory for inspection. Manual save created
+generation 2, normal close generation 3, and later launches retained exactly the
+latest three generations. The missing-source CLI check also passed.
+
+For the initial small scenario, capture was approximately 0.9–1.1 ms for 329 KB;
+SQLite writes were approximately 4–10 ms on their worker. First physics updates
+still incur about 220 ms of cold cache work. Native rendering remained around
+47–55 FPS at the tested large scaled window, with the previously recorded initial
+resize validation messages. These remain for the rendering/performance pass.
+
+Next: unify spatial queries and implement optical replication and distant ship
+glints, then verify that piece before expanding the inhabited map.

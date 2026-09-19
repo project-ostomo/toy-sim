@@ -187,6 +187,8 @@ fn draw(
     mut outgoing: ResMut<Outgoing>,
     session: Res<SessionInfo>,
     clock: Res<RenderTime>,
+    calendar: Res<CalendarClock>,
+    real_time: Res<Time<Real>>,
     diagnostics: Res<ClientDiagnostics>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
@@ -364,6 +366,7 @@ fn draw(
         connected: session.world.is_some() && session.status.is_empty(),
         status: &session.status,
         time_ns: clock.display_ns,
+        calendar_unix_ms: calendar.now(real_time.elapsed()),
         diagnostics: *diagnostics,
         orbits: view.is_some_and(|(_, _, _, options)| options.enabled),
     };

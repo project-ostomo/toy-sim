@@ -1,6 +1,18 @@
-# Ship controller ABI (version 20)
+# Ship controller ABI (version 24)
 
-Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v23`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+Every ship runs a flight computer program: a WebAssembly module that the host calls once per scheduled callback. The program talks to the host only through the imports of module `ship_v24`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+
+ABI 24 adds a persistent byte store for each computer. `persistent_read(out, capacity)`
+returns its length and copies the current data, or returns `ERR_BUFFER` if the
+buffer is too small. `persistent_write(data, length)` replaces the whole store;
+an empty write clears it. The maximum length is 65536 bytes. Copies are metered,
+out-of-bounds memory accesses trap, and display callbacks cannot write. A write
+is committed only when the callback succeeds. The committed data survives a
+computer reboot and is included with the program in server checkpoints.
+
+Server recovery creates a fresh VM from the saved program and restores this byte
+store. Native execution stacks and guest linear memory are not checkpointed.
+Programs must use the persistent store for state that must survive a restart.
 
 ABI 23 adds planning preferences and propulsion fuel budgets to the shared travel order queue. `QueuedOrder` contains an `action`, optional `estimated_duration_ticks` and optional `estimated_propellant_kg`. `Route` and `Estimate` publish a `FuelBudget` with required and available kilograms per resource and a completeness flag. `TravelState.preferences.fuel_priority` controls the time/propellant objective. `Sublight` and `Slip` are explicit orders, `Route` expands the current order, and `CompleteOrder` advances its cursor. The separate leg list is removed. Rebuild firmware and generated bindings for the changed postcard payloads.
 
@@ -29,7 +41,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v23` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v24` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 16 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` with no parameters and one result.

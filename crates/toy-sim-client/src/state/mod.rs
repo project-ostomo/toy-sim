@@ -1,3 +1,5 @@
+mod calendar;
+pub(super) use calendar::CalendarClock;
 mod commands;
 mod diagnostics;
 pub(super) use diagnostics::ClientDiagnostics;
@@ -141,6 +143,7 @@ pub(super) fn install(app: &mut App, endpoint: Endpoint, local: bool) {
         .add_systems(Update, diagnostics::update)
         .init_resource::<Replication>()
         .init_resource::<RenderTime>()
+        .init_resource::<CalendarClock>()
         .init_resource::<SessionInfo>()
         .init_resource::<Outgoing>()
         .add_observer(reset_resource::<Outgoing>)

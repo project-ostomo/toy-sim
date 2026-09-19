@@ -605,6 +605,236 @@ async fn society_changes_cross_the_protocol_and_preserve_permission_boundaries()
     server.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn process_restart_restores_paused_world_and_advances_real_calendar() {
+    use ownership::{AccessPolicy, Permission, Principal, SocietyCommand, Standing};
+    use std::collections::BTreeSet;
+
+    let account = Id::new();
+    let server_key = SigningKey::from_bytes(&[31; 32]);
+    let account_key = SigningKey::from_bytes(&[32; 32]);
+    let mut server = ServerProcess::start(&server_key, &[(account, &account_key)], Some(account));
+    let address = server.ready().await;
+    let mut client =
+        toy_sim_client::connect(&address, server_key.verifying_key(), account, &account_key)
+            .await
+            .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), client.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let ship = first.ships[0].ship;
+    let world = first.world;
+    let paused = submit_action(
+        &mut client,
+        world,
+        1,
+        Action::Debug(DebugCommand::SetRate(0.)),
+    )
+    .await;
+    assert!(paused.results.iter().all(|result| result.error.is_none()));
+    let created = submit_action(
+        &mut client,
+        world,
+        2,
+        Action::Society(SocietyCommand::CreateOrganization {
+            name: "Persistent Cooperative".into(),
+        }),
+    )
+    .await;
+    let organization = created.society.directory.players[&account]
+        .organization
+        .unwrap();
+    let transfer = submit_action(
+        &mut client,
+        world,
+        3,
+        Action::Society(SocietyCommand::TransferAsset {
+            asset: ship,
+            owner: Principal::Organization(organization),
+        }),
+    )
+    .await;
+    assert!(transfer.results.iter().all(|result| result.error.is_none()));
+    let policy = AccessPolicy {
+        public: BTreeSet::from([Permission::View]),
+        grants: Vec::new(),
+    };
+    let granted = submit_action(
+        &mut client,
+        world,
+        4,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: ship,
+            policy: policy.clone(),
+        }),
+    )
+    .await;
+    assert!(granted.results.iter().all(|result| result.error.is_none()));
+    let target = *created
+        .society
+        .directory
+        .organizations
+        .keys()
+        .find(|&&id| id != organization)
+        .unwrap();
+    let standing = submit_action(
+        &mut client,
+        world,
+        5,
+        Action::Society(SocietyCommand::SetStanding {
+            target: Principal::Organization(target),
+            standing: Some(Standing::Hostile),
+        }),
+    )
+    .await;
+    assert!(standing.results.iter().all(|result| result.error.is_none()));
+    let mut iff = first.ships[0].iff.clone();
+    iff.faction = Some(organization);
+    iff.labels.insert("restart-tested".into());
+    let renamed = submit_action(
+        &mut client,
+        world,
+        6,
+        Action::Ship {
+            ship,
+            authority_revision: granted.ships[0].authority_revision,
+            command: ShipCommand::SetIff(iff.clone()),
+        },
+    )
+    .await;
+    assert!(
+        renamed.results.iter().all(|result| result.error.is_none()),
+        "{:?}",
+        renamed.results
+    );
+    let mut pose = paused.ships[0].pose.clone().unwrap();
+    pose.position.x += 123_000_000_000;
+    let relocated = submit_action(
+        &mut client,
+        world,
+        7,
+        Action::Debug(DebugCommand::Relocate {
+            ship,
+            pose: pose.clone(),
+        }),
+    )
+    .await;
+    assert!(
+        relocated
+            .results
+            .iter()
+            .all(|result| result.error.is_none())
+    );
+    let saved = submit_action(&mut client, world, 8, Action::InstrumentSubscribe { ship }).await;
+    assert_eq!(saved.ships[0].pose, Some(pose.clone()));
+    let inventory = saved
+        .presentation
+        .ships
+        .iter()
+        .find(|item| item.ship == ship)
+        .unwrap()
+        .inventory
+        .clone();
+    drop(client);
+    server.shutdown().await;
+    assert!(
+        server
+            .directory
+            .join("world.sqlite")
+            .metadata()
+            .unwrap()
+            .len()
+            > 0
+    );
+
+    let config_path = server.directory.join("server.toml");
+    let config = std::fs::read_to_string(&config_path).unwrap();
+    std::fs::write(
+        &config_path,
+        format!("ship = \"removed-original-design.ship\"\n{config}"),
+    )
+    .unwrap();
+    server.restart();
+    let address = server.ready().await;
+    let mut client =
+        toy_sim_client::connect(&address, server_key.verifying_key(), account, &account_key)
+            .await
+            .unwrap();
+    let restored = tokio::time::timeout(Duration::from_secs(10), client.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(restored.world, saved.world);
+    assert_eq!(restored.tick, saved.tick);
+    assert_eq!(restored.sim_time_ns, saved.sim_time_ns);
+    assert_eq!(restored.rate, 0.);
+    assert!(restored.calendar_unix_ms > saved.calendar_unix_ms);
+    assert_eq!(restored.society.directory, saved.society.directory);
+    let asset = restored
+        .society
+        .assets
+        .iter()
+        .find(|item| item.entity == ship)
+        .unwrap();
+    assert_eq!(asset.owner, Principal::Organization(organization));
+    assert_eq!(asset.access, policy);
+    let telemetry = restored
+        .ships
+        .iter()
+        .find(|item| item.ship == ship)
+        .unwrap();
+    assert_eq!(telemetry.pose, Some(pose));
+    assert_eq!(telemetry.iff, iff);
+    assert_eq!(telemetry.battery_j, saved.ships[0].battery_j);
+    assert_eq!(telemetry.hull_heat_j, saved.ships[0].hull_heat_j);
+    assert_eq!(
+        telemetry.shield_temperature_k,
+        saved.ships[0].shield_temperature_k
+    );
+    assert_eq!(telemetry.info_group, saved.ships[0].info_group);
+    assert_eq!(
+        telemetry.authority_revision,
+        saved.ships[0].authority_revision
+    );
+    let instruments =
+        submit_action(&mut client, world, 1, Action::InstrumentSubscribe { ship }).await;
+    assert_eq!(
+        instruments
+            .presentation
+            .ships
+            .iter()
+            .find(|item| item.ship == ship)
+            .unwrap()
+            .inventory,
+        inventory
+    );
+    let resumed = submit_action(
+        &mut client,
+        world,
+        2,
+        Action::Debug(DebugCommand::SetRate(1.)),
+    )
+    .await;
+    assert!(resumed.results.iter().all(|result| result.error.is_none()));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = client.state.recv().await.unwrap();
+            if frame.tick > saved.tick + 20
+                && frame.presentation.ships.iter().any(|item| {
+                    item.ship == ship && matches!(item.computer, ComputerStatus::Running { .. })
+                })
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("restored world did not resume");
+    drop(client);
+    server.shutdown().await;
+}
+
 struct ServerProcess {
     child: Child,
     directory: PathBuf,
@@ -633,15 +863,24 @@ impl ServerProcess {
         }
         let path = directory.join("server.toml");
         std::fs::write(&path, config).unwrap();
-        let child = Command::new(env!("CARGO_BIN_EXE_toy-sim-server"))
-            .arg(path)
+        let child = Self::spawn(&directory);
+        Self { child, directory }
+    }
+
+    fn spawn(directory: &std::path::Path) -> Child {
+        Command::new(env!("CARGO_BIN_EXE_toy-sim-server"))
+            .arg(directory.join("server.toml"))
             .arg("--ready-file")
             .arg(directory.join("ready"))
             .arg("--shutdown-on-stdin-close")
             .stdin(Stdio::piped())
             .spawn()
-            .unwrap();
-        Self { child, directory }
+            .unwrap()
+    }
+
+    fn restart(&mut self) {
+        assert!(self.child.try_wait().unwrap().is_some());
+        self.child = Self::spawn(&self.directory);
     }
 
     async fn ready(&mut self) -> String {

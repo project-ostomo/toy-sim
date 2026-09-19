@@ -1,4 +1,5 @@
 pub mod launch;
+pub mod persistence;
 pub mod provision;
 mod sim;
 use anyhow::{Result, ensure};
@@ -106,6 +107,19 @@ fn channels(account: AccountId) -> (Connection, Endpoint) {
 
 pub fn run(
     mut app: App,
+    incoming: mpsc::Receiver<Connection>,
+    stop: Arc<AtomicBool>,
+) -> Result<()> {
+    let result = run_loop(&mut app, incoming, stop);
+    let saved = persistence::shutdown(app.world_mut());
+    if let Err(error) = &saved {
+        error!(%error, "Final world checkpoint failed");
+    }
+    result.and(saved)
+}
+
+fn run_loop(
+    app: &mut App,
     mut incoming: mpsc::Receiver<Connection>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
@@ -176,7 +190,14 @@ pub fn run(
                 .into_iter()
                 .filter_map(|entity| app.world_mut().entity_mut(entity).take::<Connection>())
                 .collect::<Vec<_>>();
-            app = scenario(&config.accounts, config.debug_account, config.ship)?;
+            let checkpoints = app
+                .world_mut()
+                .remove_resource::<persistence::Checkpoints>();
+            *app = scenario(&config.accounts, config.debug_account, config.ship)?;
+            if let Some(checkpoints) = checkpoints {
+                app.insert_resource(checkpoints);
+                persistence::request(app.world());
+            }
             tick_credit = 0.0;
             for connection in connections {
                 let entity = sim::session::connect(app.world_mut(), connection.account)?;
@@ -246,6 +267,7 @@ pub fn run(
             display_ms,
             session_count,
         );
+        persistence::poll(app.world_mut())?;
         if incoming.is_closed()
             && app
                 .world_mut()
@@ -418,6 +440,7 @@ mod asset_tests {
 
     fn empty_snapshot() -> Frame {
         Frame {
+            calendar_unix_ms: 0,
             society: Default::default(),
             world: Id::new(),
             sequence: 1,

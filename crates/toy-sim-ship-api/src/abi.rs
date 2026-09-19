@@ -1,9 +1,9 @@
-//! Ship ABI 17: fixed little-endian records and Postcard world services.
+//! Ship ABI 24: fixed little-endian records and Postcard world services.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v23";
-pub const VERSION: u32 = 23;
+pub const IMPORT_MODULE: &str = "ship_v24";
+pub const VERSION: u32 = 24;
 pub const ERR_GAS: i32 = -1;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
@@ -1206,6 +1206,8 @@ const _: () = assert!(core::mem::offset_of!(ScreenEvent, x) == 40);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, y) == 48);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, text) == 56);
 pub const IMPORTS: &[&str] = &[
+    "persistent_read",
+    "persistent_write",
     "world_query",
     "world_command",
     "tick_read",
@@ -1247,8 +1249,10 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v23")]
+    #[link(wasm_import_module = "ship_v24")]
     unsafe extern "C" {
+        pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
+        pub fn persistent_write(input: *const u8, length: u32) -> i32;
         pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
         pub fn world_command(input: *const u8, bytes: u32) -> i32;
         pub fn tick_read(out: *mut u8, bytes: u32) -> i32;

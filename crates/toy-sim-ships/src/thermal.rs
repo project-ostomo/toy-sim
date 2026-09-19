@@ -11,7 +11,7 @@ pub const JOULES_PER_HP: f64 = 100_000.0;
 pub const VAPORIZATION_K: f64 = 6000.0;
 pub const LATENT_HEAT_J_KG: f64 = 20_000_000.0;
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ThermalState {
     pub hull_energy_j: f64,
     pub pending_waste_heat_j: f64,

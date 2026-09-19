@@ -109,6 +109,7 @@ fn lease(caller: &Caller<'_, Host>, until: f64) -> CallResult {
 
 pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
     let mut linker = Linker::new(engine);
+    persistent(&mut linker)?;
     context(&mut linker)?;
     hardware(&mut linker)?;
     sensors(&mut linker)?;
@@ -117,6 +118,62 @@ pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
     publications::register(&mut linker)?;
     drawing::register(&mut linker)?;
     Ok(linker)
+}
+
+fn persistent(linker: &mut Linker<Host>) -> Result<()> {
+    linker.func_wrap(
+        w::IMPORT_MODULE,
+        "persistent_read",
+        |mut caller: Caller<'_, Host>, pointer: u32, capacity: u32| -> wasmtime::Result<i32> {
+            if let Err(error) = enter(&mut caller) {
+                return Ok(error);
+            }
+            let length = caller.data().persistent_data.len();
+            if length > capacity as usize {
+                return Ok(w::ERR_BUFFER);
+            }
+            let target = range(&caller, pointer, length as u32)
+                .ok_or_else(|| wasmtime::Error::msg("persistent read outside guest memory"))?;
+            if let Err(error) = pay(&mut caller, (length as u64).div_ceil(8)) {
+                return Ok(error);
+            }
+            let bytes = caller.data().persistent_data.clone();
+            let memory = caller
+                .data()
+                .memory
+                .ok_or_else(|| wasmtime::Error::msg("guest memory unavailable"))?;
+            memory.data_mut(&mut caller)[target].copy_from_slice(&bytes);
+            Ok(length as i32)
+        },
+    )?;
+    linker.func_wrap(
+        w::IMPORT_MODULE,
+        "persistent_write",
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| -> wasmtime::Result<i32> {
+            if let Err(error) = enter(&mut caller) {
+                return Ok(error);
+            }
+            if caller.data().display_only {
+                return Ok(w::ERR_UNSUPPORTED);
+            }
+            if length > 65536 {
+                return Ok(w::ERR_LIMIT);
+            }
+            let source = range(&caller, pointer, length)
+                .ok_or_else(|| wasmtime::Error::msg("persistent write outside guest memory"))?;
+            if let Err(error) = pay(&mut caller, u64::from(length).div_ceil(8)) {
+                return Ok(error);
+            }
+            let memory = caller
+                .data()
+                .memory
+                .ok_or_else(|| wasmtime::Error::msg("guest memory unavailable"))?;
+            let bytes = memory.data(&caller)[source].to_vec();
+            caller.data_mut().persistent_data = bytes;
+            Ok(0)
+        },
+    )?;
+    Ok(())
 }
 
 fn context(linker: &mut Linker<Host>) -> Result<()> {

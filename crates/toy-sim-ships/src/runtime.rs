@@ -2,7 +2,7 @@ use crate::*;
 use crate::{DeviceCommand, DeviceKind, DeviceReading, DeviceSetting, DeviceStatus};
 use anyhow::{Context, Result, ensure};
 use glam::DMat3;
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Inventory {
     pub quantities: Vec<u64>,
     pub cargo: Vec<u64>,
@@ -136,7 +136,7 @@ impl Inventory {
         Ok(())
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct DeviceState {
     pub operational: bool,
     pub powered: bool,
@@ -153,7 +153,7 @@ impl Default for DeviceState {
         }
     }
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ShipState {
     pub inventory: Inventory,
     pub weapons: Vec<crate::weapons::WeaponState>,

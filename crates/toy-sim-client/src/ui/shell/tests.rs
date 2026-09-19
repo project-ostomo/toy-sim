@@ -46,6 +46,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
         connected: true,
         status: "",
         time_ns: 0,
+        calendar_unix_ms: None,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -313,6 +314,7 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
         connected: true,
         status: "",
         time_ns: 0,
+        calendar_unix_ms: None,
         diagnostics: Default::default(),
         orbits: true,
     };

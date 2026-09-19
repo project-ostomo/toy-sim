@@ -118,13 +118,14 @@ impl WeaponDef {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct WeaponCommand {
+    #[serde(with = "SavedWeaponSetting")]
     pub setting: abi::WeaponSetting,
     pub epoch_s: f64,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct WeaponState {
     pub previous_yaw_rad: f64,
     pub previous_pitch_rad: f64,
@@ -251,4 +252,14 @@ mod tests {
             assert!((state.barrel_rotation() * DVec3::NEG_Z).angle_between(desired) < 1e-8);
         }
     }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "abi::WeaponSetting")]
+pub(crate) struct SavedWeaponSetting {
+    pub aim_direction: [f64; 3],
+    pub aim_angular_velocity_rad_s: [f64; 3],
+    pub maximum_pointing_error_rad: f64,
+    pub valid_until_s: f64,
+    pub trigger: u64,
 }

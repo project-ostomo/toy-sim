@@ -1,3 +1,4 @@
+pub mod calendar;
 pub mod drawing;
 pub mod navigation;
 pub mod ownership;
@@ -245,6 +246,7 @@ pub struct CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    pub calendar_unix_ms: i64,
     pub society: ownership::SocietySnapshot,
     pub presentation: PresentationFrame,
     pub world: Id,

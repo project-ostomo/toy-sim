@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v23"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v24"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (23)
+#define SHIP_API_VERSION (24)
 #define SHIP_ERR_GAS (-1)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
@@ -862,6 +862,8 @@ SHIP_ASSERT(offsetof(ship_rcs_reading_record, status) == 0, "RcsReading.status")
 SHIP_ASSERT(offsetof(ship_rcs_reading_record, thrust_n) == 8, "RcsReading.thrust_n");
 SHIP_ASSERT(sizeof(ship_rcs_reading_record) == 32, "RcsReading size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_rcs_reading_record) == 8, "RcsReading alignment");
+SHIP_IMPORT("persistent_read") int32_t ship_persistent_read(void * output, uint32_t capacity);
+SHIP_IMPORT("persistent_write") int32_t ship_persistent_write(const void * input, uint32_t length);
 SHIP_IMPORT("world_query") int32_t ship_world_query(const void * input, uint32_t bytes, void * out, uint32_t capacity);
 SHIP_IMPORT("world_command") int32_t ship_world_command(const void * input, uint32_t bytes);
 SHIP_IMPORT("tick_read") int32_t ship_tick_read(void * out, uint32_t bytes);

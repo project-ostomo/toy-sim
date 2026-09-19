@@ -1,6 +1,8 @@
 use super::*;
 
 pub(super) fn receive(
+    real_time: Res<Time<Real>>,
+    mut calendar: ResMut<CalendarClock>,
     mut transport: ResMut<Transport>,
     mut playback: ResMut<BufferedPlayback>,
     mut outgoing: ResMut<Outgoing>,
@@ -12,8 +14,10 @@ pub(super) fn receive(
                 if playback.0.world != Some(frame.world) {
                     outgoing.clear();
                 }
-                if let Err(error) = playback.0.receive(frame) {
-                    info.status = error.to_string();
+                let calendar_unix_ms = frame.calendar_unix_ms;
+                match playback.0.receive(frame) {
+                    Ok(()) => calendar.observe(calendar_unix_ms, real_time.elapsed()),
+                    Err(error) => info.status = error.to_string(),
                 }
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,

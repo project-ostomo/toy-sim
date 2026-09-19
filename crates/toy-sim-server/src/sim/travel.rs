@@ -51,7 +51,7 @@ pub struct StoredShips(Vec<Entity>);
 #[derive(Component, Default)]
 pub struct DockingBays(pub Vec<Bay>);
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Bay {
     pub centre_m: [f64; 3],
     pub rotation: [f64; 4],
@@ -62,7 +62,7 @@ pub struct Bay {
     pub reservation: Option<(EntityId, u64)>,
 }
 
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Gate {
     pub paired: EntityId,
     pub radius_m: f64,
@@ -70,7 +70,7 @@ pub struct Gate {
     pub enabled: bool,
 }
 
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SlipDrive {
     pub power_w: f64,
     pub ready_tick: u64,
@@ -87,7 +87,7 @@ impl Default for SlipDrive {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Preparation {
     pub destination: GalacticPosition,
     pub started: u64,
@@ -96,7 +96,7 @@ pub struct Preparation {
     pub required_j: f64,
 }
 
-#[derive(Component, Clone, Debug)]
+#[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Transit {
     pub origin: GalacticPosition,
     pub departed: u64,
@@ -618,7 +618,7 @@ pub struct DormantMotion {
     beacon: bool,
 }
 
-fn set_dormant(world: &mut World, ship: Entity, presence: Presence) {
+pub(crate) fn set_dormant(world: &mut World, ship: Entity, presence: Presence) {
     identity::renew_spatial_instance(world, ship);
     super::hardware::shutdown(world, ship);
     let velocity = world.get::<Velocity>(ship).map_or(DVec3::ZERO, |v| v.0);

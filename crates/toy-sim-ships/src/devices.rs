@@ -102,10 +102,12 @@ pub struct DeviceStatus {
     pub powered: bool,
     pub reading: DeviceReading,
 }
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DeviceSetting {
     RcsThrust([f64; 3]),
-    Weapon(toy_sim_ship_api::abi::WeaponSetting),
+    Weapon(
+        #[serde(with = "crate::weapons::SavedWeaponSetting")] toy_sim_ship_api::abi::WeaponSetting,
+    ),
     Throttle(f64),
     /// Requested torque in device-local axes; clamped to per-axis hardware limits.
     TorqueNm([f64; 3]),

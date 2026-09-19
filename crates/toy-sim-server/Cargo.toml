@@ -16,6 +16,7 @@ hifitime = "4.3.1"
 smol_str = { version = "0.3.6", features = ["serde"] }
 rand_chacha = "0.10"
 blake3 = "1.8"
+rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 toy-sim-intel = { path = "../toy-sim-intel" }
 toy-sim-space = { path = "../toy-sim-space" }
 toy-sim-ship-api = { path = "../toy-sim-ship-api" }

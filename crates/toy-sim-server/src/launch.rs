@@ -20,6 +20,8 @@ struct Config {
     accounts: Vec<Account>,
     debug_account: Option<String>,
     ship: Option<PathBuf>,
+    #[serde(default)]
+    persistence: crate::persistence::Config,
 }
 
 #[derive(Deserialize)]
@@ -62,6 +64,10 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
             path.parent().unwrap_or(Path::new(".")).join(ship)
         }
     });
+    let persistence = config.persistence;
+    let config_directory = path.parent().unwrap_or(Path::new(".")).to_path_buf();
+    #[cfg(unix)]
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let listener = tokio::net::TcpListener::bind(&config.listen).await?;
     let address = listener.local_addr()?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -72,14 +78,24 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
     let thread = std::thread::Builder::new()
         .name("simulation".into())
         .spawn(move || {
-            let simulation = crate::scenario(&account_ids, debug_account, ship)?;
+            let prepared = crate::persistence::prepare(&persistence, &config_directory)?;
+            let bootstrap_ship = if prepared.as_ref().is_some_and(|saved| saved.has_snapshot()) {
+                None
+            } else {
+                ship
+            };
+            let mut simulation = crate::scenario(&account_ids, debug_account, bootstrap_ship)?;
+            if let Some(prepared) = prepared {
+                prepared.initialize(simulation.world_mut())?;
+            }
             let assets = crate::assets(&simulation);
-            if initialized.send(assets).is_err() {
+            let checkpoint_trigger = crate::persistence::trigger(simulation.world());
+            if initialized.send((assets, checkpoint_trigger)).is_err() {
                 return Ok(());
             }
             crate::run(simulation, receive, simulation_stop)
         })?;
-    let assets = match initialization.await {
+    let (assets, checkpoint_trigger) = match initialization.await {
         Ok(assets) => assets,
         Err(_) => {
             return thread
@@ -87,6 +103,30 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
                 .and_then(|()| anyhow::bail!("simulation initialization stopped"));
         }
+    };
+    #[cfg(unix)]
+    let checkpoint_signal = if let Some(trigger) = checkpoint_trigger {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1()) {
+            Ok(mut signals) => Some(tokio::spawn(async move {
+                while signals.recv().await.is_some() {
+                    trigger.store(true, Ordering::Release);
+                }
+            })),
+            Err(error) => {
+                eprintln!("Manual checkpoint signal unavailable: {error}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    let _ = checkpoint_trigger;
+    let termination = async {
+        #[cfg(unix)]
+        terminate.recv().await;
+        #[cfg(not(unix))]
+        std::future::pending::<()>().await;
     };
     let (shutdown, mut closed) = tokio::sync::mpsc::channel(1);
     if options.shutdown_on_stdin_close {
@@ -112,6 +152,7 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
             tokio::select! {
                 result = crate::listen(listener, key, accounts, send, assets) => result,
                 result = tokio::signal::ctrl_c() => result.map_err(Into::into),
+                _ = termination => Ok(()),
                 _ = closed.recv(), if options.shutdown_on_stdin_close => Ok(()),
                 _ = async {
                     while !thread.is_finished() {
@@ -122,6 +163,10 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
         }
         Err(error) => Err(error),
     };
+    #[cfg(unix)]
+    if let Some(task) = checkpoint_signal {
+        task.abort();
+    }
     stop.store(true, Ordering::Release);
     let simulation_result = thread
         .join()

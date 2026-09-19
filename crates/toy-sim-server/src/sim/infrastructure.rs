@@ -4,13 +4,13 @@ use bevy::{math::DVec3, prelude::*};
 use std::sync::Arc;
 use toy_sim_model::*;
 
-#[derive(Component)]
+#[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Landmark {
     pub system: Id,
     pub name: String,
 }
 
-#[derive(Component)]
+#[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GateOrbit {
     body: String,
     offset: DVec3,

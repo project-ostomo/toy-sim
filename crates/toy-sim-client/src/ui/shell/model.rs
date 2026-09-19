@@ -44,6 +44,7 @@ pub(super) struct FrameModel<'a> {
     pub connected: bool,
     pub status: &'a str,
     pub time_ns: u64,
+    pub calendar_unix_ms: Option<i64>,
     pub diagnostics: ClientDiagnostics,
     pub orbits: bool,
 }

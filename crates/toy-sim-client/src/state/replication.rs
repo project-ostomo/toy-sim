@@ -278,6 +278,7 @@ mod tests {
 
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {
+            calendar_unix_ms: 0,
             society: Default::default(),
             presentation: PresentationFrame::default(),
             world: Id([1; 16]),

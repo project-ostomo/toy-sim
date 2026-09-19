@@ -84,7 +84,7 @@ impl Default for DeviceOutput {
 pub(crate) struct DeviceOutputs(Vec<DeviceOutput>);
 
 #[derive(Component, Default)]
-struct DormantThermalElapsed(f64);
+pub(crate) struct DormantThermalElapsed(pub f64);
 
 #[derive(Component, Default, Clone, Copy)]
 pub struct DevicePower {

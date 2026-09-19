@@ -817,6 +817,7 @@ impl Session {
             .collect();
         self.sent_event = published_event;
         Ok(Frame {
+            calendar_unix_ms: toy_sim_model::calendar::now_unix_ms(),
             society: super::ownership::snapshot(world, self.account),
             presentation,
             world: world.resource::<WorldEpoch>().0,

@@ -51,17 +51,18 @@ pub(super) fn draw(
     status_bar(ctx, |ui| {
         let seconds = model.time_ns / 1_000_000_000;
         ui.label(Icon::Clock.text(16.).color(ACCENT));
-        ui.label(
-            egui::RichText::new(format!(
-                "SIM  T+{:02}:{:02}:{:02}.{}",
+        let timestamp = model.calendar_unix_ms.map_or_else(
+            || "Synchronizing calendar…".into(),
+            toy_sim_model::calendar::format_utc,
+        );
+        ui.label(egui::RichText::new(timestamp).monospace().size(12.))
+            .on_hover_text(format!(
+                "Simulation T+{:02}:{:02}:{:02}.{}\nThe calendar follows real UTC + 400 years, including while simulation is paused.",
                 seconds / 3600,
                 (seconds / 60) % 60,
                 seconds % 60,
-                (model.time_ns / 100_000_000) % 10
-            ))
-            .monospace()
-            .size(12.),
-        );
+                (model.time_ns / 100_000_000) % 10,
+            ));
         ui.separator();
         let color = if model.connected {
             ACCENT

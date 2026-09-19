@@ -738,6 +738,7 @@ mod tests {
             connected: true,
             status: "",
             time_ns: 0,
+            calendar_unix_ms: None,
             diagnostics: Default::default(),
             orbits: false,
         };

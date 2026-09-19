@@ -1,4 +1,6 @@
 //! Synchronous, metered ship imports. Faults discard staged outputs and cold-boot automatically.
+mod checkpoint;
+pub use checkpoint::ControllerCheckpoint;
 mod imports;
 mod session;
 pub mod spatial;
@@ -40,6 +42,7 @@ pub trait ScanSource: Send + Sync {
     }
 }
 struct Host {
+    persistent_data: Vec<u8>,
     display_only: bool,
     working: Session,
     current: spatial::Snapshot,
@@ -68,6 +71,8 @@ struct Machine {
     tick: TypedFunc<(), ()>,
 }
 pub struct Controller {
+    program: Arc<[u8]>,
+    persistent_data: Vec<u8>,
     pub restart_revision: u64,
     pub last_gas_used: u64,
     display_only: bool,
@@ -197,6 +202,7 @@ impl Controller {
             machine.store.set_fuel(fuel)?;
             let host = machine.store.data_mut();
             host.gas = self.gas;
+            host.persistent_data.clone_from(&self.persistent_data);
             host.sequence += 1;
             host.current =
                 spatial::Snapshot::new(host.sequence, self.observer_origin, &input.observation);
@@ -230,6 +236,7 @@ impl Controller {
             let observation = host.input.take().map(|i| i.observation);
             host.source = None;
             result?;
+            self.persistent_data.clone_from(&host.persistent_data);
             let output = std::mem::take(&mut host.output);
 
             if let Some(time) = host.scan_time.take() {
@@ -335,6 +342,8 @@ impl ControllerRuntime {
     /// Compiles/validates the program, but leaves the computer in its initial 50-tick boot.
     pub fn instantiate(&mut self, bytes: &[u8]) -> Result<Controller> {
         Ok(Controller {
+            program: Arc::from(bytes),
+            persistent_data: Vec::new(),
             restart_revision: 0,
             last_gas_used: 0,
             display_only: false,
@@ -415,6 +424,7 @@ impl Machine {
         let mut store = Store::new(
             engine,
             Host {
+                persistent_data: Vec::new(),
                 display_only,
                 working: Session::default(),
                 current: spatial::Snapshot::default(),

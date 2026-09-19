@@ -267,3 +267,18 @@ pub fn weapons(state: &abi::WeaponsState, weapons: &[abi::WeaponInstrument]) -> 
         )
     })
 }
+
+#[cfg(target_arch = "wasm32")]
+pub fn persistent_read(buffer: &mut [u8]) -> Result<usize, i32> {
+    let length = unsafe { abi::raw::persistent_read(buffer.as_mut_ptr(), buffer.len() as u32) };
+    check(length)?;
+    Ok(length as usize)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn persistent_write(bytes: &[u8]) -> Result<(), i32> {
+    if bytes.len() > 65536 {
+        return Err(abi::ERR_LIMIT);
+    }
+    check(unsafe { abi::raw::persistent_write(bytes.as_ptr(), bytes.len() as u32) })
+}

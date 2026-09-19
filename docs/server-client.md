@@ -816,3 +816,10 @@ Automatic station resupply requires ownership or a TransferCargo grant. Historic
 controller assignment does not preserve either right after a transfer. Known
 information-group secrets remain bearer credentials until the group changes;
 revoking an asset grant does not erase a secret somebody already learned.
+
+Protocol 18 adds a signed millisecond calendar timestamp. It represents real UTC
+plus 146097 days, exactly 400 Gregorian years. The calendar advances independently
+of simulation speed and pause. The client samples it at network reception, outside
+the presentation jitter buffer. The bottom strip displays UTC date and time; its
+hover text retains simulation T+. See [Persistence](persistence.md) for saved
+worlds, debug identities, checkpoint configuration and recovery behavior.
