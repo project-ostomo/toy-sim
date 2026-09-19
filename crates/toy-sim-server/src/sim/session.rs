@@ -9,6 +9,7 @@ use super::intelligence::Group;
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 
+mod industry;
 mod optical;
 
 #[derive(Resource)]
@@ -48,6 +49,7 @@ pub struct Session {
     results: VecDeque<CommandResult>,
     seen: BTreeSet<Id>,
     optical: optical::OpticalSession,
+    industry: industry::IndustrySession,
 }
 
 pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
@@ -75,6 +77,7 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
             results: VecDeque::new(),
             seen: BTreeSet::new(),
             optical: optical::OpticalSession::default(),
+            industry: industry::IndustrySession::default(),
         })
         .id())
 }
@@ -138,7 +141,6 @@ fn command_permission(command: &ShipCommand) -> ownership::Permission {
         | ShipCommand::SetGroup(_)
         | ShipCommand::SetIff(_)
         | ShipCommand::SetDockServices { .. } => ownership::Permission::Configure,
-        ShipCommand::TransferCargo { .. } => ownership::Permission::TransferCargo,
         ShipCommand::Flight(_)
         | ShipCommand::MarkTarget { .. }
         | ShipCommand::StopFiring
@@ -261,6 +263,9 @@ impl Session {
 
     fn apply(&mut self, world: &mut World, action: Action) -> Result<Option<Reply>> {
         match action {
+            Action::Industry(command) => super::industry::execute(world, self.account, command)?,
+            Action::IndustrySubscribe(subscription) => self.industry.subscribe(subscription)?,
+            Action::IndustryUnsubscribe => self.industry.unsubscribe(),
             Action::Society(command) => super::ownership::apply(world, self.account, command)?,
             Action::JoinGroup(key) => {
                 ensure!(self.groups.len() < 16, "group subscription limit");
@@ -455,26 +460,6 @@ impl Session {
                     ShipCommand::Dock { station, bay } => {
                         let station = identity::lookup(world, station)?;
                         super::travel::dock(world, entity, station, bay)?;
-                    }
-                    ShipCommand::TransferCargo {
-                        target,
-                        resource,
-                        quantity,
-                    } => {
-                        let destination = identity::lookup(world, target)?;
-                        super::ownership::authorize(
-                            world,
-                            self.account,
-                            destination,
-                            ownership::Permission::TransferCargo,
-                        )?;
-                        super::hardware::utilities::transfer_cargo(
-                            world,
-                            entity,
-                            destination,
-                            &resource,
-                            quantity,
-                        )?;
                     }
                     ShipCommand::SetDockServices { cargo, power } => {
                         ensure!(
@@ -824,6 +809,7 @@ impl Session {
             .collect();
         self.sent_event = published_event;
         Ok(Frame {
+            industry: self.industry.frame(world, self.account)?,
             optical,
             calendar_unix_ms: toy_sim_model::calendar::now_unix_ms(),
             society: super::ownership::snapshot(world, self.account),

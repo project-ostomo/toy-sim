@@ -35,6 +35,7 @@ pub struct ShipPresentation {
     pub power_generated_w: f64,
     pub power_consumed_w: f64,
     pub inventory: Vec<ResourceAmount>,
+    pub cargo: Vec<crate::industry::CargoStack>,
     pub cargo_capacity_m3: f64,
     pub cargo_used_m3: f64,
     pub devices: Vec<DeviceTelemetry>,
@@ -59,7 +60,6 @@ pub struct PropulsionTelemetry {
 pub struct ResourceAmount {
     pub resource: String,
     pub quantity: u64,
-    pub cargo_quantity: u64,
     pub unit_mass_kg: f64,
     pub unit_volume_m3: f64,
     pub name: String,

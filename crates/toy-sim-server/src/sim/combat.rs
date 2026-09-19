@@ -399,6 +399,8 @@ mod tests {
                 Identity(id),
                 Appearance(appearance),
                 ShipInventory(toy_sim_ships::Inventory {
+                    packaged_parts: Default::default(),
+                    reservations: Default::default(),
                     tank_capacities_m3: Vec::new(),
                     quantities: Vec::new(),
                     cargo: Vec::new(),

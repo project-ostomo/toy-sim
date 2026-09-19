@@ -1,5 +1,12 @@
 use super::*;
 
+#[cfg(test)]
+pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
+    static EMPTY: std::sync::OnceLock<industry_model::IndustrySnapshot> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
 pub(super) struct Row {
     pub target: SelectedTarget,
     pub name: String,
@@ -34,6 +41,7 @@ impl Row {
 }
 
 pub(super) struct FrameModel<'a> {
+    pub industry: &'a industry_model::IndustrySnapshot,
     pub society: &'a ownership::SocietySnapshot,
     pub navigation: &'a NavigationCatalogue,
     pub navigation_status: &'a NavigationStatus,

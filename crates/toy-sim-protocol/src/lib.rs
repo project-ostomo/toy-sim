@@ -1,12 +1,14 @@
+mod industry;
 pub mod navigation;
 mod presentation;
 use anyhow::{Context, Result, bail, ensure};
+pub use industry::validate_snapshot_content as validate_industry_snapshot_content;
 pub use presentation::validate_catalogue;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 21;
+pub const VERSION: u16 = 22;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -81,6 +83,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
             section(&mut body, 9, &frame.society)?;
             section(&mut body, 10, &frame.calendar_unix_ms)?;
             section(&mut body, 11, &frame.optical)?;
+            section(&mut body, 12, &frame.industry)?;
             1
         }
         Message::Input(input) => {
@@ -109,7 +112,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
     let kind = u16::from_le_bytes(bytes[6..8].try_into()?);
     let mut sections = BTreeMap::new();
     let mut body = &bytes[HEADER_SIZE..];
-    let known = if kind == 1 { 11 } else { 1 };
+    let known = if kind == 1 { 12 } else { 1 };
     let mut count = 0;
     while !body.is_empty() {
         count += 1;
@@ -134,6 +137,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         1 => {
             let clock: Clock = read(&sections, 1)?;
             let frame = Frame {
+                industry: read(&sections, 12)?,
                 optical: read(&sections, 11)?,
                 calendar_unix_ms: read(&sections, 10)?,
                 society: read(&sections, 9)?,
@@ -261,6 +265,9 @@ fn pose_valid(pose: &Pose) -> bool {
 }
 
 pub fn validate_frame(frame: &Frame) -> Result<()> {
+    if let Some(snapshot) = &frame.industry {
+        industry::validate_snapshot(snapshot)?;
+    }
     ensure!(frame.society.valid(), "invalid society snapshot");
     presentation::validate(&frame.presentation)?;
     for system in frame
@@ -464,6 +471,10 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
     for (id, action) in &input.actions {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
+            Action::Industry(command) => industry::validate_command(command)?,
+            Action::IndustrySubscribe(subscription) => {
+                industry::validate_subscription(subscription)?
+            }
             Action::Society(ownership::SocietyCommand::CreateOrganization { name }) => {
                 ensure!(
                     !name.trim().is_empty()
@@ -633,6 +644,7 @@ mod tests {
 
     fn empty_frame() -> Frame {
         Frame {
+            industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
@@ -666,6 +678,50 @@ mod tests {
         assert!(encode(&Message::State(frame)).is_ok());
         assert_eq!(DebugCommand::Step.capability(), DebugCapability::Clock);
         assert_eq!(DebugCommand::Reset.capability(), DebugCapability::Reset);
+    }
+
+    #[test]
+    fn industry_interest_and_commands_roundtrip_in_required_version_22_section() {
+        use toy_sim_model::industry::{
+            CargoItem, IndustryCommand, IndustrySnapshot, IndustrySubscription,
+        };
+
+        let subscription = IndustrySubscription {
+            revision: 3,
+            directory: true,
+            inventories: vec![Id([2; 16])],
+            catalogue: true,
+            ..Default::default()
+        };
+        let message = Message::Input(InputFrame {
+            world: Id([1; 16]),
+            sequence: 4,
+            actions: vec![
+                (Id([3; 16]), Action::IndustrySubscribe(subscription)),
+                (
+                    Id([4; 16]),
+                    Action::Industry(IndustryCommand::Transfer {
+                        source: Id([2; 16]),
+                        target: Id([5; 16]),
+                        item: CargoItem::Part("laser_turret".into()),
+                        quantity: 2,
+                    }),
+                ),
+            ],
+        });
+        assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
+
+        let mut frame = empty_frame();
+        frame.industry = Some(IndustrySnapshot {
+            subscription_revision: 3,
+            error: Some("One inventory exceeds the subscription byte limit.".into()),
+            ..Default::default()
+        });
+        let message = Message::State(frame);
+        let mut encoded = encode(&message).unwrap();
+        assert_eq!(decode(&encoded).unwrap(), message);
+        encoded[4..6].copy_from_slice(&21_u16.to_le_bytes());
+        assert!(decode(&encoded).is_err());
     }
 
     #[test]

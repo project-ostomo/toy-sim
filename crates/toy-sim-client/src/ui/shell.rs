@@ -1,3 +1,4 @@
+mod industry;
 mod instruments;
 mod inventory;
 mod map;
@@ -10,6 +11,7 @@ use super::{SelectedTarget, Selection, scene};
 use crate::state::*;
 use bevy::prelude::*;
 use model::*;
+use toy_sim_model::industry as industry_model;
 use toy_sim_model::*;
 use toy_sim_ui::units::distance;
 use toy_sim_ui::{bevy_egui::EguiContexts, desktop::*, egui, icons::Icon};
@@ -68,6 +70,15 @@ const SOCIETY: WindowSpec = WindowSpec {
     offset: egui::Vec2::ZERO,
     open: false,
 };
+const INDUSTRY: WindowSpec = WindowSpec {
+    id: "industry",
+    title: "INDUSTRY",
+    size: egui::vec2(720., 560.),
+    min_size: egui::vec2(580., 400.),
+    anchor: egui::Align2::CENTER_CENTER,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
 const SETTINGS: WindowSpec = WindowSpec {
     id: "settings",
     title: "INTERFACE",
@@ -98,6 +109,7 @@ enum Sort {
 struct Shell {
     desktop: Desktop,
     inventory: inventory::State,
+    industry: industry::State,
     map: map::State,
     society: society::State,
     filter: Filter,
@@ -136,6 +148,7 @@ impl Default for Shell {
         Self {
             desktop: Desktop::default(),
             inventory: inventory::State::default(),
+            industry: industry::State::default(),
             map: map::State::default(),
             society: society::State::default(),
             filter: Filter::default(),
@@ -149,6 +162,9 @@ impl Default for Shell {
 }
 
 enum Intent {
+    FocusShip(Id),
+    InspectInventory(Id),
+    Industry(industry_model::IndustryCommand, &'static str),
     RetryNavigation,
     InspectAffiliation(ownership::Principal),
     Society(ownership::SocietyCommand, &'static str),
@@ -180,6 +196,8 @@ fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.feedback = None;
     shell.society = society::State::default();
     shell.map = map::State::default();
+    shell.inventory = inventory::State::default();
+    shell.industry = industry::State::default();
 }
 
 fn draw(
@@ -187,7 +205,7 @@ fn draw(
     mut shell: ResMut<Shell>,
     mut selection: ResMut<Selection>,
     mut outgoing: ResMut<Outgoing>,
-    session: Res<SessionInfo>,
+    mut session: ResMut<SessionInfo>,
     clock: Res<RenderTime>,
     calendar: Res<CalendarClock>,
     real_time: Res<Time<Real>>,
@@ -363,6 +381,7 @@ fn draw(
         });
     }
     let model = FrameModel {
+        industry: &session.industry.snapshot,
         navigation: &session.navigation,
         navigation_status: &session.navigation_status,
         navigation_hash: session.navigation_hash,
@@ -399,6 +418,33 @@ fn draw(
             _ => telemetry.map_or_else(Default::default, |ship| ship.travel.preferences),
         };
         match intent {
+            Intent::FocusShip(ship) => {
+                if model.ships.iter().any(|owned| owned.ship == ship) {
+                    selection.ship = Some(ship);
+                    selection.target = None;
+                    shell.inventory.focus(ship);
+                    for (view, _, mut camera, _) in &mut views {
+                        if Some(view.0.id) == selection.view {
+                            camera.focus = None;
+                        }
+                    }
+                }
+            }
+            Intent::InspectInventory(entity) => {
+                shell.inventory.focus(entity);
+                shell.desktop.open(INVENTORY);
+            }
+            Intent::Industry(command, label) => {
+                if model.connected {
+                    let id = outgoing.push(Action::Industry(command));
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: label.into(),
+                        last_tick: 0,
+                        error: None,
+                    });
+                }
+            }
             Intent::RetryNavigation => {
                 if let Some(hash) = session.navigation_hash {
                     asset_server.reload(crate::assets::path(hash));
@@ -519,6 +565,21 @@ fn draw(
             }
         }
     }
+    let mut interest = industry_model::IndustrySubscription::default();
+    if shell.desktop.is_open(INDUSTRY) {
+        interest.directory = true;
+        interest.catalogue = true;
+        interest.directory_after = shell.industry.directory_after;
+        interest.inventories.extend(shell.industry.facility);
+    }
+    if shell.desktop.is_open(INVENTORY) {
+        interest.directory = true;
+        interest.inventories.extend(selection.ship);
+        interest.inventories.extend(shell.inventory.inventories());
+    }
+    let wanted = (interest.directory && model.connected).then_some(interest);
+    drop(model);
+    session.industry.subscribe(wanted, &mut outgoing);
     Ok(())
 }
 

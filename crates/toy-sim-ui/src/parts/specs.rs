@@ -432,6 +432,38 @@ impl PartDescription {
             Equipment::Utility { utility } => {
                 use toy_sim_ships::utilities::UtilityDef;
                 let (kind, summary) = match *utility {
+                    UtilityDef::Factory {
+                        capability,
+                        power_per_lane_w,
+                        lanes,
+                    } => {
+                        use toy_sim_model::industry::IndustryCapability;
+                        performance.text("Production lanes", lanes.to_string());
+                        requirements.quantity("Power per lane", power_per_lane_w as f64, Power);
+                        let kind = match capability {
+                            IndustryCapability::Refinery => "Refinery",
+                            IndustryCapability::FuelPlant => "Fuel plant",
+                            IndustryCapability::Fabricator => "Fabricator",
+                            IndustryCapability::Shipyard => "Industry module",
+                        };
+                        (
+                            kind,
+                            "Processes reserved cargo into manufactured goods using station electricity.",
+                        )
+                    }
+                    UtilityDef::Shipyard {
+                        power_per_lane_w,
+                        lanes,
+                        max_radius_m,
+                    } => {
+                        performance.text("Assembly lanes", lanes.to_string());
+                        performance.quantity("Maximum ship radius", max_radius_m, Metres);
+                        requirements.quantity("Power per lane", power_per_lane_w as f64, Power);
+                        (
+                            "Shipyard",
+                            "Assembles empty ships from part kits and materials into station inventory.",
+                        )
+                    }
                     UtilityDef::MissileLauncher { spec } => {
                         performance.quantity("Launch interval", spec.cycle_interval_s, Seconds);
                         performance.quantity("Ejection speed", spec.ejection_speed_m_s, Speed);

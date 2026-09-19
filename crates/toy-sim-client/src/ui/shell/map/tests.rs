@@ -53,6 +53,7 @@ fn model<'a>(
     ship: Option<&'a ShipTelemetry>,
 ) -> FrameModel<'a> {
     FrameModel {
+        industry: empty_industry(),
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         celestial_systems: Default::default(),

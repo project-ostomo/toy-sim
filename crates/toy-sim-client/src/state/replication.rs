@@ -105,6 +105,9 @@ pub(super) fn apply(
         };
     }
     info.society = frame.society.clone();
+    for industry in publications.industry {
+        info.industry.apply(industry);
+    }
     info.events.extend(publications.events);
     let excess = info.events.len().saturating_sub(128);
     info.events.drain(..excess);
@@ -394,6 +397,7 @@ mod tests {
 
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {
+            industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
@@ -460,6 +464,71 @@ mod tests {
                 .unwrap();
         }
         app.update();
+    }
+
+    #[test]
+    fn catchup_preserves_industry_catalogue_and_following_permission_updates() {
+        let mut app = app();
+        let group = Id([2; 16]);
+        let track = Id([3; 16]);
+        step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
+        let mut outgoing = Outgoing::default();
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .industry
+            .subscribe(
+                Some(industry::IndustrySubscription {
+                    directory: true,
+                    catalogue: true,
+                    ..Default::default()
+                }),
+                &mut outgoing,
+            );
+        for sequence in 2..=10 {
+            let mut frame = snapshot(sequence, group, track, 0.);
+            if sequence <= 3 {
+                frame.industry = Some(industry::IndustrySnapshot {
+                    subscription_revision: 1,
+                    catalogue: (sequence == 2).then_some(industry::IndustryCatalogue {
+                        revision: [7; 32],
+                        recipes: Vec::new(),
+                        blueprints: Vec::new(),
+                    }),
+                    error: (sequence == 3).then(|| "Permission changed".into()),
+                    ..Default::default()
+                });
+            }
+            app.world_mut()
+                .resource_mut::<BufferedPlayback>()
+                .0
+                .receive(frame)
+                .unwrap();
+        }
+        step(&mut app, 0.2, None);
+        let session = app.world().resource::<SessionInfo>();
+        assert_eq!(session.sequence, 3);
+        assert_eq!(
+            session
+                .industry
+                .snapshot
+                .catalogue
+                .as_ref()
+                .unwrap()
+                .revision,
+            [7; 32]
+        );
+        assert_eq!(
+            session.industry.snapshot.error.as_deref(),
+            Some("Permission changed")
+        );
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .industry
+            .subscribe(None, &mut outgoing);
+        assert_eq!(
+            app.world().resource::<SessionInfo>().industry.snapshot,
+            Default::default()
+        );
     }
 
     #[test]

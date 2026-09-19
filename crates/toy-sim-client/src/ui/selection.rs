@@ -4,8 +4,9 @@ use toy_sim_model::*;
 
 #[derive(Resource, Default)]
 pub(super) struct Subscriptions {
-    initial: bool,
     focused: Option<Id>,
+    view: Option<(u64, Id, GroupId)>,
+    revision: u64,
 }
 
 #[derive(Resource, Default)]
@@ -81,15 +82,30 @@ pub(super) fn synchronize(
             outgoing.push(Action::InstrumentSubscribe { ship });
         }
     }
-    if !subscriptions.initial {
-        if let (Some(group), Some(ship)) = (
-            session.groups.iter().find(|group| **group != PUBLIC_GROUP),
-            selection.ship,
-        ) {
+    let view_id = selection.view.unwrap_or(1);
+    let current_view = views.iter().find(|view| view.0.id == view_id);
+    let group = current_view
+        .map(|view| view.0.group)
+        .filter(|group| *group != PUBLIC_GROUP && session.groups.contains(group))
+        .or_else(|| {
+            session
+                .groups
+                .iter()
+                .copied()
+                .find(|group| *group != PUBLIC_GROUP)
+        });
+    if let (Some(group), Some(ship)) = (group, selection.ship) {
+        let requested = (view_id, ship, group);
+        if subscriptions.view != Some(requested) {
+            subscriptions.revision = subscriptions
+                .revision
+                .max(current_view.map_or(0, |view| view.0.revision))
+                .checked_add(1)
+                .expect("view subscription revision exhausted");
             outgoing.push(Action::Subscribe(ViewSubscription {
-                id: 1,
-                revision: 1,
-                group: *group,
+                id: view_id,
+                revision: subscriptions.revision,
+                group,
                 focused_ship: Some(ship),
                 query: TrackQuery {
                     sphere: Some((GalacticPosition::ZERO, 1e8)),
@@ -98,7 +114,7 @@ pub(super) fn synchronize(
                     ..Default::default()
                 },
             }));
-            subscriptions.initial = true;
+            subscriptions.view = Some(requested);
         }
     }
 }

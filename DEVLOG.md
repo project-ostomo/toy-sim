@@ -1081,3 +1081,128 @@ publication fixes described above. Prior verification for this piece includes
 sandbox tests, the stock launcher-only marking regression, and the authenticated
 network/MFD test. The collision and fresh-fight checks were rerun after the live
 freeze fixes. The next piece is industry and physical cargo logistics.
+
+## Piece 8 — industry and physical logistics
+
+Missiles were committed as `f6972a5`. The main checkout has now been fast-forwarded
+to that verified commit. The interrupted early parallel drafts were preserved
+both in Git stash `6921c85daee9121856d45c821fa4ff5716331060` and a byte-verified
+copy at `/tmp/toy-sim-mvp-interrupted-drafts-20260919` (143 paths, about 3.7 MB).
+The earlier stash remains available as well. Active development continues in
+the sequential worktree, keeping the main checkout at completed milestones.
+
+Industry work is divided among shared inventory/recipes/catalogue, authoritative
+ECS jobs and mines, protocol/session access, client UI, persistence, and independent
+transaction checks. Ingredients will remain physically in inventory while jobs
+reserve their quantities. Transfer, refilling, docking services and other jobs
+must all honor those reservations. Completion consumes the bill and creates all
+outputs atomically; lack of space or construction admission pauses completion.
+Cancellation releases the reservation.
+
+Shipyards must pay for the complete dry assembly, avionics and installed tank
+containment. Fuel, battery charge and shield coolant cannot appear for free.
+New ships start in docked inventory, and the client must support selecting,
+refilling, charging and undocking them. Factories are powered installed station
+modules; fixed-rate starter mines provide explicit raw-material sources.
+
+Access policy needs one additional check: Industry permission may build a ship
+for the facility's owner. Giving that ship to a different principal additionally
+requires permission to withdraw cargo from the facility and authority over the
+chosen recipient. Otherwise an operator could bypass a locked warehouse simply
+by manufacturing its contents into a personally owned ship. These checks model
+machine and storage credentials. Territorial law remains enforced by physical
+actors.
+
+### Industry integration checks in progress
+
+The protocol 22 suite passes all twenty tests. Publication sends complete selected
+inventories within a bounded message, explicitly identifying omissions instead
+of silently truncating cargo rows. The client retains industry publications
+across jitter-buffer catch-up so that consuming two frames cannot lose a one-time
+catalogue update or access revocation.
+
+Independent review found two concrete transaction issues before playtesting:
+transferring cargo and undocking in the same input batch could leave stale mass,
+and an odd mine batch could repeatedly favor the same recipient. Both have
+regressions under development. Immediate mass updates are being restricted to
+affected ships and their containment ancestors to avoid rescanning the entire
+fleet for each warehouse operation.
+
+The planned live journey starts at Neris Anchorage, makes repair material, builds
+a Kestrel service launch, refills and charges the empty result, and undocks it.
+Factory and shipyard restart tests also exercise completion immediately after a
+snapshot. These checks are still pending; the protocol pass alone does not mark
+industry complete.
+
+The shared ship/inventory suite now passes all 52 tests, including eight new
+checks for reservations, atomic completion, exact material conservation, fuel
+recovery limits, missile assembly and cold ship construction. Three shared part
+specification tests also pass. Review found one missing gameplay connection:
+manufactured shielded ships had no way to replenish their empty coolant reserve.
+Shield coolant is now manufactured cargo, paid into the installed reserve through
+the same refill command. Its UI and server acceptance checks join the combined
+integration build.
+
+### Client and first integration results
+
+All 129 client tests pass, including manufacturing/build intents, physical-unit
+quantity editing, scrolling through long tank lists, switching focused ships and
+preserving industry publications during catch-up. The combined build succeeds;
+13 shared model tests, 20 protocol tests and two session byte-budget tests pass.
+
+The first scenario-based server checks found a real assembly error: the new
+industrial branch intersected Neris Anchorage's existing habitat ring. The
+industrial backbone was moved aft of the station beacon using its normal
+attachment connectors. Loading and compiling the corrected asset now succeeds
+with 18 parts, about 5.33 million kilograms dry mass and a 347 metre bounding
+radius. The server tests are being rebuilt against that corrected asset. This
+was a startup failure, so live verification waits for those checks.
+
+README claims about a four-system map and lack of persistence were stale. The
+README now describes the implemented map, persistent launcher, resumable gas
+execution and industry guide, while retaining the measured performance limits.
+
+All 17 persistence tests now pass, including checkpointing one tick before ship
+completion and restoring again after completion. The real FixedUpdate factory
+test passes, as do the eleven transaction tests and the real-network inventory
+privacy/revocation test. The broader server run passed 303 tests with five
+existing ignored tests; its two failures were then fixed and individually rerun.
+Mine allocation now equalizes capacity-limited shares and rotates only indivisible
+extras. The other failure was test setup: the enlarged resource catalogue requires
+an additional bounded hardware-discovery callback, so the tumble test now waits
+for its specific Manual command acknowledgement before its unchanged 100 ticks
+of control assertions. Both focused reruns pass.
+
+The playable build succeeds. Live testing has opened Industry and loaded Neris's
+real authorized facilities, available materials, recipes and catalogue over the
+network. Manufacturing, cargo transfer and commissioning are the next checks.
+
+### Live commissioning and restart verification
+
+The native client produced ten batches of repair material, admitted the Kestrel
+service launch build, and queued docking at Neris. A graceful shutdown during
+construction and approach preserved both operations. After restart, the build
+finished and exactly one Kestrel appeared in the hangar beside the patrol ship.
+Construction initially waited behind an inbound docking reservation; internal
+assembly now ignores aperture reservations while retaining host, ownership,
+containment, size and mass checks. A regression restores an undersized bay while
+leaving its inbound reservation intact and proves atomic completion succeeds.
+
+The new hull had empty water and reactor tanks, empty shield reserve and zero
+battery charge. Through the live inventory window I enabled dock power, loaded
+8,023 kg water, 45 kg reactor fuel and 100 kg shield coolant from the warehouse,
+and dragged repair material to the ship before confirming ten units. The
+warehouse decreased by ten and the ship showed ten. A second graceful restart
+preserved the ship, fuel, battery and transferred cargo. Undocking resumed its
+flight computer and returned the camera to space; the cargo remained aboard.
+
+Private hangar cameras also retained the external planet's atmospheric lighting.
+They now remove that state while docked or in slip transit and restore it when
+returning to space. The dock/undock ECS regression passes; the rebuilt native
+client shows both patrol and Kestrel hulls clearly lit in the hangar.
+
+The focused construction and atmosphere regressions pass, the final playable
+build succeeds, and formatting/diff checks pass. Captures and archived native
+logs are under `/tmp/toy-sequential-playtests/industry-*`. These checks exercise
+real controls and the normal server connection. Display performance remains a
+separate unresolved item for the final integration pass.

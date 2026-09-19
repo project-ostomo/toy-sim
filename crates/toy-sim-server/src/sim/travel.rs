@@ -255,7 +255,6 @@ pub fn reserve_bay(world: &mut World, ship: Entity, host: Entity, bay_id: u32) -
 }
 
 pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<()> {
-    reserve_bay(world, ship, host, bay)?;
     let target = ship_pose(world, host)?;
     let current = ship_pose(world, ship)?;
     let surface_gap = current.position.relative_to(target.position).length()
@@ -267,6 +266,7 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
             <= DOCKING_SPEED_M_S,
         "docking velocity too high"
     );
+    reserve_bay(world, ship, host, bay)?;
     let mass = world.get::<MassProps>(ship).unwrap().mass;
     let host_id = id(world, host)?;
     set_dormant(world, ship, Presence::Docked { host: host_id, bay });
@@ -287,6 +287,70 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
         }
     }
     emit(world, ship, "docked", None);
+    Ok(())
+}
+
+pub(crate) fn construction_bay(
+    world: &World,
+    host: Entity,
+    owner: toy_sim_model::ownership::Principal,
+    radius: f64,
+    mass: f64,
+) -> Result<u32> {
+    ensure!(active(world, host), "shipyard unavailable");
+    ensure!(
+        world
+            .get::<super::hardware::Hull>(host)
+            .is_some_and(|hull| hull.0 > 0.),
+        "shipyard destroyed"
+    );
+    ensure!(
+        containment_depth(world, host)? < 8,
+        "containment limit exceeded"
+    );
+    let bays = world
+        .get::<DockingBays>(host)
+        .ok_or_else(|| anyhow::anyhow!("shipyard has no docking aperture"))?;
+    let bay = bays
+        .0
+        .iter()
+        .position(|bay| {
+            radius <= bay.radius_m
+                && mass <= bay.mass_capacity_kg
+                && super::ownership::port_access(
+                    world,
+                    owner,
+                    host,
+                    toy_sim_model::ownership::Permission::Dock,
+                    bay.public,
+                    &bay.allowed,
+                )
+        })
+        .ok_or_else(|| anyhow::anyhow!("no available authorized docking aperture"))?;
+    Ok(bay as u32)
+}
+
+pub(crate) fn store_constructed(
+    world: &mut World,
+    ship: Entity,
+    host: Entity,
+    bay: u32,
+) -> Result<()> {
+    ensure!(ship != host, "cannot contain self");
+    let mass = world
+        .get::<MassProps>(ship)
+        .ok_or_else(|| anyhow::anyhow!("constructed mass unavailable"))?
+        .mass;
+    let selected = construction_bay(world, host, owner(world, ship)?, radius(world, ship)?, mass)?;
+    ensure!(
+        selected == bay,
+        "docking aperture changed during construction"
+    );
+    let host_id = id(world, host)?;
+    set_dormant(world, ship, Presence::Docked { host: host_id, bay });
+    world.entity_mut(ship).insert(DockedIn(host));
+    add_stored_mass(world, host, mass);
+    emit(world, ship, "constructed", None);
     Ok(())
 }
 
@@ -1343,6 +1407,8 @@ mod tests {
         world.entity_mut(child).insert((
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                packaged_parts: Default::default(),
+                reservations: Default::default(),
                 tank_capacities_m3: vec![0.; 2],
                 quantities: vec![0; 2],
                 cargo: vec![0; 2],
@@ -1391,6 +1457,8 @@ mod tests {
         world.entity_mut(child).insert((
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                packaged_parts: Default::default(),
+                reservations: Default::default(),
                 tank_capacities_m3: Vec::new(),
                 quantities: Vec::new(),
                 cargo: Vec::new(),
@@ -1493,6 +1561,8 @@ mod tests {
         world.entity_mut(child).insert((
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                packaged_parts: Default::default(),
+                reservations: Default::default(),
                 tank_capacities_m3: Vec::new(),
                 quantities: Vec::new(),
                 cargo: Vec::new(),
@@ -1540,6 +1610,8 @@ mod tests {
         world.entity_mut(child).insert((
             SlipDrive::default(),
             super::super::hardware::ShipInventory(toy_sim_ships::Inventory {
+                packaged_parts: Default::default(),
+                reservations: Default::default(),
                 tank_capacities_m3: vec![0.; 2],
                 quantities: vec![0; 2],
                 cargo: vec![0; 2],

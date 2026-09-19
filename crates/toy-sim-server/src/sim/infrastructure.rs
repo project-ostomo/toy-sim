@@ -1,6 +1,6 @@
 use super::{hardware, identity, physics, precision, registry, spatial, travel, vessel};
 use anyhow::Result;
-use bevy::{math::DVec3, prelude::*};
+use bevy::{ecs::system::RunSystemOnce, math::DVec3, prelude::*};
 use std::sync::Arc;
 use toy_sim_model::*;
 
@@ -162,6 +162,9 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         velocity,
         "Neris Anchorage".into(),
     )?;
+    world
+        .run_system_once(hardware::initialize)
+        .map_err(|error| anyhow::anyhow!("hardware initialization failed: {error:?}"))?;
     identity::attach_ship(world, station, owner)?;
     world
         .entity_mut(station)
@@ -227,6 +230,8 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
             .cargo[resource] = 100;
     }
 
+    let account = world.get::<identity::Control>(player).unwrap().account;
+    super::industry::seed_demo(world, station, account)?;
     spawn_gates(world, &universe, player_pose, velocity)?;
     Ok(())
 }
@@ -1374,7 +1379,15 @@ mod tests {
             .quantities
             .clone();
         let stored_mass = world.get::<travel::StoredMass>(station).unwrap().0;
-        hardware::utilities::transfer_cargo(world, player, other, "repair_material", 20).unwrap();
+        crate::sim::industry::transfer(
+            world,
+            account,
+            player,
+            other,
+            toy_sim_model::industry::CargoItem::Resource("repair_material".into()),
+            20,
+        )
+        .unwrap();
         assert_eq!(
             world
                 .get::<hardware::ShipInventory>(player)
@@ -1387,6 +1400,16 @@ mod tests {
             world.get::<travel::StoredMass>(station).unwrap().0,
             stored_mass
         );
-        assert!(hardware::utilities::transfer_cargo(world, player, other, "water", 1).is_err());
+        assert!(
+            crate::sim::industry::transfer(
+                world,
+                account,
+                player,
+                other,
+                toy_sim_model::industry::CargoItem::Resource("water".into()),
+                1
+            )
+            .is_err()
+        );
     }
 }

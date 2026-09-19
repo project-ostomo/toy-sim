@@ -46,7 +46,7 @@ fn capture(world: &World) -> Result<Snapshot> {
     let records = BTreeMap::from([(
         "world".into(),
         SectionData {
-            version: 4,
+            version: 5,
             bytes: self::world::capture(world).context("capture world checkpoint")?,
         },
     )]);
@@ -67,7 +67,7 @@ fn restore(world: &mut World, snapshot: Snapshot) -> Result<()> {
         .get("world")
         .context("snapshot missing world section")?;
     ensure!(
-        saved.version == 4,
+        saved.version == 5,
         "unsupported world snapshot section version {}; explicitly start a new database for this universe",
         saved.version
     );
@@ -359,7 +359,7 @@ mod tests {
         let epoch = toy_sim_model::Id::new();
         world.insert_resource(crate::sim::identity::WorldEpoch(epoch));
 
-        for version in [1, 2, 3] {
+        for version in [1, 2, 3, 4] {
             let error = restore(
                 &mut world,
                 Snapshot {

@@ -56,7 +56,6 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             unit_volume_m3: resource.volume_m3,
             resource: resource.id.clone(),
             quantity: *quantity,
-            cargo_quantity: state.inventory.cargo[index],
             amount_kg: *quantity as f64 * resource.mass_kg,
             capacity_kg: if resource.volume_m3 > 0.0 {
                 state.inventory.tank_capacities_m3[index] / resource.volume_m3 * resource.mass_kg
@@ -243,6 +242,10 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
     }
     let power = world.get::<hardware::PowerFlow>(entity);
     Some(ShipPresentation {
+        cargo: state
+            .inventory
+            .cargo_stacks(catalogue)
+            .expect("valid ship cargo"),
         cargo_capacity_m3: design.capacity_m3,
         cargo_used_m3: state.inventory.cargo_volume(catalogue),
         propulsion: {

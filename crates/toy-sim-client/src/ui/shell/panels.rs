@@ -19,6 +19,7 @@ pub(super) fn draw(
             (OVERVIEW, Icon::Overview, "Overview"),
             (SELECTED, Icon::Target, "Selected item"),
             (INVENTORY, Icon::Cargo, "Inventory"),
+            (INDUSTRY, Icon::Industry, "Industry"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
             (MAP, Icon::Planet, "Gate network map"),
             (SOCIETY, Icon::Shield, "Society and ownership"),
@@ -213,6 +214,7 @@ pub(super) fn draw(
                         }
                         if matches!(ship.presence, travel::Presence::Docked { .. }) {
                             ui.label(egui::RichText::new("DOCKED · Hangar").color(ACCENT));
+                            inventory::hangar_selector(ui, model, intents);
                             if ui.button("Undock").clicked() {
                                 intents.push(Intent::Queue(vec![travel::Order::Undock], false));
                             }
@@ -363,6 +365,9 @@ pub(super) fn draw(
         .show(ctx, NAVIGATION, |ui| navigation(ui, model, intents));
     shell.desktop.show(ctx, INVENTORY, |ui| {
         inventory::draw(ui, &mut shell.inventory, model, intents)
+    });
+    shell.desktop.show(ctx, INDUSTRY, |ui| {
+        industry::draw(ui, &mut shell.industry, model, intents)
     });
     shell
         .desktop

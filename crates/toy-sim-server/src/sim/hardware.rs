@@ -159,6 +159,7 @@ pub fn install(app: &mut App) {
             device_systems(),
             utilities::run,
             utilities::service_docked,
+            super::industry::advance,
             cooling::run,
             power_totals,
             publish_mass,
@@ -300,12 +301,7 @@ impl HardwareWriteItem<'_, '_> {
         parts: &Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     ) -> Vec<DeviceStatus> {
         let mut state = ShipState {
-            inventory: Inventory {
-                tank_capacities_m3: Vec::new(),
-                quantities: Vec::new(),
-                cargo: Vec::new(),
-                energy_j: 0,
-            },
+            inventory: self.inventory.0.clone(),
             weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
             devices: vec![DeviceState::default(); d.parts.len()],
             avionics: DeviceState::default(),
@@ -355,12 +351,7 @@ pub fn resources(
 pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
     let d = &world.get::<ShipDesign>(ship)?.0;
     let mut state = ShipState {
-        inventory: Inventory {
-            tank_capacities_m3: Vec::new(),
-            quantities: Vec::new(),
-            cargo: Vec::new(),
-            energy_j: 0,
-        },
+        inventory: world.get::<ShipInventory>(ship)?.0.clone(),
         weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
         devices: vec![DeviceState::default(); d.parts.len()],
         avionics: DeviceState::default(),

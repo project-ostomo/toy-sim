@@ -461,6 +461,13 @@ impl Catalogue {
                 "invalid resource units"
             );
             ensure!(r.storage.valid(), "invalid resource storage: {}", r.id);
+            let mass_mg = crate::industry::mass_mg(r.mass_kg)?;
+            ensure!(
+                mass_mg > 0
+                    && (mass_mg as f64 * crate::industry::MILLIGRAM_KG - r.mass_kg).abs()
+                        <= r.mass_kg * 1e-12,
+                "resource unit mass must use whole milligrams"
+            );
         }
         ids.clear();
         for p in &self.parts {
@@ -623,6 +630,13 @@ impl Catalogue {
             ensure!(
                 p.mass_kg.is_finite() && p.mass_kg > 0. && p.hull.is_finite() && p.hull > 0.,
                 "invalid mass/hull"
+            );
+            let mass_mg = crate::industry::mass_mg(p.mass_kg)?;
+            ensure!(
+                mass_mg > 0
+                    && (mass_mg as f64 * crate::industry::MILLIGRAM_KG - p.mass_kg).abs()
+                        <= p.mass_kg * 1e-12,
+                "part mass must use whole milligrams"
             );
             ensure!(
                 p.dimensions.iter().all(|&d| d > 0 && d <= 10000),

@@ -1,5 +1,6 @@
 pub mod calendar;
 pub mod drawing;
+pub mod industry;
 pub mod navigation;
 pub mod optical;
 pub mod ownership;
@@ -247,6 +248,7 @@ pub struct CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    pub industry: Option<industry::IndustrySnapshot>,
     pub optical: Vec<optical::OpticalObservation>,
     pub calendar_unix_ms: i64,
     pub society: ownership::SocietySnapshot,
@@ -266,6 +268,9 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
+    Industry(industry::IndustryCommand),
+    IndustrySubscribe(industry::IndustrySubscription),
+    IndustryUnsubscribe,
     Society(ownership::SocietyCommand),
     InstrumentSubscribe {
         ship: EntityId,
@@ -319,11 +324,6 @@ pub enum ShipCommand {
     },
     SetAutopilot(bool),
     SetThrottle(f64),
-    TransferCargo {
-        target: EntityId,
-        resource: String,
-        quantity: u64,
-    },
     SetDockServices {
         cargo: bool,
         power: bool,

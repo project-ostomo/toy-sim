@@ -6,6 +6,8 @@ use glam::DMat3;
 pub struct Inventory {
     pub quantities: Vec<u64>,
     pub cargo: Vec<u64>,
+    pub packaged_parts: std::collections::BTreeMap<String, u64>,
+    pub reservations: std::collections::BTreeMap<toy_sim_model::industry::CargoItem, u64>,
     pub tank_capacities_m3: Vec<f64>,
     pub energy_j: u64,
 }
@@ -15,6 +17,8 @@ impl Inventory {
         Self {
             quantities: vec![0; cat.resources.len()],
             cargo: vec![0; cat.resources.len()],
+            packaged_parts: Default::default(),
+            reservations: Default::default(),
             tank_capacities_m3: vec![0.; cat.resources.len()],
             energy_j: 0,
         }
@@ -71,29 +75,35 @@ impl Inventory {
     }
 
     pub fn cargo_volume(&self, cat: &Catalogue) -> f64 {
-        self.cargo
-            .iter()
-            .zip(&cat.resources)
-            .map(|(&q, r)| q as f64 * r.volume_m3)
-            .sum()
+        self.packaged_volume(cat)
+            + self
+                .cargo
+                .iter()
+                .zip(&cat.resources)
+                .map(|(&q, r)| q as f64 * r.volume_m3)
+                .sum::<f64>()
     }
 
     pub fn volume(&self, cat: &Catalogue) -> f64 {
-        self.quantities
-            .iter()
-            .zip(&self.cargo)
-            .zip(&cat.resources)
-            .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.volume_m3)
-            .sum()
+        self.packaged_volume(cat)
+            + self
+                .quantities
+                .iter()
+                .zip(&self.cargo)
+                .zip(&cat.resources)
+                .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.volume_m3)
+                .sum::<f64>()
     }
 
     pub fn mass(&self, cat: &Catalogue) -> f64 {
-        self.quantities
-            .iter()
-            .zip(&self.cargo)
-            .zip(&cat.resources)
-            .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.mass_kg)
-            .sum()
+        self.packaged_mass(cat)
+            + self
+                .quantities
+                .iter()
+                .zip(&self.cargo)
+                .zip(&cat.resources)
+                .map(|((&q, &cargo), r)| (q as f64 + cargo as f64) * r.mass_kg)
+                .sum::<f64>()
     }
 
     pub fn insert_cargo(
@@ -103,20 +113,14 @@ impl Inventory {
         capacity: f64,
         cat: &Catalogue,
     ) -> Result<()> {
-        ensure!(
-            capacity.is_finite() && capacity >= 0.0,
-            "invalid cargo capacity"
+        let item = toy_sim_model::industry::CargoItem::Resource(
+            cat.resources
+                .get(resource)
+                .context("unknown resource")?
+                .id
+                .clone(),
         );
-        let r = cat.resources.get(resource).context("unknown resource")?;
-        let quantity = *self.cargo.get(resource).context("unknown resource")?;
-        let new_quantity = quantity.checked_add(amount).context("quantity overflow")?;
-        ensure!(
-            self.cargo_volume(cat) + amount as f64 * r.volume_m3
-                <= capacity + 1e-9 * capacity.max(1.0),
-            "cargo hold full"
-        );
-        self.cargo[resource] = new_quantity;
-        Ok(())
+        self.insert_item(&item, amount, capacity, cat)
     }
 
     pub fn transfer_cargo(
@@ -127,13 +131,14 @@ impl Inventory {
         capacity: f64,
         cat: &Catalogue,
     ) -> Result<()> {
-        ensure!(
-            *self.cargo.get(resource).context("unknown resource")? >= amount,
-            "insufficient cargo"
+        let item = toy_sim_model::industry::CargoItem::Resource(
+            cat.resources
+                .get(resource)
+                .context("unknown resource")?
+                .id
+                .clone(),
         );
-        to.insert_cargo(resource, amount, capacity, cat)?;
-        self.cargo[resource] -= amount;
-        Ok(())
+        self.transfer_item(to, &item, amount, capacity, cat)
     }
 }
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -166,6 +171,16 @@ pub struct ShipState {
     pub sensor_range: f64,
 }
 impl ShipState {
+    pub fn cold(design: &CompiledShipDesign, cat: &Catalogue) -> Self {
+        let mut state = Self::new(design, cat);
+        state.inventory.quantities.fill(0);
+        state.inventory.energy_j = 0;
+        state.thermal.shield_deployed_kg = 0.;
+        state.thermal.shield_reserve_mg = 0;
+        state.thermal.shield_energy_j = 0.;
+        state
+    }
+
     pub fn new(design: &CompiledShipDesign, cat: &Catalogue) -> Self {
         Self {
             inventory: Inventory::for_design(design, cat),

@@ -227,7 +227,7 @@ Messages are defined in [toy-sim-protocol](../crates/toy-sim-protocol/src/lib.rs
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 21 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 22 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input` |
 
@@ -255,11 +255,12 @@ A reader ignores unknown optional sections. It rejects unknown required sections
 | `State` | 9 | `SocietySnapshot` |
 | `State` | 10 | `calendar_unix_ms` (`i64`, real UTC plus 400 Gregorian years) |
 | `State` | 11 | `Vec<OpticalObservation>` |
+| `State` | 12 | `Option<IndustrySnapshot>` |
 | `Input` | 1 | `InputFrame` |
 
-All eleven `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 21 adds authorized gas-account balances and distinguishes suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
+All twelve `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 22 adds subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty and population fields to navigation systems and moved the static map into an asset.
 
-`PresentationFrame.navigation` is an `Arc<NavigationSnapshot>` containing an optional catalogue hash, currently relevant live beacons and system-definition references needed by queued celestial destinations. `Arc` shares immutable data inside a process; Postcard serializes the value. Each state frame remains a complete snapshot of its relevant live state. The catalogue downloads separately through the existing asset stream and changes when topology or structural metadata changes. Ordinary orbital motion updates live beacon poses without replacing the catalogue.
+`PresentationFrame.navigation` is an `Arc<NavigationSnapshot>` containing an optional catalogue hash, currently relevant live beacons and system-definition references needed by queued celestial destinations. `Arc` shares immutable data inside a process; Postcard serializes the value. Presentation state is a complete snapshot of its relevant live state; the separate industry section carries subscribed changes as described below. The navigation catalogue downloads separately through the existing asset stream and changes when topology or structural metadata changes. Ordinary orbital motion updates live beacon poses without replacing the catalogue.
 
 This division keeps the map outside the continuous snapshot compression window. A prototype that repeated the 3,000-system catalogue produced roughly 2.84 MB state frames and about 1 MB per compressed frame, exceeding the configured 2 MiB Zstd history. Repeating that static graph at 10 Hz therefore remained expensive. The content hash lets clients retain the catalogue while normal state updates stay small.
 
@@ -329,6 +330,8 @@ A session can request detailed data for at most eight distinct ships across focu
 | `Unsubscribe(id)` | Removes a view |
 | `InstrumentSubscribe { ship }` / `InstrumentUnsubscribe` | Requests instrument presentation for a controlled ship. At most 8. |
 | `ScreenSubscribe { ship, slot, hz }` / `ScreenUnsubscribe` | Requests display frames for a controlled ship. At most 8 subscriptions. |
+| `IndustrySubscribe(IndustrySubscription)` / `IndustryUnsubscribe` | Requests an authorized directory page, selected inventories and optional manufacturing catalogue. Replacement revisions must increase. |
+| `Industry(IndustryCommand)` | Starts or cancels production, orders a ship, transfers cargo or refills tanks; permissions and physical transfer constraints are checked when applied. |
 | `Debug(command)` | Requires a debug account ([Debug accounts](#debug-accounts)) |
 | `Ship { ship, authority_revision, command }` | The account must control the ship, and `authority_revision` must equal the ship's current revision |
 
@@ -351,6 +354,42 @@ Views with a focused ship, instrument subscriptions and screen subscriptions tog
 | `ScreenInput { slot, revision, kind, code, modifiers, xy, text }` | Requires a subscription to the slot and a live display instance. `revision` must match the displayed frame. Queues a `ScreenEvent` on the display instance. |
 
 The flight computer's request queue accepts a command only while it holds fewer than 255 entries ("ship command queue full").
+
+### Industry and cargo subscriptions
+
+`IndustrySubscription` selects a directory page using `directory` and the
+exclusive `directory_after` ID, up to eight inventory IDs in priority order, and
+whether the manufacturing catalogue is needed. The directory contains at most
+128 authorized summaries and a `directory_next` cursor. Selected facility views
+include ownership, permissions, installed capabilities, cargo stacks and jobs.
+The server rechecks access on every publication, so revocation removes private
+contents without requiring the client to resubscribe.
+
+`Frame.industry = None` means there is no industry update. A received snapshot
+replaces the directory and selected facility views for its
+`subscription_revision`. Its optional catalogue replaces the cached recipes and
+blueprints only when present; catalogue revisions are content hashes. Sessions
+send a catalogue once per subscription or catalogue change. Closing the windows
+unsubscribes; reconnecting or changing worlds clears retained industry data.
+Playback retains every industry update when consuming two snapshots to catch up,
+including a catalogue delivered in the earlier snapshot.
+
+Industry updates are limited to 512 KiB. Entire inventory views that do not fit
+are listed in `omitted_inventories`; their stack lists are never truncated.
+The client must clear omitted details and report the capacity limit. If one
+inventory or the requested catalogue alone cannot fit, a bounded `error` with
+the subscription revision replaces the details. Input blueprint payloads are
+limited to 48 KiB within the normal 64 KiB input frame; recipe requests accept
+1–10,000 batches.
+
+`ShipPresentation.inventory` contains consumables. Its separate `cargo` list
+uses the same `CargoStack` records as facility views: a resource or part-kit ID,
+integer total and reserved quantities, display name, unit mass and unit volume.
+Reserved quantities remain physically stored and are unavailable to other jobs,
+transfers and refills. Cargo transfers use `IndustryCommand::Transfer` for both
+resources and kits. Refill requests identify the source inventory and target
+ship. Remote production management does not permit remote movement of cargo;
+the server checks both inventories' permissions and physical location.
 
 ### State frames
 

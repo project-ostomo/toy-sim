@@ -95,6 +95,13 @@ fn update(
     mut media: ResMut<Assets<ScatteringMedium>>,
 ) {
     for (entity, view, transform, previous, systems) in &cameras {
+        if view.private {
+            commands
+                .entity(entity)
+                .remove::<(ViewAtmosphere, AtmosphereSettings)>();
+            continue;
+        }
+
         let position = view.origin.offset_by(transform.translation.as_dvec3());
         let selected = choose_atmosphere(
             bodies.iter().filter_map(|(body, pose, system)| {
@@ -304,6 +311,77 @@ mod tests {
             Some(giant)
         );
         assert!(choose_atmosphere(std::iter::empty(), Some(moon)).is_none());
+    }
+
+    #[test]
+    fn private_hangar_clears_external_atmosphere_and_undocking_restores_it() {
+        let mut world = World::new();
+        world.init_resource::<Assets<ScatteringMedium>>();
+        let system = Id([3; 16]);
+        let pose = toy_sim_model::Pose {
+            position: GalacticPosition::from_meters(bevy::math::DVec3::new(0., -4.6e7, 0.)),
+            ..Default::default()
+        };
+        world.spawn((
+            Celestial(toy_sim_model::CelestialPresentation {
+                entity: Id([1; 16]),
+                name: "Neris".into(),
+                pose: pose.clone(),
+                radius_m: 6e6,
+                gravitational_parameter: 1.,
+                luminosity_lumens: 0.,
+                temperature_k: 300.,
+                color: [1.; 3],
+                atmosphere: Some(toy_sim_model::AtmospherePresentation {
+                    height_m: 1e5,
+                    scale_height_m: 8000.,
+                    rayleigh_scattering: [1e-5; 3],
+                    mie_scattering: 1e-5,
+                    mie_absorption: 1e-6,
+                    mie_scale_height_m: 1200.,
+                    mie_asymmetry: 0.8,
+                    ground_albedo: [0.3; 3],
+                }),
+                ephemeris: None,
+            }),
+            DisplayPose(pose),
+            CelestialSystem(system),
+        ));
+        let camera = world
+            .spawn((
+                ViewObservation(ViewState {
+                    focused_ship: None,
+                    origin: GalacticPosition::ZERO,
+                    id: 1,
+                    revision: 1,
+                    group: Id([2; 16]),
+                    tracks: Vec::new(),
+                    completion: Completion::Complete,
+                }),
+                SystemSubscription(vec![toy_sim_model::CelestialSystemRef {
+                    view: 1,
+                    system,
+                    definition: [0; 32],
+                    epoch_mjd_utc: 0.,
+                    sim_time_origin_ns: 0,
+                }]),
+            ))
+            .id();
+        world
+            .run_system_once(super::super::camera::setup_views)
+            .unwrap();
+        world.run_system_once(update).unwrap();
+        assert!(world.get::<ViewAtmosphere>(camera).is_some());
+
+        world.get_mut::<ViewCamera>(camera).unwrap().private = true;
+        world.run_system_once(update).unwrap();
+        assert!(world.get::<ViewAtmosphere>(camera).is_none());
+        assert!(world.get::<AtmosphereSettings>(camera).is_none());
+
+        world.get_mut::<ViewCamera>(camera).unwrap().private = false;
+        world.run_system_once(update).unwrap();
+        assert!(world.get::<ViewAtmosphere>(camera).is_some());
+        assert!(world.get::<AtmosphereSettings>(camera).is_some());
     }
 
     #[test]

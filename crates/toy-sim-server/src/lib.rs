@@ -438,6 +438,7 @@ mod asset_tests {
 
     fn empty_snapshot() -> Frame {
         Frame {
+            industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),

@@ -163,7 +163,7 @@ fn gas_amount(amount: u64) -> String {
     grouped
 }
 
-fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
+pub(super) fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
     match principal {
         Principal::Sovereignty(id) => directory
             .sovereignties
@@ -854,6 +854,7 @@ mod tests {
     ) -> Vec<(String, egui::Pos2)> {
         let navigation = NavigationCatalogue::default();
         let model = FrameModel {
+            industry: empty_industry(),
             navigation_status: &NavigationStatus::Ready,
             navigation_hash: None,
             celestial_systems: Default::default(),

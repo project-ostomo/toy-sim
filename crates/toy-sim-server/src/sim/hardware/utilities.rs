@@ -109,6 +109,12 @@ pub fn run(
             *power = DevicePower::default();
             device.0.powered = false;
             device.0.actual = 0.;
+            if matches!(
+                utility.0,
+                UtilityDef::Factory { .. } | UtilityDef::Shipyard { .. }
+            ) {
+                continue;
+            }
             if !device.0.operational || h.hull.0 <= 0. {
                 continue;
             }
@@ -267,7 +273,13 @@ pub fn service_docked(
             }
             for (i, resource) in cat.0.resources.iter().enumerate() {
                 let room = (design.0.capacity_m3 - target.0.cargo_volume(&cat.0)).max(0.0);
-                let units = source.0.cargo[i]
+                let units = source
+                    .0
+                    .cargo_available(
+                        &toy_sim_model::industry::CargoItem::Resource(resource.id.clone()),
+                        &cat.0,
+                    )
+                    .expect("validated dock inventory")
                     .min((room / resource.volume_m3).floor() as u64)
                     .min((cargo_budget / resource.mass_kg).floor() as u64);
                 if units == 0 {
@@ -290,57 +302,6 @@ pub fn service_docked(
             }
         }
     }
-}
-
-pub fn transfer_cargo(
-    world: &mut World,
-    source: Entity,
-    destination: Entity,
-    resource: &str,
-    quantity: u64,
-) -> anyhow::Result<()> {
-    use crate::sim::{identity::Identity, travel::PresenceState};
-    use anyhow::{Context, ensure};
-    use toy_sim_model::travel::Presence;
-    ensure!(
-        source != destination && quantity > 0,
-        "choose a different ship and a positive quantity"
-    );
-    let source_id = world
-        .get::<Identity>(source)
-        .context("source ship missing")?
-        .0;
-    let target_id = world
-        .get::<Identity>(destination)
-        .context("target ship missing")?
-        .0;
-    let host = |entity| match world.get::<PresenceState>(entity).map(|p| &p.0) {
-        Some(Presence::Docked { host, .. }) => Some(*host),
-        _ => None,
-    };
-    let a = host(source);
-    let b = host(destination);
-    ensure!(
-        a == Some(target_id) || b == Some(source_id) || (a.is_some() && a == b),
-        "cargo transfers require a shared dock"
-    );
-    let cat = world.resource::<ShipCatalogue>().0.clone();
-    let index = cat
-        .resources
-        .iter()
-        .position(|r| r.id == resource)
-        .context("unknown resource")?;
-    let capacity = world
-        .get::<ShipDesign>(destination)
-        .context("target design missing")?
-        .0
-        .capacity_m3;
-    let mut query = world.query::<&mut ShipInventory>();
-    let [mut from, mut to] = query
-        .get_many_mut(world, [source, destination])
-        .context("inventory unavailable")?;
-    from.0
-        .transfer_cargo(&mut to.0, index, quantity, capacity, &cat)
 }
 
 #[cfg(test)]

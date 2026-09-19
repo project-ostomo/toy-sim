@@ -2,8 +2,9 @@ use super::*;
 use bevy::ecs::system::RunSystemOnce;
 use toy_sim_ui::bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
-fn details() -> ShipPresentation {
+pub(in crate::ui) fn details() -> ShipPresentation {
     ShipPresentation {
+        cargo: Vec::new(),
         ship: Id([1; 16]),
         revision: 1,
         sim_time_ns: 1,
@@ -38,7 +39,6 @@ fn details() -> ShipPresentation {
         inventory: vec![ResourceAmount {
             resource: "water".into(),
             quantity: 8000,
-            cargo_quantity: 50_000,
             unit_mass_kg: 1.,
             unit_volume_m3: 0.001,
             name: "Water".into(),

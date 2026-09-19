@@ -17,6 +17,10 @@ pub mod weapons;
 
 pub mod missiles;
 
+mod cargo;
+pub mod industry;
+pub use cargo::aggregate_stacks;
+
 pub mod reactors;
 
 pub mod utilities;

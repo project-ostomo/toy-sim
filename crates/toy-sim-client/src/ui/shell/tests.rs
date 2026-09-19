@@ -31,6 +31,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     };
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
+        industry: empty_industry(),
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         celestial_systems: Default::default(),
@@ -318,6 +319,7 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
     });
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
+        industry: empty_industry(),
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,

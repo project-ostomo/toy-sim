@@ -72,6 +72,7 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
             resources(&ship.inventory) && ship.devices.len() <= 4096 && ship.screens.len() <= 8,
             "hardware limit"
         );
+        super::industry::validate_cargo(&ship.cargo)?;
         match &ship.computer {
             ComputerStatus::Fault {
                 message,
@@ -406,6 +407,7 @@ mod tests {
             power_generated_w: 0.,
             power_consumed_w: 0.,
             inventory: Vec::new(),
+            cargo: Vec::new(),
             cargo_capacity_m3: 0.,
             cargo_used_m3: 0.,
             devices: Vec::new(),

@@ -99,11 +99,65 @@ pub(super) struct SessionInfo {
     pub navigation_status: NavigationStatus,
     pub navigation_ephemerides: Vec<CelestialSystemRef>,
     pub society: ownership::SocietySnapshot,
+    pub industry: IndustryState,
     pub results: Vec<CommandResult>,
     pub events: Vec<toy_sim_model::Event>,
     pub target_frames: usize,
     pub underruns: u64,
     pub status: String,
+}
+
+#[derive(Default)]
+pub(super) struct IndustryState {
+    pub snapshot: industry::IndustrySnapshot,
+    subscription: Option<industry::IndustrySubscription>,
+    revision: u64,
+}
+
+impl IndustryState {
+    pub fn subscribe(
+        &mut self,
+        mut wanted: Option<industry::IndustrySubscription>,
+        outgoing: &mut Outgoing,
+    ) {
+        if let Some(wanted) = &mut wanted {
+            let mut seen = std::collections::BTreeSet::new();
+            wanted
+                .inventories
+                .retain(|inventory| seen.insert(*inventory));
+            wanted.revision = self.revision;
+        }
+        if wanted == self.subscription {
+            return;
+        }
+        if let Some(mut wanted) = wanted {
+            self.revision = self
+                .revision
+                .checked_add(1)
+                .expect("industry revision exhausted");
+            wanted.revision = self.revision;
+            outgoing.push(Action::IndustrySubscribe(wanted.clone()));
+            self.subscription = Some(wanted);
+        } else {
+            outgoing.push(Action::IndustryUnsubscribe);
+            self.subscription = None;
+            self.snapshot = Default::default();
+        }
+    }
+
+    fn apply(&mut self, mut snapshot: industry::IndustrySnapshot) {
+        if self
+            .subscription
+            .as_ref()
+            .is_none_or(|subscription| subscription.revision != snapshot.subscription_revision)
+        {
+            return;
+        }
+        if snapshot.catalogue.is_none() {
+            snapshot.catalogue = self.snapshot.catalogue.take();
+        }
+        self.snapshot = snapshot;
+    }
 }
 
 #[derive(Default, Debug, PartialEq, Eq)]

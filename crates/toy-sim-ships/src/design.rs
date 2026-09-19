@@ -300,6 +300,15 @@ impl ShipBlueprint {
                     "invalid tank volume on part {}",
                     p.id
                 );
+                let resource = cat
+                    .resources
+                    .iter()
+                    .find(|r| r.id == tank.resource)
+                    .unwrap();
+                crate::industry::tank_containment_mass_kg(
+                    tank.volume_m3,
+                    resource.storage.containment_kg_m3,
+                )?;
                 ensure!(
                     tank.initial_fill.is_finite() && (0.0..=1.0).contains(&tank.initial_fill),
                     "invalid tank fill on part {}",
@@ -346,7 +355,11 @@ impl ShipBlueprint {
                             .iter()
                             .find(|r| r.id == tank.resource)
                             .unwrap();
-                        tank.volume_m3 * resource.storage.containment_kg_m3
+                        crate::industry::tank_containment_mass_kg(
+                            tank.volume_m3,
+                            resource.storage.containment_kg_m3,
+                        )
+                        .expect("validated containment mass")
                     })
                     .sum::<f64>()
         };

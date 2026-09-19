@@ -393,6 +393,160 @@ async fn submit_action(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn industry_subscriptions_recheck_private_inventory_access_and_cargo_authority() {
+    use industry::{CargoItem, IndustryCommand, IndustrySubscription};
+    use ownership::{AccessGrant, AccessPolicy, Permission, Principal, SocietyCommand};
+
+    let alice = Id([41; 16]);
+    let bob = Id([42; 16]);
+    let alice_key = SigningKey::from_bytes(&[43; 32]);
+    let bob_key = SigningKey::from_bytes(&[44; 32]);
+    let server_key = SigningKey::from_bytes(&[45; 32]);
+    let mut server =
+        ServerProcess::start(&server_key, &[(alice, &alice_key), (bob, &bob_key)], None);
+    let address = server.ready().await;
+    let mut a = toy_sim_client::connect(&address, server_key.verifying_key(), alice, &alice_key)
+        .await
+        .unwrap();
+    let mut b = toy_sim_client::connect(&address, server_key.verifying_key(), bob, &bob_key)
+        .await
+        .unwrap();
+    let first = tokio::time::timeout(Duration::from_secs(10), a.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let other = tokio::time::timeout(Duration::from_secs(10), b.state.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(first.industry.is_none());
+    assert!(other.industry.is_none());
+    let world = first.world;
+    let alice_ship = first.ships[0].ship;
+    let bob_ship = other.ships[0].ship;
+
+    let interest = |revision, catalogue| {
+        Action::IndustrySubscribe(IndustrySubscription {
+            revision,
+            directory: true,
+            inventories: vec![alice_ship, bob_ship],
+            catalogue,
+            ..Default::default()
+        })
+    };
+    let subscribed = submit_action(&mut a, world, 1, interest(1, true)).await;
+    assert!(
+        subscribed
+            .results
+            .iter()
+            .all(|result| result.error.is_none())
+    );
+    let snapshot = subscribed.industry.as_ref().unwrap();
+    assert!(snapshot.error.is_none(), "{:?}", snapshot.error);
+    assert!(snapshot.catalogue.is_some());
+    assert_eq!(snapshot.facilities.len(), 1);
+    assert_eq!(snapshot.facilities[0].entity, alice_ship);
+    assert!(
+        !snapshot
+            .directory
+            .iter()
+            .any(|entry| entry.entity == bob_ship)
+    );
+
+    let subscribed = submit_action(&mut b, world, 1, interest(1, false)).await;
+    let snapshot = subscribed.industry.as_ref().unwrap();
+    assert!(snapshot.catalogue.is_none());
+    assert_eq!(snapshot.facilities.len(), 1);
+    assert_eq!(snapshot.facilities[0].entity, bob_ship);
+
+    let granted = submit_action(
+        &mut a,
+        world,
+        2,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: alice_ship,
+            policy: AccessPolicy {
+                grants: vec![AccessGrant {
+                    principal: Principal::Player(bob),
+                    permissions: [Permission::View].into(),
+                }],
+                ..Default::default()
+            },
+        }),
+    )
+    .await;
+    assert!(granted.results.iter().all(|result| result.error.is_none()));
+    assert!(
+        granted
+            .industry
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.catalogue.is_none())
+    );
+    let subscribed = submit_action(&mut b, world, 2, interest(2, false)).await;
+    let snapshot = subscribed.industry.as_ref().unwrap();
+    assert_eq!(snapshot.facilities.len(), 2);
+    let shared = snapshot
+        .facilities
+        .iter()
+        .find(|view| view.entity == alice_ship)
+        .unwrap();
+    assert!(!shared.can_transfer);
+    assert!(!shared.can_manage);
+
+    let denied = submit_action(
+        &mut b,
+        world,
+        3,
+        Action::Industry(IndustryCommand::Transfer {
+            source: alice_ship,
+            target: bob_ship,
+            item: CargoItem::Resource("water".into()),
+            quantity: 1,
+        }),
+    )
+    .await;
+    assert!(denied.results.iter().any(|result| result.error.is_some()));
+
+    let revoked = submit_action(
+        &mut a,
+        world,
+        3,
+        Action::Society(SocietyCommand::SetAssetAccess {
+            asset: alice_ship,
+            policy: AccessPolicy::default(),
+        }),
+    )
+    .await;
+    assert!(revoked.results.iter().all(|result| result.error.is_none()));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = b.state.recv().await.unwrap();
+            if frame.industry.as_ref().is_some_and(|snapshot| {
+                snapshot.subscription_revision == 2
+                    && snapshot
+                        .facilities
+                        .iter()
+                        .all(|view| view.entity != alice_ship)
+            }) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("revoked inventory remained published");
+
+    let unsubscribed = submit_action(&mut b, world, 4, Action::IndustryUnsubscribe).await;
+    assert!(unsubscribed.industry.is_none());
+    let stale = submit_action(&mut b, world, 5, interest(1, false)).await;
+    assert!(stale.results.iter().any(|result| result.error.is_some()));
+    assert!(stale.industry.is_none());
+
+    drop(a);
+    drop(b);
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn society_changes_cross_the_protocol_and_preserve_permission_boundaries() {
     use ownership::{AccessGrant, AccessPolicy, Permission, Principal, SocietyCommand, Standing};
     use std::collections::BTreeSet;

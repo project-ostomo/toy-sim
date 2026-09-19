@@ -2,11 +2,11 @@
 
 toy-sim is a prototype space-flight simulator written in Rust with Bevy. Ships and stations are assembled from parts with typed attachment nodes. The server compiles a coarse 1 m collision volume. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, docking, gates, slipdrives, a sky rendered from an embedded catalogue of one million Gaia DR3 stars, and an orbital navigation overlay.
 
-The simulation runs only in an authoritative server process. Every window, including the local debug application, is a network client that connects to a server over authenticated TCP ([docs/server-client.md](docs/server-client.md)). The server keeps all state in memory; there is no persistence.
+The simulation runs only in an authoritative server process. Every window, including the local debug application, is a network client that connects to a server over authenticated TCP ([docs/server-client.md](docs/server-client.md)). The server checkpoints the authoritative world, ship programs, ownership and account gas to SQLite; see [persistence](docs/persistence.md).
 
 The project is in early prototyping. Interfaces change without compatibility layers (see [AGENTS.md](AGENTS.md)).
 
-The default encounter has two small water-NTR patrol ships 1 km apart, one hostile, near Neris Anchorage. Four systems are linked by wormholes. The client includes a gate map, navigation queue and separate weapon controls, cargo and consumable inventory, slip-transit effects, and a docked hangar view. See [stations and navigation](docs/stations-navigation.md) for controls and implementation details.
+The default encounter has two patrol ships 1 km apart, one hostile, near Neris Anchorage. The player starts with an expedition patrol equipped for laser combat, micropulse propulsion and slip travel. The inhabited map contains 3,000 systems across roughly 250 light-years, with procedural planets and a connected wormhole network. The client includes a gate map, navigation queue, weapon controls, industrial jobs, cargo and consumable inventory, and a docked hangar view. See [the inhabited map](docs/inhabited-map.md), [industry](docs/industry.md), and [stations and navigation](docs/stations-navigation.md).
 
 ## Workspace map
 
@@ -16,7 +16,7 @@ The Cargo workspace ([Cargo.toml](Cargo.toml)) includes every package under `app
 
 | Package | Path | Purpose |
 | --- | --- | --- |
-| `toy-sim-debug` | [apps/toy-sim-debug](apps/toy-sim-debug) | Local debug launcher. It starts `toy-sim-server` as a child process with a temporary configuration, connects to it over loopback TCP with a debug account, and opens the client UI. |
+| `toy-sim-debug` | [apps/toy-sim-debug](apps/toy-sim-debug) | Local debug launcher. It starts `toy-sim-server` as a child process, retains its state directory by default, connects over loopback TCP with a debug account, and opens the client UI. |
 | `toy-ship-editor` | [apps/toy-ship-editor](apps/toy-ship-editor) | Interactive ship editor that saves `.ship` files and can launch `toy-sim-debug` with the current design. |
 | `toy-star-query` | [apps/toy-star-query](apps/toy-star-query) | Headless loader and query benchmark for the star catalogue. |
 
@@ -26,16 +26,17 @@ The server binary `toy-sim-server` and the remote client binary `toy-sim-client`
 
 | Package | Path | Purpose |
 | --- | --- | --- |
+| `toy-sim-spatial` | [crates/toy-sim-spatial](crates/toy-sim-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
 | `toy-sim-space` | [crates/toy-sim-space](crates/toy-sim-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
-| `toy-sim-stars` | [crates/toy-sim-stars](crates/toy-sim-stars) | Star records, the flat `.stars` file format, luminosity-bucketed KD-tree queries and the embedded Gaia catalogue. |
-| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI version 20: fixed C records, constants, raw imports (including the postcard-based `world_query`/`world_command`) and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `toy-sim-stars` | [crates/toy-sim-stars](crates/toy-sim-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
+| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI: fixed C records, constants, raw imports (including the postcard-based `world_query`/`world_command`) and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
 | `toy-sim-ships` | [crates/toy-sim-ships](crates/toy-sim-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
 | `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
 | `toy-sim-ui` | [crates/toy-sim-ui](crates/toy-sim-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
 | `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and a travel planner with a multi-gate route search. |
 | `toy-sim-model` | [crates/toy-sim-model](crates/toy-sim-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
-| `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing (protocol version 16), sections and validation limits. |
+| `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing, sections and validation limits. |
 | `toy-sim-net` | [crates/toy-sim-net](crates/toy-sim-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
 | `toy-sim-intel` | [crates/toy-sim-intel](crates/toy-sim-intel) | Measurements, immutable track snapshots and metered track queries. |
 | `toy-sim-universe` | [crates/toy-sim-universe](crates/toy-sim-universe) | Celestial definitions, Keplerian solver, system index, atmosphere tables and replicated system assets; independent of Bevy. |
@@ -49,7 +50,7 @@ The server binary `toy-sim-server` and the remote client binary `toy-sim-client`
 - [tools/](tools): Python scripts for Gaia downloads, Gaia conversion and ABI binding generation, and a standalone compression experiment.
 - [vendor/picomux](vendor/picomux): picomux 0.2.1 with project-local stream, frame and queue bounds, patched in through `[patch.crates-io]` ([docs/server-client.md](docs/server-client.md#multiplexing-vendored-picomux)).
 - [tests/fixtures/](tests/fixtures): a remote star system used by tests and a synthetic Gaia-shaped CSV.
-- [.cargo/config.toml](.cargo/config.toml): linker arguments for `wasm32-unknown-unknown` builds (64 KiB guest stack, 1 MiB maximum memory).
+- [.cargo/config.toml](.cargo/config.toml): linker arguments for `wasm32-unknown-unknown` builds (64 KiB guest stack, 8 MiB maximum memory).
 
 ## Setup
 
@@ -107,28 +108,27 @@ cargo run -p toy-star-query --release
 cargo test --workspace
 ```
 
-`toy-sim-debug` accepts `--ship PATH`, `--server EXECUTABLE` and `--check`, and rejects anything else. It:
+`toy-sim-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
 
-1. Creates a private temporary directory and writes a server configuration with a random server key, one random account, `debug_account` set to that account, `listen = "127.0.0.1:0"`, and the canonical `--ship` path if given.
+1. Opens its state directory, creating the local server configuration and account keys when necessary. The server listens on loopback with an automatically allocated port.
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 60 s for the file to contain the listening address.
 3. Connects with `toy_sim_client::connect`, the same TCP path a remote client uses.
-4. With `--check`, waits up to 10 s for the first state frame, fails if it contains no controlled ship, and prints the tick and ship count. Otherwise it opens the client UI with a one-frame playback buffer.
+4. With `--check`, waits up to 10 s for the first state frame, fails if it contains no controlled ship, and prints the tick and ship count. Otherwise it opens the client UI.
 
-When the launcher exits, it closes the server's standard input, waits up to 5 s for the server to stop, kills it if needed, and removes the temporary directory.
+When the launcher exits, it closes the server's standard input and allows up to 120 seconds for the final snapshot and shutdown. Persistent state directories are retained.
 
 The client UI reads assets from the repository's `assets/` directory through a path fixed at compile time.
 
 ## What happens at startup
 
-The server builds its world in [bootstrap.rs](crates/toy-sim-server/src/sim/bootstrap.rs) from the scenario constants in [scenario.rs](crates/toy-sim-server/src/sim/scenario.rs):
+For a new world, the server builds the scenario in [bootstrap.rs](crates/toy-sim-server/src/sim/bootstrap.rs). A saved world restores its authoritative data before accepting clients.
 
-- The universe is the Helion system ([assets/stars/helion.star.toml](assets/stars/helion.star.toml)).
-- The first ship, "Patrol ship", starts on the day side of Helion I Neris, in a circular orbit 40,000 km above the surface and facing along its velocity. Its tangential direction comes from a seeded sequence (seed 42), and the client initially places the camera on the illuminated side. Its design is the `ship` blueprint from the server configuration, or `assets/ships/micropulse-patrol.ship`.
-- A second patrol ship, "Hostile patrol 001", spawns 1 km away with the same initial orbital velocity, pointed at the player. It aims and fires after its computer boots.
-- The first configured account controls the explorer. Each further account gets an "Explorer *n*" ship 1,000 m further along +Y. The hostile patrol belongs to a separate account that no configuration knows.
-- Every player ship has a slipdrive. The default single-player scenario contains the two patrol ships.
-- Every ship receives a test loadout: a full battery, generator fuel, ammunition and propellant filling the remaining storage.
-- Each flight computer spends its first 5 simulated seconds booting (a 50-tick startup reserve) before it runs.
+- The player starts on the day side of Helion I Neris, in a circular orbit about 40,000 km above the surface. The client initially places the camera on the illuminated side.
+- The first ship uses the configured blueprint, or `assets/ships/expedition-patrol.ship`. Additional configured accounts receive their own ships.
+- A hostile patrol starts 1 km away with the same orbital velocity. Neris Anchorage and the local gates are nearby destinations.
+- Neris Anchorage provides manufacturing modules, cargo storage and starting industrial supplies. The player can manage its production remotely and dock for physical transfers.
+- Initial scenario ships use their configured loadouts. Ships manufactured later start empty and require fuel, coolant and battery charging.
+- Flight computers boot and execute within their gas allowances. Exhausting an allowance suspends work until a later tick. Invalid accesses and other program faults still trigger a reboot.
 
 Target marking, unmarking, starting fire and stopping fire are separate controls. Navigation commands never start weapons automatically.
 
@@ -158,9 +158,12 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | Guide | Topic |
 | --- | --- |
 | [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, intelligence model, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
+| [docs/industry.md](docs/industry.md) | Factories, material reservations, ship construction, cargo transfers and commissioning |
+| [docs/persistence.md](docs/persistence.md) | SQLite world snapshots, restoration and durable ship programs |
+| [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, procedural systems and wormhole topology |
 | [docs/ships.md](docs/ships.md) | Parts, the catalogue, blueprints, compiled designs, hardware simulation, avionics and the standard firmware |
 | [docs/ship-editor.md](docs/ship-editor.md) | Using the editor, its command-line modes and launching the debug client |
-| [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware against ABI version 20, including world services and the `ship_display` entry point |
+| [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware, including world services and the `ship_display` entry point |
 | [docs/mfds.md](docs/mfds.md) | Programmable screens, input events, display subscriptions and the MFD renderer |
 | [docs/weapons.md](docs/weapons.md) | Weapon parts, target marking, firing, interlocks and control requests |
 | [docs/collisions.md](docs/collisions.md) | Continuous collision detection, impacts, shields and destruction |
@@ -183,15 +186,12 @@ Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/READ
 - **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([rotation.rs](crates/toy-sim-server/src/sim/physics/rotation.rs)). Ships and projectiles are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
 - **Firmware.** Flight programs run in Wasmtime with a gas budget. They see their own flight state, device readings, fused contacts from their ship's information group, and world services for travel ([docs/ship-abi.md](docs/ship-abi.md)).
 - **Intelligence.** Clients receive fused tracks from information groups they have joined, exact reports shared by group members or IFF broadcasts, private telemetry and presentation for ships they control, and presentation for tracks whose identity the group already knows ([docs/server-client.md](docs/server-client.md#observations-and-intelligence)).
-- **Presentation.** The client buffers state frames, plays them back on a steady presentation clock, and interpolates hulls, the camera, effects and instruments between frames. Instruments come from records the firmware publishes. Screens come from a separate `ship_display` instance that runs only while a client subscribes ([docs/mfds.md](docs/mfds.md)).
+- **Presentation.** The client buffers state frames, consumes them in a 10 Hz client FixedUpdate, and interpolates hulls, the camera, effects and instruments between frames. Instruments come from records the firmware publishes. Screens come from a separate `ship_display` instance that runs only while a client subscribes ([docs/mfds.md](docs/mfds.md)).
 
 ## Known limitations
 
-- There is no save-game format and no persistence. The startup scenario is fixed in code, and the server keeps accounts' group keys, tracks and sessions in memory. Every server start creates a new world ID.
+- Persistence restores durable ship data and programs, but native suspended VM stacks restart from boot after server recovery.
 - Accounts are a fixed list in the server configuration. There is no registration, revocation or key rotation.
-- No protocol action transfers control of a ship to another account.
-- Only the Helion system is loaded. [assets/stars/sol.star.toml](assets/stars/sol.star.toml) exists but is not used by the server.
-- Navigation guidance brakes to arrive within 2 m and 0.5 m/s of its aim point. It does not keep station afterwards ([docs/rendezvous.md](docs/rendezvous.md)).
 - Aerodynamic drag acts at the centre of mass with a constant coefficient and produces no lift or torque.
 - Sensor measurements have range-dependent noise but no light-speed delay. Sensors are omnidirectional and use sphere occlusion.
-- The benchmark has not been used to show scalability beyond its small cases ([docs/server-client.md](docs/server-client.md#benchmark)).
+- Client frame rate and crowded collision performance remain under investigation; the current build does not establish the intended MMO capacity. The network benchmark covers smaller workloads ([docs/server-client.md](docs/server-client.md#benchmark)).

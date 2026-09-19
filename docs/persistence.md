@@ -86,6 +86,37 @@ without a retained parent computer where one is required. Restore also checks
 that a guided parent's saved program exports `missile_tick`. Invalid launcher
 clocks, handle counters and steering values stop recovery before world mutation.
 
+Industry state is saved with each facility. Jobs retain their UUID, creator and
+output owner, capability, exact input and output specifications, total processing
+energy, stored output energy and integer progress. Shipyard jobs also retain the
+complete blueprint, including its program. Recovery validates that program before
+replacing any world entities.
+
+Cargo includes resource quantities and packaged part kits. Reservations remain
+inside the same physical inventory and count toward its mass and volume. Their
+totals must equal the sum of pending jobs' inputs exactly. Capture and recovery
+reject orphan reservations, unavailable items, overflowing counts, invalid job
+owners and output specifications, and jobs requiring an absent installed
+capability. Damaged or unpowered modules can retain suspended jobs. Job UUIDs
+cannot duplicate one another or another world identity.
+
+Snapshots occur between simulation updates, so they cannot interrupt completion
+between consuming ingredients, creating the output and removing the job. A
+checkpoint before completion retains the job and its reserved stock; a checkpoint
+after completion retains the output and no pending job. Integer progress
+determines the processing energy already paid, while the facility's saved battery
+contains the remaining energy. Recovery resumes that work without charging the
+completed steps again. Finished ships use the ordinary saved ship record and
+docking relationship. Construction produces a cold hull; recovery does not grant
+fuel, coolant or battery charge.
+
+Each starter mine saves its output type, integer units per second, fractional
+remainder and last recipient UUID. A prior recipient may have departed, so the
+cursor does not require a live inventory reference. Mine production advances on
+simulation ticks; restarting does not produce material for the downtime. The
+facility's starter-grant flag is durable, preventing recovery from repeating the
+initial stock grant.
+
 Saved programs must implement the current ABI 28. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
@@ -96,7 +127,7 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 4. SQLite’s table schema and the
+The current named `world` section has version 5. SQLite’s table schema and the
 outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.

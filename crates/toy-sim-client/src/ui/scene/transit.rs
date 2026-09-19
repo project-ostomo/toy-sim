@@ -159,6 +159,8 @@ fn update(
                     .id();
                 commands.entity(entity).with_children(|parent| {
                     parent.spawn((
+                        RenderLayers::layer(camera.layer),
+                        bevy::light::SunDisk::OFF,
                         DirectionalLight {
                             color: Color::srgb(0.6, 0.8, 1.),
                             illuminance: 180000.,
@@ -168,6 +170,8 @@ fn update(
                         Transform::from_xyz(1., 2., 3.).looking_at(Vec3::ZERO, Vec3::Y),
                     ));
                     parent.spawn((
+                        RenderLayers::layer(camera.layer),
+                        bevy::light::SunDisk::OFF,
                         DirectionalLight {
                             color: Color::srgb(0.3, 0.5, 1.),
                             illuminance: 90000.,
@@ -207,6 +211,7 @@ fn update(
                             (Vec3::new(-0.3, -0.2, -0.4), Color::srgb(1., 0.7, 0.4)),
                         ] {
                             parent.spawn((
+                                RenderLayers::layer(camera.layer),
                                 PointLight {
                                     color,
                                     intensity: 2e9,

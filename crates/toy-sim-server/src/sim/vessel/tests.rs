@@ -124,7 +124,21 @@ fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold()
             throttle: crate::sim::scenario::TRAFFIC_CHALLENGE_THROTTLE,
             steering: [0.; 3],
         });
+    let request_id = app.world().get::<ShipSoftware>(target).unwrap().request_id;
     boot(&mut app, target);
+    for tick in 0..10 {
+        let software = app.world().get::<ShipSoftware>(target).unwrap();
+        assert!(software.controller.fault.is_none());
+        if let Some(reply) = software.results.iter().find(|reply| reply.id == request_id) {
+            assert_eq!(reply.result, abi::REPLY_ACCEPTED, "{}", reply.message);
+            break;
+        }
+        assert!(
+            tick < 9,
+            "manual throttle request was not accepted after hardware discovery"
+        );
+        step(&mut app);
+    }
     let mut directions = vec![];
     for i in 0..100 {
         // Exercise the real WASM and hardware throughout a tumble, including angular

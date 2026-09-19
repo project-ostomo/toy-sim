@@ -117,6 +117,62 @@ mod tests {
     }
 
     #[test]
+    fn choosing_a_built_hangar_ship_updates_view_focus_with_a_new_revision() {
+        let mut world = World::new();
+        world.init_resource::<selection::Subscriptions>();
+        world.init_resource::<Selection>();
+        world.init_resource::<Outgoing>();
+        let first = Id([1; 16]);
+        let built = Id([2; 16]);
+        let group = Id([3; 16]);
+        world.insert_resource(SessionInfo {
+            groups: vec![group],
+            ..Default::default()
+        });
+        world.spawn(ship(first));
+        let mut hull = ship(built);
+        hull.0.presence = travel::Presence::Docked {
+            host: Id([4; 16]),
+            bay: 0,
+        };
+        world.spawn(hull);
+        world.spawn(state::ViewObservation(ViewState {
+            focused_ship: Some(first),
+            origin: GalacticPosition::ZERO,
+            id: 1,
+            revision: 7,
+            group,
+            tracks: Vec::new(),
+            completion: Completion::Complete,
+        }));
+        world.run_system_once(selection::synchronize).unwrap();
+        world.resource_mut::<Selection>().ship = Some(built);
+        world.run_system_once(selection::synchronize).unwrap();
+        world.run_system_once(selection::synchronize).unwrap();
+
+        let outgoing = world.resource::<Outgoing>();
+        let subscriptions: Vec<_> = outgoing
+            .pending()
+            .iter()
+            .filter_map(|(_, action)| match action {
+                Action::Subscribe(view) => Some(view),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(subscriptions.len(), 2);
+        assert_eq!(subscriptions[0].revision, 8);
+        assert_eq!(subscriptions[1].revision, 9);
+        assert_eq!(subscriptions[1].focused_ship, Some(built));
+        assert_eq!(subscriptions[1].id, 1);
+        assert!(outgoing.pending().iter().any(|(_, action)| {
+            matches!(action, Action::InstrumentUnsubscribe { ship } if *ship == first)
+        }));
+        assert!(outgoing.pending().iter().any(|(_, action)| {
+            matches!(action, Action::InstrumentSubscribe { ship } if *ship == built)
+        }));
+    }
+
+    #[test]
     fn world_change_resets_contact_and_view() {
         let mut world = World::new();
         world.insert_resource(Selection {

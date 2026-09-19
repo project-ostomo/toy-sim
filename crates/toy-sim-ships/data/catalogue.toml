@@ -512,6 +512,8 @@ storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
 
 [[resources]]
 id = "spent_fuel"
+# The fuel ledger retains a 20% recoverable fraction; recycling is lossy and
+# cannot yield more than 75 TJ from an original kilogram rated at 60 TJ/kg.
 title = "Spent reactor fuel"
 mass_kg = 1.0
 volume_m3 = 0.001
@@ -1568,3 +1570,155 @@ nodes = [
 [parts.utility]
 type = "command"
 power_w = 100.0
+
+[[resources]]
+id = "industrial_metals"
+title = "Industrial metals"
+mass_kg = 0.000001
+volume_m3 = 0.00000000013
+
+[[resources]]
+id = "industrial_electronics"
+title = "Electronic components"
+mass_kg = 0.000001
+volume_m3 = 0.0000000004
+
+[[resources]]
+id = "reactor_material"
+title = "Reactor alloys and ceramics"
+mass_kg = 0.000001
+volume_m3 = 0.00000000025
+
+[[resources]]
+id = "chemical_feedstock"
+title = "Chemical feedstock"
+mass_kg = 0.000001
+volume_m3 = 0.000000001
+
+[[resources]]
+id = "industrial_ore"
+title = "Industrial ore (kg)"
+mass_kg = 1.0
+volume_m3 = 0.0003
+
+[[resources]]
+id = "fissile_ore"
+title = "Fissile feedstock ore (kg)"
+mass_kg = 1.0
+volume_m3 = 0.0003
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "tailings"
+title = "Mineral tailings (kg)"
+mass_kg = 1.0
+volume_m3 = 0.0005
+
+[[resources]]
+id = "radioactive_waste"
+title = "Radioactive process waste (kg)"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "nuclear", usable_fraction = 0.9, containment_kg_m3 = 40.0 }
+
+[[resources]]
+id = "oxygen"
+title = "Oxygen (kg)"
+mass_kg = 1.0
+volume_m3 = 0.001
+storage = { class = "cryogenic", usable_fraction = 0.85, containment_kg_m3 = 20.0 }
+
+[[parts]]
+id = "station_refinery_32m"
+title = "32m station refinery"
+dimensions = [320,320,640]
+mass_kg = 400000.0
+hull = 400000.0
+color = [0.42,0.46,0.50]
+model = "models/stations/station-core-32m.glb"
+collision = { shape = "cylinder" }
+kind = "utility"
+utility = { type = "factory", capability = "refinery", power_per_lane_w = 5000000, lanes = 2 }
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0,0.0,-32.0], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0,0.0,32.0], normal = [0.0,0.0,1.0] },
+{ name = "left", connector = "equipment", position_m = [-16.0,0.0,0.0], normal = [-1.0,0.0,0.0] },
+{ name = "right", connector = "equipment", position_m = [16.0,0.0,0.0], normal = [1.0,0.0,0.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,16.0,0.0], normal = [0.0,1.0,0.0] },
+{ name = "bottom", connector = "equipment", position_m = [0.0,-16.0,0.0], normal = [0.0,-1.0,0.0] }
+]
+
+[[parts]]
+id = "station_fuel_plant_32m"
+title = "32m station fuel plant"
+dimensions = [320,320,640]
+mass_kg = 400000.0
+hull = 400000.0
+color = [0.44,0.45,0.40]
+model = "models/stations/station-core-32m.glb"
+collision = { shape = "cylinder" }
+kind = "utility"
+utility = { type = "factory", capability = "fuel_plant", power_per_lane_w = 5000000, lanes = 2 }
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0,0.0,-32.0], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0,0.0,32.0], normal = [0.0,0.0,1.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,16.0,0.0], normal = [0.0,1.0,0.0] }
+]
+
+[[parts]]
+id = "station_factory_32m"
+title = "32m station fabricator"
+dimensions = [320,320,640]
+mass_kg = 400000.0
+hull = 400000.0
+color = [0.38,0.45,0.50]
+model = "models/stations/station-core-32m.glb"
+collision = { shape = "cylinder" }
+kind = "utility"
+utility = { type = "factory", capability = "fabricator", power_per_lane_w = 5000000, lanes = 2 }
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0,0.0,-32.0], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0,0.0,32.0], normal = [0.0,0.0,1.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,16.0,0.0], normal = [0.0,1.0,0.0] }
+]
+
+[[parts]]
+id = "station_shipyard_32m"
+title = "32m station shipyard"
+dimensions = [320,320,640]
+mass_kg = 600000.0
+hull = 400000.0
+color = [0.40,0.45,0.49]
+model = "models/stations/station-core-32m.glb"
+collision = { shape = "cylinder" }
+kind = "utility"
+utility = { type = "shipyard", power_per_lane_w = 10000000, lanes = 1, max_radius_m = 100.0 }
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0,0.0,-32.0], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0,0.0,32.0], normal = [0.0,0.0,1.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,16.0,0.0], normal = [0.0,1.0,0.0] }
+]
+
+[[parts]]
+id = "station_cargo_32m"
+title = "32m station warehouse"
+dimensions = [320,320,640]
+mass_kg = 100000.0
+hull = 400000.0
+color = [0.43,0.46,0.49]
+model = "models/stations/station-core-32m.glb"
+collision = { shape = "cylinder" }
+kind = "storage"
+capacity_m3 = 40000.0
+nodes = [
+{ name = "fore", connector = "station_backbone", position_m = [0.0,0.0,-32.0], normal = [0.0,0.0,-1.0] },
+{ name = "aft", connector = "station_backbone", position_m = [0.0,0.0,32.0], normal = [0.0,0.0,1.0] },
+{ name = "top", connector = "equipment", position_m = [0.0,16.0,0.0], normal = [0.0,1.0,0.0] }
+]
+
+[[resources]]
+id = "shield_coolant"
+title = "Shield radiator coolant (kg)"
+mass_kg = 1.0
+volume_m3 = 0.0002
+storage = { class = "liquid", usable_fraction = 0.95, containment_kg_m3 = 5.0 }

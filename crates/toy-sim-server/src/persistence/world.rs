@@ -1,6 +1,6 @@
 use crate::sim::{
-    gas, hardware, identity, infrastructure, intelligence, missiles, orrery, ownership, physics,
-    precision, registry, simulation, spatial, travel, vessel,
+    gas, hardware, identity, industry, infrastructure, intelligence, missiles, orrery, ownership,
+    physics, precision, registry, simulation, spatial, travel, vessel,
 };
 use anyhow::{Context, Result, ensure};
 use bevy::{
@@ -81,6 +81,8 @@ struct ShipRecord {
     missile: Option<missiles::Missile>,
     launchers: Option<missiles::Launchers>,
     retained_computer: bool,
+    industry: Option<industry::IndustryFacility>,
+    mine: Option<industry::MineSource>,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
     group: Option<Id>,
@@ -250,6 +252,18 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                         hull_energy_j: software.hull_energy_j,
                         shield_energy_j: software.shield_energy_j,
                     });
+            let hardware = hardware::snapshot(world, entity)
+                .context("ship hardware unavailable during checkpoint")?;
+            let facility = world.get::<industry::IndustryFacility>(entity).cloned();
+            let mine = world.get::<industry::MineSource>(entity).cloned();
+            industry::validate_saved(
+                facility.as_ref(),
+                mine.as_ref(),
+                &design.0,
+                &hardware.inventory,
+                &world.resource::<vessel::ShipCatalogue>().0,
+                &record.directory,
+            )?;
             record.ships.push(ShipRecord {
                 id: stable_id,
                 spatial_instance: world
@@ -263,8 +277,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                 blueprint: toml::to_string(&blueprint)?,
                 program,
                 pose: pose(world, entity)?,
-                hardware: hardware::snapshot(world, entity)
-                    .context("ship hardware unavailable during checkpoint")?,
+                hardware,
                 parts: world
                     .get::<hardware::PartDevices>(entity)
                     .into_iter()
@@ -296,6 +309,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                 missile: world.get::<missiles::Missile>(entity).cloned(),
                 launchers: world.get::<missiles::Launchers>(entity).cloned(),
                 retained_computer: world.get::<missiles::RetainedComputer>(entity).is_some(),
+                industry: facility,
+                mine,
                 control: control(world, entity),
                 iff: world
                     .get::<identity::Transponder>(entity)
@@ -403,6 +418,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
     }
     let ships = record.ships.iter().map(|ship| (ship.id, ship)).collect();
     validate_missiles(&record.ships, &ships)?;
+    validate_industry_ids(&record)?;
     Ok(postcard::to_stdvec(&record)?)
 }
 
@@ -434,6 +450,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     {
         ensure!(identities.insert(value), "duplicate persistent identity");
     }
+    validate_industry_ids(record)?;
     let groups: BTreeSet<_> = record.groups.iter().map(|group| group.id).collect();
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
@@ -509,6 +526,20 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             );
         }
     }
+    for job in record
+        .ships
+        .iter()
+        .filter_map(|ship| ship.industry.as_ref())
+        .flat_map(|facility| &facility.jobs)
+    {
+        if let industry::JobOutput::Ship(bytes) = &job.output {
+            let blueprint = toy_sim_ships::ShipBlueprint::from_bytes(bytes)?;
+            world
+                .resource_mut::<vessel::WasmRuntime>()
+                .0
+                .validate_program(blueprint.controller_bytes())?;
+        }
+    }
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
     for ship in &record.ships {
         ensure!(
@@ -538,6 +569,14 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         );
         let blueprint: toy_sim_ships::ShipBlueprint = toml::from_str(&ship.blueprint)?;
         let design = blueprint.compile(catalogue)?;
+        industry::validate_saved(
+            ship.industry.as_ref(),
+            ship.mine.as_ref(),
+            &design,
+            &ship.hardware.inventory,
+            catalogue,
+            &record.directory,
+        )?;
         if let Some(launchers) = &ship.launchers {
             ensure!(
                 launchers.next_handle > 0
@@ -739,6 +778,29 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                 && projectile.radius_m > 0.,
             "invalid saved projectile"
         );
+    }
+    Ok(())
+}
+
+fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
+    let mut identities: std::collections::BTreeSet<_> = record
+        .groups
+        .iter()
+        .map(|group| group.id)
+        .chain(record.accounts.iter().map(|account| account.id))
+        .chain(record.ships.iter().map(|ship| ship.id))
+        .chain(record.gates.iter().map(|gate| gate.id))
+        .chain(record.directory.players.keys().copied())
+        .chain(record.directory.organizations.keys().copied())
+        .chain(record.directory.sovereignties.keys().copied())
+        .collect();
+    for ship in &record.ships {
+        for job in ship.industry.iter().flat_map(|facility| &facility.jobs) {
+            ensure!(
+                identities.insert(job.view.id),
+                "duplicate persistent industry job identity"
+            );
+        }
     }
     Ok(())
 }
@@ -1071,6 +1133,12 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         if let Some(launchers) = ship.launchers {
             world.entity_mut(entity).insert(launchers);
         }
+        if let Some(facility) = ship.industry {
+            world.entity_mut(entity).insert(facility);
+        }
+        if let Some(mine) = ship.mine {
+            world.entity_mut(entity).insert(mine);
+        }
         relationships.push((
             entity,
             ship.presence,
@@ -1226,8 +1294,13 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     publish.run(world);
     travel::geometry::refresh(world);
     infrastructure::restore_navigation(world, &record.navigation)?;
+    industry::refresh_publication(world);
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "industry_tests.rs"]
+mod industry_tests;
 
 #[cfg(test)]
 mod tests {

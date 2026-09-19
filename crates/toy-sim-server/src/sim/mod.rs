@@ -6,6 +6,7 @@ pub mod displays;
 mod firmware_tests;
 pub mod gas;
 pub mod hardware;
+pub mod industry;
 pub mod infrastructure;
 pub mod missiles;
 pub mod presentation;
