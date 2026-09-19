@@ -184,6 +184,7 @@ mod tests {
             (farther, DVec3::Y * 15., 1., false),
         ] {
             index.insert(SpatialObject {
+                optical_luminosity_w: 0.0,
                 entity,
                 position: GalacticPosition::ZERO.offset_by(position),
                 radius_m,
@@ -244,6 +245,7 @@ mod tests {
             (clear, -DVec3::X * 15e6, 1e6, true),
         ] {
             index.insert(SpatialObject {
+                optical_luminosity_w: 0.0,
                 entity,
                 position: origin.offset_by(delta),
                 radius_m,
@@ -278,6 +280,7 @@ mod tests {
                 rng.random_range(-1e8..1e8),
             );
             index.insert(SpatialObject {
+                optical_luminosity_w: 0.0,
                 entity: world.spawn_empty().id(),
                 position: origin.offset_by(delta),
                 radius_m: if i % 7 == 0 {

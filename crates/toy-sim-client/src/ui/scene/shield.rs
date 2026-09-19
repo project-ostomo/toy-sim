@@ -1,5 +1,5 @@
 use super::{RenderSource, Shield};
-use crate::state::{CombatPublication, Contact, RenderTime};
+use crate::state::{CombatPublication, Optical, RenderTime};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use toy_sim_model::presentation::CombatEventKind;
@@ -21,7 +21,7 @@ fn temperature_boost(event_ns: u64, now_ns: u64) -> f32 {
 pub(super) fn update_flashes(
     clock: Res<RenderTime>,
     publications: Query<&CombatPublication>,
-    contacts: Query<(Option<&Contact>, Option<&crate::state::DisplayVisual>)>,
+    contacts: Query<(Option<&Optical>, Option<&super::glints::VisualContact>)>,
     ships: Query<&RenderSource>,
     mut shields: Query<(&ChildOf, &mut ThermalSphere), With<Shield>>,
 ) {
@@ -48,7 +48,9 @@ pub(super) fn update_flashes(
             .ok()
             .and_then(|source| contacts.get(source.0).ok())
             .and_then(|(contact, visual)| {
-                contact.map(|c| c.1).or_else(|| visual.map(|v| v.0.contact))
+                contact
+                    .and_then(|c| c.0.contact)
+                    .or_else(|| visual.and_then(|v| v.0))
             })
         else {
             continue;

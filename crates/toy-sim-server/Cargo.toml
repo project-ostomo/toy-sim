@@ -19,6 +19,7 @@ blake3 = "1.8"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 toy-sim-intel = { path = "../toy-sim-intel" }
 toy-sim-space = { path = "../toy-sim-space" }
+toy-sim-spatial = { path = "../toy-sim-spatial" }
 toy-sim-ship-api = { path = "../toy-sim-ship-api" }
 toy-sim-ship-wasm = { path = "../toy-sim-ship-wasm" }
 postcard = { version = "1.1", features = ["use-std"] }

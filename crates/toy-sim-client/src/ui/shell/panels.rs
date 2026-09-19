@@ -291,7 +291,7 @@ pub(super) fn draw(
                     if response.clicked() {
                         intents.push(Intent::Select(row.target));
                     }
-                    if response.double_clicked() {
+                    if response.double_clicked() && row.can_look {
                         intents.push(Intent::Look(Some(row.target)));
                     }
                     response.context_menu(|ui| {
@@ -301,7 +301,10 @@ pub(super) fn draw(
                                 ui.close();
                             }
                         }
-                        if ui.button("Look at").clicked() {
+                        if ui
+                            .add_enabled(row.can_look, egui::Button::new("Look at"))
+                            .clicked()
+                        {
                             intents.push(Intent::Look(Some(row.target)));
                             ui.close();
                         }

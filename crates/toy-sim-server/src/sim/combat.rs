@@ -8,10 +8,10 @@ use super::{
     session::Events,
 };
 use bevy::prelude::*;
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use toy_sim_model::{
-    AccountId, CombatEvent, CombatEventKind, ContactRef, Event, GalacticPosition, GroupId, Id,
-    Pose, Track, TrackId,
+    CombatEvent, CombatEventKind, ContactRef, Event, GalacticPosition, GroupId, Id, Pose, Track,
+    TrackId,
 };
 
 #[derive(Component, Clone, Copy)]
@@ -241,8 +241,9 @@ pub fn prune(world: &mut World, published: u64) {
 
 pub fn for_session(
     world: &World,
-    _account: AccountId,
     tracks: &BTreeMap<GroupId, BTreeMap<TrackId, Track>>,
+    optically_visible: &BTreeSet<Id>,
+    previously_visible: &BTreeSet<Id>,
     after_sequence: u64,
 ) -> Vec<CombatEvent> {
     let Some(history) = world.get_resource::<CombatHistory>() else {
@@ -279,7 +280,10 @@ pub fn for_session(
                     position,
                     energy,
                 } => CombatEventKind::Fired {
-                    source: contact(*source)?,
+                    source: optically_visible
+                        .contains(source)
+                        .then(|| contact(*source))
+                        .flatten()?,
                     position: *position,
                     energy_j: *energy,
                 },
@@ -292,7 +296,12 @@ pub fn for_session(
                     radius,
                 } => CombatEventKind::Projectile {
                     id: *id,
-                    source: Some(contact(*source)?),
+                    source: Some(
+                        optically_visible
+                            .contains(source)
+                            .then(|| contact(*source))
+                            .flatten()?,
+                    ),
                     start: *start,
                     end: *end,
                     end_time_ns: *end_time_ns,
@@ -307,7 +316,9 @@ pub fn for_session(
                     shields,
                 } => {
                     let (index, target) = targets.iter().enumerate().find_map(|(index, id)| {
-                        id.and_then(contact).map(|target| (index, target))
+                        id.filter(|id| optically_visible.contains(id))
+                            .and_then(contact)
+                            .map(|target| (index, target))
                     })?;
                     CombatEventKind::Impact {
                         target: Some(target),
@@ -326,7 +337,10 @@ pub fn for_session(
                     mass,
                     radius,
                 } => CombatEventKind::Destroyed {
-                    target: contact(*target)?,
+                    target: (optically_visible.contains(target)
+                        || previously_visible.contains(target))
+                    .then(|| contact(*target))
+                    .flatten()?,
                     pose: pose.clone(),
                     appearance: *appearance,
                     energy_j: *energy,
@@ -415,9 +429,33 @@ mod tests {
             });
         ingest(&mut world, &report, 10.0);
         world.despawn(ship);
-        assert!(for_session(&world, Id::new(), &BTreeMap::new(), 0).is_empty());
-        assert!(for_session(&world, Id::new(), &observed(id, 10.0), 0).is_empty());
-        let events = for_session(&world, Id::new(), &observed(id, 0.0), 0);
+        assert!(
+            for_session(
+                &world,
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeSet::new(),
+                0
+            )
+            .is_empty()
+        );
+        assert!(
+            for_session(
+                &world,
+                &observed(id, 10.0),
+                &BTreeSet::from([id]),
+                &BTreeSet::new(),
+                0
+            )
+            .is_empty()
+        );
+        let events = for_session(
+            &world,
+            &observed(id, 0.0),
+            &BTreeSet::new(),
+            &BTreeSet::from([id]),
+            0,
+        );
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sim_time_ns, 10_050_000_000);
         let CombatEventKind::Destroyed {
@@ -432,7 +470,16 @@ mod tests {
         assert_eq!(pose.position, position);
         assert_eq!(*energy_j, 80.0);
         assert_eq!(*image, Some(appearance));
-        assert!(for_session(&world, Id::new(), &observed(id, 0.0), events[0].sequence).is_empty());
+        assert!(
+            for_session(
+                &world,
+                &observed(id, 0.0),
+                &BTreeSet::new(),
+                &BTreeSet::from([id]),
+                events[0].sequence
+            )
+            .is_empty()
+        );
         assert!(
             world
                 .resource::<Events>()
@@ -440,6 +487,27 @@ mod tests {
                 .iter()
                 .all(|event| event.subject.is_none() && event.position.is_none())
         );
+    }
+
+    #[test]
+    fn shared_iff_and_previous_visibility_do_not_authorize_current_weapon_effects() {
+        let mut world = World::new();
+        let id = Id::new();
+        world.insert_resource(CombatHistory(VecDeque::from([Recorded {
+            sequence: 1,
+            time_ns: 100_000_000,
+            kind: RecordedKind::Fired {
+                source: id,
+                position: GalacticPosition::ZERO,
+                energy: 1000.,
+            },
+        }])));
+        let tracks = observed(id, 0.);
+        let none = BTreeSet::new();
+        let visible = BTreeSet::from([id]);
+        assert!(for_session(&world, &tracks, &none, &none, 0).is_empty());
+        assert!(for_session(&world, &tracks, &none, &visible, 0).is_empty());
+        assert_eq!(for_session(&world, &tracks, &visible, &none, 0).len(), 1);
     }
 
     #[test]
@@ -464,7 +532,16 @@ mod tests {
         assert_eq!(event.kind, "gate-transferred");
         assert_eq!(event.subject, Some(id));
         assert!(event.position.is_none());
-        assert!(for_session(&world, Id::new(), &observed(id, 0.0), 0).is_empty());
+        assert!(
+            for_session(
+                &world,
+                &observed(id, 0.0),
+                &BTreeSet::new(),
+                &BTreeSet::from([id]),
+                0
+            )
+            .is_empty()
+        );
     }
 
     #[test]

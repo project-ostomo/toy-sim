@@ -1,0 +1,13 @@
+[package]
+name = "toy-sim-spatial"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+toy-sim-space = { path = "../toy-sim-space" }
+glam.workspace = true
+ahash = "0.8"
+
+[dev-dependencies]
+rand = "0.10"
+rand_chacha = "0.10"

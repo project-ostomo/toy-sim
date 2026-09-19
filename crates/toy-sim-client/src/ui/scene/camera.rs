@@ -1,6 +1,6 @@
 use super::{ViewLayer, orbit, sky, sun_direction};
 use crate::state::{
-    Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, SystemSubscription,
+    Celestial, CelestialSystem, DisplayPose, Optical, OwnedShip, SystemSubscription,
     ViewObservation,
 };
 use crate::ui::{SelectedTarget, Selection};
@@ -130,7 +130,7 @@ pub(super) fn update_views(
         Option<&SystemSubscription>,
     )>,
     owned: Query<(&OwnedShip, &DisplayPose)>,
-    contacts: Query<(&Contact, &DisplayPose)>,
+    optical: Query<(&Optical, &DisplayPose)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window>,
     beacons: Query<(&crate::state::NavigationObject, &DisplayPose)>,
@@ -185,34 +185,28 @@ pub(super) fn update_views(
         }
         state.private = private;
         let mut followed = view.focused_ship;
-        let mut radius = contacts
-            .iter()
-            .find(|(contact, _)| contact.0.entity == followed)
-            .and_then(|(contact, _)| contact.0.radius_m)
-            .unwrap_or_else(|| own_ship.map_or(1., |(ship, _)| ship.0.radius_m))
-            as f32;
+        let mut radius = own_ship.map_or(1., |(ship, _)| ship.0.radius_m) as f32;
         if let Some(focus) = options.focus {
             let selected = match focus {
-                SelectedTarget::Contact(reference) => contacts
+                SelectedTarget::Contact(reference) => optical
                     .iter()
-                    .find(|(contact, pose)| {
-                        contact.1 == reference
-                            && contact.1.group == view.group
-                            && view.tracks.contains(&contact.0.id)
+                    .find(|(object, pose)| {
+                        object.0.contact == Some(reference)
+                            && object.0.view == view.id
                             && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
                     })
-                    .map(|(contact, pose)| {
-                        (
-                            pose.0.position,
-                            reference.track,
-                            contact.0.radius_m.unwrap_or(1.) as f32,
-                        )
+                    .map(|(object, pose)| {
+                        (pose.0.position, reference.track, object.0.radius_m as f32)
                     }),
                 SelectedTarget::Beacon(id) => beacons
                     .iter()
                     .find(|(beacon, pose)| {
                         beacon.0.id == id
                             && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
+                            && (beacon.0.gate_exit.is_some()
+                                || optical.iter().any(|(object, _)| {
+                                    object.0.view == view.id && object.0.known_entity == Some(id)
+                                }))
                     })
                     .map(|(beacon, pose)| (pose.0.position, id, beacon.0.radius_m as f32)),
                 SelectedTarget::Celestial(id) => bodies

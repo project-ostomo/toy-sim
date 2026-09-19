@@ -1,22 +1,16 @@
 use crate::{GalacticPosition, Star, StarId, min_brightness};
 use anyhow::{Result, ensure};
-use kdtree::{KdTree, distance::squared_euclidean};
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap, HashMap},
+    collections::{BinaryHeap, HashMap},
 };
+use toy_sim_spatial::{Entry, SpatialHash};
 
-struct Bucket {
-    tree: KdTree<f64, usize, [f64; 3]>,
-    max_luminosity: f64,
-    extent: f64,
-}
 /// Immutable after construction; share with Arc for lock-free read-only queries.
 pub struct StarCatalogue {
     stars: Vec<Star>,
     identities: HashMap<StarId, usize>,
-    anchor: GalacticPosition,
-    buckets: Vec<Bucket>,
+    index: SpatialHash,
 }
 #[derive(Clone, Copy)]
 pub struct VisibilityQuery<'a> {
@@ -62,9 +56,9 @@ impl PartialOrd for Ranked {
 }
 impl StarCatalogue {
     pub fn from_stars(stars: Vec<Star>) -> Result<Self> {
-        let anchor = stars.first().map_or(GalacticPosition::ZERO, |s| s.position);
+        ensure!(stars.len() <= u32::MAX as usize, "too many stars");
         let mut identities = HashMap::with_capacity(stars.len());
-        let mut buckets = BTreeMap::<i32, Bucket>::new();
+        let mut spatial = SpatialHash::default();
         for (index, star) in stars.iter().enumerate() {
             star.validate()?;
             ensure!(
@@ -72,25 +66,19 @@ impl StarCatalogue {
                 "duplicate star identity {:?}",
                 star.id
             );
-            // Adjacent buckets span a factor of two in intrinsic luminosity.
-            let key = star.luminosity.log2().floor() as i32;
-            let bucket = buckets.entry(key).or_insert_with(|| Bucket {
-                tree: KdTree::with_capacity(3, 32),
-                max_luminosity: 0.,
-                extent: 0.,
-            });
-            let point = star.position.relative_to(anchor).to_array();
-            bucket.max_luminosity = bucket.max_luminosity.max(star.luminosity);
-            bucket.extent = bucket
-                .extent
-                .max(point.iter().map(|v| v.abs()).fold(0., f64::max));
-            bucket.tree.add(point, index)?;
+            spatial.insert(
+                index as u32,
+                Entry {
+                    position: star.position,
+                    radius_m: 0.0,
+                    luminosity: star.luminosity,
+                },
+            );
         }
         Ok(Self {
             stars,
             identities,
-            anchor,
-            buckets: buckets.into_values().collect(),
+            index: spatial,
         })
     }
     pub fn stars(&self) -> &[Star] {
@@ -103,7 +91,7 @@ impl StarCatalogue {
         self.stars.is_empty()
     }
     pub fn bucket_count(&self) -> usize {
-        self.buckets.len()
+        self.index.bucket_count()
     }
     pub fn star(&self, id: StarId) -> Option<&Star> {
         self.identities.get(&id).map(|&i| &self.stars[i])
@@ -114,44 +102,29 @@ impl StarCatalogue {
             radius.is_finite() && radius >= 0.,
             "radius must be finite and nonnegative"
         );
-        let point = origin.relative_to(self.anchor).to_array();
-        let mut found = Vec::new();
-        for bucket in &self.buckets {
-            for (_, &id) in bucket.tree.within(
-                &point,
-                padded_radius_squared(bucket, point, radius),
-                &squared_euclidean,
-            )? {
-                if self.stars[id].position.relative_to(origin).length_squared() <= radius * radius {
-                    found.push(id);
-                }
-            }
-        }
-        Ok(found)
+        Ok(self
+            .index
+            .within_radius(origin, radius)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .collect())
     }
+
     pub fn nearest(&self, origin: GalacticPosition) -> Result<Option<(usize, f64)>> {
-        let point = origin.relative_to(self.anchor).to_array();
-        let mut best: Option<(usize, f64)> = None;
-        for bucket in &self.buckets {
-            for (_, &id) in bucket.tree.nearest(&point, 1, &squared_euclidean)? {
-                let d = self.stars[id].position.relative_to(origin).length();
-                if best.is_none_or(|(_, old)| d < old) {
-                    best = Some((id, d));
-                }
-            }
-        }
-        // The KD-tree uses approximate f64 points. Refine in a conservatively
-        // padded radius to handle coincident rounded points and tiny separations.
-        if let Some((_, radius)) = best {
-            for id in self.within_radius(origin, radius)? {
-                let d = self.stars[id].position.relative_to(origin).length();
-                if best.is_none_or(|(old_id, old)| d < old || (d == old && id < old_id)) {
-                    best = Some((id, d));
-                }
-            }
-        }
-        Ok(best)
+        Ok(self
+            .index
+            .nearest(origin, f64::INFINITY, 1)
+            .first()
+            .map(|&id| {
+                let index = id as usize;
+                (
+                    index,
+                    self.stars[index].position.relative_to(origin).length(),
+                )
+            }))
     }
+
     pub fn visible(
         &self,
         origin: GalacticPosition,
@@ -161,41 +134,33 @@ impl StarCatalogue {
             query.min_brightness.is_finite() && query.min_brightness >= 0.,
             "brightness threshold must be finite and nonnegative"
         );
-        let point = origin.relative_to(self.anchor).to_array();
-        let mut result = VisibleStars::default();
+        let visible = self.index.visible(origin, query.min_brightness);
+        let mut result = VisibleStars {
+            candidates: visible.stats.candidates,
+            buckets_searched: visible.stats.buckets_searched,
+            ..Default::default()
+        };
         let mut best = BinaryHeap::new();
-        for bucket in &self.buckets {
-            result.buckets_searched += 1;
-            let radius = (bucket.max_luminosity / query.min_brightness).sqrt();
-            for (_, &id) in bucket.tree.within(
-                &point,
-                padded_radius_squared(bucket, point, radius),
-                &squared_euclidean,
-            )? {
-                result.candidates += 1;
-                let star = &self.stars[id];
-                if query.excluded.contains(&star.id) {
-                    continue;
-                }
-                let d2 = star.position.relative_to(origin).length_squared();
-                if d2 <= 0. {
-                    continue;
-                }
-                let brightness = star.luminosity / d2;
-                if brightness < query.min_brightness {
-                    continue;
-                }
-                result.matched += 1;
-                if query.max_stars == 0 {
-                    continue;
-                }
-                best.push(Ranked {
-                    brightness,
-                    index: id,
-                });
-                if best.len() > query.max_stars {
-                    best.pop();
-                }
+        for id in visible.ids {
+            let index = id as usize;
+            let star = &self.stars[index];
+            if query.excluded.contains(&star.id) {
+                continue;
+            }
+            let d2 = star.position.relative_to(origin).length_squared();
+            if d2 <= 0.0 {
+                continue;
+            }
+            result.matched += 1;
+            if query.max_stars == 0 {
+                continue;
+            }
+            best.push(Ranked {
+                brightness: star.luminosity / d2,
+                index,
+            });
+            if best.len() > query.max_stars {
+                best.pop();
             }
         }
         result.indices = best
@@ -205,12 +170,4 @@ impl StarCatalogue {
             .collect();
         Ok(result)
     }
-}
-fn padded_radius_squared(bucket: &Bucket, point: [f64; 3], radius: f64) -> f64 {
-    // KD points and the observer have independently rounded coordinates. Expand
-    // broad-phase radii, then filter using precise relative positions. Padding
-    // is negligible astronomically but prevents false negatives near boundaries.
-    let extent = point.iter().map(|v| v.abs()).fold(bucket.extent, f64::max);
-    let padding = 32. * f64::EPSILON * (extent + radius) + 1e-6;
-    (radius + padding).powi(2)
 }

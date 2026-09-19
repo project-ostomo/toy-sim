@@ -92,8 +92,8 @@ pub(super) fn selected_item(
             ui,
             Icon::Look,
             "Look at",
-            target.is_some(),
-            "Center the camera on this object",
+            row.is_some_and(|row| row.can_look),
+            "Center the camera on a visible object within 100 km",
         )
         .clicked()
         {

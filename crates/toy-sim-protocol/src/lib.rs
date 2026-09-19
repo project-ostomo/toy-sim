@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 18;
+pub const VERSION: u16 = 19;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -79,6 +79,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
             section(&mut body, 8, &frame.presentation)?;
             section(&mut body, 9, &frame.society)?;
             section(&mut body, 10, &frame.calendar_unix_ms)?;
+            section(&mut body, 11, &frame.optical)?;
             1
         }
         Message::Input(input) => {
@@ -107,7 +108,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
     let kind = u16::from_le_bytes(bytes[6..8].try_into()?);
     let mut sections = BTreeMap::new();
     let mut body = &bytes[HEADER_SIZE..];
-    let known = if kind == 1 { 10 } else { 1 };
+    let known = if kind == 1 { 11 } else { 1 };
     let mut count = 0;
     while !body.is_empty() {
         count += 1;
@@ -132,6 +133,7 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
         1 => {
             let clock: Clock = read(&sections, 1)?;
             let frame = Frame {
+                optical: read(&sections, 11)?,
                 calendar_unix_ms: read(&sections, 10)?,
                 society: read(&sections, 9)?,
                 presentation: read(&sections, 8)?,
@@ -229,18 +231,37 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
             "private publication requires ship telemetry"
         );
     }
-    let mut visual_tracks = BTreeSet::new();
-    for visual in &frame.presentation.visuals {
+    ensure!(
+        frame.optical.len() <= optical::MAX_OPTICAL_OBSERVATIONS,
+        "optical observation limit"
+    );
+    let known_contacts: BTreeSet<_> = frame
+        .tracks
+        .iter()
+        .flat_map(|(group, tracks)| tracks.iter().map(move |track| (*group, track.id)))
+        .collect();
+    let mut optical_ids = BTreeSet::new();
+    for observation in &frame.optical {
         ensure!(
-            visual_tracks.insert((visual.contact.group, visual.contact.track))
-                && frame
-                    .tracks
-                    .get(&visual.contact.group)
-                    .is_some_and(|tracks| tracks
-                        .iter()
-                        .any(|track| track.id == visual.contact.track)),
-            "visual requires observed track"
+            optical_ids.insert((observation.view, observation.id))
+                && frame.views.iter().any(|view| view.id == observation.view),
+            "duplicate optical observation or unknown view"
         );
+        ensure!(
+            pose_valid(&observation.pose)
+                && observation.radius_m.is_finite()
+                && observation.radius_m > 0.
+                && observation.luminosity_w.is_finite()
+                && observation.luminosity_w >= 0.,
+            "invalid optical observation"
+        );
+        if let Some(contact) = observation.contact {
+            ensure!(
+                known_contacts.contains(&(contact.group, contact.track)),
+                "optical contact references unknown track"
+            );
+        }
+        presentation::validate_visual(&observation.visual)?;
     }
 
     ensure!(
@@ -589,6 +610,7 @@ mod tests {
 
     fn empty_frame() -> Frame {
         Frame {
+            optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
             presentation: PresentationFrame::default(),
@@ -679,16 +701,74 @@ mod tests {
         });
         assert!(encode(&Message::State(frame.clone())).is_err());
         frame.presentation.combat.clear();
-        frame.presentation.visuals.push(TrackVisual {
-            contact: ContactRef {
-                group: Id([2; 16]),
-                track: Id([3; 16]),
+        frame.optical.push(optical::OpticalObservation {
+            view: 1,
+            id: Id([2; 16]),
+            spatial_instance: Id([3; 16]),
+            known_entity: None,
+            contact: None,
+            pose: Pose::default(),
+            radius_m: 5.,
+            luminosity_w: 100.,
+            appearance: None,
+            visual: ShipVisual {
+                engines: Vec::new(),
+                turrets: Vec::new(),
+                shield: None,
             },
-            engines: Vec::new(),
-            turrets: Vec::new(),
-            shield: None,
         });
         assert!(encode(&Message::State(frame)).is_err());
+    }
+
+    #[test]
+    fn anonymous_optical_observations_roundtrip_without_radio_tracks() {
+        let mut frame = empty_frame();
+        frame.views.push(ViewState {
+            focused_ship: None,
+            origin: GalacticPosition::ZERO,
+            id: 7,
+            revision: 1,
+            group: Id([4; 16]),
+            tracks: Vec::new(),
+            completion: Completion::Complete,
+        });
+        let observation = optical::OpticalObservation {
+            view: 7,
+            id: Id([5; 16]),
+            spatial_instance: Id([6; 16]),
+            known_entity: None,
+            contact: None,
+            pose: Pose::default(),
+            radius_m: 10.,
+            luminosity_w: 42.,
+            appearance: Some([7; 32]),
+            visual: ShipVisual {
+                engines: Vec::new(),
+                turrets: Vec::new(),
+                shield: None,
+            },
+        };
+        frame.optical.push(observation.clone());
+        let message = Message::State(frame.clone());
+        assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
+
+        frame.optical.push(observation);
+        assert!(validate_frame(&frame).is_err());
+        frame.optical.pop();
+        frame.optical[0].luminosity_w = f64::NAN;
+        assert!(validate_frame(&frame).is_err());
+        frame.optical[0].luminosity_w = 0.;
+        frame.optical[0].contact = Some(ContactRef {
+            group: Id([4; 16]),
+            track: Id([8; 16]),
+        });
+        assert!(validate_frame(&frame).is_err());
+        frame.optical[0].contact = None;
+        frame.optical[0].visual.shield = Some(ShieldVisual {
+            temperature_k: 1000.,
+            coverage: 1.1,
+        });
+        assert!(validate_frame(&frame).is_err());
     }
 
     #[test]

@@ -465,7 +465,7 @@ fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instrume
     }
 }
 
-pub fn visual(world: &World, entity: Entity, contact: ContactRef) -> Option<TrackVisual> {
+pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
     let design = &world.get::<ShipDesign>(entity)?.0;
     let state = hardware::snapshot(world, entity)?;
     let mut engines = Vec::new();
@@ -500,8 +500,7 @@ pub fn visual(world: &World, entity: Entity, contact: ContactRef) -> Option<Trac
             _ => {}
         }
     }
-    Some(TrackVisual {
-        contact,
+    Some(ShipVisual {
         engines,
         turrets,
         shield: state.shield_active().then(|| ShieldVisual {

@@ -4,36 +4,26 @@ use glam::DVec3;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use toy_sim_model::*;
-
-type Cell = (i128, i128, i128);
-
-fn cell(position: GalacticPosition) -> Cell {
-    const SIZE: i128 = 100_000_000_000_000;
-    (
-        position.x.div_euclid(SIZE),
-        position.y.div_euclid(SIZE),
-        position.z.div_euclid(SIZE),
-    )
-}
+use toy_sim_spatial::{Entry, SpatialHash};
 
 #[derive(Clone, Default)]
 pub struct Snapshot {
     pub tick: u64,
     pub tracks: BTreeMap<TrackId, Arc<Track>>,
-    cells: BTreeMap<Cell, BTreeSet<TrackId>>,
+    spatial: SpatialHash,
+    slots: BTreeMap<TrackId, u32>,
+    spatial_ids: Vec<Option<TrackId>>,
+    free_slots: Vec<u32>,
     tags: BTreeMap<Tag, BTreeSet<TrackId>>,
 }
 
 impl Snapshot {
     fn remove(&mut self, id: TrackId) {
         if let Some(track) = self.tracks.remove(&id) {
-            let key = cell(track.pose.position);
-            if let Some(ids) = self.cells.get_mut(&key) {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.cells.remove(&key);
-                }
-            }
+            let slot = self.slots.remove(&id).unwrap();
+            self.spatial.remove(slot);
+            self.spatial_ids[slot as usize] = None;
+            self.free_slots.push(slot);
             for tag in &track.tags {
                 if let Some(ids) = self.tags.get_mut(tag) {
                     ids.remove(&id);
@@ -47,10 +37,21 @@ impl Snapshot {
 
     pub fn put(&mut self, track: Track) {
         self.remove(track.id);
-        self.cells
-            .entry(cell(track.pose.position))
-            .or_default()
-            .insert(track.id);
+        let slot = self.free_slots.pop().unwrap_or_else(|| {
+            let slot = u32::try_from(self.spatial_ids.len()).expect("too many sensor tracks");
+            self.spatial_ids.push(None);
+            slot
+        });
+        self.spatial.insert(
+            slot,
+            Entry {
+                position: track.pose.position,
+                radius_m: 0.0,
+                luminosity: 0.0,
+            },
+        );
+        self.slots.insert(track.id, slot);
+        self.spatial_ids[slot as usize] = Some(track.id);
         for tag in &track.tags {
             self.tags.entry(tag.clone()).or_default().insert(track.id);
         }

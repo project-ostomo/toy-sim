@@ -110,10 +110,13 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
     assert_eq!(observed.screens.len(), 1);
     assert!(observed.screens[0].frame.as_ref().unwrap().draws.len() >= 5);
     assert!(!observed.tracks[&group].is_empty());
-    let appearance = observed.tracks[&group]
+    let own_optical = observed
+        .optical
         .iter()
-        .find_map(|track| track.appearance)
-        .unwrap();
+        .find(|observation| observation.known_entity == Some(first.ships[0].ship))
+        .expect("focused ship must arrive through the optical snapshot");
+    assert_eq!(own_optical.view, observed.views[0].id);
+    let appearance = own_optical.appearance.unwrap();
     let asset = tokio::time::timeout(Duration::from_secs(5), client.assets.fetch(appearance))
         .await
         .unwrap()
@@ -213,6 +216,15 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             .any(|track| track.entity == Some(first.ships[0].ship))
     );
     assert_eq!(shared.ships.len(), 1);
+    assert!(
+        shared.optical.is_empty(),
+        "a radio-only view has no optical vantage"
+    );
+    assert!(
+        shared.tracks[&group]
+            .iter()
+            .all(|track| track.appearance.is_none())
+    );
     drop(other);
     let start_tick = observed.tick;
     tokio::time::timeout(Duration::from_secs(20), async {

@@ -9,6 +9,8 @@ use super::intelligence::Group;
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 
+mod optical;
+
 #[derive(Resource)]
 pub struct Clock {
     pub rate: f64,
@@ -45,6 +47,7 @@ pub struct Session {
     sent_event: u64,
     results: VecDeque<CommandResult>,
     seen: BTreeSet<Id>,
+    optical: optical::OpticalSession,
 }
 
 pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
@@ -71,6 +74,7 @@ pub fn connect(world: &mut World, account: AccountId) -> Result<Entity> {
             sent_event,
             results: VecDeque::new(),
             seen: BTreeSet::new(),
+            optical: optical::OpticalSession::default(),
         })
         .id())
 }
@@ -661,27 +665,21 @@ impl Session {
                 super::presentation::ship(world, *entity, self.instruments.contains(id))
             })
             .collect();
-        for (&group, group_tracks) in &tracks {
-            for track in group_tracks.values() {
-                if track.observed_tick != tick {
-                    continue;
-                }
-                if let Some(entity) = track.entity.and_then(|id| identity::lookup(world, id).ok()) {
-                    if let Some(visual) = super::presentation::visual(
-                        world,
-                        entity,
-                        ContactRef {
-                            group,
-                            track: track.id,
-                        },
-                    ) {
-                        presentation.visuals.push(visual);
-                    }
-                }
+        let (optical, optically_visible) =
+            self.optical.observe(world, self.account, &views, &tracks);
+        presentation.combat = super::combat::for_session(
+            world,
+            &tracks,
+            &optically_visible,
+            &self.optical.previous_entities,
+            self.sent_event,
+        );
+        self.optical.previous_entities = optically_visible;
+        for group in tracks.values_mut() {
+            for track in group.values_mut() {
+                track.appearance = None;
             }
         }
-        presentation.combat =
-            super::combat::for_session(world, self.account, &tracks, self.sent_event);
         let owner = identity::lookup(world, self.account)?;
         let debug = world
             .get::<Account>(owner)
@@ -817,6 +815,7 @@ impl Session {
             .collect();
         self.sent_event = published_event;
         Ok(Frame {
+            optical,
             calendar_unix_ms: toy_sim_model::calendar::now_unix_ms(),
             society: super::ownership::snapshot(world, self.account),
             presentation,

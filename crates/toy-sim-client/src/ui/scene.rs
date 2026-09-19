@@ -1,7 +1,7 @@
 use crate::assets::{Appearance, ShipDesign};
-use crate::state::SessionInfo;
 mod atmosphere;
 mod camera;
+mod glints;
 mod navigation_hud;
 mod projection;
 mod transit;
@@ -14,8 +14,8 @@ mod shield;
 mod sky;
 
 use crate::state::{
-    Celestial, CelestialSystem, Contact, DestroyedAt, DisplayPose, DisplayVisual, OwnedShip,
-    PresentationSet, RenderTime, SystemSubscription, ViewObservation,
+    Celestial, CelestialSystem, DisplayPose, DisplayVisual, Optical, OwnedShip, PresentationSet,
+    SystemSubscription, ViewObservation,
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 use std::collections::{HashMap, HashSet};
@@ -86,6 +86,7 @@ pub(super) fn install(app: &mut App) {
         toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
         camera::align_on_double_click,
     );
+    glints::install(app);
     transit::install(app);
     navigation_hud::install(app);
     sky::install(app);
@@ -129,16 +130,18 @@ fn sun_direction(
 
 fn sync_ships(
     mut commands: Commands,
-    clock: Res<RenderTime>,
-    session: Res<SessionInfo>,
-    views: Query<(Entity, &ViewObservation, &ViewCamera)>,
-    contacts: Query<(
-        Entity,
-        &Contact,
-        &DisplayPose,
-        Option<&DestroyedAt>,
-        Option<&Appearance>,
-    )>,
+    views: Query<
+        (
+            Entity,
+            &ViewObservation,
+            &ViewCamera,
+            &Camera,
+            &Projection,
+            &Transform,
+        ),
+        Without<ShipMesh>,
+    >,
+    optical: Query<(Entity, &Optical, &DisplayPose, Option<&Appearance>)>,
     owned: Query<(
         Entity,
         &OwnedShip,
@@ -161,10 +164,16 @@ fn sync_ships(
         .iter()
         .map(|(entity, view, source, _, _)| ((view.0, source.0), entity))
         .collect();
-    let inactive: HashSet<_> = owned.iter().map(|(_, ship, _, _)| ship.0.ship).collect();
     let mut visible = HashSet::new();
-    for (view_entity, observation, camera) in &views {
+    for (view_entity, observation, camera, render_camera, projection, camera_transform) in &views {
         let view = &observation.0;
+        let height = render_camera
+            .physical_viewport_size()
+            .map_or(1080., |size| size.y.max(1) as f64);
+        let fov = match projection {
+            Projection::Perspective(projection) => projection.fov as f64,
+            _ => 1.,
+        };
         let private_view = owned
             .iter()
             .find(|(_, ship, _, _)| Some(ship.0.ship) == view.focused_ship)
@@ -174,6 +183,9 @@ fn sync_ships(
         for (source, ship, pose, appearance) in &owned {
             if Some(ship.0.ship) != view.focused_ship {
                 continue;
+            }
+            if appearance.is_none() {
+                commands.entity(source).insert(crate::assets::MeshDemand);
             }
             let (Some(pose), Some(appearance)) = (pose, appearance) else {
                 continue;
@@ -220,21 +232,50 @@ fn sync_ships(
                 ViewLayer(camera.layer),
                 RenderLayers::layer(camera.layer),
             ));
+            if private_view {
+                commands.entity(entity).remove::<glints::MeshLod>();
+            } else {
+                let offset = pose.0.position.relative_to(camera.origin)
+                    - camera_transform.translation.as_dvec3();
+                let forward = camera_transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
+                commands.entity(entity).insert(glints::MeshLod::at(
+                    ship.0.radius_m,
+                    offset.length(),
+                    offset.dot(forward),
+                    height,
+                    fov,
+                ));
+            }
             visible.insert(entity);
         }
         if private_view {
             continue;
         }
-        let membership: HashSet<_> = view.tracks.iter().copied().collect();
-        for (source, contact, pose, destroyed, appearance) in &contacts {
-            let track = &contact.0;
-            if contact.1.group != view.group
-                || !membership.contains(&track.id)
-                || destroyed.is_some_and(|at| clock.display_ns >= at.0)
-                || session.tick.saturating_sub(track.observed_tick) > 10
-                || track.entity.is_some_and(|id| inactive.contains(&id))
+        for (source, optical, pose, appearance) in &optical {
+            let optical = &optical.0;
+            if optical.view != view.id
+                || optical
+                    .known_entity
+                    .is_some_and(|id| Some(id) == view.focused_ship)
             {
                 continue;
+            }
+            let displacement = pose.0.position.relative_to(camera.origin);
+            let relative_to_camera = displacement - camera_transform.translation.as_dvec3();
+            let forward = camera_transform.rotation.as_dquat() * bevy::math::DVec3::NEG_Z;
+            let depth = relative_to_camera.dot(forward);
+            let pixels = if depth < -optical.radius_m {
+                0.
+            } else {
+                glints::diameter_pixels(optical.radius_m, depth, height, fov)
+            };
+            let keep_mesh =
+                glints::mesh_needed(pixels, existing.contains_key(&(view_entity, source)));
+            if !keep_mesh {
+                continue;
+            }
+            if appearance.is_none() {
+                commands.entity(source).insert(crate::assets::MeshDemand);
             }
             let Some(appearance) = appearance else {
                 continue;
@@ -244,10 +285,6 @@ fn sync_ships(
                 continue;
             };
             let design = &design.0;
-            let displacement = pose.0.position.relative_to(camera.origin);
-            if displacement.length() > 1e7 {
-                continue;
-            }
             let transform = Transform::from_translation(displacement.as_vec3())
                 .with_rotation(Quat::from_array(pose.0.rotation.map(|value| value as f32)));
             let existing = existing
@@ -267,6 +304,13 @@ fn sync_ships(
                 ViewMember(view_entity),
                 RenderSource(source),
                 ShipMesh { appearance: hash },
+                glints::MeshLod::at(
+                    optical.radius_m,
+                    relative_to_camera.length(),
+                    depth,
+                    height,
+                    fov,
+                ),
                 ViewLayer(camera.layer),
                 RenderLayers::layer(camera.layer),
             ));
@@ -550,20 +594,24 @@ fn mechanism_time(
 fn own_visuals(
     mut commands: Commands,
     ships: Query<(Entity, &OwnedShip)>,
-    contacts: Query<(&Contact, &DisplayVisual)>,
+    optical: Query<(&Optical, &DisplayVisual)>,
+    views: Query<&ViewObservation>,
 ) {
     for (entity, ship) in &ships {
-        if ship.0.presence == toy_sim_model::travel::Presence::Space {
-            if let Some((_, visual)) = contacts
-                .iter()
-                .find(|(contact, _)| contact.0.entity == Some(ship.0.ship))
-            {
-                commands
-                    .entity(entity)
-                    .insert(DisplayVisual(visual.0.clone()));
-            }
+        if let Some((observation, visual)) = optical.iter().find(|(observation, _)| {
+            observation.0.known_entity == Some(ship.0.ship)
+                && views.iter().any(|view| {
+                    view.0.id == observation.0.view && view.0.focused_ship == Some(ship.0.ship)
+                })
+        }) {
+            commands.entity(entity).insert((
+                DisplayVisual(visual.0.clone()),
+                glints::VisualContact(observation.0.contact),
+            ));
         } else {
-            commands.entity(entity).remove::<DisplayVisual>();
+            commands
+                .entity(entity)
+                .remove::<(DisplayVisual, glints::VisualContact)>();
         }
     }
 }

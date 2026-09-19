@@ -2,7 +2,7 @@
 
 The simulation runs only in `toy-sim-server`. Every UI is a network client: the standalone `toy-sim-client`, and `toy-sim-debug`, which starts its own server process and connects to it over loopback TCP. This guide describes the server process, its configuration, the transport and application protocol, the intelligence model that decides what each account can see, presentation data, display instances, docking and travel, client playback, the client UI, and the benchmark.
 
-There is no persistence. The world, accounts' information-group keys, tracks and sessions exist only in memory. Every server start and every debug reset creates a new world ID. Input frames that carry another world ID are discarded, allowing connections to survive inputs already in transit during a reset.
+The server restores durable world state from SQLite checkpoints, including ownership, information-group keys, ships and installed WASM programs. Sessions reconnect after a restart. A debug reset creates a new world ID; inputs carrying another world ID are discarded so existing connections can survive a reset. Checkpoints default to every 900 seconds, with initial and graceful-shutdown saves. Unsupported or corrupt newest checkpoints stop startup explicitly.
 
 ## Crates
 
@@ -11,6 +11,7 @@ There is no persistence. The world, accounts' information-group keys, tracks and
 | `toy-sim-model` | [crates/toy-sim-model](../crates/toy-sim-model) | Shared serde types: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel orders, drawing lists, and the program query/action types used by `world_query`/`world_command` |
 | `toy-sim-protocol` | [crates/toy-sim-protocol](../crates/toy-sim-protocol) | Application message framing, sections and validation limits |
 | `toy-sim-net` | [crates/toy-sim-net](../crates/toy-sim-net) | TCP handshake, record encryption, Zstd compression and picomux multiplexing |
+| `toy-sim-spatial` | [crates/toy-sim-spatial](../crates/toy-sim-spatial) | Shared spatial hash for brightness, radius, nearest-neighbour, segment and metered cursor queries |
 | `toy-sim-intel` | [crates/toy-sim-intel](../crates/toy-sim-intel) | Measurements, immutable track snapshots and metered queries |
 | `toy-sim-universe` | [crates/toy-sim-universe](../crates/toy-sim-universe) | Orrery configuration, Keplerian solver, star catalogue and atmosphere tables |
 | `toy-sim-server` | [crates/toy-sim-server](../crates/toy-sim-server) | The Bevy ECS simulation in private modules under [src/sim](../crates/toy-sim-server/src/sim), the simulation loop, TCP listener, asset streams, configuration, key provisioning and the benchmark example |
@@ -53,7 +54,7 @@ toy-sim-server <config.toml> [--ready-file PATH] [--shutdown-on-stdin-close]
 - `--ready-file PATH` writes the actual listening address (for example `127.0.0.1:41234`) to `PATH` once the scenario is built and the listener is bound. The file is removed on shutdown.
 - `--shutdown-on-stdin-close` starts a thread that reads standard input and stops the server when it reaches end of file or fails. A parent process uses this to tie the server's lifetime to its own.
 
-Any other argument is an error. The server also stops on Ctrl-C and when the simulation thread ends.
+Any other argument is an error. The server also stops on Ctrl-C, SIGTERM on Unix, and when the simulation thread ends. Graceful shutdown writes a final checkpoint. SIGUSR1 requests a checkpoint on Unix.
 
 ### Configuration files
 
@@ -61,21 +62,21 @@ Configuration files reject unknown fields.
 
 | File | Fields |
 | --- | --- |
-| Server | `listen` (a socket address; port 0 picks a free port); `server_secret` (64 hex characters, the Ed25519 secret key); `[[accounts]]` entries with `id` (UUID) and `public_key` (64 hex); optional `debug_account` (UUID); optional `ship` (path to a `.ship` blueprint, relative paths resolved against the configuration file's directory) |
+| Server | `listen` (a socket address; port 0 picks a free port); `server_secret` (64 hex characters, the Ed25519 secret key); `[[accounts]]` entries with `id` (UUID) and `public_key` (64 hex); optional `debug_account` (UUID); optional `ship` (path to a `.ship` blueprint, relative paths resolved against the configuration file's directory); optional `[persistence]` with `enabled` (default true), `path` (default `world.sqlite`, relative to this directory) and `interval_seconds` (default 900) |
 | Client | `address`; `server_public_key` (64 hex); `account` (UUID); `account_secret` (64 hex) |
 
 `debug_account` must be one of the configured accounts, or startup fails with "debug account must be authorized". That account gets the debug capabilities described under [Debug accounts](#debug-accounts).
 
 ### Debug launcher
 
-`toy-sim-debug [--ship PATH] [--server EXECUTABLE] [--check]` ([main.rs](../apps/toy-sim-debug/src/main.rs)):
+`toy-sim-debug [--ship PATH] [--server EXECUTABLE] [--state-dir PATH] [--ephemeral] [--check]` ([main.rs](../apps/toy-sim-debug/src/main.rs)):
 
 - Without `--server`, the server executable is `toy-sim-server` in the same directory as the launcher's executable. If it is not a file, the launcher fails with "build toy-sim-server first, or pass --server EXECUTABLE".
-- It creates a temporary directory (mode `0700` on Unix) and writes `server.toml` (mode `0600`) with `listen = "127.0.0.1:0"`, a random server key, one random account that is also `debug_account`, and the canonicalized `--ship` path.
+- It keeps credentials and checkpoints under `$XDG_STATE_HOME/toy-sim/debug`, or `~/.local/state/toy-sim/debug`. `--state-dir` chooses another world; `--ephemeral` creates a disposable directory. Credentials are reused on later launches, and a directory lock prevents concurrent launchers from sharing the same state. The generated configuration listens on `127.0.0.1:0` and designates the local account as `debug_account`. A saved world restores its stored blueprint even if the original `--ship` file has disappeared.
 - It starts the server with `--ready-file` and `--shutdown-on-stdin-close` and a piped standard input. It waits up to 60 s for a parseable address in the ready file, and fails if the server exits first.
 - It connects with `toy_sim_client::connect`. The debug session uses the same TCP, handshake, encryption, compression, multiplexing and session code as a remote client.
 - With `--check`, it waits up to 10 s for a state frame, fails with "server did not provision the debug ship" if the frame has no ship telemetry, and prints the address, tick and ship count. Otherwise it runs the client UI with a playback target depth of 1.
-- On exit, it drops the server's standard input, waits up to 5 s, kills the server if it is still running, and removes the temporary directory.
+- On exit, it drops the server's standard input and waits up to 120 s for shutdown and its final checkpoint. A server still running after that deadline is killed. Only disposable state directories are removed.
 
 The ship editor's "Launch sim" runs `toy-sim-debug --ship <snapshot>` ([ship-editor.md](ship-editor.md#launching-the-debug-client)).
 
@@ -94,7 +95,7 @@ After spawning, bootstrap runs identity, acquisition, coasting, fusion and publi
 
 ## Server loop
 
-`toy_sim_server::launch::run` ([launch.rs](../crates/toy-sim-server/src/launch.rs)) reads the configuration, binds the listener, and builds the scenario on a thread named `simulation`. Once the scenario and its asset map exist, it writes the ready file and runs the listener. `toy_sim_server::run` ([lib.rs](../crates/toy-sim-server/src/lib.rs)) owns the Bevy `App` on that thread and loops every 100 ms of wall-clock time:
+`toy_sim_server::launch::run` ([launch.rs](../crates/toy-sim-server/src/launch.rs)) reads the configuration, binds the listener, and builds the scenario on a thread named `simulation`. It locks and reads the configured checkpoint database before choosing a bootstrap design, restores any saved world, and commits the initial checkpoint for a new world before publishing readiness. Once the world and its asset map exist, it writes the ready file and runs the listener. `toy_sim_server::run` ([lib.rs](../crates/toy-sim-server/src/lib.rs)) owns the Bevy `App` on that thread and loops every 100 ms of wall-clock time:
 
 1. Accepts new connections into sessions. If 1024 sessions already exist, the connection is dropped.
 2. Applies up to 4 queued input frames per session. A frame that fails validation, or a closed input channel, disconnects that session. Valid frames for another world are discarded before checking session sequence numbers.
@@ -103,7 +104,7 @@ After spawning, bootstrap runs identity, acquisition, coasting, fusion and publi
 5. Runs simulation ticks. At a clock rate of 0, it runs one queued single step if there is one. Otherwise it adds the rate to a tick credit and runs the whole number of ticks in the credit, so a rate of 10 runs 10 ticks in one loop iteration. Each tick is one `App::update`, and its wall-clock duration is recorded for diagnostics.
 6. Updates display instances once ([Display instances](#display-instances)).
 7. Builds and validates one `Frame` per session and queues the complete encoded frame in a FIFO. Each connection has a 64 MiB outbound byte budget, including the frame currently being written. Exhausting that budget disconnects the slow connection. Invalid server-generated frames panic and abort the server.
-8. Sleeps until the next 100 ms deadline. If it is already late, the next deadline starts from now.
+8. Collects completed checkpoint writes and captures a requested or due checkpoint for the bounded background writer. Then it sleeps until the next 100 ms deadline. If it is already late, the next deadline starts from now.
 
 The loop exits when the listener side has closed and no sessions remain, or when the stop flag is set.
 
@@ -225,7 +226,7 @@ Messages are defined in [toy-sim-protocol](../crates/toy-sim-protocol/src/lib.rs
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 13 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 19 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input` |
 
@@ -250,9 +251,12 @@ A reader ignores unknown optional sections. It rejects unknown required sections
 | `State` | 6 | `Vec<Event>` |
 | `State` | 7 | `Vec<CommandResult>` |
 | `State` | 8 | `PresentationFrame` |
+| `State` | 9 | `SocietySnapshot` |
+| `State` | 10 | `calendar_unix_ms` (`i64`, real UTC plus 400 Gregorian years) |
+| `State` | 11 | `Vec<OpticalObservation>` |
 | `Input` | 1 | `InputFrame` |
 
-All eight `State` sections are required. A version 1 message, or a state message without section 8, is rejected. Encoding and decoding both validate the message.
+All eleven `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message.
 
 **State frame limits.**
 
@@ -269,11 +273,13 @@ All eight `State` sections are required. A version 1 message, or a state message
 
 **Presentation limits** ([presentation.rs](../crates/toy-sim-protocol/src/presentation.rs)):
 
-- At most 64 ship presentations, 8192 track visuals, 16,384 combat events, 256 celestial system references and 7 capabilities.
-- Every ship presentation needs a telemetry record for the same ship in the frame, with at most one presentation per ship. Every track visual must name a track present in the frame, with at most one visual per track.
+- At most 64 ship presentations, 16,384 combat events, 256 celestial system references and 7 capabilities.
+- Every ship presentation needs a telemetry record for the same ship in the frame, with at most one presentation per ship. Ship visuals are nested in optical observations in section 11.
 - Hardware totals, device readings, health, environment and execution metrics are finite and non-negative where they are physical amounts. Fractions such as throttle, weapon progress, shield strength and shield coverage are within 0 to 1. At most 256 inventory entries, 4096 devices and 8 screen definitions per ship; screen definitions have a slot below 8, a size from 1 to 4096 and a title of at most 64 bytes.
 - Instruments have at most 4096 weapon rows, 64 paths with 16,384 vertices in total, and 256 markers. Timed paths have strictly increasing vertex times.
 - Combat events have valid positions and poses, and a projectile's end time is not before its start.
+
+**Optical limits.** At most 8192 observations per frame, unique by `(view, id)`. Each names an existing view and carries a valid pose, positive finite radius, non-negative finite luminosity, and validated engine/turret/shield visual state. An optional contact reference must name a track in the same frame. An anonymous observation needs no radio track. The server additionally reserves at most 4 MiB of serialized observations, dividing both count and byte budgets equally among subscribed views. This leaves room within the 8 MiB state-message limit for other sections.
 
 **Input frame limits.**
 
@@ -349,20 +355,39 @@ A session frame contains:
 - **Ships.** Private telemetry for up to 64 ships the account controls. Ships named by a view focus, a screen subscription or an instrument subscription come first, then the rest, each part in ship ID order. Each record holds the information-group key, IFF identity, authority revision, presence, exact pose (only while in space), battery energy, hull heat, shield temperature, coolant reserve and travel state.
 - **Screens.** One update per subscribed slot: the latest display frame, or, if there is none, an update with no frame and the error "Display unavailable".
 - **Events and results**, as described above.
-- **Presentation** ([Presentation](#presentation)).
+- **Presentation** ([Presentation](#presentation)), plus per-view **optical observations** ([Optical replication](#optical-replication)).
+- **Society.** Ownership hierarchy, standing overrides and permitted asset access information.
+- **Calendar.** Authoritative real UTC plus 400 Gregorian years, independent of paused or accelerated simulation time.
 
 Network views have no continuation. Each frame runs a fresh query, so a view that stops at `WorkLimit` or `ResultLimit` shows only its first page.
 
+## Shared spatial queries
+
+[toy-sim-spatial](../crates/toy-sim-spatial/src/lib.rs) supplies one spatial-index implementation to the server and supporting crates. Each entry contains an integer galactic position, a conservative radius and a luminosity coefficient. Occupied cells form a sparse hierarchy with compressed empty scales. Coordinates remain signed 128-bit micrometres until a query needs relative floating-point distances.
+
+The index maintains geometry cells and additional cells grouped by powers of two in luminosity. A brightness query uses each bucket's upper luminosity bound to choose a conservative search radius, then checks individual entries. Changing luminosity moves an entry between buckets as needed; zero-luminosity objects remain available for geometric queries. Radius, sphere-intersection, nearest-neighbour, segment and resumable range queries use the same implementation. Cursor work is explicit and charged by the intelligence query layer.
+
+Consumers keep separate instances for their data and lifetimes:
+
+- Server spatial observations index active ships, celestial bodies and gates. Celestials block sensors but are excluded from ship sensor results. Projectiles and dormant ships are omitted from this observation index.
+- Immutable intelligence snapshots index fused track estimates alongside their tag indexes.
+- The star catalogue uses the hash for nearby-star and apparent-brightness queries.
+- Travel geometry indexes physical extents and gate exclusions for departure/arrival checks.
+- Collision `SweptIndex` indexes conservative motion envelopes and filters candidate capsules before continuous contact prediction. Parry retains its shape queries and internal compound acceleration structures; see [collisions.md](collisions.md#broad-phase).
+
+Each instance has its own records and lifetime, and all use the same query implementation. The active observation index currently rebuilds at the simulation boundary; immutable readers may retain the preceding version. The hash itself supports incremental position and luminosity updates, which the collision adapter uses.
+
 ## Observations and intelligence
 
-Clients never receive the true world state for ships they do not control. They receive fused tracks from information groups. The implementation is in [intelligence.rs](../crates/toy-sim-server/src/sim/intelligence.rs), [identity.rs](../crates/toy-sim-server/src/sim/identity.rs) and [toy-sim-intel](../crates/toy-sim-intel/src/lib.rs).
+Clients receive private state for authorized ships, fused radio/sensor tracks from information groups, and separately filtered optical observations from each focused ship. Radio knowledge alone does not grant a ship mesh, its appearance asset or live visual state. The implementation is in [intelligence.rs](../crates/toy-sim-server/src/sim/intelligence.rs), [identity.rs](../crates/toy-sim-server/src/sim/identity.rs) and [toy-sim-intel](../crates/toy-sim-intel/src/lib.rs).
 
 ### Identities
 
-Two kinds of identifier are kept apart:
+Three kinds of identifier are kept apart:
 
 - **Physical UUIDs.** Ships, celestial bodies, accounts and groups have 16-byte UUIDs. A ship's UUID is its identity for control, commands, telemetry, beacons, docking and IFF. A track exposes it in `entity` only when the observing group has an authenticated measurement of that ship.
-- **Track IDs and contact references.** A `TrackId` is random per group, so the same ship has unrelated track IDs in different groups, and a sensor-only track carries no UUID. A `ContactRef { group, track }` names a track as seen by one group. Presentation, targeting and instruments refer to other ships through `ContactRef`, not through UUIDs. Flight programs see only opaque `u64` contact handles ([Contact handles](#contact-handles)).
+- **Track IDs and contact references.** A `TrackId` is random per group, so the same ship has unrelated track IDs in different groups, and a sensor-only track carries no UUID. A `ContactRef { group, track }` names a track as seen by one group. Targeting, instruments and identified combat records use these references. Flight programs see opaque `u64` contact handles ([Contact handles](#contact-handles)).
+- **Optical IDs.** The server assigns random session-local IDs to visible physical objects. The same ID can appear in several views; client identity is `(view, id)`. It persists through brief visibility losses for 100 simulation ticks. `known_entity` is populated only when the UUID is already known through authenticated tracks, control or the focused ship itself. A separate spatial-lifetime token prevents interpolation across a relocation or gate transit.
 
 ### Information groups
 
@@ -379,7 +404,7 @@ After physics, every ship contributes measurements to its group:
 - **Other ships.** If its sensor range is positive, the ship takes the nearest 256 objects within range from the spatial index. Celestial occlusion is then applied to those 256, and hidden candidates are not replaced by more distant ones. Ships in the observer's own group are skipped. There is no light-speed delay: every measurement describes the target's state at the current tick.
   - If the target's transponder is enabled and the target is within its own `iff.range_m`, the measurement is exact and authenticated. Its provenance is `Transponder`. It carries the UUID and the tags `Kind("ship")`, `IffOwner`, `IffFaction` if set, and `Advertised` labels.
   - Otherwise it is a sensor measurement. It has no UUID, only the tag `Kind("ship")`, identity rotation and zero angular velocity. Position and velocity carry noise with σ = √(1 + (distance × 1e-5)²) metres. On each axis the error is σ × (√0.9 × bias + √0.1 × per-tick noise). The Gaussian samples come from BLAKE3 keyed with a per-world seed, the sensing platform, the target, the axis and the tick. The bias is the same on every tick, so repeating a query or a measurement does not average the noise away.
-  - Both kinds of measurement carry the target's radius and appearance hash.
+  - Internal measurements carry the target's radius and appearance hash. Session publication removes appearance hashes from all transmitted tracks; optical observations supply geometry separately.
 
 Acquisition runs in parallel across groups.
 
@@ -399,7 +424,7 @@ Once per tick:
 2. **Grouping.** Measurements are grouped by physical entity and sorted by σ, then platform. The best measurement is the lowest σ.
 3. **Association.** The best measurement keeps the entity's existing track ID if it is authenticated with the same UUID, or if it lies within 3 × (track σ + measurement σ) of the track. Otherwise the track gets a new random ID. A known UUID is kept. When the best measurement is an unauthenticated sensor measurement, IFF owner and faction tags from the continued track are kept, so a ship that switches off its transponder keeps its last identified owner.
 4. **Weighting.** When the best measurement is noisy, one measurement per platform is combined by inverse-variance weighting. The fused σ is at least max(1 m, best σ / 4), and the velocity σ equals the position σ.
-5. **Publication.** Each group gets a new immutable `Snapshot` (`Arc`) indexed by tag and by cubic spatial cells 100,000 km on a side. Queries and flight programs read snapshots and never block the next update.
+5. **Publication.** Each group gets an immutable `Snapshot` (`Arc`) indexed by tags and the shared `toy-sim-spatial` hash. Queries and flight programs retain their snapshot while the next update proceeds.
 
 Grouping in step 2 uses the server's true entity identity. Clients never see that identity for sensor-only tracks.
 
@@ -419,7 +444,7 @@ A query has an optional direct `track`, an optional `sphere`, tag sets `all`, `a
 
 1. The direct track ID.
 2. The smallest `all` tag index, when there is no sphere or that index holds at most 256 tracks.
-3. The spatial cells overlapping the sphere's bounding box.
+3. A resumable spatial-hash range cursor over the sphere.
 4. The union of the `any` tag indexes.
 5. All tracks.
 
@@ -430,7 +455,7 @@ Every candidate is then filtered against all conditions.
 | Charge | Amount |
 | --- | --- |
 | Page call | 100 |
-| Each index step | 8 (plus 8 per tag for an `any` union) |
+| Each index step | 8 (plus 8 per tag for an `any` union); spatial cursors charge occupied-cell visits and candidate checks |
 | Each candidate examined | 1000 |
 | Each returned track | 1 per 8 bytes of its postcard encoding |
 
@@ -457,11 +482,34 @@ Instruments translate handles back into `ContactRef`s only for tracks that still
 Section 8 of a state frame is a `PresentationFrame` ([presentation.rs](../crates/toy-sim-model/src/presentation.rs), built in [sim/presentation.rs](../crates/toy-sim-server/src/sim/presentation.rs)). It carries what the shared client needs for the original rendering, flight instruments and windows, without exposing true state beyond what the session may already see.
 
 - **`ships`.** One `ShipPresentation` per controlled ship that a view focuses, a screen subscribes or an instrument subscription names. It holds the authority revision, flight environment (altitude, airspeed, density, pressure), health, execution timings, mass, inertia, control rotation, heat and battery capacities, power flow, inventory, per-device telemetry, computer status and screen definitions. `instruments` (attitude, navigation, weapons, trajectories and markers published by the firmware) is included only for instrument subscriptions. Targets in instruments are `ContactRef`s.
-- **`visuals`.** Engine thrust, turret angles and shield state for tracks in the frame that have a UUID and were observed on this tick.
-- **`combat`.** Shots, projectiles, impacts and destruction since the session's preceding publication. A record is included only if it can be attached to a track in the frame that has a UUID and is either exact or was observed within one tick of the record. The record names that `ContactRef`. Spatial lifetime changes are represented by the token in the track and owned ship telemetry.
+- **`combat`.** Shots, projectiles, impacts and destruction since the session's preceding publication. Publication requires both a suitable identified track and optical visibility of its source or target. Destruction may use visibility from the preceding publication so removing a destroyed body does not erase its final effect. This grace is cleared when a view changes focus or spatial lifetime. The record names a `ContactRef`; radio reports alone cannot reveal remote firing or destruction geometry.
 - **`celestial_systems`.** Per-view system IDs, definition asset hashes and an explicit epoch/time origin. Complete system definitions arrive through asset streams. The client evaluates the shared orrery solver at presentation time for positions, velocities and rotations. System selection uses the view’s location independently of sensor coverage and server ECS activation.
 - **`universe`.** The catalogue asset hash for every session. Debug sessions also receive the active systems (with the reason `ships` or `debug inspection`) and the inspected body.
 - **`capabilities`** and **`diagnostics`** for debug sessions ([Debug accounts](#debug-accounts)).
+
+### Optical replication
+
+Section 11 contains `OpticalObservation` records built in [session/optical.rs](../crates/toy-sim-server/src/sim/session/optical.rs). A view needs an authorized focused ship. Visibility is evaluated at that ship's position, independently of its radio query and the client's orbit-camera position. The focused ship is included for its own presentation. A dormant focused ship has no surrounding space observations.
+
+For other active ships, the server queries brightness buckets, computes the observer-dependent luminosity, and requires received flux of at least `1e-12 W/m²`. It rejects a body only when an intervening optical blocker covers its entire conservative angular disc; a body partly visible around a planetary limb remains eligible. Candidates are ordered by received flux. Each view receives an equal share of the frame's 8192-observation and 4 MiB optical budgets, with its focused ship first. Oversized records are skipped. Multiple views cannot let one dense scene consume every other view's allowance.
+
+Each record carries its view, anonymous optical ID, spatial-lifetime token, optional already-known UUID/contact, exact visual pose, conservative radius, equivalent optical luminosity, optional appearance hash, and `ShipVisual` engine/turret/shield state. Appearance and live geometry are absent from radio-only tracks. A visible ship can therefore appear without an IFF identity or sensor track, while a distant radio contact can remain in the Overview without acquiring a mesh.
+
+#### Brightness model and approximations
+
+The current CPU model in [spatial/lighting.rs](../crates/toy-sim-server/src/sim/spatial/lighting.rs) combines:
+
+- Reflected starlight and enabled-gate light. It uses inverse-square irradiance, a spherical target with geometric albedo 0.3, and a Lambert phase function for the observer. A fully eclipsed light source contributes no reflection. The indexed value is the full-phase upper bound under current illumination; the observer-specific phase is applied after candidate discovery. Geometric albedo describes full-phase brightness relative to a diffuse reference disc; it does not specify the total fraction of incident energy absorbed by the material. See [JPL’s albedo definition](https://ssd.jpl.nasa.gov/glossary/albedo.html).
+- Shield/radiator thermal emission, using the current emitting area and a numerical integral of the blackbody spectrum over 380–780 nm.
+- Engine emission from delivered thrust and exhaust speed. The optical fraction of `0.5 × thrust × exhaust_speed` is 0.001 for thermal/conventional engines and RCS, and 0.01 for micropulse engines. Disabled or unpowered engines contribute zero.
+
+Buckets therefore follow current thermal state, engine output and planetary shadows. Stellar/gate luminosity uses a fixed 220 lumens per optical watt conversion. These are gameplay photometric approximations: materials, directional exhaust radiation, specular hull reflections, indirect planet light and partial-eclipse attenuation are not modeled. Ship bounding spheres are excluded as optical blockers because they can enclose large empty spaces; celestial blockers use spheres. The index remains conservative for partial target occultation.
+
+#### Distant ship glints
+
+The client uses the projected diameter of each optical observation's bounding sphere to choose its representation. [glints.rs](../crates/toy-sim-client/src/ui/scene/glints.rs) crossfades between detailed geometry and a sprite over approximately 3–8 physical pixels, with 0.5-pixel hysteresis around mesh creation/removal. The decision accounts for viewport height, field of view and camera depth. Engine plumes and shields fade with the mesh.
+
+Glints share one additive billboard batch per view. Their brightness follows `L / (4πr²)` with a finite near-distance clamp, the view's exposure and a nominal magnitude-based display gain. A bounded attitude-dependent modulation gives gentle glints without random atmospheric twinkling. The shader draws a compact core and halo; it adds no lights, shadows or prepass. The client updates the batch geometry each display frame. The sprite's appearance and nominal magnitude scale are display approximations, while its visibility and baseline brightness remain supplied by the server.
 
 ## Debug accounts
 
@@ -639,9 +687,9 @@ Publications are delivered when playback consumes their frame, including the int
 
 ## Client ECS presentation
 
-The client separates transport ingestion, replication and interpolation into the [state modules](../crates/toy-sim-client/src/state). `SessionInfo` owns the world, generation, applied tick and sequence, capabilities, diagnostics and delivered command results. Network reception, buffered playback, outgoing commands and session metadata have separate resources. Only snapshot ingestion reads the buffered frames. It reconciles stable entities for contacts, controlled ships, views and combat publications. Contact identity includes the information group, so observations from different groups remain distinct. ID-to-entity maps are derived lookup indexes.
+The client separates transport ingestion, replication and interpolation into the [state modules](../crates/toy-sim-client/src/state). `SessionInfo` owns the world, generation, applied tick and sequence, capabilities, diagnostics and delivered command results. Network reception, buffered playback, outgoing commands and session metadata have separate resources. Only snapshot ingestion reads the buffered frames. It reconciles stable entities for contacts, controlled ships, optical observations, views and combat publications. Contact identity includes the information group, so observations from different groups remain distinct. ID-to-entity maps are derived lookup indexes.
 
-Ship and contact entities hold pose samples and interpolated display components. Each view owns its camera, origin, exposure and sky state. `CameraOptions` holds the camera focus separately from the orbit data used to construct trajectories. Render instances relate to both their source observation and their view, allowing either lifetime to remove the associated visuals. Bevy asset handles own immutable downloaded assets; sky baking keeps its separate work budget. HUD overlays query presentation components, and scene alignment gestures enqueue navigation actions through the outgoing resource.
+Ship, contact and optical entities hold pose samples and interpolated display components. Optical entities also interpolate luminosity. Radio contacts supply HUD/Overview entries; live ship geometry is sourced from the optical entities for that view, with private rendering for the focused ship in a hangar. Each view owns its camera, origin, exposure and sky state. `CameraOptions` holds the camera focus separately from the orbit data used to construct trajectories. Render instances relate to both their source observation and their view, allowing either lifetime to remove the associated visuals. Bevy asset handles own immutable downloaded assets; sky baking keeps its separate work budget. HUD overlays query presentation components, and scene alignment gestures enqueue navigation actions through the outgoing resource.
 
 Reception runs in `PreUpdate`, snapshot application in `FixedUpdate`, and input publication in `FixedPostUpdate`. `Update` then runs interpolation, celestial evaluation, view updates and rendering updates. World changes remove the old observations and reset selection. Missing observations remove their entities; a changed spatial lifetime creates fresh presentation samples. Docked ships retain private telemetry while their space pose is absent. MFD publications remain available in the wire protocol; the current UI does not subscribe to screens or replicate them into display entities.
 
@@ -673,9 +721,11 @@ The HUD draws the native coast estimate, published navigation paths and markers,
 
 | Location | Covers |
 | --- | --- |
-| `toy-sim-protocol` unit tests | Round trips, skipped optional sections, rejected required sections, truncation at every length, oversized headers, non-finite input, paused clocks and debug capabilities, rejection of version 1 and of frames without the presentation section, invalid combat payloads and visuals for unobserved tracks, numeric limits of debug and flight commands |
+| `toy-sim-protocol` unit tests | Round trips, skipped optional sections, rejected required sections, truncation at every length, oversized headers, non-finite input, paused clocks and debug capabilities, rejection of version 1 and of frames without the presentation section, invalid combat payloads, optical observations with missing views or contacts, duplicate optical IDs, anonymous optical observations and non-finite photometry, numeric limits of debug and flight commands |
 | `toy-sim-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, epoch rekeying |
 | `toy-sim-intel` unit tests | Measurements, noise stability, metered queries and cursors, snapshots |
+| `toy-sim-spatial` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, updates/deletion, cursor budgets and invalidation |
+| [session/optical.rs](../crates/toy-sim-server/src/sim/session/optical.rs) tests | Focused-vantage visibility, anonymous objects, remote radio tracks, occlusion, per-view budgets and optical IDs |
 | [session.rs](../crates/toy-sim-server/src/sim/session.rs) tests | A group key grants views without ship control, a control change rejects old-revision commands without rewriting IFF, a non-debug account cannot change the clock, repeated command IDs are idempotent and replayed frames are rejected |
 | [displays.rs](../crates/toy-sim-server/src/sim/displays.rs) tests | Subscribers share one instance released 10 ticks after the last viewer, authority and power changes revoke frames and queued input, every ABI input kind is forwarded |
 | [services.rs](../crates/toy-sim-server/src/sim/services.rs) tests | Scans exclude celestials and use stable opaque ship handles, handles differ between groups and after expiry and stay bounded, program and display cursors are separate, slip aperture checks, beacon pages hide inaccessible bays, celestial references resolve without active bodies |
@@ -690,6 +740,16 @@ cargo test -p toy-sim-protocol -p toy-sim-net -p toy-sim-intel -p toy-sim-server
 ```
 
 Enable `toy-sim-client/ui` to run the client ECS, asset-pipeline and rendering-math tests. These tests do not launch a graphics window; visual verification uses `toy-sim-debug`.
+
+## Spatial CPU benchmarks
+
+```sh
+cargo run --release -p toy-sim-spatial --example benchmark
+```
+
+The standalone benchmark builds 100,000 entries in each of two deterministic distributions: a sparse volume and 100 dense clusters. It measures brightness queries, a 500 AU radius query, nearby geometry, segment candidates, and 10,000 position/luminosity updates. Output includes build time, process RSS growth on Linux, occupied cells, brightness buckets, time per query, visited cells, tested candidates and returned hits. The 500 AU case measures the spatial primitive; it does not imply that local-chat routing is already implemented.
+
+These are CPU index measurements. They exclude simulation, illumination updates, per-session serialization, network traffic and client rendering. Full observer batches and collision workloads must be measured separately; build contention and the number of returned objects materially affect timings. Measured sprint results and their conditions are recorded in [DEVLOG.md](../DEVLOG.md).
 
 ## Benchmark
 

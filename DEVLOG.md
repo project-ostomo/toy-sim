@@ -288,3 +288,91 @@ resize validation messages. These remain for the rendering/performance pass.
 
 Next: unify spatial queries and implement optical replication and distant ship
 glints, then verify that piece before expanding the inhabited map.
+
+## 2026-09-19 — Piece 3: spatial queries and optical rendering
+
+Persistence and calendar work was committed as `49e7749`. The spatial piece is
+being integrated and verified before map expansion begins.
+
+The common `toy-sim-spatial` crate now serves stellar visibility, sensor and
+optical queries, intelligence query cursors, travel exclusion geometry, and
+collision broad phase. It uses integer galactic coordinates, compressed occupied
+cells and luminosity buckets. Parry still handles detailed shape collision and
+CCD. Tests include extreme signed coordinates, conservative sweeps, randomized
+brute-force comparisons, stable ordering and bounded cursor work.
+
+Protocol 19 adds a required optical observation section. Radio tracks remain
+tactical information; a focused physical vantage authorizes optical geometry.
+Observations carry opaque session identities, optional authenticated associations,
+pose, radius, apparent-direction luminosity and engine/shield/turret visuals.
+The server recalculates illumination, planetary shadow, reflection phase, engine
+emission and shield glow. Publication has per-view count and serialized-byte
+budgets, preserving the focused ship first. The client uses separate optical ECS
+entities, interpolates brightness, and transitions small projected meshes to one
+batched sprite mesh per view.
+
+Early verification found and corrected several real issues:
+
+- The initial moving-fleet hash wrapper regressed against the old collision
+  index. Measurements with moving poses exposed this; the old benchmark reused
+  identical poses. In-place leaf updates and integer frame anchoring are being
+  measured before accepting the replacement.
+- Main-engine emission needed the scalar actual thrust field; the vector field
+  represents RCS thrust.
+- A restored paused world needs its optical index rebuilt before its first
+  snapshot, without advancing the simulation or discarding saved tracks.
+- Completing an intelligence query could destroy an old retained index inside
+  the script syscall. Releasing these snapshots now happens in existing tick
+  maintenance. Query creation only takes an Arc and prepares bounded cursors.
+
+The million-star catalogue test loads all entries in 2.178 seconds and averages
+2.096 ms across 500 visibility queries; whole-process peak memory is about
+575 MiB, including catalogue data and identity/index storage. A magnitude-six
+query returned 6,373 stars after checking 17,856 candidates. These are local
+optimized-development measurements, not capacity guarantees.
+
+At this checkpoint, the initial server suite had 226 passing tests and one new
+fixture error (missing mandatory firmware), now corrected. The initial client
+suite had 92 passing tests and one new photometry test exercising the intentional
+brightness clamp rather than the unsaturated inverse-square range. Final tests,
+interactive rendering verification and the commit are still pending.
+
+### Spatial/optical verification completed
+
+Final checks pass: 229 server library tests, 92 client library tests, 14 spatial
+core tests, six intelligence tests, six star tests, 12 model tests, 11 protocol
+tests and all four real-network tests. The network test downloads a focused
+ship appearance through its optical observation and confirms that a radio-only
+view can receive shared tracks without receiving optical geometry or appearance
+hashes. Formatting and whitespace checks pass.
+
+Interactive checks used the actual client: selected the hostile patrol, used
+Look at to inspect its mesh and active RCS, zoomed out until both ships became
+small glowing points, dragged the orbit camera and toggled orbit overlays, then
+returned to the own-ship close view. Mark and Fire were accepted, battery charge
+fell, and Hold fire stopped the latch. No shader compilation error, panic or
+connection failure occurred during this run. Captures include
+`optical-hostile-close.png`, `optical-glint-far.png`,
+`optical-glint-orbited.png`, and `optical-combat-restored-mesh.png` in
+`/tmp/toy-sequential-playtests/`. The first attempt to drive wheel input used a
+legacy virtual device; a device exposing high-resolution wheel events worked.
+
+The large collision benchmark preserves exact outcomes, including all 1,000
+slug impacts. It also exposes an unresolved scale cost: the moving 100k-body
+broad phase takes about 122–204 ms versus 38–99 ms for the previous BVH, using
+eight Rayon threads in the development profile. The standard reset-pose
+benchmark takes 90–266 ms total depending on scenario. Fewer false candidates
+and lower peak memory do not cancel this CPU regression. The small scene is
+fast, but this implementation does not yet demonstrate 100k-body 10 Hz capacity.
+This remains an explicit performance task for the final MVP load/playability
+pass; the feature must not be described as production-scale performance.
+
+A dense lighting benchmark with 20,040 objects takes about 89.5 ms to rebuild
+illumination and 145 ms for 500 observer queries in aggregate. Rebuilding every
+active object and serial per-session publication are further scale costs to
+address. Live rendering in the tested scaled window remains roughly 41–50 FPS;
+CPU-heavy concurrent test runs were excluded from that observation.
+
+Next piece: generate the inhabited political map and deterministic stellar and
+planetary parameters, then verify navigation and saved-world integration before
+working on planetary surfaces.

@@ -1,6 +1,7 @@
 pub mod calendar;
 pub mod drawing;
 pub mod navigation;
+pub mod optical;
 pub mod ownership;
 pub mod presentation;
 pub mod transfer;
@@ -246,6 +247,7 @@ pub struct CommandResult {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
+    pub optical: Vec<optical::OpticalObservation>,
     pub calendar_unix_ms: i64,
     pub society: ownership::SocietySnapshot,
     pub presentation: PresentationFrame,

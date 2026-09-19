@@ -4257,16 +4257,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kdtree"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cd666c2aae5dde60d2f9bfa4e1f8c17698fce13d599c0f9b76725641fec13d9"
-dependencies = [
- "num-traits",
- "thiserror 2.0.20",
-]
-
-[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6986,6 +6976,7 @@ dependencies = [
  "postcard",
  "serde",
  "toy-sim-model",
+ "toy-sim-spatial",
 ]
 
 [[package]]
@@ -7057,6 +7048,7 @@ dependencies = [
  "toy-sim-ship-wasm",
  "toy-sim-ships",
  "toy-sim-space",
+ "toy-sim-spatial",
  "toy-sim-universe",
  "wat",
  "zstd",
@@ -7114,12 +7106,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "toy-sim-spatial"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "glam 0.32.1",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
+ "toy-sim-space",
+]
+
+[[package]]
 name = "toy-sim-stars"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "kdtree",
  "toy-sim-space",
+ "toy-sim-spatial",
 ]
 
 [[package]]

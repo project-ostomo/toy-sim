@@ -1,15 +1,16 @@
 use crate::sim::precision::GalacticPosition;
-use bevy::prelude::*;
+use bevy::{math::DVec3, prelude::*};
+use toy_sim_spatial::{Entry, SpatialHash};
+
 #[derive(Clone, Copy)]
 pub struct SpatialObject {
     pub entity: Entity,
     pub position: GalacticPosition,
     pub radius_m: f64,
     pub occludes: bool,
+    pub optical_luminosity_w: f64,
 }
 
-/// Snapshots share the immutable index during controller execution. Rebuilds mutate
-/// in place once the previous tick's synchronous callbacks have released it.
 #[derive(Resource, Clone, Default)]
 pub struct SpatialIndex(pub std::sync::Arc<SpatialData>);
 impl std::ops::Deref for SpatialIndex {
@@ -24,113 +25,141 @@ impl std::ops::DerefMut for SpatialIndex {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SpatialData {
     pub objects: Vec<SpatialObject>,
-    excluded_targets: std::collections::HashSet<Entity>,
-    targets: std::sync::OnceLock<crate::sim::spatial_tree::RegionIndex>,
-    occluders: std::sync::OnceLock<(GalacticPosition, parry3d_f64::partitioning::Bvh)>,
+    entities: ahash::AHashMap<Entity, usize>,
+    excluded_targets: ahash::AHashSet<Entity>,
+    hash: SpatialHash,
+    optical_occluders: SpatialHash,
+    illumination: Vec<Illumination>,
 }
 
-impl Default for SpatialData {
-    fn default() -> Self {
-        Self {
-            objects: Vec::new(),
-            excluded_targets: Default::default(),
-            targets: Default::default(),
-            occluders: Default::default(),
-        }
-    }
+#[derive(Clone, Default)]
+struct Illumination {
+    emitted_w: f64,
+    reflected: Vec<(usize, f64)>,
 }
 
 impl SpatialData {
     pub fn clear(&mut self) {
         self.objects.clear();
+        self.entities.clear();
         self.excluded_targets.clear();
-        self.targets.take();
-        self.occluders.take();
+        self.hash.clear();
+        self.optical_occluders.clear();
+        self.illumination.clear();
     }
 
     pub fn insert(&mut self, object: SpatialObject) {
-        assert!(object.radius_m.is_finite() && object.radius_m >= 0.0);
+        let id = self.objects.len();
+        assert!(id < u32::MAX as usize);
+        self.hash.insert(
+            id as u32,
+            Entry {
+                position: object.position,
+                radius_m: object.radius_m,
+                luminosity: object.optical_luminosity_w,
+            },
+        );
+        if object.occludes {
+            self.optical_occluders.insert(
+                id as u32,
+                Entry {
+                    position: object.position,
+                    radius_m: object.radius_m,
+                    luminosity: 0.0,
+                },
+            );
+        }
+        self.entities.insert(object.entity, id);
         self.objects.push(object);
-        self.targets.take();
-        self.occluders.take();
+        self.illumination.push(Illumination {
+            emitted_w: object.optical_luminosity_w,
+            reflected: Vec::new(),
+        });
+    }
+
+    pub fn set_luminosity(&mut self, id: usize, luminosity_w: f64) {
+        self.objects[id].optical_luminosity_w = luminosity_w;
+        self.hash.set_luminosity(id as u32, luminosity_w);
+        self.illumination[id] = Illumination {
+            emitted_w: luminosity_w,
+            reflected: Vec::new(),
+        };
+    }
+
+    pub fn set_illumination(&mut self, id: usize, emitted_w: f64, reflected: Vec<(usize, f64)>) {
+        let peak = emitted_w + reflected.iter().map(|(_, power)| power).sum::<f64>();
+        self.set_luminosity(id, peak);
+        self.illumination[id] = Illumination {
+            emitted_w,
+            reflected,
+        };
+    }
+
+    pub fn observed_luminosity(&self, target: usize, observer: GalacticPosition) -> f64 {
+        let illumination = &self.illumination[target];
+        let position = self.objects[target].position;
+        let view = observer.relative_to(position).normalize_or_zero();
+        illumination.emitted_w
+            + illumination
+                .reflected
+                .iter()
+                .map(|&(source, peak)| {
+                    let light = self.objects[source]
+                        .position
+                        .relative_to(position)
+                        .normalize_or_zero();
+                    let cosine = light.dot(view).clamp(-1.0, 1.0);
+                    let phase = cosine.acos();
+                    let fraction = (phase.sin() + (std::f64::consts::PI - phase) * cosine)
+                        / std::f64::consts::PI;
+                    peak * fraction.clamp(0.0, 1.0)
+                })
+                .sum::<f64>()
+    }
+
+    pub fn object_index(&self, entity: Entity) -> Option<usize> {
+        self.entities.get(&entity).copied()
     }
 
     pub fn exclude_sensor_target(&mut self, entity: Entity) {
         self.excluded_targets.insert(entity);
-        self.targets.take();
     }
 
-    pub fn targets(&self) -> &crate::sim::spatial_tree::RegionIndex {
-        self.targets.get_or_init(|| {
-            let proxies: Vec<_> = self
-                .objects
-                .iter()
-                .enumerate()
-                .filter(|(_, object)| !self.excluded_targets.contains(&object.entity))
-                .map(|(id, o)| crate::sim::spatial_tree::Proxy {
-                    id: id as u32,
-                    position: o.position,
-                    displacement: bevy::math::DVec3::ZERO,
-                    radius: 0.0,
-                })
-                .collect();
-            crate::sim::spatial_tree::RegionIndex::build(&proxies)
-        })
+    pub fn exclude_optical_blocker(&mut self, entity: Entity) {
+        if let Some(&id) = self.entities.get(&entity) {
+            self.optical_occluders.remove(id as u32);
+        }
     }
 
-    pub fn blockers(&self) -> &(GalacticPosition, parry3d_f64::partitioning::Bvh) {
-        self.occluders.get_or_init(|| {
-            let anchor = self
-                .objects
-                .first()
-                .map_or(GalacticPosition::ZERO, |o| o.position);
-            use parry3d_f64::partitioning::{Bvh, BvhBuildStrategy};
-            let leaves: Vec<_> = self
-                .objects
-                .iter()
-                .enumerate()
-                .filter(|(_, o)| o.occludes)
-                .map(|(i, o)| {
-                    let p = o.position.relative_to(anchor);
-                    let r = bevy::math::DVec3::splat(o.radius_m);
-                    (i as u32, crate::sim::spatial_tree::bounds(p - r, p + r))
-                })
-                .collect();
-            let tree = if leaves.len() <= 2 {
-                // Parry's one/two-leaf bulk constructors assume dense IDs.
-                let mut tree = Bvh::new();
-                for &(id, bounds) in &leaves {
-                    tree.insert(bounds, id);
-                }
-                tree
-            } else {
-                Bvh::from_iter(
-                    BvhBuildStrategy::Binned,
-                    leaves.into_iter().map(|(id, aabb)| (id as usize, aabb)),
-                )
-            };
-            (anchor, tree)
-        })
+    pub fn all_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
+        self.hash
+            .within_radius(centre, radius)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
     }
 
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        if !radius.is_finite() || radius < 0.0 {
-            return Vec::new();
-        }
-        self.targets()
-            .range(centre, radius)
+        self.all_in_range(centre, radius)
+            .into_iter()
+            .filter(|&id| !self.excluded_targets.contains(&self.objects[id].entity))
+            .collect()
+    }
+
+    pub fn visible(
+        &self,
+        centre: GalacticPosition,
+        min_luminosity_over_distance2: f64,
+    ) -> Vec<usize> {
+        self.hash
+            .visible(centre, min_luminosity_over_distance2)
+            .ids
             .into_iter()
             .map(|id| id as usize)
-            .filter(|&id| {
-                self.objects[id]
-                    .position
-                    .relative_to(centre)
-                    .length_squared()
-                    <= radius * radius
-            })
             .collect()
     }
 
@@ -141,18 +170,11 @@ impl SpatialData {
         radius: f64,
         n: usize,
     ) -> Vec<usize> {
-        if n == 0 {
-            return Vec::new();
-        }
-        self.targets()
-            .nearest(centre, radius, n, |id| {
-                let o = self.objects[id as usize];
-                (o.entity != observer).then(|| {
-                    (
-                        o.position.relative_to(centre).length_squared(),
-                        o.entity.to_bits(),
-                    )
-                })
+        self.hash
+            .nearest_filtered(centre, radius, n, |id| {
+                let object = self.objects[id as usize];
+                (object.entity != observer && !self.excluded_targets.contains(&object.entity))
+                    .then_some(object.entity.to_bits())
             })
             .into_iter()
             .map(|id| id as usize)
@@ -160,42 +182,76 @@ impl SpatialData {
     }
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        let (anchor, tree) = self.blockers();
-        let p = centre.relative_to(*anchor);
-        let r = bevy::math::DVec3::splat(radius);
-        tree.intersect_aabb(&crate::sim::spatial_tree::bounds(p - r, p + r))
-            .map(|i| i as usize)
-            .filter(|&i| {
-                let o = self.objects[i];
-                o.position.relative_to(centre).length_squared() <= (radius + o.radius_m).powi(2)
-            })
+        self.hash
+            .intersecting_sphere(centre, radius)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .filter(|&id| self.objects[id].occludes)
             .collect()
     }
 
     pub fn occluded(&self, observer: Entity, target: usize, centre: GalacticPosition) -> bool {
-        let (anchor, tree) = self.blockers();
-        let p = centre.relative_to(*anchor);
         let endpoint = self.objects[target].position.relative_to(centre);
-        let ray = parry3d_f64::query::Ray::new(
-            crate::sim::spatial_tree::vector(p),
-            crate::sim::spatial_tree::vector(endpoint),
-        );
-        tree.cast_ray(&ray, 1.0, |id, _| {
-            let o = self.objects[id as usize];
-            (o.entity != observer
-                && id as usize != target
-                && sphere_blocks(endpoint, o.position.relative_to(centre), o.radius_m))
-            .then_some(0.0)
-        })
-        .is_some()
+        self.hash
+            .segment_candidates(centre, endpoint, 0.0)
+            .ids
+            .into_iter()
+            .any(|id| {
+                let object = self.objects[id as usize];
+                object.occludes
+                    && object.entity != observer
+                    && id as usize != target
+                    && sphere_blocks(
+                        endpoint,
+                        object.position.relative_to(centre),
+                        object.radius_m,
+                    )
+            })
+    }
+
+    pub fn fully_occluded(
+        &self,
+        observer: Entity,
+        target: usize,
+        centre: GalacticPosition,
+    ) -> bool {
+        let target_object = self.objects[target];
+        let endpoint = target_object.position.relative_to(centre);
+        self.optical_blockers_on_segment(centre, endpoint)
+            .into_iter()
+            .any(|id| {
+                let object = self.objects[id];
+                object.entity != observer
+                    && id != target
+                    && sphere_fully_blocks(
+                        endpoint,
+                        target_object.radius_m,
+                        object.position.relative_to(centre),
+                        object.radius_m,
+                    )
+            })
+    }
+
+    pub fn optical_blockers_on_segment(
+        &self,
+        origin: GalacticPosition,
+        displacement: DVec3,
+    ) -> Vec<usize> {
+        self.optical_occluders
+            .segment_candidates(origin, displacement, 0.0)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
     }
 
     pub fn occupied_cells(&self) -> usize {
-        self.targets().regions.len()
+        self.hash.occupied_cells()
     }
 }
 
-pub fn sphere_blocks(target: bevy::math::DVec3, centre: bevy::math::DVec3, radius: f64) -> bool {
+pub fn sphere_blocks(target: DVec3, centre: DVec3, radius: f64) -> bool {
     let length2 = target.length_squared();
     if length2 <= 0.0 || radius <= 0.0 {
         return false;
@@ -203,4 +259,90 @@ pub fn sphere_blocks(target: bevy::math::DVec3, centre: bevy::math::DVec3, radiu
     let t = (centre.dot(target) / length2).clamp(0.0, 1.0);
     let closest = target * t;
     (closest - centre).length_squared() < radius * radius * (1.0 - 1e-12)
+}
+
+pub fn sphere_fully_blocks(
+    target: DVec3,
+    target_radius: f64,
+    blocker: DVec3,
+    blocker_radius: f64,
+) -> bool {
+    let target_distance = target.length();
+    let blocker_distance = blocker.length();
+    if target_distance <= target_radius
+        || blocker_distance <= blocker_radius
+        || blocker_radius <= 0.0
+    {
+        return false;
+    }
+    let target_angle = (target_radius / target_distance).asin();
+    let blocker_angle = (blocker_radius / blocker_distance).asin();
+    let separation = target.cross(blocker).length().atan2(target.dot(blocker));
+    if separation + target_angle >= blocker_angle {
+        return false;
+    }
+    let furthest_entry_distance = (blocker_distance.powi(2) - blocker_radius.powi(2)).sqrt();
+    target_distance - target_radius > furthest_entry_distance
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reflected_phase_changes_observed_brightness_without_hiding_candidate() {
+        let mut world = World::new();
+        let mut index = SpatialIndex::default();
+        for position in [DVec3::ZERO, DVec3::X * 1e9] {
+            index.insert(SpatialObject {
+                entity: world.spawn_empty().id(),
+                position: GalacticPosition::from_meters(position),
+                radius_m: 1.0,
+                occludes: false,
+                optical_luminosity_w: 0.0,
+            });
+        }
+        index.set_illumination(0, 10.0, vec![(1, 1000.0)]);
+        let bright = GalacticPosition::from_meters(DVec3::X * 1000.0);
+        let dark = GalacticPosition::from_meters(DVec3::NEG_X * 1000.0);
+        let quarter = GalacticPosition::from_meters(DVec3::Y * 1000.0);
+        assert_eq!(index.observed_luminosity(0, bright), 1010.0);
+        assert!((index.observed_luminosity(0, dark) - 10.0).abs() < 1e-9);
+        assert!(
+            (index.observed_luminosity(0, quarter) - (10.0 + 1000.0 / std::f64::consts::PI)).abs()
+                < 1e-9
+        );
+        assert_eq!(index.visible(bright, 0.001), vec![0]);
+        assert_eq!(index.visible(dark, 0.001), vec![0]);
+    }
+
+    #[test]
+    fn optical_occlusion_keeps_limb_targets_and_ignores_hollow_ship_bounds() {
+        let target = DVec3::X * 100.0;
+        assert!(sphere_blocks(target, DVec3::new(50.0, 4.9, 0.0), 5.0));
+        assert!(!sphere_fully_blocks(
+            target,
+            2.0,
+            DVec3::new(50.0, 4.9, 0.0),
+            5.0
+        ));
+        assert!(sphere_fully_blocks(target, 2.0, DVec3::X * 50.0, 5.0));
+        let mut world = World::new();
+        let observer = world.spawn_empty().id();
+        let mut index = SpatialIndex::default();
+        for (position, radius) in [(target, 2.0), (DVec3::X * 50.0, 5.0)] {
+            index.insert(SpatialObject {
+                entity: world.spawn_empty().id(),
+                position: GalacticPosition::from_meters(position),
+                radius_m: radius,
+                occludes: true,
+                optical_luminosity_w: 0.0,
+            });
+        }
+        assert!(index.fully_occluded(observer, 0, GalacticPosition::ZERO));
+        let blocker = index.objects[1].entity;
+        index.exclude_optical_blocker(blocker);
+        assert!(!index.fully_occluded(observer, 0, GalacticPosition::ZERO));
+        assert!(index.occluded(observer, 0, GalacticPosition::ZERO));
+    }
 }

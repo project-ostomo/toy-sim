@@ -22,7 +22,6 @@ pub mod scenario;
 pub mod sensors;
 pub mod simulation;
 pub mod spatial;
-pub mod spatial_tree;
 pub mod vessel;
 
 use bevy::{prelude::*, state::app::StatesPlugin, time::TimeUpdateStrategy};

@@ -30,7 +30,6 @@ fn resources(values: &[ResourceAmount]) -> bool {
 pub fn validate(p: &PresentationFrame) -> Result<()> {
     ensure!(
         p.ships.len() <= 64
-            && p.visuals.len() <= 8192
             && p.combat.len() <= 16384
             && p.celestial_systems.len() <= 256
             && p.capabilities.len() <= 7,
@@ -290,25 +289,6 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
             );
         }
     }
-    for v in &p.visuals {
-        ensure!(
-            v.engines.len() <= 4096 && v.turrets.len() <= 4096,
-            "visual device limit"
-        );
-        ensure!(
-            v.engines.iter().all(|e| finite(&e.thrust_n)
-                && e.thrust_fraction.is_finite()
-                && (0. ..=1.).contains(&e.thrust_fraction))
-                && v.turrets.iter().all(|t| finite(&[t.yaw_rad, t.pitch_rad])),
-            "invalid device visual"
-        );
-        if let Some(s) = &v.shield {
-            ensure!(
-                nonnegative(&[s.temperature_k, s.coverage]) && s.coverage <= 1.,
-                "invalid shield visual"
-            );
-        }
-    }
     for event in &p.combat {
         let valid = match &event.kind {
             CombatEventKind::Projectile {
@@ -438,4 +418,25 @@ mod tests {
         attitude.reference = Some([0., 0., 0., 1.]);
         assert!(attitude_valid(&attitude));
     }
+}
+
+pub(super) fn validate_visual(v: &ShipVisual) -> Result<()> {
+    ensure!(
+        v.engines.len() <= 4096 && v.turrets.len() <= 4096,
+        "visual device limit"
+    );
+    ensure!(
+        v.engines.iter().all(|e| finite(&e.thrust_n)
+            && e.thrust_fraction.is_finite()
+            && (0. ..=1.).contains(&e.thrust_fraction))
+            && v.turrets.iter().all(|t| finite(&[t.yaw_rad, t.pitch_rad])),
+        "invalid device visual"
+    );
+    if let Some(s) = &v.shield {
+        ensure!(
+            nonnegative(&[s.temperature_k, s.coverage]) && s.coverage <= 1.,
+            "invalid shield visual"
+        );
+    }
+    Ok(())
 }

@@ -20,12 +20,7 @@ pub(crate) struct Publications {
     pub sequence: u64,
     pub results: Vec<CommandResult>,
     pub events: Vec<Event>,
-    pub combat: Vec<RetainedCombat>,
-}
-
-pub(crate) struct RetainedCombat {
-    pub event: CombatEvent,
-    pub destroyed_instance: Option<Id>,
+    pub combat: Vec<CombatEvent>,
 }
 
 impl Playback {
@@ -77,25 +72,7 @@ impl Playback {
     fn publish(&mut self, frame: &Frame) {
         let results = frame.results.clone();
 
-        let combat = frame
-            .presentation
-            .combat
-            .iter()
-            .map(|event| {
-                let destroyed_instance = match event.kind {
-                    CombatEventKind::Destroyed { target, .. } => frame
-                        .tracks
-                        .get(&target.group)
-                        .and_then(|tracks| tracks.iter().find(|track| track.id == target.track))
-                        .map(|track| track.spatial_instance),
-                    _ => None,
-                };
-                RetainedCombat {
-                    event: event.clone(),
-                    destroyed_instance,
-                }
-            })
-            .collect::<Vec<_>>();
+        let combat = frame.presentation.combat.clone();
         if !results.is_empty() || !combat.is_empty() || !frame.events.is_empty() {
             self.publications.push_back(Publications {
                 sequence: frame.sequence,
@@ -191,6 +168,7 @@ mod tests {
 
     fn frame(sequence: u64) -> Frame {
         Frame {
+            optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
             world: Id([1; 16]),
@@ -320,9 +298,8 @@ mod tests {
             assert_eq!(publications.results[0].effective_tick, sequence - 1);
             assert_eq!(publications.results[1].effective_tick, sequence);
             assert_eq!(publications.combat.len(), 2);
-            assert_eq!(publications.combat[0].event.sequence, sequence - 1);
-            assert_eq!(publications.combat[1].event.sequence, sequence);
-            assert_eq!(publications.combat[0].destroyed_instance, None);
+            assert_eq!(publications.combat[0].sequence, sequence - 1);
+            assert_eq!(publications.combat[1].sequence, sequence);
         }
         assert!(!playback.catching_up);
         assert_eq!(playback.tick().unwrap().sequence, 999);

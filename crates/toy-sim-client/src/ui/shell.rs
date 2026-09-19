@@ -192,6 +192,7 @@ fn draw(
     diagnostics: Res<ClientDiagnostics>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
+    optical: Query<&Optical>,
     beacons: Query<(&NavigationObject, &DisplayPose)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     mut views: Query<(
@@ -262,6 +263,10 @@ fn draw(
                 speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
                 radius: track.radius_m.unwrap_or(0.),
                 own,
+                can_look: pose.0.position.relative_to(origin).length() <= scene::LOOK_AT_RANGE_M
+                    && optical.iter().any(|object| {
+                        object.0.view == view.0.id && object.0.contact == Some(contact.1)
+                    }),
                 affiliation: super::standing::advertised_principal(&track.tags),
                 standing: session
                     .society
@@ -315,6 +320,7 @@ fn draw(
                 standing: None,
                 detail: "Orrery ephemeris".into(),
                 own: false,
+                can_look: true,
             });
         }
     }
@@ -337,6 +343,12 @@ fn draw(
             distance: offset.length(),
             speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
             radius: beacon.radius_m,
+            can_look: offset.length() <= scene::LOOK_AT_RANGE_M
+                && (beacon.gate_exit.is_some()
+                    || optical.iter().any(|object| {
+                        Some(object.0.view) == selection.view
+                            && object.0.known_entity == Some(beacon.id)
+                    })),
             affiliation: contacts
                 .iter()
                 .find(|(contact, _)| contact.0.entity == Some(beacon.id))
@@ -451,15 +463,20 @@ fn draw(
                 shell.desktop.open(SELECTED);
             }
             Intent::Look(target) => {
-                if let Some(SelectedTarget::Contact(_)) = target {
-                    if !model.rows.iter().any(|row| {
-                        Some(row.target) == target && row.distance <= scene::LOOK_AT_RANGE_M
-                    }) {
+                if target.is_some() {
+                    if !model
+                        .rows
+                        .iter()
+                        .any(|row| Some(row.target) == target && row.can_look)
+                    {
                         shell.feedback = Some(Feedback {
                             pending: vec![],
                             label: "Look at".into(),
                             last_tick: session.tick,
-                            error: Some("Ship is outside camera range (100 km)".into()),
+                            error: Some(
+                                "Object must be optically visible and within camera range (100 km)"
+                                    .into(),
+                            ),
                         });
                         continue;
                     }

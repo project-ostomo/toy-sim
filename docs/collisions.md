@@ -2,7 +2,7 @@
 
 Ships in space and projectiles are integrated by a time-ordered continuous collision solver ([crates/toy-sim-server/src/sim/physics/collision](../crates/toy-sim-server/src/sim/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves contacts with partial restitution and impact heat. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
 
-Geometry queries, broad-phase trees and contact manifolds come from Parry (`parry3d-f64`). Trajectory sampling, heat accounting and event scheduling are implemented in this module.
+The shared `toy-sim-spatial` hash supplies broad-phase candidates. Parry (`parry3d-f64`) supplies geometry queries, contact manifolds and acceleration structures inside compound shapes. Trajectory sampling, heat accounting and event scheduling are implemented in this module.
 
 ## Participating bodies
 
@@ -38,7 +38,11 @@ Between events, each body translates at constant velocity. Its rotation follows 
 
 The solver works in a common translating frame: the first body's velocity plus the mass-weighted mean velocity offset. Ships that share an orbital velocity therefore have short swept volumes. Each live body becomes a proxy: its start position, its displacement over the rest of the tick in that frame, and its radius plus 2 mm.
 
-`RegionIndex` ([spatial_tree.rs](../crates/toy-sim-server/src/sim/spatial_tree.rs)) stores proxies in 100 km integer-addressed regions, each with its own Parry BVH. A swept proxy occupies only the cells along its capsule. The index persists between ticks and is refreshed in place. `pairs()` returns candidate pairs, and after each event `neighbors()` finds the pairs to predict again.
+`SweptIndex` ([spatial/swept.rs](../crates/toy-sim-server/src/sim/spatial/swept.rs)) uses the shared [spatial hash](../crates/toy-sim-spatial/src/lib.rs). Each proxy is indexed by a conservative sphere around its swept segment, with numerical padding. Hash queries discover overlapping envelopes; a geometric capsule filter rejects clear misses before the continuous solver runs. Near-parallel segments retain conservative candidates when closest-point arithmetic is ill-conditioned.
+
+The index persists between ticks and updates changed proxies in place. Its integer position anchor follows a retained reference body, avoiding needless cell migration for a fleet sharing orbital motion. `pairs()` returns initial candidate pairs, and after each event `neighbors()` finds the pairs to predict again. Capsule filtering compares geometric paths even when two bodies have different event times; the narrow phase then restricts prediction to their overlapping time interval. Insertions, removals and changes of reference preserve candidate coverage.
+
+This replaces the separate region/BVH broad phase. Parry's BVHs within compound hulls still prune primitive pairs during detailed shape queries.
 
 ## Narrow phase: predicting the next contact
 
@@ -129,12 +133,12 @@ cargo test -p toy-sim-server collision
 - contacts caused by rotation alone
 - re-testing against the hull after a shield collapses
 - destroyed slugs not hitting a second ship
-- region boundaries and diagonal sweeps
+- spatial cell boundaries and diagonal sweeps
 - resting penetration correction without heat
 - nearest-neighbour queries
 - resting parts not masking new contacts
 - docked member destruction
-- region storage reuse
+- swept-index reuse, moving frames, reference removal and near-parallel paths
 - the rotation speed bound
 - rotational energy in off-centre impacts
 - spinning spheres keeping their cast normal
@@ -147,13 +151,13 @@ Two benchmarks are ignored by default. Run them in release mode:
 
 ```sh
 # 10,000 and 100,000 bodies in sparse, dense, battles, mixed and slugs scenarios
-cargo test -p toy-sim-server --release physics::collision::tests::scale_benchmark -- --ignored --exact --nocapture
+cargo test -p toy-sim-server --release sim::physics::collision::solver_tests::scale_benchmark -- --ignored --exact --nocapture
 
 # Nearest-32 sensor queries with occlusion over 10,000 and 100,000 objects
-cargo test -p toy-sim-server --release physics::collision::tests::sensor_scale_benchmark -- --ignored --exact --nocapture
+cargo test -p toy-sim-server --release sim::physics::collision::solver_tests::sensor_scale_benchmark -- --ignored --exact --nocapture
 ```
 
-`scale_benchmark` prints the thread count, cold, median and p95 milliseconds, the index, query and solve times, and pair, query and impact counts. On Linux it also prints peak RSS. See [ship-step-profile.md](ship-step-profile.md) for other profiling commands.
+`scale_benchmark` prints the thread count, cold, median and p95 milliseconds, the index, query and solve times, and pair, query and impact counts. On Linux it also prints peak RSS. The shared hash also has `cargo run --release -p toy-sim-spatial --example benchmark`; it measures index construction, visibility/range/segment queries and updates independently of CCD. These CPU results do not measure client GPU performance. See [ship-step-profile.md](ship-step-profile.md) for other profiling commands, and [DEVLOG.md](../DEVLOG.md) for measured sprint workloads and limitations.
 
 ## Limitations
 

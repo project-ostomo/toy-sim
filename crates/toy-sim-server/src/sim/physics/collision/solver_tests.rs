@@ -393,7 +393,7 @@ fn destroyed_slug_cannot_hit_a_second_ship() {
 }
 
 #[test]
-fn region_boundaries_and_diagonal_sweeps_match_exhaustive_candidates() {
+fn hash_boundaries_and_diagonal_sweeps_match_exhaustive_candidates() {
     let origin = GalacticPosition::splat(1_i128 << 100);
     let mut proxies = Vec::new();
     for i in 0..200 {
@@ -409,7 +409,7 @@ fn region_boundaries_and_diagonal_sweeps_match_exhaustive_candidates() {
             radius: 1000.0,
         });
     }
-    let index = RegionIndex::build(&proxies);
+    let index = SweptIndex::build(&proxies);
     let pairs = index.pairs();
     for a in 0..proxies.len() {
         for b in a + 1..proxies.len() {
@@ -574,6 +574,7 @@ fn nearest_queries_match_exhaustive_selection_across_regions_and_ties() {
             0.0,
         );
         index.insert(SpatialObject {
+            optical_luminosity_w: 0.0,
             entity: world.spawn_empty().id(),
             position: anchor.offset_by(p),
             radius_m: 2.0,
@@ -689,6 +690,7 @@ fn sensor_scale_benchmark() {
         let mut index = SpatialIndex::default();
         for i in 0..count {
             index.insert(SpatialObject {
+                optical_luminosity_w: 0.0,
                 entity: world.spawn_empty().id(),
                 position: GalacticPosition::from_meters(DVec3::new(
                     (i % 100) as f64 * 20.0,
@@ -731,8 +733,8 @@ fn sensor_scale_benchmark() {
 }
 
 #[test]
-fn regional_storage_reuse_handles_migration_deletion_and_reordered_ids() {
-    let mut index = RegionIndex::default();
+fn swept_storage_reuse_handles_migration_deletion_and_reordered_ids() {
+    let mut index = SweptIndex::default();
     for tick in 0..5 {
         let mut proxies: Vec<_> = (tick..120)
             .map(|i| Proxy {
@@ -748,7 +750,7 @@ fn regional_storage_reuse_handles_migration_deletion_and_reordered_ids() {
             .collect();
         proxies.reverse();
         index.refresh(&proxies);
-        assert_eq!(index.pairs(), RegionIndex::build(&proxies).pairs());
+        assert_eq!(index.pairs(), SweptIndex::build(&proxies).pairs());
     }
 }
 

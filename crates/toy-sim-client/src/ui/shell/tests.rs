@@ -14,6 +14,7 @@ fn row(id: u8, x: f64) -> Row {
         radius: 50.,
         detail: String::new(),
         own: false,
+        can_look: true,
         standing: None,
         affiliation: None,
     }

@@ -2,28 +2,16 @@ use super::{Dormant, Gate};
 use crate::sim::{
     precision::{GalacticPosition, PreciseTransform},
     spatial::SpatialBody,
-    spatial_tree::bounds,
 };
-use bevy::{math::DVec3, prelude::*};
-use parry3d_f64::{
-    bounding_volume::Aabb,
-    partitioning::{Bvh, BvhBuildStrategy},
-};
+use bevy::prelude::*;
 use std::collections::HashMap;
+use toy_sim_spatial::{Entry, SpatialHash};
 
 #[derive(Resource, Default)]
 pub struct TravelGeometry {
-    tree: Bvh,
-    anchor: GalacticPosition,
+    index: SpatialHash,
     entities: Vec<Entity>,
     slots: HashMap<Entity, u32>,
-}
-
-fn aabb(anchor: GalacticPosition, position: GalacticPosition, radius: f64) -> Aabb {
-    let center = position.relative_to(anchor);
-    let padding = center.abs().max_element() * f64::EPSILON * 8. + 1e-4;
-    let extent = DVec3::splat(radius + padding);
-    bounds(center - extent, center + extent)
 }
 
 pub fn refresh(world: &mut World) {
@@ -40,28 +28,19 @@ pub fn refresh(world: &mut World) {
             Some((entity, transform.translation_um, radius))
         })
         .collect();
-    let anchor = entries
-        .first()
-        .map_or(GalacticPosition::ZERO, |entry| entry.1);
-    let mut geometry = TravelGeometry {
-        anchor,
-        ..Default::default()
-    };
-    let leaves: Vec<_> = entries
-        .into_iter()
-        .enumerate()
-        .map(|(slot, (entity, position, radius))| {
-            geometry.entities.push(entity);
-            geometry.slots.insert(entity, slot as u32);
-            (slot, aabb(anchor, position, radius))
-        })
-        .collect();
-    if leaves.len() <= 2 {
-        for (slot, bounds) in leaves {
-            geometry.tree.insert(bounds, slot as u32);
-        }
-    } else {
-        geometry.tree = Bvh::from_iter(BvhBuildStrategy::Binned, leaves);
+    let mut geometry = TravelGeometry::default();
+    for (entity, position, radius) in entries {
+        let slot = u32::try_from(geometry.entities.len()).expect("too many travel obstacles");
+        geometry.entities.push(entity);
+        geometry.slots.insert(entity, slot);
+        geometry.index.insert(
+            slot,
+            Entry {
+                position,
+                radius_m: radius,
+                luminosity: 0.0,
+            },
+        );
     }
     world.insert_resource(geometry);
 }
@@ -95,15 +74,21 @@ pub fn update(world: &mut World, entity: Entity) {
         let slot = if let Some(&slot) = geometry.slots.get(&entity) {
             slot
         } else {
-            let slot = geometry.entities.len() as u32;
+            let slot = u32::try_from(geometry.entities.len()).expect("too many travel obstacles");
             geometry.entities.push(entity);
             geometry.slots.insert(entity, slot);
             slot
         };
-        let bounds = aabb(geometry.anchor, position, radius);
-        geometry.tree.insert(bounds, slot);
+        geometry.index.insert(
+            slot,
+            Entry {
+                position,
+                radius_m: radius,
+                luminosity: 0.0,
+            },
+        );
     } else if let Some(&slot) = geometry.slots.get(&entity) {
-        geometry.tree.remove(slot);
+        geometry.index.remove(slot);
     }
 }
 
@@ -116,23 +101,27 @@ pub fn candidates(
         refresh(world);
     }
     let geometry = world.resource::<TravelGeometry>();
-    let bounds = aabb(geometry.anchor, position, radius);
-    let mut candidates = Vec::new();
-    for slot in geometry.tree.intersect_aabb(&bounds) {
-        if candidates.len() >= 4096 {
-            return None;
-        }
-        candidates.push(geometry.entities[slot as usize]);
+    let mut cursor = geometry.index.range_cursor(position, radius, true);
+    let found = geometry.index.advance_range(&mut cursor, usize::MAX, 4097);
+    if found.ids.len() > 4096 {
+        return None;
     }
-    Some(candidates)
+    Some(
+        found
+            .ids
+            .into_iter()
+            .map(|slot| geometry.entities[slot as usize])
+            .collect(),
+    )
 }
 
 pub fn mouth_candidates(world: &World, position: GalacticPosition, radius: f64) -> Vec<Entity> {
     let geometry = world.resource::<TravelGeometry>();
-    let bounds = aabb(geometry.anchor, position, radius);
     geometry
-        .tree
-        .intersect_aabb(&bounds)
+        .index
+        .intersecting_sphere(position, radius)
+        .ids
+        .into_iter()
         .map(|slot| geometry.entities[slot as usize])
         .filter(|&entity| world.get::<Gate>(entity).is_some_and(|gate| gate.enabled))
         .collect()
@@ -141,6 +130,7 @@ pub fn mouth_candidates(world: &World, position: GalacticPosition, radius: f64) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::math::DVec3;
 
     #[test]
     fn huge_extents_have_one_leaf_each_and_updates_move_queries_immediately() {
@@ -166,7 +156,7 @@ mod tests {
             ))
             .id();
         refresh(&mut world);
-        assert_eq!(world.resource::<TravelGeometry>().tree.leaf_count(), 2);
+        assert_eq!(world.resource::<TravelGeometry>().index.len(), 2);
         assert_eq!(
             candidates(&mut world, GalacticPosition::ZERO, 1.)
                 .unwrap()
@@ -218,5 +208,63 @@ mod tests {
                 .unwrap()
                 .contains(&obstacle)
         );
+    }
+
+    #[test]
+    fn exclusion_queries_match_sphere_intersections_and_never_return_a_truncated_list() {
+        let mut world = World::new();
+        let origin = GalacticPosition::new(1 << 90, -(1 << 90), 1 << 86);
+        let mut obstacles = Vec::new();
+        for number in 0..128 {
+            let position = origin.offset_by(DVec3::new(
+                (number % 8) as f64 * 100.0,
+                (number / 8) as f64 * 100.0,
+                0.0,
+            ));
+            let radius_m = 1.0 + number as f64 * 3.0;
+            let entity = world
+                .spawn((
+                    PreciseTransform {
+                        translation_um: position,
+                        ..Default::default()
+                    },
+                    Gate {
+                        paired: toy_sim_model::Id::new(),
+                        radius_m: 1.0,
+                        exclusion_m: radius_m,
+                        enabled: true,
+                    },
+                ))
+                .id();
+            obstacles.push((entity, position, radius_m));
+        }
+        refresh(&mut world);
+        for radius in [0.0, 50.0, 500.0, 10_000.0] {
+            let mut actual = candidates(&mut world, origin, radius).unwrap();
+            actual.sort_unstable();
+            let mut expected: Vec<_> = obstacles
+                .iter()
+                .filter(|(_, position, extent)| {
+                    position.relative_to(origin).length() <= radius + extent
+                })
+                .map(|(entity, _, _)| *entity)
+                .collect();
+            expected.sort_unstable();
+            assert_eq!(actual, expected);
+            let mut mouths = mouth_candidates(&world, origin, radius);
+            mouths.sort_unstable();
+            assert_eq!(mouths, expected);
+        }
+        for _ in 0..4097 {
+            world.spawn((
+                PreciseTransform::default(),
+                SpatialBody {
+                    radius_m: 1.0,
+                    occludes: true,
+                },
+            ));
+        }
+        refresh(&mut world);
+        assert!(candidates(&mut world, GalacticPosition::ZERO, 1.0).is_none());
     }
 }

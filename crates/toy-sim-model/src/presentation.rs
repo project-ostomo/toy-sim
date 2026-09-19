@@ -11,7 +11,6 @@ pub struct ContactRef {
 pub struct PresentationFrame {
     pub navigation: NavigationCatalogue,
     pub ships: Vec<ShipPresentation>,
-    pub visuals: Vec<TrackVisual>,
     pub combat: Vec<CombatEvent>,
     pub celestial_systems: Vec<CelestialSystemRef>,
     pub capabilities: Vec<DebugCapability>,
@@ -227,8 +226,7 @@ pub struct ScreenDefinition {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct TrackVisual {
-    pub contact: ContactRef,
+pub struct ShipVisual {
     pub engines: Vec<EngineVisual>,
     pub turrets: Vec<TurretVisual>,
     pub shield: Option<ShieldVisual>,

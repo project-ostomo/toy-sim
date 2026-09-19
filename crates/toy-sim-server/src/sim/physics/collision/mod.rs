@@ -1,5 +1,5 @@
-//! Time-ordered, dissipative contacts. Broad phase and geometry belong to Parry;
-//! trajectory sampling, thermal accounting and impact scheduling belong here.
+//! Time-ordered, dissipative contacts. Swept spatial hashes find candidates;
+//! Parry supplies geometry and continuous contact queries.
 mod ecs;
 mod gates;
 #[cfg(test)]
@@ -10,7 +10,7 @@ pub use ecs::{CollisionBody, CollisionReport, CollisionStats, Projectile, instal
 use super::rotation;
 use crate::sim::{
     precision::GalacticPosition,
-    spatial_tree::{Proxy, RegionIndex, dvec, vector},
+    spatial::swept::{Proxy, SweptIndex, dvec, vector},
 };
 use bevy::{
     math::{DMat3, DQuat, DVec3},
@@ -892,7 +892,7 @@ pub struct SolverWorkspace {
     pub weapons: std::collections::BTreeMap<Entity, weapons::WeaponShip>,
     pub time_s: f64,
     gates: Vec<gates::Mouth>,
-    index: RegionIndex,
+    index: SweptIndex,
     contacts: ahash::AHashMap<(Entity, Entity, usize, usize), ContactCache>,
     epoch: u64,
 }
@@ -1374,7 +1374,7 @@ pub fn activate(bodies: &mut [Body]) {
         .filter(|(_, b)| b.alive())
         .map(|(i, b)| b.proxy(i, 0.0))
         .collect();
-    let index = RegionIndex::build(&proxies);
+    let index = SweptIndex::build(&proxies);
     for (a, member) in pending {
         let anchor = bodies[a].position;
         let pa = bodies[a].shape_pose(member, 0.0, anchor);

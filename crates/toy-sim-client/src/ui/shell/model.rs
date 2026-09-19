@@ -10,6 +10,7 @@ pub(super) struct Row {
     pub radius: f64,
     pub detail: String,
     pub own: bool,
+    pub can_look: bool,
     pub affiliation: Option<ownership::Principal>,
     pub standing: Option<ownership::Standing>,
 }

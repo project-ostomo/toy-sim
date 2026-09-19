@@ -149,6 +149,9 @@ impl AssetLoader for SystemLoader {
 }
 
 #[derive(Component)]
+pub(crate) struct MeshDemand;
+
+#[derive(Component)]
 pub(crate) struct Appearance {
     pub hash: [u8; 32],
     pub design: Handle<ShipDesign>,
@@ -160,22 +163,28 @@ pub(crate) fn synchronize_appearances(
     sources: Query<
         (
             Entity,
-            Option<&crate::state::Contact>,
+            Option<&crate::state::Optical>,
             Option<&crate::state::OwnedShip>,
             Option<&crate::state::CombatPublication>,
             Option<&Appearance>,
+            Option<&MeshDemand>,
         ),
         Or<(
-            With<crate::state::Contact>,
+            With<crate::state::Optical>,
             With<crate::state::OwnedShip>,
             With<crate::state::CombatPublication>,
         )>,
     >,
 ) {
-    for (entity, contact, owned, combat, appearance) in &sources {
+    for (entity, contact, owned, combat, appearance, mesh_demand) in &sources {
         let hash = contact
+            .filter(|_| mesh_demand.is_some() || appearance.is_some())
             .and_then(|contact| contact.0.appearance)
-            .or_else(|| owned.and_then(|ship| ship.0.appearance))
+            .or_else(|| {
+                owned
+                    .filter(|_| mesh_demand.is_some() || appearance.is_some())
+                    .and_then(|ship| ship.0.appearance)
+            })
             .or_else(|| match &combat?.0.kind {
                 toy_sim_model::CombatEventKind::Destroyed { appearance, .. } => *appearance,
                 _ => None,

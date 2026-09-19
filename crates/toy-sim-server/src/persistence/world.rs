@@ -1044,7 +1044,14 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             .insert((group, track.physical), entity);
     }
     let mut activate = Schedule::default();
-    activate.add_systems((orrery::activity::activate, identity::identify_celestials).chain());
+    activate.add_systems(
+        (
+            orrery::activity::activate,
+            identity::identify_celestials,
+            spatial::rebuild,
+        )
+            .chain(),
+    );
     activate.run(world);
     let mut publish = Schedule::default();
     publish.add_systems(intelligence::publish);
@@ -1057,6 +1064,46 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
 mod tests {
     use super::*;
     use toy_sim_model::travel::{Order, QueuedOrder, Status};
+
+    #[test]
+    fn paused_restore_rebuilds_optical_visibility_without_advancing_or_expiring_tracks() {
+        let account = Id::new();
+        let mut app = crate::scenario(&[account], Some(account), None).unwrap();
+        for _ in 0..3 {
+            app.update();
+        }
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let ship_id = id(world, ship).unwrap();
+        world.resource_mut::<crate::sim::session::Clock>().rate = 0.0;
+        let tick = world.resource::<simulation::SimulationCounters>().ticks;
+        let tracks = world.resource::<intelligence::AssociationIndex>().0.len();
+        let bytes = capture(world).unwrap();
+        restore(world, &bytes).unwrap();
+
+        let ship = identity::lookup(world, ship_id).unwrap();
+        let index = world.resource::<spatial::SpatialIndex>();
+        let ship_index = index.object_index(ship).unwrap();
+        let origin = index.objects[ship_index].position;
+        assert!(
+            index
+                .visible(origin, 1e-9)
+                .iter()
+                .any(|&id| id != ship_index)
+        );
+        assert_eq!(world.resource::<crate::sim::session::Clock>().rate, 0.0);
+        assert_eq!(
+            world.resource::<simulation::SimulationCounters>().ticks,
+            tick
+        );
+        assert_eq!(
+            world.resource::<intelligence::AssociationIndex>().0.len(),
+            tracks
+        );
+    }
 
     #[test]
     fn corrupt_references_are_rejected_before_replacing_the_world() {

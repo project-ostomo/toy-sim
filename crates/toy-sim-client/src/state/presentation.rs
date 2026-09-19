@@ -5,6 +5,7 @@ pub(super) fn interpolate(
     mut clock: ResMut<RenderTime>,
     mut poses: Query<(&PoseSamples, &mut DisplayPose)>,
     mut visuals: Query<(&VisualSamples, &mut DisplayVisual)>,
+    mut lights: Query<&mut OpticalLight>,
 ) {
     let alpha = time.overstep_fraction_f64();
     clock.display_ns = clock
@@ -31,12 +32,15 @@ pub(super) fn interpolate(
                     * alpha;
         }
     });
+    for mut light in &mut lights {
+        light.display_w = light.previous + (light.current - light.previous) * alpha;
+    }
     visuals.par_iter_mut().for_each(|(samples, mut visual)| {
         visual.0 = interpolate_visual(&samples.previous, &samples.current, alpha);
     });
 }
 
-fn interpolate_visual(previous: &TrackVisual, current: &TrackVisual, alpha: f64) -> TrackVisual {
+fn interpolate_visual(previous: &ShipVisual, current: &ShipVisual, alpha: f64) -> ShipVisual {
     let mut visual = current.clone();
     for turret in &mut visual.turrets {
         if let Some(old) = previous.turrets.iter().find(|old| old.part == turret.part) {
@@ -70,11 +74,7 @@ mod tests {
     use super::*;
     #[test]
     fn visual_interpolation_wraps_turret_yaw() {
-        let visual = |yaw| TrackVisual {
-            contact: ContactRef {
-                group: Id([7; 16]),
-                track: Id([8; 16]),
-            },
+        let visual = |yaw| ShipVisual {
             engines: Vec::new(),
             shield: None,
             turrets: vec![TurretVisual {

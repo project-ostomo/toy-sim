@@ -61,6 +61,7 @@ pub(super) fn apply(
     mut clock: ResMut<RenderTime>,
     mut info: ResMut<SessionInfo>,
     old_samples: Query<(&SpatialInstance, &PoseSamples, Option<&VisualSamples>)>,
+    old_optical: Query<&Optical>,
 ) {
     let playback = &mut playback.0;
     let advanced = playback.tick().is_some();
@@ -101,30 +102,6 @@ pub(super) fn apply(
     let excess = info.results.len().saturating_sub(128);
     info.results.drain(..excess);
 
-    replication
-        .deaths
-        .retain(|_, timestamp| clock.display_ns.saturating_sub(*timestamp) <= 60_000_000_000);
-    for retained in &publications.combat {
-        if let CombatEventKind::Destroyed { target, .. } = retained.event.kind {
-            if let Some(instance) = retained.destroyed_instance {
-                replication.deaths.insert(
-                    (target.group, target.track, instance),
-                    retained.event.sim_time_ns,
-                );
-            }
-        }
-    }
-    while replication.deaths.len() > 16_384 {
-        if let Some(key) = replication
-            .deaths
-            .iter()
-            .min_by_key(|(_, time)| **time)
-            .map(|(key, _)| *key)
-        {
-            replication.deaths.remove(&key);
-        }
-    }
-
     let mut seen_beacons = BTreeSet::new();
     for beacon in &frame.presentation.navigation.beacons {
         seen_beacons.insert(beacon.id);
@@ -141,12 +118,6 @@ pub(super) fn apply(
     }
     retain(&mut commands, &mut replication.beacons, &seen_beacons);
 
-    let visuals: BTreeMap<_, _> = frame
-        .presentation
-        .visuals
-        .iter()
-        .map(|visual| ((visual.contact.group, visual.contact.track), visual))
-        .collect();
     let mut seen = BTreeSet::new();
     for (group, tracks) in &frame.tracks {
         for track in tracks {
@@ -167,40 +138,56 @@ pub(super) fn apply(
                 group: *group,
                 track: track.id,
             };
-            if let Some(timestamp) =
-                replication
-                    .deaths
-                    .get(&(*group, track.id, track.spatial_instance))
-            {
-                commands.entity(entity).insert(DestroyedAt(*timestamp));
-            } else {
-                commands.entity(entity).remove::<DestroyedAt>();
-            }
             commands.entity(entity).insert((
                 Contact(track.clone(), reference),
                 SpatialInstance(track.spatial_instance),
                 samples(old.map(|(_, poses, _)| &poses.current), &track.pose),
             ));
-            if let Some(visual) = visuals.get(&key) {
-                let old = old
-                    .and_then(|(_, _, visual)| visual)
-                    .map(|visual| &visual.current)
-                    .unwrap_or(visual);
-                commands.entity(entity).insert((
-                    VisualSamples {
-                        previous: old.clone(),
-                        current: (*visual).clone(),
-                    },
-                    DisplayVisual((*visual).clone()),
-                ));
-            } else {
-                commands
-                    .entity(entity)
-                    .remove::<(VisualSamples, DisplayVisual)>();
-            }
         }
     }
     retain(&mut commands, &mut replication.contacts, &seen);
+
+    let mut seen = BTreeSet::new();
+    for observation in &frame.optical {
+        let key = (observation.view, observation.id);
+        seen.insert(key);
+        if let Some(entity) = replication.optical.get(&key).copied() {
+            if old_samples
+                .get(entity)
+                .is_ok_and(|(instance, _, _)| instance.0 != observation.spatial_instance)
+            {
+                commands.entity(entity).despawn();
+                replication.optical.remove(&key);
+            }
+        }
+        let entity = indexed(&mut commands, &mut replication.optical, key);
+        let old = old_samples
+            .get(entity)
+            .ok()
+            .filter(|(instance, _, _)| instance.0 == observation.spatial_instance);
+        let previous_visual = old
+            .and_then(|(_, _, visual)| visual)
+            .map(|visual| &visual.current)
+            .unwrap_or(&observation.visual);
+        commands.entity(entity).insert((
+            Optical(observation.clone()),
+            OpticalLight {
+                previous: old_optical
+                    .get(entity)
+                    .map_or(observation.luminosity_w, |old| old.0.luminosity_w),
+                current: observation.luminosity_w,
+                display_w: observation.luminosity_w,
+            },
+            SpatialInstance(observation.spatial_instance),
+            samples(old.map(|(_, poses, _)| &poses.current), &observation.pose),
+            VisualSamples {
+                previous: previous_visual.clone(),
+                current: observation.visual.clone(),
+            },
+            DisplayVisual(observation.visual.clone()),
+        ));
+    }
+    retain(&mut commands, &mut replication.optical, &seen);
 
     let details: BTreeMap<_, _> = frame
         .presentation
@@ -254,8 +241,7 @@ pub(super) fn apply(
     }
     retain(&mut commands, &mut replication.views, &seen);
 
-    for retained in publications.combat {
-        let event = retained.event;
+    for event in publications.combat {
         let entity = commands
             .spawn((WorldMember, CombatPublication(event.clone())))
             .id();
@@ -278,6 +264,7 @@ mod tests {
 
     fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
         let mut frame = Frame {
+            optical: Vec::new(),
             calendar_unix_ms: 0,
             society: Default::default(),
             presentation: PresentationFrame::default(),
@@ -602,54 +589,6 @@ mod tests {
     }
 
     #[test]
-    fn returning_spatial_instance_does_not_inherit_an_unsubscribed_death() {
-        let mut app = app();
-        let group = Id([2; 16]);
-        let track = Id([3; 16]);
-        let mut first = snapshot(1, group, track, 0.);
-        first.presentation.combat.push(CombatEvent {
-            sequence: 1,
-            sim_time_ns: first.sim_time_ns,
-            kind: CombatEventKind::Destroyed {
-                target: ContactRef { group, track },
-                pose: Pose::default(),
-                appearance: None,
-                energy_j: 1.,
-                mass_kg: 1.,
-                radius_m: 1.,
-            },
-        });
-        step(&mut app, 0.1, Some(first));
-        assert_eq!(
-            app.world_mut()
-                .query::<&DestroyedAt>()
-                .iter(app.world())
-                .count(),
-            1
-        );
-
-        let mut absent = snapshot(2, group, track, 0.);
-        absent.tracks.clear();
-        step(&mut app, 0.2, Some(absent));
-        let mut arrived = snapshot(3, group, track, 1000.);
-        arrived.tracks.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
-        step(&mut app, 0.3, Some(arrived));
-        assert_eq!(
-            app.world_mut()
-                .query::<&Contact>()
-                .iter(app.world())
-                .count(),
-            1
-        );
-        assert_eq!(
-            app.world_mut()
-                .query::<&DestroyedAt>()
-                .iter(app.world())
-                .count(),
-            0
-        );
-    }
-    #[test]
     fn catchup_preserves_both_publications_and_interpolates_to_the_final_sample() {
         let mut app = app();
         let group = Id([2; 16]);
@@ -717,23 +656,9 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(
-            app.world_mut()
-                .query::<&DestroyedAt>()
-                .iter(app.world())
-                .count(),
-            1
-        );
 
         step(&mut app, 0.3, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 5);
-        assert_eq!(
-            app.world_mut()
-                .query::<&DestroyedAt>()
-                .iter(app.world())
-                .count(),
-            0
-        );
         step(&mut app, 0.4, None);
         step(&mut app, 0.45, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 7);
@@ -745,5 +670,110 @@ mod tests {
         assert!((pose.0.position.relative_to(GalacticPosition::ZERO).x - 500.).abs() < 1e-6);
         assert_eq!(app.world().resource::<RenderTime>().display_ns, 600_000_000);
         assert_eq!(app.world().resource::<SessionInfo>().results.len(), 2);
+    }
+    fn optical(view: u64, position: f64, luminosity_w: f64) -> optical::OpticalObservation {
+        optical::OpticalObservation {
+            view,
+            id: Id([9; 16]),
+            spatial_instance: Id([10; 16]),
+            known_entity: None,
+            contact: None,
+            pose: Pose {
+                position: GalacticPosition::ZERO.offset_by(glam::DVec3::X * position),
+                ..Default::default()
+            },
+            radius_m: 10.,
+            luminosity_w,
+            appearance: Some([11; 32]),
+            visual: ShipVisual {
+                engines: Vec::new(),
+                turrets: Vec::new(),
+                shield: None,
+            },
+        }
+    }
+
+    #[test]
+    fn optical_entities_are_view_scoped_independent_of_radio_tracks_and_interpolate_light() {
+        let mut app = app();
+        let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
+        first.optical = vec![optical(1, 0., 10.), optical(2, 1000., 20.)];
+        step(&mut app, 0.1, Some(first));
+        assert_eq!(
+            app.world_mut()
+                .query::<&Optical>()
+                .iter(app.world())
+                .count(),
+            2
+        );
+        assert_eq!(
+            app.world_mut()
+                .query_filtered::<&DisplayVisual, With<Contact>>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+        let source = app
+            .world_mut()
+            .query::<(Entity, &Optical)>()
+            .iter(app.world())
+            .find(|(_, object)| object.0.view == 1)
+            .unwrap()
+            .0;
+
+        let mut second = snapshot(2, Id([2; 16]), Id([3; 16]), 0.);
+        second.tracks.clear();
+        second.optical = vec![optical(1, 100., 30.), optical(2, 2000., 40.)];
+        step(&mut app, 0.2, Some(second));
+        step(&mut app, 0.25, None);
+        let position = app.world().get::<DisplayPose>(source).unwrap().0.position;
+        assert!((position.relative_to(GalacticPosition::ZERO).x - 50.).abs() < 1e-6);
+        assert!((app.world().get::<OpticalLight>(source).unwrap().display_w - 20.).abs() < 1e-6);
+        assert_eq!(
+            app.world_mut()
+                .query::<&Contact>()
+                .iter(app.world())
+                .count(),
+            0
+        );
+
+        let mut third = snapshot(3, Id([2; 16]), Id([3; 16]), 0.);
+        third.optical = vec![optical(2, 2000., 40.)];
+        step(&mut app, 0.3, Some(third));
+        assert!(app.world().get_entity(source).is_err());
+        assert_eq!(
+            app.world_mut()
+                .query::<&Optical>()
+                .iter(app.world())
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn optical_transit_instance_replaces_pose_and_light_samples() {
+        let mut app = app();
+        let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
+        first.optical = vec![optical(1, 0., 10.)];
+        step(&mut app, 0.1, Some(first));
+        let old = app
+            .world_mut()
+            .query_filtered::<Entity, With<Optical>>()
+            .single(app.world())
+            .unwrap();
+        let mut second = snapshot(2, Id([2; 16]), Id([3; 16]), 0.);
+        let mut arrived = optical(1, 1e9, 1000.);
+        arrived.spatial_instance = Id([12; 16]);
+        second.optical.push(arrived);
+        step(&mut app, 0.2, Some(second));
+        step(&mut app, 0.25, None);
+        assert!(app.world().get_entity(old).is_err());
+        let (_, pose, light) = app
+            .world_mut()
+            .query::<(&Optical, &DisplayPose, &OpticalLight)>()
+            .single(app.world())
+            .unwrap();
+        assert_eq!(pose.0.position.relative_to(GalacticPosition::ZERO).x, 1e9);
+        assert_eq!(light.display_w, 1000.);
     }
 }

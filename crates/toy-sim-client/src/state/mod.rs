@@ -23,6 +23,16 @@ pub(super) struct WorldMember;
 pub(super) struct Contact(pub Track, pub ContactRef);
 
 #[derive(Component)]
+pub(super) struct Optical(pub optical::OpticalObservation);
+
+#[derive(Component)]
+pub(super) struct OpticalLight {
+    previous: f64,
+    current: f64,
+    pub display_w: f64,
+}
+
+#[derive(Component)]
 pub(super) struct OwnedShip(pub ShipTelemetry);
 
 #[derive(Component)]
@@ -50,13 +60,10 @@ pub(super) struct SpatialInstance(pub Id);
 pub(super) struct DisplayPose(pub Pose);
 
 #[derive(Component)]
-pub(super) struct DisplayVisual(pub TrackVisual);
+pub(super) struct DisplayVisual(pub ShipVisual);
 
 #[derive(Component)]
 pub(super) struct CombatPublication(pub CombatEvent);
-
-#[derive(Component)]
-pub(super) struct DestroyedAt(pub u64);
 
 #[derive(Component)]
 struct PoseSamples {
@@ -66,8 +73,8 @@ struct PoseSamples {
 
 #[derive(Component)]
 struct VisualSamples {
-    previous: TrackVisual,
-    current: TrackVisual,
+    previous: ShipVisual,
+    current: ShipVisual,
 }
 
 #[derive(Resource, Default)]
@@ -119,10 +126,10 @@ struct BufferedPlayback(Playback);
 struct Replication {
     contacts: BTreeMap<(Id, Id), Entity>,
     ships: BTreeMap<Id, Entity>,
+    optical: BTreeMap<(u64, Id), Entity>,
     beacons: BTreeMap<Id, Entity>,
     views: BTreeMap<u64, Entity>,
     events: BTreeMap<u64, (Entity, u64)>,
-    deaths: BTreeMap<(Id, Id, Id), u64>,
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
