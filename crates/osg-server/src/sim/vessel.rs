@@ -181,10 +181,11 @@ fn spawn(
     };
     let scenario = &crate::sim::scenario::INITIAL_SCENARIO;
     scenario.validate(&universe).unwrap();
-    let body = universe.get_body(scenario.body).unwrap();
+    let body_id = universe.authored_body(scenario.body).unwrap();
+    let body = universe.body(body_id).unwrap();
     let epoch = crate::sim::physics::sim_time(&time);
-    let planet_position = universe.solve_position(scenario.body, epoch).unwrap();
-    let planet_velocity = universe.solve_velocity(scenario.body, epoch).unwrap();
+    let planet_position = universe.solve_position(body_id, epoch).unwrap();
+    let planet_velocity = universe.solve_velocity(body_id, epoch).unwrap();
     let mut states = scenario.fleet_states(body.radius, body.mass).unwrap();
     states[0] = scenario.sunlit_state(&universe, epoch).unwrap();
     let (player_position, player_velocity) = states[0];
@@ -213,6 +214,9 @@ fn spawn(
         controller.configure_hardware(&design, &cat.0);
         let mut state = ShipState::new(&design, &cat.0);
         state.test_loadout(&design, &cat.0);
+        let loaded_mass = state.mass_properties(&design, &cat.0).0;
+        seed_exotic_inventory(&mut state.inventory, loaded_mass, &cat.0, 300.0)
+            .expect("starter exotic tank has sufficient capacity");
         let (mass, inertia) = state.mass_properties(&design, &cat.0);
         let mut pose = PreciseTransform {
             translation_um: planet_position.offset_by(position),
@@ -297,23 +301,26 @@ pub(crate) fn run(
     time: Res<Time<Fixed>>,
     callbacks: Option<Res<super::missiles::Callbacks>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
-    mut ships: Query<(
-        Entity,
-        &ShipDesign,
-        HardwareWrite,
-        &mut ShipSoftware,
-        &mut super::displays::DisplayEnvironment,
-        Option<&super::displays::Display>,
-        &PreciseTransform,
-        Option<&Velocity>,
-        Option<&AngularVelocity>,
-        &crate::sim::physics::AccelerometerState,
-        &MassProps,
-        &super::identity::Identity,
-        &super::ownership::AssetOwner,
-        Has<super::travel::SystemsSuspended>,
-        Option<&mut super::missiles::Launchers>,
-    )>,
+    mut ships: Query<
+        (
+            Entity,
+            &ShipDesign,
+            HardwareWrite,
+            &mut ShipSoftware,
+            &mut super::displays::DisplayEnvironment,
+            Option<&super::displays::Display>,
+            &PreciseTransform,
+            Option<&Velocity>,
+            Option<&AngularVelocity>,
+            &crate::sim::physics::AccelerometerState,
+            &MassProps,
+            &super::identity::Identity,
+            &super::ownership::AssetOwner,
+            Has<super::travel::SystemsSuspended>,
+            Option<&mut super::missiles::Launchers>,
+        ),
+        Without<super::travel::ArrivalOffset>,
+    >,
 ) {
     use osg_ship_wasm::CallbackKind;
 
@@ -802,6 +809,77 @@ pub fn spawn_ship(
             mass,
         ))
         .id())
+}
+
+/// Provision a newly created scenario vessel. Restored and constructed vessels
+/// retain the quantities supplied by their saved inventory or blueprint.
+pub fn seed_exotic_fuel(world: &mut World, entity: Entity, range_ly: f64) -> anyhow::Result<()> {
+    use anyhow::Context;
+
+    let catalogue = world.resource::<ShipCatalogue>().0.clone();
+    let design = world
+        .get::<ShipDesign>(entity)
+        .context("ship has no design")?
+        .0
+        .clone();
+    let thermal = &world
+        .get::<ShipThermal>(entity)
+        .context("ship has no thermal state")?
+        .0;
+    let thermal_mass = thermal.shield_reserve_kg() + thermal.shield_deployed_kg;
+    let inventory = &world
+        .get::<ShipInventory>(entity)
+        .context("ship has no inventory")?
+        .0;
+    let mass = design.dry_mass + inventory.mass(&catalogue) + thermal_mass;
+    let mut inventory = world.get_mut::<ShipInventory>(entity).unwrap();
+    seed_exotic_inventory(&mut inventory.0, mass, &catalogue, range_ly)?;
+    let mass = design.dry_mass + inventory.0.mass(&catalogue) + thermal_mass;
+    let seeded_inventory = inventory.0.clone();
+    if let Some(mut pending) = world.get_mut::<PendingHardwareReset>(entity) {
+        pending.0.inventory = seeded_inventory;
+    }
+    let inertia = design.inertia * (mass / design.dry_mass);
+    world.entity_mut(entity).insert(MassProps {
+        mass,
+        inertia,
+        inertia_inv: inertia.inverse(),
+    });
+    Ok(())
+}
+
+fn seed_exotic_inventory(
+    inventory: &mut Inventory,
+    loaded_mass_kg: f64,
+    catalogue: &Catalogue,
+    range_ly: f64,
+) -> anyhow::Result<()> {
+    use anyhow::{Context, ensure};
+    use osg_model::travel::slip;
+
+    let resource = catalogue
+        .resources
+        .iter()
+        .position(|resource| resource.id == slip::EXOTIC_RESOURCE)
+        .context("exotic fuel missing from catalogue")?;
+    if inventory.tank_capacities_m3[resource] == 0.0 {
+        return Ok(());
+    }
+    let definition = &catalogue.resources[resource];
+    let base_mass = loaded_mass_kg - inventory.quantities[resource] as f64 * definition.mass_kg;
+    let fraction = slip::exotic_fuel_kg(1.0, range_ly);
+    ensure!(
+        fraction.is_finite() && (0.0..1.0).contains(&fraction),
+        "invalid exotic endurance"
+    );
+    let quantity = (base_mass * fraction / (1.0 - fraction) / definition.mass_kg).ceil() as u64;
+    let capacity = (inventory.tank_capacities_m3[resource] / definition.volume_m3).floor() as u64;
+    ensure!(
+        quantity <= capacity,
+        "exotic tank cannot supply {range_ly} ly endurance"
+    );
+    inventory.quantities[resource] = quantity;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -163,6 +163,14 @@ pub(super) fn performance(world: &World, ship: Entity) -> Result<routing::ShipPe
         slip_power_w: world
             .get::<travel::SlipDrive>(ship)
             .map_or(0.0, |drive| drive.power_w),
+        exotic_available_kg: catalogue
+            .resources
+            .iter()
+            .enumerate()
+            .find(|(_, resource)| resource.id == osg_model::travel::slip::EXOTIC_RESOURCE)
+            .map_or(0.0, |(index, resource)| {
+                inventory.quantities[index] as f64 * resource.mass_kg
+            }),
         fuels,
     })
 }

@@ -106,7 +106,10 @@ impl From<&travel::Destination> for abi::Destination {
                 axes,
             } => {
                 let (kind, id) = match reference {
-                    travel::Reference::Celestial(id) => (2, id),
+                    travel::Reference::Celestial(reference) => {
+                        output.system = reference.system.0;
+                        (2, &reference.body)
+                    }
                     travel::Reference::Beacon(id) => (3, id),
                 };
                 output.kind = kind;
@@ -128,7 +131,10 @@ impl TryFrom<&abi::Destination> for travel::Destination {
             1 => Self::Galactic(position_value(&value.position)),
             2 | 3 => Self::Relative {
                 reference: if value.kind == 2 {
-                    travel::Reference::Celestial(Id(value.entity))
+                    travel::Reference::Celestial(travel::CelestialRef {
+                        system: Id(value.system),
+                        body: Id(value.entity),
+                    })
                 } else {
                     travel::Reference::Beacon(Id(value.entity))
                 },
@@ -179,7 +185,6 @@ impl From<&travel::Order> for abi::Order {
     fn from(value: &travel::Order) -> Self {
         let mut output = Self::default();
         match value {
-            travel::Order::Jump(id) => output.entity = id.0,
             travel::Order::Guidance(guidance) => {
                 output.kind = 1;
                 output.target = (&guidance.target).into();
@@ -198,9 +203,16 @@ impl From<&travel::Order> for abi::Order {
                 output.kind = 3;
                 output.destination = destination.into();
             }
-            travel::Order::Slip { destination } => {
+            travel::Order::Slip {
+                destination,
+                speed_ly_s,
+                navigation_beacon,
+            } => {
                 output.kind = 4;
                 output.destination = destination.into();
+                output.speed_ly_s = *speed_ly_s;
+                output.navigation_beacon_present = navigation_beacon.is_some() as u64;
+                output.navigation_beacon = navigation_beacon.unwrap_or_default().0;
             }
             travel::Order::Dock(id) => {
                 output.kind = 5;
@@ -221,7 +233,6 @@ impl TryFrom<&abi::Order> for travel::Order {
 
     fn try_from(value: &abi::Order) -> Result<Self, ()> {
         Ok(match value.kind {
-            0 => Self::Jump(Id(value.entity)),
             1 => Self::Guidance(travel::Guidance {
                 mode: match value.mode {
                     0 => travel::GuidanceMode::Align,
@@ -236,6 +247,11 @@ impl TryFrom<&abi::Order> for travel::Order {
             3 => Self::Sublight((&value.destination).try_into()?),
             4 => Self::Slip {
                 destination: (&value.destination).try_into()?,
+                speed_ly_s: value.speed_ly_s,
+                navigation_beacon: optional(
+                    value.navigation_beacon_present,
+                    Id(value.navigation_beacon),
+                )?,
             },
             5 => Self::Dock(Id(value.entity)),
             6 => Self::Undock,
@@ -277,7 +293,7 @@ impl From<&travel::PlanningPreferences> for abi::Preferences {
     fn from(value: &travel::PlanningPreferences) -> Self {
         Self {
             fuel_fraction: value.fuel_fraction,
-            allow_wormholes: value.allow_wormholes as u64,
+            max_loss_ppm: value.max_loss_ppm,
             allow_slipdrive: value.allow_slipdrive as u64,
         }
     }
@@ -289,7 +305,7 @@ impl TryFrom<&abi::Preferences> for travel::PlanningPreferences {
     fn try_from(value: &abi::Preferences) -> Result<Self, ()> {
         let preferences = Self {
             fuel_fraction: value.fuel_fraction,
-            allow_wormholes: flag(value.allow_wormholes)?,
+            max_loss_ppm: value.max_loss_ppm,
             allow_slipdrive: flag(value.allow_slipdrive)?,
         };
         preferences.valid().then_some(preferences).ok_or(())
@@ -316,34 +332,6 @@ impl TryFrom<&abi::LocalObstacle> for crate::LocalObstacle {
             pose: (&value.pose).into(),
             radius_m: value.radius_m,
             slip_exclusion_m: value.slip_exclusion_m,
-        })
-    }
-}
-
-impl From<&crate::NavigationGate> for abi::NavigationGate {
-    fn from(value: &crate::NavigationGate) -> Self {
-        Self {
-            entity: value.entity.0,
-            system: value.system.0,
-            pose: (&value.pose).into(),
-            exit: value.exit.0,
-            staging: position_record(&value.staging),
-            slip_ready: value.slip_ready as u64,
-        }
-    }
-}
-
-impl TryFrom<&abi::NavigationGate> for crate::NavigationGate {
-    type Error = ();
-
-    fn try_from(value: &abi::NavigationGate) -> Result<Self, ()> {
-        Ok(Self {
-            entity: Id(value.entity),
-            system: Id(value.system),
-            pose: (&value.pose).into(),
-            exit: Id(value.exit),
-            staging: position_value(&value.staging),
-            slip_ready: flag(value.slip_ready)?,
         })
     }
 }
@@ -463,6 +451,8 @@ pub fn route_records(
             header.order_count = plan.orders.len() as u64;
             header.fuel_count = plan.fuel_budget.resources.len() as u64;
             header.fuel_complete = plan.fuel_budget.complete as u64;
+            header.estimated_loss_ppm = plan.estimated_loss_ppm;
+            header.exotic_fuel_kg = plan.exotic_fuel_kg;
             orders.extend(plan.orders.iter().map(abi::QueuedOrder::from));
             fuels.extend(
                 plan.fuel_budget
@@ -503,6 +493,18 @@ pub fn route_reply(
         },
         2 => routing::Status::Ready {
             plan: routing::Plan {
+                estimated_loss_ppm: header.estimated_loss_ppm,
+                exotic_fuel_kg: header.exotic_fuel_kg,
+                beacon_assumptions: counted(orders, header.order_count)?
+                    .iter()
+                    .filter(|order| {
+                        order.action.kind == abi::ORDER_SLIP
+                            && order.action.navigation_beacon_present == 1
+                    })
+                    .map(|order| Id(order.action.navigation_beacon))
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
                 planned_tick: header.planned_tick,
                 travel_revision: header.travel_revision,
                 topology_revision: header.topology_revision,
@@ -544,26 +546,21 @@ impl From<&abi::OrreryQuery> for ProgramQuery {
     }
 }
 
-impl TryFrom<&abi::NavigationQuery> for ProgramQuery {
+impl TryFrom<&abi::SlipEligibilityQuery> for ProgramQuery {
     type Error = ();
 
-    fn try_from(value: &abi::NavigationQuery) -> Result<Self, ()> {
-        Ok(Self::Navigation {
-            after: optional(value.after_present, Id(value.after))?,
-            limit: u16::try_from(value.limit).map_err(|_| ())?,
-            reference: position_value(&value.reference),
-        })
-    }
-}
-
-impl From<&abi::SlipEligibilityQuery> for ProgramQuery {
-    fn from(value: &abi::SlipEligibilityQuery) -> Self {
-        Self::SlipEligibility {
+    fn try_from(value: &abi::SlipEligibilityQuery) -> Result<Self, ()> {
+        Ok(Self::SlipEligibility {
             origin: position_value(&value.origin),
             destination: position_value(&value.destination),
             departure_after_seconds: value.departure_after_seconds,
             arrival_after_seconds: value.arrival_after_seconds,
-        }
+            speed_ly_s: value.speed_ly_s,
+            navigation_beacon: optional(
+                value.navigation_beacon_present,
+                Id(value.navigation_beacon),
+            )?,
+        })
     }
 }
 
@@ -649,7 +646,9 @@ action!(
     Self::Slip {
         revision: value.revision,
         order: usize::try_from(value.order).map_err(|_| ())?,
-        destination: position_value(&value.destination)
+        destination: position_value(&value.destination),
+        speed_ly_s: value.speed_ly_s,
+        navigation_beacon: optional(value.navigation_beacon_present, Id(value.navigation_beacon))?,
     }
 );
 action!(
@@ -785,38 +784,6 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
                 .map_err(|_| ERR_ARGUMENT)?;
             Ok(ProgramReply::Orrery(obstacles))
         }
-        ProgramQuery::Navigation {
-            after,
-            limit,
-            reference,
-        } => {
-            let input = abi::NavigationQuery {
-                after_present: after.is_some() as u64,
-                after: after.unwrap_or_default().0,
-                limit: *limit as u64,
-                reference: position_record(reference),
-            };
-            let mut values = vec![abi::NavigationGate::default(); *limit as usize];
-            let mut header = abi::NavigationReply::default();
-            syscall(unsafe {
-                raw::navigation_query(
-                    &input,
-                    values.as_mut_ptr(),
-                    values.len() as u32,
-                    &mut header,
-                )
-            })?;
-            let gates = counted(&values, header.count)
-                .map_err(|_| ERR_ARGUMENT)?
-                .iter()
-                .map(TryInto::try_into)
-                .collect::<Result<_, _>>()
-                .map_err(|_| ERR_ARGUMENT)?;
-            Ok(ProgramReply::Navigation {
-                revision: header.revision,
-                gates,
-            })
-        }
         ProgramQuery::Contact(contact) => {
             let mut output = abi::ContactReply::default();
             syscall(unsafe { raw::contact_get(&contact.into(), &mut output) })?;
@@ -831,12 +798,17 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
             destination,
             departure_after_seconds,
             arrival_after_seconds,
+            speed_ly_s,
+            navigation_beacon,
         } => {
             let input = abi::SlipEligibilityQuery {
                 origin: position_record(origin),
                 destination: position_record(destination),
                 departure_after_seconds: *departure_after_seconds,
                 arrival_after_seconds: *arrival_after_seconds,
+                speed_ly_s: *speed_ly_s,
+                navigation_beacon_present: navigation_beacon.is_some() as u64,
+                navigation_beacon: navigation_beacon.unwrap_or_default().0,
             };
             let mut output = abi::SlipEligibilityReply::default();
             syscall(unsafe { raw::slip_eligibility(&input, &mut output) })?;
@@ -963,11 +935,16 @@ pub fn command(action: ProgramAction) -> Result<(), i32> {
             revision,
             order,
             destination,
+            speed_ly_s,
+            navigation_beacon,
         } => unsafe {
             raw::travel_slip(&abi::Slip {
                 revision,
                 order: order as u64,
                 destination: position_record(&destination),
+                speed_ly_s,
+                navigation_beacon_present: navigation_beacon.is_some() as u64,
+                navigation_beacon: navigation_beacon.unwrap_or_default().0,
             })
         },
         ProgramAction::ReserveBay {
@@ -1025,22 +1002,36 @@ mod tests {
         let action = travel::Order::Guidance(travel::Guidance {
             mode: travel::GuidanceMode::KeepRange,
             target: travel::Target::Destination(travel::Destination::Relative {
-                reference: travel::Reference::Celestial(Id([13; 16])),
+                reference: travel::Reference::Celestial(travel::CelestialRef {
+                    system: Id([12; 16]),
+                    body: Id([13; 16]),
+                }),
                 offset: position,
                 axes: travel::Axes::BodyFixed,
             }),
             range_m: 1050.,
         });
         let plan = routing::Plan {
+            estimated_loss_ppm: 31.5,
+            beacon_assumptions: vec![Id([14; 16])],
+            exotic_fuel_kg: 14.0,
             planned_tick: 42,
             travel_revision: 17,
             topology_revision: 8,
-            orders: vec![travel::QueuedOrder {
-                transfer_cost: crate::transfer::TransferCost { seconds_per_kg: 8. },
-                action,
-                estimated_duration_ticks: Some(0),
-                estimated_propellant_kg: None,
-            }],
+            orders: vec![
+                travel::QueuedOrder {
+                    transfer_cost: crate::transfer::TransferCost { seconds_per_kg: 8. },
+                    action,
+                    estimated_duration_ticks: Some(0),
+                    estimated_propellant_kg: None,
+                },
+                travel::Order::Slip {
+                    destination: travel::Destination::Galactic(position),
+                    speed_ly_s: 0.03,
+                    navigation_beacon: Some(Id([14; 16])),
+                }
+                .into(),
+            ],
             fuel_budget: travel::FuelBudget {
                 resources: vec![travel::FuelRequirement {
                     resource: "hydrogen".into(),
@@ -1073,7 +1064,7 @@ mod tests {
         assert!(travel::Destination::try_from(&destination).is_err());
         let preferences = abi::Preferences {
             fuel_fraction: 0.5,
-            allow_wormholes: 2,
+            max_loss_ppm: f64::NAN,
             allow_slipdrive: 1,
         };
         assert!(travel::PlanningPreferences::try_from(&preferences).is_err());

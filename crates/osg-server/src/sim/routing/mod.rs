@@ -6,7 +6,7 @@ mod tests;
 use anyhow::{Result, ensure};
 use bevy::math::DVec3;
 use osg_model::{
-    Beacon, GalacticPosition, Id, NavigationGate, Pose,
+    Beacon, GalacticPosition, Id, Pose,
     travel::{FuelBudget, Order, PlanningPreferences, QueuedOrder},
 };
 
@@ -31,6 +31,7 @@ pub struct ShipPerformance {
     pub propellant_kg_s: f64,
     pub turn_s: f64,
     pub slip_power_w: f64,
+    pub exotic_available_kg: f64,
     pub fuels: Vec<FuelRate>,
 }
 
@@ -45,10 +46,12 @@ pub struct RouteRequest {
 }
 
 #[derive(Clone, Debug)]
-pub struct RouteGate {
-    pub navigation: NavigationGate,
-    pub aperture_radius_m: f64,
-    pub exclusion_m: f64,
+pub struct CaptureTarget {
+    pub reference: osg_model::travel::CelestialRef,
+    pub pose: Pose,
+    pub radius_m: f64,
+    pub surface_radius_m: f64,
+    pub navigation_beacon: Option<Id>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -59,7 +62,18 @@ pub struct SlipEstimate {
 }
 
 pub trait RouteEnvironment: Send + Sync {
-    fn gates(&self) -> &[RouteGate];
+    fn candidates(
+        &self,
+        origin: GalacticPosition,
+        goal: GalacticPosition,
+        limit: usize,
+    ) -> Result<Vec<CaptureTarget>>;
+    fn capture_target(
+        &self,
+        destination: &osg_model::travel::Destination,
+        after_s: f64,
+    ) -> Result<Option<CaptureTarget>>;
+    fn departure(&self, origin: &Pose, toward: GalacticPosition, after_s: f64) -> Result<Pose>;
     fn resolve(&self, destination: &osg_model::travel::Destination, after_s: f64) -> Result<Pose>;
     fn beacon(&self, id: Id) -> Result<Beacon>;
     fn contact(&self, reference: osg_model::ContactRef) -> Result<(Pose, f64)>;
@@ -69,6 +83,7 @@ pub trait RouteEnvironment: Send + Sync {
         destination: GalacticPosition,
         departure_after_s: f64,
         arrival_after_s: f64,
+        speed_ly_s: f64,
     ) -> Result<SlipEstimate>;
     fn cancelled(&self) -> bool {
         false
@@ -80,11 +95,15 @@ pub struct RoutePlan {
     pub orders: Vec<QueuedOrder>,
     pub fuel_budget: FuelBudget,
     pub work: u64,
+    pub estimated_loss_ppm: f64,
+    pub beacon_assumptions: Vec<Id>,
+    pub exotic_fuel_kg: f64,
 }
 
 struct Work {
     spent: u64,
     limit: u64,
+    deadline: std::time::Instant,
 }
 
 impl Work {
@@ -95,6 +114,10 @@ impl Work {
         }
         self.spent += count;
         ensure!(!environment.cancelled(), "route computation cancelled");
+        ensure!(
+            std::time::Instant::now() < self.deadline,
+            "route search time budget exhausted"
+        );
         Ok(())
     }
 }
@@ -147,18 +170,7 @@ fn transfer(
     )
 }
 
-fn slip_rendezvous(
-    performance: &ShipPerformance,
-    weights: TransferCost,
-    origin: &Pose,
-    destination: &Pose,
-) -> (f64, f64) {
-    let mut arrival = destination.clone();
-    arrival.velocity = origin.velocity;
-    transfer(performance, weights, &arrival, destination)
-}
-
-pub fn work_limit(request: &RouteRequest, gate_count: usize) -> u64 {
+pub fn work_limit(request: &RouteRequest, candidate_count: usize) -> u64 {
     if request
         .orders
         .iter()
@@ -166,7 +178,7 @@ pub fn work_limit(request: &RouteRequest, gate_count: usize) -> u64 {
     {
         MAX_WORK
     } else {
-        (1_000 + gate_count as u64 * 2 + request.orders.len() as u64 * 100 * ENVIRONMENT_WORK)
+        (1_000 + candidate_count as u64 * 2 + request.orders.len() as u64 * 100 * ENVIRONMENT_WORK)
             .saturating_mul(24)
             .min(MAX_WORK)
     }
@@ -182,7 +194,8 @@ pub fn plan_metered(
 ) -> (Result<RoutePlan>, u64) {
     let mut work = Work {
         spent: 0,
-        limit: work_limit(request, environment.gates().len()),
+        limit: work_limit(request, 0),
+        deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
     };
     let result = plan_budgeted(request, environment, &mut work);
     (result, work.spent)
@@ -259,7 +272,8 @@ fn plan_inner(
             performance.acceleration_m_s2,
             performance.propellant_kg_s,
             performance.turn_s,
-            performance.slip_power_w
+            performance.slip_power_w,
+            performance.exotic_available_kg,
         ]
         .iter()
         .all(|value| value.is_finite() && *value >= 0.0)
@@ -289,6 +303,19 @@ fn plan_inner(
         docked_at: request.docked_at,
         orders: Vec::new(),
         complete: true,
+        log_loss: 0.0,
+        exotic_fuel_kg: 0.0,
+        beacon_assumptions: Vec::new(),
+        risk_routes_remaining: request
+            .orders
+            .iter()
+            .filter(|order| {
+                matches!(
+                    order,
+                    Order::TravelTo(_) | Order::Dock(_) | Order::Slip { .. }
+                )
+            })
+            .count(),
     };
     for (index, order) in request.orders.iter().enumerate() {
         osg_protocol::validate_order(order)?;
@@ -299,8 +326,11 @@ fn plan_inner(
             Order::TravelTo(destination) => builder.route(destination.clone(), false)?,
             Order::Dock(station) => builder.route(Destination::Beacon(*station), true)?,
             Order::Sublight(destination) => builder.sublight(destination.clone())?,
-            Order::Jump(entry) => builder.jump(*entry)?,
-            Order::Slip { destination } => builder.slip(destination.clone())?,
+            Order::Slip {
+                destination,
+                speed_ly_s,
+                navigation_beacon,
+            } => builder.slip(destination.clone(), *speed_ly_s, *navigation_beacon, None)?,
             Order::Undock => {
                 if builder.docked_at.is_some() {
                     builder.undock()?;
@@ -338,6 +368,12 @@ fn plan_inner(
                 }
             }
         }
+        if matches!(
+            order,
+            Order::TravelTo(_) | Order::Dock(_) | Order::Slip { .. }
+        ) {
+            builder.risk_routes_remaining = builder.risk_routes_remaining.saturating_sub(1);
+        }
     }
     let required = builder
         .orders
@@ -345,7 +381,7 @@ fn plan_inner(
         .filter_map(|order| order.estimated_propellant_kg)
         .sum::<f64>();
     let total_flow = performance.fuels.iter().map(|fuel| fuel.kg_s).sum::<f64>();
-    let resources = performance
+    let mut resources: Vec<_> = performance
         .fuels
         .iter()
         .map(|fuel| FuelRequirement {
@@ -358,6 +394,11 @@ fn plan_inner(
             available_kg: fuel.available_kg,
         })
         .collect();
+    resources.push(FuelRequirement {
+        resource: slip::EXOTIC_RESOURCE.to_owned(),
+        required_kg: builder.exotic_fuel_kg,
+        available_kg: performance.exotic_available_kg,
+    });
     let fuel_budget = FuelBudget {
         resources,
         complete: builder.complete && (total_flow > 0.0 || required == 0.0),
@@ -367,6 +408,9 @@ fn plan_inner(
         orders: builder.orders,
         fuel_budget,
         work: builder.work.spent,
+        estimated_loss_ppm: slip::ppm_from_log_loss(builder.log_loss),
+        beacon_assumptions: builder.beacon_assumptions,
+        exotic_fuel_kg: builder.exotic_fuel_kg,
     })
 }
 
@@ -380,6 +424,10 @@ struct Builder<'a, E> {
     docked_at: Option<Id>,
     orders: Vec<QueuedOrder>,
     complete: bool,
+    log_loss: f64,
+    exotic_fuel_kg: f64,
+    beacon_assumptions: Vec<Id>,
+    risk_routes_remaining: usize,
 }
 
 impl<E: RouteEnvironment> Builder<'_, E> {
@@ -462,41 +510,21 @@ impl<E: RouteEnvironment> Builder<'_, E> {
         Ok(())
     }
 
-    fn jump(&mut self, entry_id: Id) -> Result<()> {
-        ensure!(
-            self.request.preferences.allow_wormholes,
-            "Wormholes disabled in route preferences"
-        );
-        use osg_model::travel::Destination;
-
-        let entry = self.beacon(entry_id)?;
-        let exit_id = entry
-            .gate_exit
-            .ok_or_else(|| anyhow::anyhow!("destination is not a gate"))?;
-        let exit = self.beacon(exit_id)?;
-        ensure!(exit.gate_exit == Some(entry_id), "gate pair unavailable");
-        ensure!(
-            entry.radius_m > self.request.performance.radius_m + 2.0
-                && exit.radius_m > self.request.performance.radius_m + 2.0,
-            "ship does not fit gate aperture"
-        );
-        let destination = self.resolve(&Destination::Beacon(entry_id), self.elapsed_s)?;
-        let estimate = transfer(
-            &self.request.performance,
-            self.cost,
-            &self.pose,
-            &destination,
-        );
-        self.append(Order::Jump(entry_id), estimate.0 + 0.1, estimate.1)?;
-        self.pose = self.resolve(&Destination::Beacon(exit_id), self.elapsed_s)?;
-        self.docked_at = None;
-        Ok(())
-    }
-
-    fn slip(&mut self, destination: osg_model::travel::Destination) -> Result<()> {
+    fn slip(
+        &mut self,
+        destination: osg_model::travel::Destination,
+        mut speed_ly_s: f64,
+        navigation_beacon: Option<Id>,
+        max_leg_loss_ppm: Option<f64>,
+    ) -> Result<()> {
+        use osg_model::travel::slip;
         ensure!(
             self.request.preferences.allow_slipdrive,
             "Slipdrive disabled in route preferences"
+        );
+        ensure!(
+            self.request.preferences.max_loss_ppm > 0.0,
+            "zero destruction risk excludes slip travel"
         );
         ensure!(
             self.request.performance.slip_power_w > 0.0,
@@ -512,10 +540,27 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                 .position
                 .offset_by(DVec3::from_array(self.pose.velocity) * preparation_s);
             let target = self.resolve(&destination, arrival)?;
+            if let Some(max_loss_ppm) = max_leg_loss_ppm {
+                let capture = self
+                    .environment
+                    .capture_target(&destination, arrival)?
+                    .ok_or_else(|| anyhow::anyhow!("slip aim has no natural capture target"))?;
+                ensure!(
+                    capture.radius_m > capture.surface_radius_m + self.request.performance.radius_m,
+                    "target surface extends into its capture boundary"
+                );
+                speed_ly_s = slip::fastest_speed_ly_s(
+                    capture.radius_m,
+                    target.position.relative_to(origin).length(),
+                    max_loss_ppm,
+                    navigation_beacon.is_some(),
+                )
+                .ok_or_else(|| anyhow::anyhow!("moving target exceeds capture floor"))?;
+            }
             self.work.charge(ENVIRONMENT_WORK, self.environment)?;
-            let estimate = self
-                .environment
-                .slip(origin, target.position, departure, arrival)?;
+            let estimate =
+                self.environment
+                    .slip(origin, target.position, departure, arrival, speed_ly_s)?;
             ensure!(
                 estimate.preparation_s.is_finite()
                     && estimate.preparation_s >= 0.0
@@ -528,11 +573,50 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             preparation_s = estimate.preparation_s;
             duration_s = estimate.duration_s;
             if converged {
-                if !estimate.ready {
-                    self.complete = false;
+                ensure!(
+                    estimate.ready,
+                    "slip departure is inside a natural exclusion"
+                );
+                let capture = self
+                    .environment
+                    .capture_target(&destination, arrival)?
+                    .ok_or_else(|| anyhow::anyhow!("slip aim has no natural capture target"))?;
+                ensure!(
+                    navigation_beacon.is_none() || navigation_beacon == capture.navigation_beacon,
+                    "navigation beacon unavailable for this capture"
+                );
+                let distance = target.position.relative_to(origin).length();
+                let loss_ppm = slip::capture_loss_ppm(
+                    capture.radius_m,
+                    distance,
+                    speed_ly_s,
+                    navigation_beacon.is_some(),
+                );
+                self.log_loss += slip::log_loss_from_ppm(loss_ppm);
+                ensure!(
+                    self.log_loss
+                        <= slip::log_loss_from_ppm(self.request.preferences.max_loss_ppm)
+                            * (1.0 + 1e-9),
+                    "slip itinerary exceeds destruction risk allowance"
+                );
+                self.exotic_fuel_kg +=
+                    slip::exotic_fuel_kg(self.request.performance.mass_kg, distance / slip::LY_M);
+                if let Some(beacon) = navigation_beacon {
+                    if !self.beacon_assumptions.contains(&beacon) {
+                        self.beacon_assumptions.push(beacon);
+                    }
                 }
-                self.append(Order::Slip { destination }, preparation_s + duration_s, 0.0)?;
-                self.pose.position = target.position;
+                self.append(
+                    Order::Slip {
+                        destination,
+                        speed_ly_s,
+                        navigation_beacon,
+                    },
+                    preparation_s + duration_s,
+                    0.0,
+                )?;
+                let outward = origin.relative_to(target.position).normalize_or_zero();
+                self.pose.position = target.position.offset_by(outward * capture.radius_m);
                 self.docked_at = None;
                 return Ok(());
             }
@@ -666,71 +750,41 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             None
         };
         let target = self.resolve(&destination, self.elapsed_s)?;
-        self.work.charge(
-            self.environment.gates().len() as u64 * 8 + 1,
+        let remaining =
+            (osg_model::travel::slip::log_loss_from_ppm(self.request.preferences.max_loss_ppm)
+                - self.log_loss)
+                .max(0.0)
+                / self.risk_routes_remaining.max(1) as f64;
+        let path = graph::search(
+            self.request,
             self.environment,
+            self.work,
+            self.cost,
+            &self.pose,
+            &target,
+            &destination,
+            self.elapsed_s,
+            remaining,
         )?;
-        let mut graph = graph::Graph::new(
-            self.pose.clone(),
-            target,
-            destination.clone(),
-            self.environment.gates(),
-            &self.request.performance,
-        )?;
-        let path = if self.request.preferences.allow_wormholes {
-            graph.search(self.request, self.environment, self.work, self.cost)?
-        } else {
-            graph.direct(self.request, self.environment, self.work, self.cost)?
-        };
-        let mut escape_time = 0.0;
-        let mut escape_fuel = 0.0;
-        for edge in path {
-            match edge.kind {
-                graph::EdgeKind::Jump(index) => {
-                    self.jump(self.environment.gates()[index].navigation.entity)?;
-                    escape_time = 0.0;
-                    escape_fuel = 0.0;
+        for leg in path {
+            for attempt in 0..16 {
+                let departure = self.environment.departure(
+                    &self.pose,
+                    leg.target.pose.position,
+                    self.elapsed_s,
+                )?;
+                if departure.position == self.pose.position {
+                    break;
                 }
-                graph::EdgeKind::Sublight if edge.to != 1 => {
-                    escape_time += edge.time_s;
-                    escape_fuel += edge.fuel_kg;
-                }
-                graph::EdgeKind::Sublight => {
-                    // The last local transfer is represented by the final strategic action.
-                }
-                graph::EdgeKind::Slip => {
-                    let semantic = if edge.to == 1 {
-                        station.as_ref().map_or_else(
-                            || destination.clone(),
-                            |beacon| Destination::Beacon(beacon.entity),
-                        )
-                    } else {
-                        let gate = graph.nodes[edge.to]
-                            .gate
-                            .ok_or_else(|| anyhow::anyhow!("slip endpoint has no public anchor"))?;
-                        Destination::Beacon(self.environment.gates()[gate].navigation.entity)
-                    };
-                    let rendezvous = slip_rendezvous(
-                        &self.request.performance,
-                        self.cost,
-                        &graph.nodes[edge.from].pose,
-                        &graph.nodes[edge.to].pose,
-                    );
-                    self.append(
-                        Order::Slip {
-                            destination: semantic,
-                        },
-                        escape_time + (edge.time_s - rendezvous.0).max(0.0),
-                        escape_fuel,
-                    )?;
-                    let velocity = self.pose.velocity;
-                    self.pose = self.resolve(&graph.nodes[edge.to].destination, self.elapsed_s)?;
-                    self.pose.velocity = velocity;
-                    self.docked_at = None;
-                    escape_time = 0.0;
-                    escape_fuel = 0.0;
-                }
+                ensure!(attempt < 15, "departure clearance did not converge");
+                self.sublight(Destination::Galactic(departure.position))?;
             }
+            self.slip(
+                leg.destination(),
+                leg.speed_ly_s,
+                leg.target.navigation_beacon,
+                Some(leg.max_loss_ppm),
+            )?;
         }
         if let Some(station) = &station {
             self.arrive_at_beacon(station, dock)?;

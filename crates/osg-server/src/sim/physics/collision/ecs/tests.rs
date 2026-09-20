@@ -37,6 +37,62 @@ fn advance(world: &mut World) {
 }
 
 #[test]
+fn arriving_collision_body_uses_only_the_remaining_force_and_motion_interval() {
+    let mut world = world();
+    advance(&mut world);
+    let spawn = |world: &mut World, x: f64| {
+        world
+            .spawn((
+                RigidBody,
+                CollisionBody,
+                Projectile::new(0.1, 1.0),
+                PreciseTransform {
+                    translation_um: crate::sim::precision::GalacticPosition::from_meters(
+                        DVec3::X * x,
+                    ),
+                    ..Default::default()
+                },
+                Velocity(DVec3::X * 10.0),
+                AccumulatedForce(DVec3::X * 20.0),
+            ))
+            .id()
+    };
+    let arrival = spawn(&mut world, 0.0);
+    let ordinary = spawn(&mut world, 1000.0);
+    world
+        .entity_mut(arrival)
+        .insert(crate::sim::travel::ArrivalOffset(0.075));
+    step(&mut world);
+    assert!((world.get::<Velocity>(arrival).unwrap().0.x - 10.5).abs() < 1e-10);
+    assert!(
+        (world
+            .get::<PreciseTransform>(arrival)
+            .unwrap()
+            .translation_um
+            .x
+            - 262_500)
+            .abs()
+            <= 1
+    );
+    assert!((world.get::<Velocity>(ordinary).unwrap().0.x - 12.0).abs() < 1e-10);
+    assert!(
+        (world
+            .get::<PreciseTransform>(ordinary)
+            .unwrap()
+            .translation_um
+            .x
+            - 1_001_200_000)
+            .abs()
+            <= 1
+    );
+    assert!(
+        world
+            .get::<crate::sim::travel::ArrivalOffset>(arrival)
+            .is_none()
+    );
+}
+
+#[test]
 fn ecs_materializes_timed_launches_and_writes_back_their_physics() {
     let mut world = world();
     advance(&mut world);
@@ -94,23 +150,21 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
     };
 
     let universe = crate::sim::orrery::Universe::init(osg_universe::example_config()).unwrap();
-    let planet = universe.get_body(INITIAL_SCENARIO.body).unwrap();
+    let planet_reference = universe.authored_body(INITIAL_SCENARIO.body).unwrap();
+    let planet = universe.body(planet_reference).unwrap();
     let epoch = hifitime::Epoch::from_mjd_utc(0.0);
     let (position, velocity) = INITIAL_SCENARIO
         .relative_state(planet.radius, planet.mass)
         .unwrap();
     let mut pose = PreciseTransform {
         translation_um: universe
-            .solve_position(INITIAL_SCENARIO.body, epoch)
+            .solve_position(planet_reference, epoch)
             .unwrap()
             .offset_by(position),
         ..Default::default()
     };
     pose.look_to(velocity.normalize(), position.normalize());
-    let velocity = velocity
-        + universe
-            .solve_velocity(INITIAL_SCENARIO.body, epoch)
-            .unwrap();
+    let velocity = velocity + universe.solve_velocity(planet_reference, epoch).unwrap();
     let slugs = incoming_slugs(&universe, epoch, pose.translation_um, velocity, position);
 
     let mut world = world();
@@ -157,11 +211,24 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
 
     let mut hardware = hardware_schedule();
     let mut consumed_reserve = false;
+    let definition = universe.resolve(planet_reference.system).unwrap();
     for tick in 0..300 {
         let time = epoch + hifitime::Duration::from_seconds(tick as f64 * 0.1);
-        let sources: Vec<_> = universe
+        let sources: Vec<_> = definition
+            .solver
             .iter()
-            .map(|body| (body, universe.solve_position(&body.name, time).unwrap()))
+            .filter(|body| {
+                !matches!(
+                    body.class_params,
+                    osg_universe::orrery_cfg::BodyClass::Barycenter
+                )
+            })
+            .map(|body| {
+                (
+                    body,
+                    definition.solver.solve_position(&body.name, time).unwrap(),
+                )
+            })
             .collect();
         advance(&mut world);
         hardware.run(&mut world);
@@ -171,7 +238,12 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
             .iter_mut(&mut world)
         {
             for &(body, source) in &sources {
-                if universe.gravity_applies(&body.name, pose.translation_um) {
+                if pose
+                    .translation_um
+                    .relative_to(definition.solver.anchor)
+                    .length_squared()
+                    <= definition.influence.powi(2)
+                {
                     let offset = source.relative_to(pose.translation_um);
                     force.0 += offset.normalize()
                         * (crate::sim::physics::GRAVITATIONAL_CONSTANT * body.mass * mass.mass

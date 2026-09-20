@@ -1,5 +1,5 @@
 use super::ViewCamera;
-use crate::state::{Celestial, CelestialSystem, DisplayPose, SystemSubscription};
+use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
 use bevy::{
     light::atmosphere::{Falloff, PhaseFunction, ScatteringMedium, ScatteringTerm},
     math::curve::{FunctionCurve, Interval},
@@ -89,7 +89,7 @@ fn update(
         &ViewCamera,
         &Transform,
         Option<&ViewAtmosphere>,
-        &SystemSubscription,
+        &ViewSystems,
     )>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     mut media: ResMut<Assets<ScatteringMedium>>,
@@ -106,20 +106,16 @@ fn update(
         let selected = choose_atmosphere(
             bodies.iter().filter_map(|(body, pose, system)| {
                 let atmosphere = body.0.atmosphere.as_ref()?;
-                systems
-                    .0
-                    .iter()
-                    .any(|entry| entry.system == system.0)
-                    .then(|| {
-                        (
-                            body.0.entity,
-                            AtmosphereDistance::new(
-                                pose.0.position.relative_to(position).length(),
-                                body.0.radius_m,
-                                atmosphere.height_m,
-                            ),
-                        )
-                    })
+                systems.0.iter().any(|entry| *entry == system.0).then(|| {
+                    (
+                        body.0.entity,
+                        AtmosphereDistance::new(
+                            pose.0.position.relative_to(position).length(),
+                            body.0.radius_m,
+                            atmosphere.height_m,
+                        ),
+                    )
+                })
             }),
             previous.map(|atmosphere| atmosphere.body),
         );
@@ -324,6 +320,10 @@ mod tests {
         };
         world.spawn((
             Celestial(osg_model::CelestialPresentation {
+                reference: osg_model::travel::CelestialRef {
+                    system: osg_model::Id::default(),
+                    body: osg_model::Id::default(),
+                },
                 entity: Id([1; 16]),
                 name: "Neris".into(),
                 pose: pose.clone(),
@@ -342,7 +342,6 @@ mod tests {
                     mie_asymmetry: 0.8,
                     ground_albedo: [0.3; 3],
                 }),
-                ephemeris: None,
             }),
             DisplayPose(pose),
             CelestialSystem(system),
@@ -358,13 +357,7 @@ mod tests {
                     tracks: Vec::new(),
                     completion: Completion::Complete,
                 }),
-                SystemSubscription(vec![osg_model::CelestialSystemRef {
-                    view: 1,
-                    system,
-                    definition: [0; 32],
-                    epoch_mjd_utc: 0.,
-                    sim_time_origin_ns: 0,
-                }]),
+                ViewSystems(vec![system]),
             ))
             .id();
         world

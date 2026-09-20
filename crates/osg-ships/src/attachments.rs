@@ -38,7 +38,7 @@ impl PartDef {
         let station = matches!(
             self.equipment,
             Equipment::Utility {
-                utility: crate::utilities::UtilityDef::Beacon { .. }
+                utility: crate::utilities::UtilityDef::DirectoryTransmitter { .. }
                     | crate::utilities::UtilityDef::Docking { .. }
             }
         );

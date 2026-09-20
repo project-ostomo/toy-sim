@@ -59,9 +59,7 @@ record!(Beacon {
     radius_m: f64,
     owner: [u8; 16],
     faction: [u8; 16],
-    gate_exit: [u8; 16],
     range_m: f64,
-    exclusion_m: f64,
     flags: u32,
     labels_offset: u32,
     labels_count: u32,
@@ -77,7 +75,7 @@ record!(BeaconPage {
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
     use super::*;
-    #[link(wasm_import_module = "ship_v31")]
+    #[link(wasm_import_module = "ship_v32")]
     unsafe extern "C" {
         pub fn intel_tracks(
             query: *const TrackQuery,

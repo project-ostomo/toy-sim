@@ -8,6 +8,7 @@ pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
 }
 
 pub(super) struct Row {
+    pub celestial: Option<travel::CelestialRef>,
     pub target: SelectedTarget,
     pub contact: Option<ContactRef>,
     pub name: String,
@@ -46,9 +47,9 @@ pub(super) struct FrameModel<'a> {
     pub industry: &'a industry_model::IndustrySnapshot,
     pub society: &'a ownership::SocietySnapshot,
     pub navigation: &'a NavigationCatalogue,
+    pub inhabited: std::sync::Arc<osg_model::InhabitedDirectory>,
     pub navigation_status: &'a NavigationStatus,
     pub navigation_hash: Option<[u8; 32]>,
-    pub celestial_systems: std::collections::BTreeMap<Id, Id>,
     pub ships: Vec<&'a ShipTelemetry>,
     pub rows: Vec<Row>,
     pub ship: Option<&'a ShipTelemetry>,

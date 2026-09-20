@@ -1,7 +1,6 @@
 use super::{ViewLayer, orbit, sky, sun_direction};
 use crate::state::{
-    Celestial, CelestialSystem, DisplayPose, Optical, OwnedShip, SystemSubscription,
-    ViewObservation,
+    Celestial, CelestialSystem, DisplayPose, Optical, OwnedShip, ViewObservation, ViewSystems,
 };
 use crate::ui::{SelectedTarget, Selection};
 use bevy::input::mouse::{AccumulatedMouseMotion, AccumulatedMouseScroll};
@@ -54,7 +53,7 @@ fn smooth_angles(current: &mut Option<Vec2>, target: Vec2, dt: f32) -> Vec2 {
 
 pub(super) fn setup_views(
     mut commands: Commands,
-    views: Query<(Entity, &ViewObservation, Option<&SystemSubscription>), Without<ViewCamera>>,
+    views: Query<(Entity, &ViewObservation, Option<&ViewSystems>), Without<ViewCamera>>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
 ) {
     for (entity, observation, systems) in &views {
@@ -64,9 +63,7 @@ pub(super) fn setup_views(
             bodies
                 .iter()
                 .filter(|(_, _, system)| {
-                    systems.is_some_and(|systems| {
-                        systems.0.iter().any(|entry| entry.system == system.0)
-                    })
+                    systems.is_some_and(|systems| systems.0.iter().any(|entry| *entry == system.0))
                 })
                 .map(|(body, pose, _)| (body.0.luminosity_lumens, pose.0.position)),
         );
@@ -116,7 +113,7 @@ pub(super) fn update_views(
         &mut Camera,
         &mut ViewCamera,
         &mut CameraOptions,
-        Option<&SystemSubscription>,
+        Option<&ViewSystems>,
     )>,
     owned: Query<(&OwnedShip, &DisplayPose)>,
     optical: Query<(&Optical, &DisplayPose)>,
@@ -190,10 +187,9 @@ pub(super) fn update_views(
                     .find(|(beacon, pose)| {
                         beacon.0.id == id
                             && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
-                            && (beacon.0.gate_exit.is_some()
-                                || optical.iter().any(|(object, _)| {
-                                    object.0.view == view.id && object.0.known_entity == Some(id)
-                                }))
+                            && optical.iter().any(|(object, _)| {
+                                object.0.view == view.id && object.0.known_entity == Some(id)
+                            })
                     })
                     .map(|(beacon, pose)| (pose.0.position, id, beacon.0.radius_m as f32)),
                 SelectedTarget::Celestial(id) => bodies
@@ -215,9 +211,8 @@ pub(super) fn update_views(
                 bodies
                     .iter()
                     .filter(|(_, _, system)| {
-                        systems.is_some_and(|systems| {
-                            systems.0.iter().any(|entry| entry.system == system.0)
-                        })
+                        systems
+                            .is_some_and(|systems| systems.0.iter().any(|entry| *entry == system.0))
                     })
                     .map(|(body, pose, _)| (body.0.luminosity_lumens, pose.0.position)),
             ) {

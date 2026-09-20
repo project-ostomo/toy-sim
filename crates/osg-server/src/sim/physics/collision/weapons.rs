@@ -899,6 +899,9 @@ pub fn resolve_beam(
     let mut closest = None;
     let mut distance = beam.range_m;
     for (body_index, body) in bodies.iter().enumerate() {
+        if t < body.time {
+            continue;
+        }
         for (member_index, member) in body.members.iter().enumerate() {
             if member.destroyed || member.entity == beam.owner {
                 continue;

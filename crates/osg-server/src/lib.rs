@@ -51,6 +51,8 @@ struct SnapshotReceiver {
 }
 
 struct QueuedSnapshot {
+    world: Id,
+    universe: UniverseDescriptor,
     bytes: Vec<u8>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 }
@@ -76,8 +78,9 @@ impl SnapshotSender {
         self.frames.is_closed() || *self.failed.borrow()
     }
 
-    fn send(&self, frame: Frame) -> Result<()> {
+    fn send(&self, frame: Frame, universe: UniverseDescriptor) -> Result<()> {
         ensure!(!self.is_closed(), "connection closed");
+        let world = frame.world;
         let bytes = encode_snapshot(frame);
         let permit = self
             .budget
@@ -89,6 +92,8 @@ impl SnapshotSender {
         };
         self.frames
             .send(QueuedSnapshot {
+                world,
+                universe,
                 bytes,
                 _permit: permit,
             })
@@ -261,6 +266,15 @@ fn run_loop(
             .iter(app.world())
             .collect::<Vec<_>>();
         let session_count = sessions.len();
+        let universe = UniverseDescriptor {
+            fingerprint: app
+                .world()
+                .resource::<sim::registry::UniverseRegistry>()
+                .universe
+                .fingerprint,
+            epoch_mjd_utc: 0.,
+            sim_time_origin_ns: 0,
+        };
         for entity in sessions {
             match sim::session::frame(app.world_mut(), entity) {
                 Ok(frame) => {
@@ -269,7 +283,7 @@ fn run_loop(
                         .get::<Connection>(entity)
                         .unwrap()
                         .state
-                        .send(frame);
+                        .send(frame, universe.clone());
                     if let Err(error) = result {
                         eprintln!("Session publication failed: {error:#}");
                         sim::session::disconnect(app.world_mut(), entity);
@@ -386,7 +400,19 @@ async fn main_stream(stream: osg_net::picomux::Stream, mut endpoint: Endpoint) -
         Ok::<(), anyhow::Error>(())
     };
     let outgoing = async {
+        let mut published_world = None;
         while let Some(frame) = endpoint.state.frames.recv().await {
+            if published_world != Some(frame.world) {
+                osg_net::write_message(
+                    &mut write,
+                    &Message::Session {
+                        world: frame.world,
+                        universe: frame.universe.clone(),
+                    },
+                )
+                .await?;
+                published_world = Some(frame.world);
+            }
             send_snapshot(&mut write, &frame.bytes).await?;
         }
         anyhow::bail!("session closed")
@@ -469,6 +495,14 @@ pub fn key_bytes(value: &str) -> Result<[u8; 32]> {
 mod asset_tests {
     use super::*;
 
+    fn universe() -> UniverseDescriptor {
+        UniverseDescriptor {
+            fingerprint: [7; 32],
+            epoch_mjd_utc: 0.,
+            sim_time_origin_ns: 0,
+        }
+    }
+
     fn empty_snapshot() -> Frame {
         Frame {
             chat: None,
@@ -517,11 +551,13 @@ mod asset_tests {
         second.sequence = 2;
         let frame_bytes = encode_snapshot(first.clone()).len();
         let (sender, mut receiver) = snapshot_queue(frame_bytes * 2);
-        sender.send(first.clone()).unwrap();
-        sender.send(second.clone()).unwrap();
+        sender.send(first.clone(), universe()).unwrap();
+        sender.send(second.clone(), universe()).unwrap();
         assert_eq!(sender.budget.available_permits(), 0);
 
         let queued = receiver.frames.recv().await.unwrap();
+        assert_eq!(queued.world, first.world);
+        assert_eq!(queued.universe, universe());
         assert_eq!(
             osg_protocol::decode(&queued.bytes).unwrap(),
             Message::State(first)
@@ -543,10 +579,10 @@ mod asset_tests {
     async fn snapshot_queue_overflow_disconnects_instead_of_replacing_frames() {
         let frame = empty_snapshot();
         let (sender, mut receiver) = snapshot_queue(encode_snapshot(frame.clone()).len());
-        sender.send(frame.clone()).unwrap();
+        sender.send(frame.clone(), universe()).unwrap();
         assert!(
             sender
-                .send(frame.clone())
+                .send(frame.clone(), universe())
                 .unwrap_err()
                 .to_string()
                 .contains("client too slow")
@@ -600,12 +636,41 @@ mod asset_tests {
                 tokio::task::yield_now().await;
             }
             assert_eq!(connection.input.len(), 16);
-            connection.state.send(snapshot.clone()).unwrap();
+            connection.state.send(snapshot.clone(), universe()).unwrap();
             assert_eq!(
                 osg_net::read_message(&mut read).await.unwrap(),
-                Message::State(snapshot)
+                Message::Session {
+                    world,
+                    universe: universe()
+                }
+            );
+            assert_eq!(
+                osg_net::read_message(&mut read).await.unwrap(),
+                Message::State(snapshot.clone())
             );
             assert!(!serving.is_finished());
+
+            let mut next = snapshot;
+            next.sequence += 1;
+            connection.state.send(next.clone(), universe()).unwrap();
+            assert_eq!(
+                osg_net::read_message(&mut read).await.unwrap(),
+                Message::State(next.clone())
+            );
+
+            next.world = Id::new();
+            connection.state.send(next.clone(), universe()).unwrap();
+            assert_eq!(
+                osg_net::read_message(&mut read).await.unwrap(),
+                Message::Session {
+                    world: next.world,
+                    universe: universe(),
+                }
+            );
+            assert_eq!(
+                osg_net::read_message(&mut read).await.unwrap(),
+                Message::State(next)
+            );
 
             for sequence in 1..=64 {
                 let frame = connection.input.recv().await.unwrap();

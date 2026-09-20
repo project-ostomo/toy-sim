@@ -34,6 +34,14 @@ pub fn validate_status(status: &osg_model::routing::Status) -> Result<()> {
                 "too many planned waypoints"
             );
             ensure!(plan.fuel_budget.valid(), "invalid route fuel budget");
+            ensure!(
+                plan.estimated_loss_ppm.is_finite()
+                    && (0. ..=1_000_000.).contains(&plan.estimated_loss_ppm)
+                    && plan.exotic_fuel_kg.is_finite()
+                    && plan.exotic_fuel_kg >= 0.
+                    && plan.beacon_assumptions.len() <= MAX_ORDERS,
+                "invalid route risk or exotic fuel estimate"
+            );
             for order in &plan.orders {
                 validate_order(&order.action)?;
                 ensure!(
@@ -86,6 +94,14 @@ mod tests {
                 ),
                 (
                     Id::new(),
+                    Action::RouteCancel {
+                        ship,
+                        authority_revision: 8,
+                        id: 10,
+                    },
+                ),
+                (
+                    Id::new(),
                     Action::Ship {
                         ship,
                         authority_revision: 8,
@@ -115,6 +131,9 @@ mod tests {
         request.id = 0;
         assert!(validate_request(&request).is_err());
         request.id = 1;
+        request.preferences.max_loss_ppm = f64::NAN;
+        assert!(validate_request(&request).is_err());
+        request.preferences.max_loss_ppm = 100.;
         request.orders.resize(257, travel::Order::Undock);
         assert!(validate_request(&request).is_err());
 
@@ -127,8 +146,14 @@ mod tests {
                     .into(),
             ],
             fuel_budget: Default::default(),
+            estimated_loss_ppm: 100.,
+            exotic_fuel_kg: 1.,
+            beacon_assumptions: Vec::new(),
         };
         validate_status(&Status::Ready { plan: plan.clone() }).unwrap();
+        plan.estimated_loss_ppm = 1_000_001.;
+        assert!(validate_status(&Status::Ready { plan: plan.clone() }).is_err());
+        plan.estimated_loss_ppm = 100.;
         plan.orders[0].action =
             travel::Order::TravelTo(travel::Destination::Galactic(GalacticPosition::ZERO));
         assert!(validate_status(&Status::Ready { plan: plan.clone() }).is_err());

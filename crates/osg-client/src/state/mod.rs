@@ -46,8 +46,8 @@ pub(super) struct NavigationObject(pub NavigationBeacon);
 #[derive(Component)]
 pub(super) struct ViewObservation(pub ViewState);
 
-#[derive(Component)]
-pub(super) struct SystemSubscription(pub Vec<CelestialSystemRef>);
+#[derive(Component, Default)]
+pub(super) struct ViewSystems(pub Vec<Id>);
 
 #[derive(Component)]
 pub(super) struct Celestial(pub CelestialPresentation);
@@ -95,11 +95,11 @@ pub(super) struct SessionInfo {
     pub capabilities: Vec<DebugCapability>,
     pub groups: Vec<GroupId>,
     pub diagnostics: Option<Diagnostics>,
-    pub universe: Option<UniverseStatus>,
+    pub universe_descriptor: Option<UniverseDescriptor>,
+    pub inhabited: std::sync::Arc<InhabitedDirectory>,
     pub navigation: std::sync::Arc<NavigationCatalogue>,
     pub navigation_hash: Option<[u8; 32]>,
     pub navigation_status: NavigationStatus,
-    pub navigation_ephemerides: Vec<CelestialSystemRef>,
     pub society: ownership::SocietySnapshot,
     pub industry: IndustryState,
     pub chat: ChatState,

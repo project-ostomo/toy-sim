@@ -83,10 +83,6 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     );
     app.add_systems(
         FixedPostUpdate,
-        infrastructure::move_gates.in_set(simulation::SimulationSystems::Celestials),
-    );
-    app.add_systems(
-        FixedPostUpdate,
         (services::dispatch_actions, chat::flush)
             .chain()
             .before(simulation::SimulationSystems::Integrate),
@@ -102,9 +98,6 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
         (
             intelligence::collect_unused_groups,
             travel::geometry::refresh,
-            infrastructure::exclusion::certify
-                .run_if(infrastructure::exclusion::configuration_changed),
-            infrastructure::enforce_exclusion,
             identity::identify_celestials,
             identity::clean_indexes,
             intelligence::acquire,
@@ -127,6 +120,56 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "full seeded world performance measurement"]
+    fn seeded_world_performance() {
+        let account = osg_model::Id::new();
+        let mut app = provision(&[account], Some(account), None).unwrap();
+        npc::seed::populate(app.world_mut()).unwrap();
+        let ship = app
+            .world_mut()
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .iter(app.world())
+            .next()
+            .unwrap();
+        let mut durations = Vec::new();
+        for tick in 0..120 {
+            let started = std::time::Instant::now();
+            app.update();
+            let simulation_ms = started.elapsed().as_secs_f64() * 1000.;
+            infrastructure::publish_navigation(app.world_mut());
+            let publication_ms = started.elapsed().as_secs_f64() * 1000. - simulation_ms;
+            let position = app
+                .world()
+                .get::<precision::PreciseTransform>(ship)
+                .unwrap()
+                .translation_um;
+            let index = app.world().resource::<spatial::SpatialIndex>();
+            let candidates = index.visible(
+                position,
+                4. * std::f64::consts::PI * osg_model::optical::MIN_OPTICAL_FLUX_W_M2,
+            );
+            for target in candidates {
+                let _ = index.observed_luminosity(target, position);
+                let _ = index.fully_occluded(ship, target, position);
+            }
+            let complete_ms = started.elapsed().as_secs_f64() * 1000.;
+            eprintln!(
+                "seeded profile tick={tick} simulation_ms={simulation_ms:.2} publication_ms={publication_ms:.2} complete_ms={complete_ms:.2}"
+            );
+            if tick >= 60 {
+                durations.push(complete_ms);
+            }
+        }
+        durations.sort_by(f64::total_cmp);
+        eprintln!(
+            "seeded profile median_ms={:.2} p95_ms={:.2} max_ms={:.2}",
+            durations[durations.len() / 2],
+            durations[durations.len() * 95 / 100],
+            durations.last().unwrap()
+        );
+    }
 
     #[test]
     fn original_ecs_runs_orbital_ships_without_rendering() {

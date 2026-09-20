@@ -17,7 +17,7 @@ pub(super) struct Fixture {
 fn guidance_program() -> Vec<u8> {
     wat::parse_str(format!(
         r#"(module
-            (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
+            (import "ship_v32" "missile_control" (func $control (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (global $ship_ticks (mut i32) (i32.const 0))
             (global $missile_ticks (mut i32) (i32.const 0))
@@ -38,6 +38,29 @@ fn guidance_program() -> Vec<u8> {
     .unwrap()
 }
 
+fn retain_local_combat_objects(world: &mut World, parent: Entity) {
+    let origin = world
+        .get::<PreciseTransform>(parent)
+        .unwrap()
+        .translation_um;
+    let distant = world
+        .query_filtered::<(Entity, &PreciseTransform, &identity::Identity), With<ShipDesign>>()
+        .iter(world)
+        .filter(|(_, transform, _)| transform.translation_um.relative_to(origin).length() > 1e14)
+        .map(|(entity, _, identity)| (entity, identity.0))
+        .collect::<Vec<_>>();
+    // These tests exercise local combat. Keep nearby infrastructure while
+    // excluding unrelated installations from each physics and hardware tick.
+    for (entity, id) in distant {
+        world
+            .resource_mut::<identity::IdentityIndex>()
+            .0
+            .remove(&id);
+        world.despawn(entity);
+    }
+    travel::geometry::refresh(world);
+}
+
 impl Fixture {
     pub(super) fn new() -> Self {
         let account = Id::new();
@@ -50,6 +73,7 @@ impl Fixture {
             .query_filtered::<Entity, With<ControlledVessel>>()
             .single(world)
             .unwrap();
+        retain_local_combat_objects(world, parent);
         let target = world
             .query::<(Entity, &identity::Transponder)>()
             .iter(world)
@@ -600,6 +624,7 @@ fn stock_two_launcher_close_fight_completes_repeated_volleys_without_contact_sta
         .query_filtered::<Entity, With<ControlledVessel>>()
         .single(world)
         .unwrap();
+    retain_local_combat_objects(world, parent);
     let target = world
         .query::<(Entity, &identity::Transponder)>()
         .iter(world)

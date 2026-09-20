@@ -1,5 +1,5 @@
 use super::ViewCamera;
-use crate::state::{Celestial, CelestialSystem, DisplayPose, SystemSubscription};
+use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 use osg_model::{GalacticPosition, Id, presentation::CelestialPresentation};
 use std::collections::HashMap;
@@ -89,13 +89,7 @@ pub(super) fn install(app: &mut App) {
 fn update(
     mut commands: Commands,
     cameras: Query<
-        (
-            Entity,
-            &ViewCamera,
-            &Camera,
-            &Transform,
-            &SystemSubscription,
-        ),
+        (Entity, &ViewCamera, &Camera, &Transform, &ViewSystems),
         Without<DirectionalLight>,
     >,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
@@ -123,7 +117,7 @@ fn update(
                 view.origin.offset_by(camera.translation.as_dvec3()),
                 bodies
                     .iter()
-                    .filter(|(_, _, system)| systems.0.iter().any(|entry| entry.system == system.0))
+                    .filter(|(_, _, system)| systems.0.iter().any(|entry| *entry == system.0))
                     .map(|(body, pose, _)| (&body.0, pose.0.position)),
             ),
         })
@@ -188,10 +182,14 @@ mod tests {
     use crate::state::ViewObservation;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::math::DVec3;
-    use osg_model::{Completion, Pose, ViewState, presentation::CelestialSystemRef};
+    use osg_model::{Completion, Pose, ViewState};
 
     fn star(id: u8, position: DVec3, luminosity: f64) -> CelestialPresentation {
         CelestialPresentation {
+            reference: osg_model::travel::CelestialRef {
+                system: osg_model::Id::default(),
+                body: osg_model::Id::default(),
+            },
             entity: Id([id; 16]),
             name: format!("Star {id}"),
             pose: Pose {
@@ -204,7 +202,6 @@ mod tests {
             temperature_k: 5000.,
             color: [1.; 3],
             atmosphere: None,
-            ephemeris: None,
         }
     }
 
@@ -281,13 +278,7 @@ mod tests {
                     tracks: Vec::new(),
                     completion: Completion::Complete,
                 }),
-                SystemSubscription(vec![CelestialSystemRef {
-                    view: 1,
-                    system,
-                    definition: [0; 32],
-                    epoch_mjd_utc: 0.,
-                    sim_time_origin_ns: 0,
-                }]),
+                ViewSystems(vec![system]),
             ))
             .id();
         for star in [

@@ -298,6 +298,8 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
         .get_mut::<sim::travel::SlipDrive>(ship)
         .unwrap()
         .preparation = Some(sim::travel::Preparation {
+        speed_ly_s: 0.01,
+        navigation_beacon: None,
         destination: GalacticPosition::ZERO,
         started: 7,
         mass: 1000.,

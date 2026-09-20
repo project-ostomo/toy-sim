@@ -139,13 +139,10 @@ pub(super) fn sync(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{CelestialSystem, SystemSubscription, ViewObservation};
+    use crate::state::{CelestialSystem, ViewObservation, ViewSystems};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::math::DVec3;
-    use osg_model::{
-        Completion, Pose, ViewState,
-        presentation::{CelestialPresentation, CelestialSystemRef},
-    };
+    use osg_model::{Completion, Pose, ViewState, presentation::CelestialPresentation};
     use osg_stars::{SOLAR_LUMENS, Star, StarId};
     use std::sync::Arc;
 
@@ -156,6 +153,10 @@ mod tests {
         luminosity: f64,
     ) -> CelestialPresentation {
         CelestialPresentation {
+            reference: osg_model::travel::CelestialRef {
+                system: osg_model::Id::default(),
+                body: osg_model::Id::default(),
+            },
             entity,
             name: "Star".into(),
             pose: Pose {
@@ -168,7 +169,6 @@ mod tests {
             temperature_k: 5000.,
             color: [1., 0.9, 0.8],
             atmosphere: None,
-            ephemeris: None,
         }
     }
 
@@ -183,6 +183,7 @@ mod tests {
                 },
                 position: star.pose.position,
                 luminosity: star.luminosity_lumens,
+                temperature_k: star.temperature_k,
                 colour: star.color,
             },
             radius_m: star.radius_m,
@@ -197,6 +198,7 @@ mod tests {
                 id,
                 position: GalacticPosition::from_meters(position),
                 luminosity: SOLAR_LUMENS,
+                temperature_k: 5772.,
                 colour: [1., 0.9, 0.8],
             },
             radius_m: 6.96e8,
@@ -210,7 +212,10 @@ mod tests {
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<surfaces::SurfaceCache>();
-        world.insert_resource(Settings::default());
+        world.insert_resource(Settings {
+            brightness: 1.0,
+            ..Default::default()
+        });
         let system = Id([3; 16]);
         let camera = world
             .spawn((
@@ -223,13 +228,7 @@ mod tests {
                     tracks: Vec::new(),
                     completion: Completion::Complete,
                 }),
-                SystemSubscription(vec![CelestialSystemRef {
-                    view: 1,
-                    system,
-                    definition: [0; 32],
-                    epoch_mjd_utc: 0.,
-                    sim_time_origin_ns: 0,
-                }]),
+                ViewSystems(vec![system]),
             ))
             .id();
         let star = celestial(Id([1; 16]), DVec3::X * 2.0e11, 6.96e8, SOLAR_LUMENS);

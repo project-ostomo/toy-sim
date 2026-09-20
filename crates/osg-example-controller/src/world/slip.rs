@@ -53,29 +53,36 @@ mod tests {
 
     #[test]
     fn moving_destination_is_led_through_remaining_charge_and_transit() {
-        let gate = GalacticPosition::from_meters(DVec3::X * 1e16);
+        let target = GalacticPosition::from_meters(DVec3::X * 1e16);
         let velocity = DVec3::Y * 30_000.;
         for charge_remaining in [120., 10., 0.] {
             let mut evaluations = 0;
             let solution = intercept(
                 |after| Ok(GalacticPosition::from_meters(DVec3::Z * after * 100.)),
-                |after| Ok(gate.offset_by(velocity * after)),
+                |after| Ok(target.offset_by(velocity * after)),
                 |origin, destination, departure, arrival| {
                     evaluations += 1;
                     assert_eq!(
                         origin,
                         GalacticPosition::from_meters(DVec3::Z * departure * 100.)
                     );
-                    assert_eq!(destination, gate.offset_by(velocity * arrival));
-                    Ok((true, charge_remaining, 80.))
+                    assert_eq!(destination, target.offset_by(velocity * arrival));
+                    Ok((
+                        true,
+                        charge_remaining,
+                        destination.relative_to(origin).length() / 1.25e14,
+                    ))
                 },
             )
             .unwrap();
             assert_eq!(evaluations, 2);
-            assert_eq!(solution.seconds, charge_remaining + 80.);
-            assert_eq!(
-                solution.destination,
-                gate.offset_by(velocity * solution.seconds)
+            assert!((solution.seconds - charge_remaining - 80.).abs() < 0.001);
+            assert!(
+                solution
+                    .destination
+                    .relative_to(target.offset_by(velocity * solution.seconds))
+                    .length()
+                    < 1.
             );
         }
     }

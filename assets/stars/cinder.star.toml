@@ -1,6 +1,8 @@
+key = "authored/cinder"
 name = "Cinder system"
 position_um = ["104068030000000000000000", "9460730000000000000000", "0"]
 [[bodies]]
+key = "body/1"
 name = "Cinder"
 class = "star"
 lumens = 3.6e28

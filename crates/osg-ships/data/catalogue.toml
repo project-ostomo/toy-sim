@@ -1387,9 +1387,9 @@ radius_m = 25.0
 mass_capacity_kg = 100000000.0
 
 [[parts]]
-id = "station_beacon_48m"
+id = "directory_transmitter_48m"
 collision = { shape = "hub_and_rings", hub_radius_m = 16.0, inner_radius_m = 16.1, outer_radius_m = 24.0, ring_offset_m = 26.0, ring_half_depth_m = 13.0 }
-title = "Station subspace beacon"
+title = "Directory transmitter"
 dimensions = [480, 480, 640]
 mass_kg = 250000.0
 hull = 250000.0
@@ -1405,7 +1405,21 @@ nodes = [
 { name = "bottom", connector = "equipment", position_m = [0.0, -16.0, 0.0], normal = [0.0, -1.0, 0.0] }
 ]
 [parts.utility]
-type = "beacon"
+type = "directory_transmitter"
+power_w = 5000000.0
+
+[[parts]]
+id = "navigation_beacon_4m"
+title = "Navigation beacon"
+dimensions = [40, 40, 40]
+mass_kg = 2000.0
+hull = 5000.0
+color = [0.3, 0.6, 0.8]
+model = "models/parts/command-2m.glb"
+model_scale = 2.0
+kind = "utility"
+[parts.utility]
+type = "navigation_beacon"
 power_w = 5000000.0
 
 [[parts]]
@@ -1746,3 +1760,10 @@ title = "Shield radiator coolant (kg)"
 mass_kg = 1.0
 volume_m3 = 0.0002
 storage = { class = "liquid", usable_fraction = 0.95, containment_kg_m3 = 5.0 }
+
+[[resources]]
+id = "exotic_fuel"
+title = "Exotic slip fuel (g)"
+mass_kg = 0.001
+volume_m3 = 0.000001
+storage = { class = "bulk" }

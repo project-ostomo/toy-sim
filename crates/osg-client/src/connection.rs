@@ -48,6 +48,7 @@ impl AssetClient {
 }
 
 pub struct Endpoint {
+    pub descriptor: tokio::sync::watch::Receiver<Option<(Id, UniverseDescriptor)>>,
     pub assets: AssetClient,
     pub input: tokio::sync::mpsc::Sender<InputFrame>,
     pub state: tokio::sync::mpsc::UnboundedReceiver<std::sync::Arc<Frame>>,
@@ -61,7 +62,9 @@ impl Endpoint {
         let (uploads, _) = tokio::sync::mpsc::channel(1);
         let (_, state) = tokio::sync::mpsc::unbounded_channel();
         let (_, status) = tokio::sync::watch::channel(None);
+        let (_, descriptor) = tokio::sync::watch::channel(None);
         Self {
+            descriptor,
             assets: AssetClient { requests, uploads },
             input,
             state,
@@ -77,6 +80,7 @@ pub async fn connect(
     secret: &ed25519_dalek::SigningKey,
 ) -> Result<Endpoint> {
     let mux = Arc::new(osg_net::connect(address, key, account, secret).await?);
+    let local = tokio::task::spawn_blocking(crate::universe::shared_universe).await??;
     let stream = mux.open(b"main").await?;
     let (mut read, mut write) = tokio::io::split(stream);
     let (send, mut input) = tokio::sync::mpsc::channel(16);
@@ -84,19 +88,47 @@ pub async fn connect(
     let (requests, requested) = tokio::sync::mpsc::channel(8);
     let (uploads, uploaded) = tokio::sync::mpsc::channel(8);
     let (status, connection_status) = tokio::sync::watch::channel(None);
+    let (descriptor, session_descriptor) = tokio::sync::watch::channel(None);
     tokio::spawn(async move {
         let loading = load_assets(mux.clone(), requested);
         let uploading = upload_blueprints(mux.clone(), uploaded);
         let reader = async {
+            let osg_protocol::Message::Session { world, universe } =
+                osg_net::read_message(&mut read).await?
+            else {
+                anyhow::bail!("expected universe session descriptor");
+            };
+            ensure!(
+                local.fingerprint == universe.fingerprint,
+                "universe data does not match server"
+            );
+            ensure!(universe.epoch_mjd_utc.is_finite(), "invalid universe epoch");
+            descriptor.send(Some((world, universe)))?;
+            let mut session_world = world;
             let mut last_arrival = None;
             let mut summary_at = std::time::Instant::now();
             let mut received = 0_u64;
             let mut max_gap_ms = 0_f64;
             loop {
-                let osg_protocol::Message::State(frame) = osg_net::read_message(&mut read).await?
-                else {
-                    anyhow::bail!("expected state")
+                let frame = match osg_net::read_message(&mut read).await? {
+                    osg_protocol::Message::Session { world, universe } => {
+                        ensure!(
+                            local.fingerprint == universe.fingerprint,
+                            "universe data does not match server"
+                        );
+                        ensure!(universe.epoch_mjd_utc.is_finite(), "invalid universe epoch");
+                        descriptor.send(Some((world, universe)))?;
+                        session_world = world;
+                        last_arrival = None;
+                        continue;
+                    }
+                    osg_protocol::Message::State(frame) => frame,
+                    _ => anyhow::bail!("expected session descriptor or state"),
                 };
+                ensure!(
+                    frame.world == session_world,
+                    "state arrived before its universe descriptor"
+                );
                 let now = std::time::Instant::now();
                 if let Some(previous) = last_arrival {
                     let gap_ms = now.duration_since(previous).as_secs_f64() * 1000.;
@@ -143,6 +175,7 @@ pub async fn connect(
         let _ = status.send(Some(reason));
     });
     Ok(Endpoint {
+        descriptor: session_descriptor,
         assets: AssetClient { requests, uploads },
         input: send,
         state: receive,
@@ -465,34 +498,21 @@ mod tests {
     #[cfg(feature = "ui")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn bevy_assets_share_downloads_retry_explicitly_and_release_after_last_owner() {
-        use crate::assets::{self, SystemDefinition};
+        use crate::assets::{self, NavigationDefinition};
         use bevy::prelude::*;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        use osg_universe::replication::{BodyIdentity, SystemAsset};
-
-        let config = osg_universe::example_config();
-        let definition = SystemAsset {
-            version: 1,
-            system_id: [200; 16],
-            body_ids: config
-                .bodies
-                .iter()
-                .enumerate()
-                .map(|(index, body)| BodyIdentity {
-                    name: body.name.to_string(),
-                    id: [(index + 1) as u8; 16],
-                })
-                .collect(),
-            config,
+        let definition = osg_model::InhabitedDirectory {
+            systems: vec![Id([200; 16])],
+            ..Default::default()
         };
-        let bytes = definition.encode().unwrap();
+        let bytes = osg_protocol::navigation::encode_directory(&definition).unwrap();
         let hash = *blake3::hash(&bytes).as_bytes();
-        let other = SystemAsset {
-            system_id: [201; 16],
-            ..definition
+        let other = osg_model::InhabitedDirectory {
+            systems: vec![Id([201; 16])],
+            ..Default::default()
         };
-        let other_bytes = other.encode().unwrap();
+        let other_bytes = osg_protocol::navigation::encode_directory(&other).unwrap();
         let other_hash = *blake3::hash(&other_bytes).as_bytes();
         let (requests, mut requested) = tokio::sync::mpsc::channel::<AssetRequest>(8);
         let count = Arc::new(AtomicUsize::new(0));
@@ -519,8 +539,8 @@ mod tests {
         app.add_plugins((MinimalPlugins, AssetPlugin::default()));
         assets::install(&mut app);
         let server = app.world().resource::<AssetServer>().clone();
-        let first: Handle<SystemDefinition> = server.load(assets::path(hash));
-        let second: Handle<SystemDefinition> = server.load(assets::path(hash));
+        let first: Handle<NavigationDefinition> = server.load(assets::path(hash));
+        let second: Handle<NavigationDefinition> = server.load(assets::path(hash));
         assert_eq!(first.id(), second.id());
 
         async fn settle(app: &mut App, ready: impl Fn(&World) -> bool) {
@@ -539,7 +559,7 @@ mod tests {
         }
         settle(&mut app, |world| {
             world
-                .resource::<Assets<SystemDefinition>>()
+                .resource::<Assets<NavigationDefinition>>()
                 .get(&first)
                 .is_some()
         })
@@ -552,16 +572,18 @@ mod tests {
         }
         assert!(
             app.world()
-                .resource::<Assets<SystemDefinition>>()
+                .resource::<Assets<NavigationDefinition>>()
                 .contains(id)
         );
         drop(second);
         settle(&mut app, |world| {
-            !world.resource::<Assets<SystemDefinition>>().contains(id)
+            !world
+                .resource::<Assets<NavigationDefinition>>()
+                .contains(id)
         })
         .await;
 
-        let failed: Handle<SystemDefinition> = server.load(assets::path(other_hash));
+        let failed: Handle<NavigationDefinition> = server.load(assets::path(other_hash));
         settle(&mut app, |_| {
             matches!(
                 server.load_state(failed.id()),
@@ -576,7 +598,7 @@ mod tests {
         server.reload(assets::path(other_hash));
         settle(&mut app, |world| {
             world
-                .resource::<Assets<SystemDefinition>>()
+                .resource::<Assets<NavigationDefinition>>()
                 .get(&failed)
                 .is_some()
         })
@@ -584,11 +606,12 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 3);
         assert_eq!(
             app.world()
-                .resource::<Assets<SystemDefinition>>()
+                .resource::<Assets<NavigationDefinition>>()
                 .get(&failed)
                 .unwrap()
-                .system,
-            Id(other.system_id)
+                .0
+                .as_ref(),
+            &other
         );
         drop(failed);
         drop(server);

@@ -13,6 +13,7 @@ fn temporary() -> PathBuf {
 }
 fn star(value: u64, position: P, luminosity: f64) -> Star {
     Star {
+        temperature_k: 5772.0,
         id: StarId::gaia(value),
         position,
         luminosity,
@@ -165,7 +166,10 @@ fn file_roundtrip_and_rejection_of_invalid_formats_and_records() {
         StarCatalogue::from_stars(vec![star(123, P::new(1 << 90, -(1 << 90), 1), 1e20)]).unwrap();
     catalogue.save(&path, StarId::GAIA_DR3).unwrap();
     let original = std::fs::read(&path).unwrap();
-    assert_eq!(original.len(), 116);
+    assert_eq!(
+        original.len(),
+        (osg_stars::HEADER_BYTES + osg_stars::RECORD_BYTES) as usize
+    );
     let restored = StarCatalogue::load(&path).unwrap();
     assert_eq!(
         restored.star(StarId::gaia(123)).unwrap().position,

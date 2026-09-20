@@ -2,7 +2,7 @@ use super::ViewCamera;
 use crate::{
     state::{
         Celestial, CelestialSystem, DisplayPose, PresentationSet, RenderTime, SessionReset,
-        SystemSubscription,
+        ViewSystems,
     },
     ui::celestials::PlanetSurface,
 };
@@ -264,13 +264,7 @@ fn allocate(demands: &mut [Demand]) {
 
 fn gather_demand(
     mut cache: ResMut<SurfaceCache>,
-    cameras: Query<(
-        &ViewCamera,
-        &Transform,
-        &SystemSubscription,
-        &Camera,
-        &Projection,
-    )>,
+    cameras: Query<(&ViewCamera, &Transform, &ViewSystems, &Camera, &Projection)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem, &PlanetSurface)>,
 ) {
     cache.frame += 1;
@@ -292,11 +286,7 @@ fn gather_demand(
         let eye = view.origin.offset_by(transform.translation.as_dvec3());
         let rotation = transform.rotation.as_dquat().inverse();
         for (body, pose, system, recipe) in &bodies {
-            if !systems
-                .0
-                .iter()
-                .any(|reference| reference.system == system.0)
-            {
+            if !systems.0.iter().any(|reference| *reference == system.0) {
                 continue;
             }
             let Some(pixels) = projected_pixels(
@@ -672,8 +662,7 @@ mod tests {
     fn view_demand_shares_appearances_and_ignores_private_inactive_or_unsubscribed_views() {
         use crate::state::ViewObservation;
         use osg_model::{
-            Completion, GalacticPosition, Id, Pose, ViewState,
-            presentation::{CelestialPresentation, CelestialSystemRef},
+            Completion, GalacticPosition, Id, Pose, ViewState, presentation::CelestialPresentation,
         };
 
         let mut world = World::new();
@@ -695,13 +684,7 @@ mod tests {
                             tracks: Vec::new(),
                             completion: Completion::Complete,
                         }),
-                        SystemSubscription(vec![CelestialSystemRef {
-                            view: id,
-                            system,
-                            definition: [0; 32],
-                            epoch_mjd_utc: 0.,
-                            sim_time_origin_ns: 0,
-                        }]),
+                        ViewSystems(vec![system]),
                     ))
                     .id(),
             );
@@ -713,6 +696,10 @@ mod tests {
         };
         world.spawn((
             Celestial(CelestialPresentation {
+                reference: osg_model::travel::CelestialRef {
+                    system: osg_model::Id::default(),
+                    body: osg_model::Id::default(),
+                },
                 entity: Id([5; 16]),
                 name: "Test planet".into(),
                 pose: pose.clone(),
@@ -722,7 +709,6 @@ mod tests {
                 temperature_k: params.temperature_k,
                 color: [0.3; 3],
                 atmosphere: None,
-                ephemeris: None,
             }),
             DisplayPose(pose),
             CelestialSystem(system),
@@ -757,11 +743,7 @@ mod tests {
         world.run_system_once(gather_demand).unwrap();
         assert!(world.resource::<SurfaceCache>().wanted.is_empty());
         world.get_mut::<Camera>(views[0]).unwrap().is_active = true;
-        world
-            .get_mut::<SystemSubscription>(views[0])
-            .unwrap()
-            .0
-            .clear();
+        world.get_mut::<ViewSystems>(views[0]).unwrap().0.clear();
         world.run_system_once(gather_demand).unwrap();
         assert!(world.resource::<SurfaceCache>().wanted.is_empty());
     }

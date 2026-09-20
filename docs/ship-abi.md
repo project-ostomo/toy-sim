@@ -1,6 +1,13 @@
-# Ship controller ABI (version 31)
+# Ship controller ABI (version 32)
 
-A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v31`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
+A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v32`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
+
+ABI 32 adds slip speed and optional navigation-beacon identity to slip orders,
+actions, and eligibility queries. Celestial destinations carry both their system
+and local body identities. Planning preferences specify the maximum complete
+itinerary loss in decimal ppm, defaulting to 100. Gate orders and the gate
+navigation query have been removed. Route replies include estimated loss and
+exotic fuel requirements; navigation-beacon assumptions follow the slip orders.
 
 ABI 31 replaces `world_query` and `world_command` with typed service imports.
 Programs allocate their output storage and specify element or byte capacities.
@@ -34,8 +41,7 @@ arrival offsets and returns remaining preparation time separately from flight
 duration. Programs using older ABI exports or import namespaces are rejected;
 rebuild them and their language bindings together.
 
-The public `Navigation` query remains available for programs that inspect gate
-facts. The standard flight program executes one strategic command at a time and does not
+The standard flight program executes one strategic command at a time and does not
 load the navigation graph or search it. It generates local waypoints, collision
 avoidance and slip-exclusion escape manoeuvres within that command's execution. The runtime permits 8 MiB of guest linear
 memory while metering both guest execution and native host work.
@@ -83,7 +89,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v31` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v32` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
 - It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 31; end`, allowing the host to verify the ABI without running guest code.
@@ -290,7 +296,7 @@ Typed imports connect firmware to the authoritative travel, beacon and intellige
 | Import | Notes |
 | --- | --- |
 | `travel_read`, `contact_get`, `destination_resolve`, `slip_eligibility` | Read fixed output records. |
-| `local_space_query`, `navigation_query` | Fill caller-owned record arrays and a page header. |
+| `orrery_read` | Fills caller-owned local-obstacle records and a page header. |
 | `intel_tracks`, `intel_continue`, `beacon_read`, `beacons_read` | Fill record arrays, page metadata, and a separate byte arena for variable-length fields. |
 | `route_request`, `route_poll` | Fill route metadata plus separate order and fuel-requirement arrays. |
 | `travel_use_route`, `travel_block`, `travel_estimate`, `travel_complete`, `travel_slip`, `travel_reserve_bay`, `travel_dock`, `travel_undock` | Accept a typed input record and stage the corresponding action. |
@@ -302,7 +308,7 @@ Typed imports connect firmware to the authoritative travel, beacon and intellige
 **Gas.**
 
 1. The call cost (100) plus one gas per 8 input bytes.
-2. Admission for bounded query work and the output-copy allowance. `Tracks` and `Continue` work is capped by the physical tick ceiling after allowing for the call and input/output copies. The remaining query prices are `100 + 1008 × min(limit, 256)` for `Beacons`, `100 + 4096 × min(limit, 128)` for `Navigation`, 131,072 for `SlipEligibility`, and 1000 for other queries. Navigation prices are exposed as `NAVIGATION_GAS_BASE` and `NAVIGATION_GAS_PER_GATE`. A call that fits the physical ceiling can suspend until its slice can pay; a call exceeding that ceiling returns `ERR_LIMIT`.
+2. Admission for bounded query work and the output-copy allowance. `Tracks` and `Continue` work is capped by the physical tick ceiling after allowing for the call and input/output copies. The remaining query prices are `100 + 1008 × min(limit, 256)` for `Beacons`, 131,072 for `SlipEligibility`, and 1000 for other queries. A call that fits the physical ceiling can suspend until its slice can pay; a call exceeding that ceiling returns `ERR_LIMIT`.
 3. The actual bounded native work, with track pages reporting their measured `gas_used`.
 4. One gas per 8 reply bytes.
 
@@ -322,9 +328,8 @@ without silently truncating its bay lists.
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
-| `Navigation { after, limit, reference }` | Public enabled gate endpoints in entity ID order, with `limit` from 1 to 128 and an exclusive `after` cursor. Returns a topology revision, current poses, paired exits, systems, staging positions and spatial slip eligibility. |
-| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds }` | `SlipEligibility { ready, preparation_s, duration_s }`: current drive readiness and predicted aperture eligibility at the two future epochs, remaining preparation time, and flight duration alone. |
-| `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials and orbital gates use ephemerides; other beacons extrapolate current linear and angular motion. |
+| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, speed_ly_s, navigation_beacon }` | `SlipEligibility { ready, preparation_s, duration_s }`: departure clearance, guidance availability, remaining preparation time, and flight duration at the selected speed. |
+| `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials use locally resolved ephemerides; other objects extrapolate current linear and angular motion. |
 
 `LocalSpace` admits 262144 work gas plus the normal call and copy envelope. It
 examines at most 2048 weighted index/ephemeris work units and returns at most 32
@@ -353,11 +358,11 @@ command. Jobs do not reveal another ship's route or observations.
 
 Prediction offsets are relative to the current query epoch and must be finite,
 nonnegative and at most one Julian year (`365.25 × 86400` seconds). A slip arrival
-offset must be at least its departure offset. `Navigation` staging eligibility
-excludes transient drive cooldown; `SlipEligibility` checks actual readiness.
+offset must be at least its departure offset. `SlipEligibility` checks current
+drive readiness and departure clearance.
 Preparation estimates include the remaining energy and minimum preparation delay,
 rounded to future simulation ticks because charging runs before the firmware
-callback. Flight duration uses the same tick rounding as the transit schedule.
+callback. Natural capture resolves the intersection time within a simulation tick.
 
 Track queries are metered as described in [server-client.md](server-client.md#metered-queries). A cursor expires 10 ticks after its query started. Each ship keeps separate cursor stores for its flight instance and its display instance.
 
@@ -373,7 +378,7 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 | `Block { revision, order, reason }` | Blocks only the matching active command, cancels unfinished slip preparation and clears its ETA. |
 | `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates the matching active stage. The server combines its remaining fuel estimate with later stages. |
 | `CompleteOrder { revision, order }` | Completes the matching active stage and advances the server's cursor. |
-| `Slip { revision, order, destination }` | Starts or updates the matching slip command's charging candidate, preserving work and start time; departure freezes the endpoint. |
+| `Slip { revision, order, destination, speed_ly_s, navigation_beacon }` | Starts or updates the matching slip command's charging aim, preserving work and start time; departure commits the trajectory and speed. |
 | `ReserveBay { revision, order, station, bay }`, `Dock { revision, order, station, bay }`, `Undock { revision, order }` | Performs the bay operation only for the matching active command. |
 
 The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
@@ -381,9 +386,9 @@ The host rules for each action are in [server-client.md](server-client.md#dockin
 A queued `Order::Slip` holds a typed `Destination`, including beacon-relative and
 celestial-relative references. Firmware predicts its future pose and supplies
 concrete galactic candidates through `ProgramAction::Slip`. Updating a charging
-candidate recomputes required energy; it does not restart preparation. The host
-validates route geometry before changing the queue and checks aperture admission
-again during preparation and arrival. Blocking cancels an unfinished charge.
+candidate preserves accumulated work. The host validates departure clearance and
+guidance before committing. Transit ends at the first natural exclusion capture,
+physical collision, or exotic exhaustion. Blocking cancels an unfinished charge.
 Candidate changes and cancellation do not refund energy already spent.
 
 ### Availability
@@ -553,7 +558,7 @@ Include [ship.h](../crates/osg-ship-api/include/ship.h). It declares `ship_<name
 
 ### AssemblyScript
 
-[ship.ts](../crates/osg-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v31", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/osg-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v32", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 

@@ -263,6 +263,7 @@ mod tests {
     #[test]
     fn sun_earth_system_positions() -> Result<()> {
         let yaml = r#"
+key: "test/sun-earth"
 name: "sun-earth"
 bodies:
   - name: "Sun"
@@ -309,6 +310,7 @@ bodies:
     #[test]
     fn default_solve_rotation_identity() -> Result<()> {
         let yaml = r#"
+key: "test/rotation"
 name: "test"
 bodies:
   - name: "A"

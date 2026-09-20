@@ -389,7 +389,20 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 })
             })
             .collect(),
-        slip_cooldown_s: drive.map(|drive| drive.ready_tick.saturating_sub(tick) as f64 * 0.1),
+        slip_available: drive.is_some(),
+        slip_exotic_fuel_kg: drive.map(|drive| {
+            let grams = catalogue
+                .resources
+                .iter()
+                .position(|resource| resource.id == osg_model::travel::slip::EXOTIC_RESOURCE)
+                .and_then(|index| state.inventory.quantities.get(index))
+                .copied()
+                .unwrap_or(0) as f64;
+            (grams - drive.fuel_fraction_g).max(0.0) * 0.001
+        }),
+        slip_navigation_lock: world
+            .get::<super::travel::Transit>(entity)
+            .map(|transit| transit.navigation_beacon.is_some() && !transit.beacon_lost),
         power_consumed_w: power.map_or(0.0, |power| power.supplied_w) + slip_input,
         power_requested_w: power.map_or(0., |power| power.requested_w)
             + if preparation.is_some() {
@@ -626,6 +639,14 @@ mod tests {
             .query_filtered::<Entity, With<super::super::vessel::ControlledVessel>>()
             .single(world)
             .unwrap();
+        let unrelated: Vec<_> = world
+            .query_filtered::<Entity, With<ShipDesign>>()
+            .iter(world)
+            .filter(|other| *other != entity)
+            .collect();
+        for other in unrelated {
+            world.despawn(other);
+        }
         let session = super::super::session::connect(
             world,
             account,

@@ -7,13 +7,11 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
     let player = Id::new();
     let mut app = crate::sim::provision(&[player], None, None).unwrap();
     let world = app.world_mut();
-    let sol = registry::system_identity("Sol");
-    assert!(
-        world
-            .query_filtered::<&infrastructure::Landmark, With<travel::Gate>>()
-            .iter(world)
-            .all(|landmark| landmark.system != sol)
-    );
+    let sol = Id(world
+        .resource::<registry::UniverseRegistry>()
+        .universe
+        .system_id_for_name("Sol")
+        .unwrap());
     let neris = find_neris(world).unwrap();
     let neris_id = world.get::<identity::Identity>(neris).unwrap().0;
     let neris_access = world
@@ -92,7 +90,7 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
             );
 
             if asset.role == NpcRole::Station {
-                assert!(world.get::<identity::BeaconEmitter>(entity).is_some());
+                assert!(world.get::<identity::DirectoryEmitter>(entity).is_some());
                 assert!(world.get::<industry::IndustryFacility>(entity).is_some());
                 assert!(
                     inventory

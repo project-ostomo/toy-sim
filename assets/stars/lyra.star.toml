@@ -1,6 +1,8 @@
+key = "authored/lyra"
 name = "Lyra system"
 position_um = ["94607300000000000000000", "0", "0"]
 [[bodies]]
+key = "body/1"
 name = "Lyra"
 class = "star"
 lumens = 3.6e28

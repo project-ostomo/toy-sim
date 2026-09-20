@@ -1,7 +1,7 @@
 use crate::sim::precision::GalacticPosition;
 use bevy::{math::DVec3, prelude::*};
 use osg_spatial::{Entry, SpatialHash};
-use std::ops::ControlFlow;
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy)]
 pub struct SpatialObject {
@@ -14,94 +14,151 @@ pub struct SpatialObject {
 }
 
 #[derive(Resource, Clone, Default)]
-pub struct SpatialIndex(pub std::sync::Arc<SpatialData>);
-impl std::ops::Deref for SpatialIndex {
-    type Target = SpatialData;
-    fn deref(&self) -> &SpatialData {
-        &self.0
-    }
-}
-impl std::ops::DerefMut for SpatialIndex {
-    fn deref_mut(&mut self) -> &mut SpatialData {
-        std::sync::Arc::make_mut(&mut self.0)
-    }
-}
-
-#[derive(Clone, Default)]
-pub struct SpatialData {
+pub struct SpatialIndex {
     pub objects: Vec<SpatialObject>,
     entities: ahash::AHashMap<Entity, usize>,
-    excluded_targets: ahash::AHashSet<Entity>,
+    targets: Vec<usize>,
     hash: SpatialHash,
-    optical_occluders: SpatialHash,
-    illumination: Vec<Illumination>,
+    celestial_hash: SpatialHash,
+    celestial_groups: Vec<Vec<usize>>,
+    celestial_systems: ahash::AHashMap<usize, usize>,
+    illumination: Vec<OnceLock<Illumination>>,
+    pub sky: super::lighting::Sky,
 }
 
 #[derive(Clone, Default)]
 struct Illumination {
     emitted_w: f64,
-    reflected: Vec<(usize, f64)>,
+    reflected: Vec<(GalacticPosition, f64)>,
 }
 
-impl SpatialData {
+impl SpatialIndex {
     pub fn clear(&mut self) {
         self.objects.clear();
         self.entities.clear();
-        self.excluded_targets.clear();
+        self.targets.clear();
         self.hash.clear();
-        self.optical_occluders.clear();
+        self.celestial_hash.clear();
+        for group in self
+            .celestial_groups
+            .iter_mut()
+            .take(self.celestial_systems.len())
+        {
+            group.clear();
+        }
+        self.celestial_systems.clear();
         self.illumination.clear();
+        self.sky.local.clear();
     }
 
     pub fn insert(&mut self, object: SpatialObject) {
+        self.insert_object(object, None);
+    }
+
+    pub fn insert_celestial(&mut self, object: SpatialObject, system: usize) {
+        self.insert_object(object, Some(system));
+    }
+
+    fn insert_object(&mut self, object: SpatialObject, system: Option<usize>) {
         let id = self.objects.len();
         assert!(id < u32::MAX as usize);
-        self.hash.insert(
-            id as u32,
-            Entry {
-                position: object.position,
-                radius_m: object.radius_m,
-                luminosity: object.optical_luminosity_w,
-            },
-        );
-        if object.optical_occludes {
-            self.optical_occluders.insert(
+        if let Some(system) = system {
+            let next_slot = self.celestial_systems.len();
+            let slot = *self.celestial_systems.entry(system).or_insert_with(|| {
+                if next_slot == self.celestial_groups.len() {
+                    self.celestial_groups.push(Vec::new());
+                }
+                next_slot
+            });
+            self.celestial_groups[slot].push(id);
+        } else {
+            self.targets.push(id);
+            self.hash.insert(
                 id as u32,
                 Entry {
                     position: object.position,
                     radius_m: object.radius_m,
-                    luminosity: 0.0,
+                    luminosity: 0.,
                 },
             );
         }
         self.entities.insert(object.entity, id);
         self.objects.push(object);
-        self.illumination.push(Illumination {
-            emitted_w: object.optical_luminosity_w,
-            reflected: Vec::new(),
-        });
+        self.illumination.push(OnceLock::new());
+    }
+
+    pub fn finish_geometry(&mut self) {
+        for (id, group) in self
+            .celestial_groups
+            .iter()
+            .take(self.celestial_systems.len())
+            .enumerate()
+        {
+            let Some(&first) = group.first() else {
+                continue;
+            };
+            let anchor = self.objects[first].position;
+            let radius_m = group
+                .iter()
+                .map(|&object| {
+                    let object = self.objects[object];
+                    object.position.relative_to(anchor).length() + object.radius_m
+                })
+                .fold(0_f64, f64::max);
+            self.celestial_hash.insert(
+                id as u32,
+                Entry {
+                    position: anchor,
+                    radius_m,
+                    luminosity: 0.,
+                },
+            );
+        }
+    }
+
+    fn segment_candidates(&self, origin: GalacticPosition, displacement: DVec3) -> Vec<usize> {
+        let mut result: Vec<_> = self
+            .hash
+            .segment_candidates(origin, displacement, 0.)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .collect();
+        for group in self
+            .celestial_hash
+            .segment_candidates(origin, displacement, 0.)
+            .ids
+        {
+            result.extend(self.celestial_groups[group as usize].iter().copied());
+        }
+        result
     }
 
     pub fn set_luminosity(&mut self, id: usize, luminosity_w: f64) {
         self.objects[id].optical_luminosity_w = luminosity_w;
-        self.hash.set_luminosity(id as u32, luminosity_w);
-        self.illumination[id] = Illumination {
+        self.illumination[id] = OnceLock::from(Illumination {
             emitted_w: luminosity_w,
             reflected: Vec::new(),
-        };
+        });
     }
 
     pub fn set_illumination(&mut self, id: usize, emitted_w: f64, reflected: Vec<(usize, f64)>) {
         let peak = emitted_w + reflected.iter().map(|(_, power)| power).sum::<f64>();
         self.set_luminosity(id, peak);
-        self.illumination[id] = Illumination {
+        self.illumination[id] = OnceLock::from(Illumination {
             emitted_w,
-            reflected,
-        };
+            reflected: reflected
+                .into_iter()
+                .map(|(source, power)| (self.objects[source].position, power))
+                .collect(),
+        });
     }
 
     pub fn observed_luminosity(&self, target: usize, observer: GalacticPosition) -> f64 {
-        let illumination = &self.illumination[target];
+        let illumination = self.illumination[target].get_or_init(|| Illumination {
+            emitted_w: self.objects[target].optical_luminosity_w,
+            reflected: super::lighting::reflection_sources(self, target, &self.sky),
+        });
         let position = self.objects[target].position;
         let view = observer.relative_to(position).normalize_or_zero();
         illumination.emitted_w
@@ -109,10 +166,7 @@ impl SpatialData {
                 .reflected
                 .iter()
                 .map(|&(source, peak)| {
-                    let light = self.objects[source]
-                        .position
-                        .relative_to(position)
-                        .normalize_or_zero();
+                    let light = source.relative_to(position).normalize_or_zero();
                     let cosine = light.dot(view).clamp(-1.0, 1.0);
                     let phase = cosine.acos();
                     let fraction = (phase.sin() + (std::f64::consts::PI - phase) * cosine)
@@ -126,10 +180,6 @@ impl SpatialData {
         self.entities.get(&entity).copied()
     }
 
-    pub fn exclude_sensor_target(&mut self, entity: Entity) {
-        self.excluded_targets.insert(entity);
-    }
-
     pub fn all_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.hash
             .within_radius(centre, radius)
@@ -141,9 +191,6 @@ impl SpatialData {
 
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.all_in_range(centre, radius)
-            .into_iter()
-            .filter(|&id| !self.excluded_targets.contains(&self.objects[id].entity))
-            .collect()
     }
 
     pub fn visible(
@@ -151,11 +198,24 @@ impl SpatialData {
         centre: GalacticPosition,
         min_luminosity_over_distance2: f64,
     ) -> Vec<usize> {
-        self.hash
-            .visible(centre, min_luminosity_over_distance2)
-            .ids
-            .into_iter()
-            .map(|id| id as usize)
+        self.targets
+            .iter()
+            .copied()
+            .filter_map(|id| {
+                let object = &self.objects[id];
+                let peak = self.illumination[id].get().map_or_else(
+                    || {
+                        object.optical_luminosity_w
+                            + self.sky.peak(object.position, object.radius_m)
+                    },
+                    |light| {
+                        light.emitted_w
+                            + light.reflected.iter().map(|(_, power)| power).sum::<f64>()
+                    },
+                );
+                let distance2 = object.position.relative_to(centre).length_squared();
+                (peak >= min_luminosity_over_distance2 * distance2).then_some(id)
+            })
             .collect()
     }
 
@@ -169,8 +229,7 @@ impl SpatialData {
         self.hash
             .nearest_filtered(centre, radius, n, |id| {
                 let object = self.objects[id as usize];
-                (object.entity != observer && !self.excluded_targets.contains(&object.entity))
-                    .then_some(object.entity.to_bits())
+                (object.entity != observer).then_some(object.entity.to_bits())
             })
             .into_iter()
             .map(|id| id as usize)
@@ -178,36 +237,45 @@ impl SpatialData {
     }
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.hash
+        let mut result: Vec<_> = self
+            .hash
             .intersecting_sphere(centre, radius)
             .ids
             .into_iter()
             .map(|id| id as usize)
             .filter(|&id| self.objects[id].occludes)
-            .collect()
+            .collect();
+        for group in self.celestial_hash.intersecting_sphere(centre, radius).ids {
+            result.extend(
+                self.celestial_groups[group as usize]
+                    .iter()
+                    .copied()
+                    .filter(|&id| {
+                        let object = self.objects[id];
+                        object.occludes
+                            && object.position.relative_to(centre).length()
+                                <= radius + object.radius_m
+                    }),
+            );
+        }
+        result
     }
 
     pub fn occluded(&self, observer: Entity, target: usize, centre: GalacticPosition) -> bool {
         let endpoint = self.objects[target].position.relative_to(centre);
-        self.hash
-            .visit_segment_candidates(centre, endpoint, 0.0, |id| {
-                let object = self.objects[id as usize];
-                if object.occludes
+        self.segment_candidates(centre, endpoint)
+            .into_iter()
+            .any(|id| {
+                let object = self.objects[id];
+                object.occludes
                     && object.entity != observer
-                    && id as usize != target
+                    && id != target
                     && sphere_blocks(
                         endpoint,
                         object.position.relative_to(centre),
                         object.radius_m,
                     )
-                {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
             })
-            .0
-            .is_break()
     }
 
     pub fn fully_occluded(
@@ -228,7 +296,15 @@ impl SpatialData {
                     object.position.relative_to(centre),
                     object.radius_m,
                 )
-        })
+        }) || self
+            .sky
+            .uninstantiated_occlusion(self, centre, endpoint, target_object.radius_m)
+    }
+
+    pub fn has_celestial_system(&self, system: usize) -> bool {
+        self.celestial_systems
+            .get(&system)
+            .is_some_and(|&group| !self.celestial_groups[group].is_empty())
     }
 
     pub fn any_optical_blocker_on_segment(
@@ -237,16 +313,9 @@ impl SpatialData {
         displacement: DVec3,
         mut blocks: impl FnMut(usize) -> bool,
     ) -> bool {
-        self.optical_occluders
-            .visit_segment_candidates(origin, displacement, 0.0, |id| {
-                if blocks(id as usize) {
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            })
-            .0
-            .is_break()
+        self.segment_candidates(origin, displacement)
+            .into_iter()
+            .any(|id| self.objects[id].optical_occludes && blocks(id))
     }
 
     pub fn occupied_cells(&self) -> usize {

@@ -494,7 +494,7 @@ impl PartDescription {
                         requirements.quantity("Preparation power", power_w, Power);
                         (
                             "Slipdrive",
-                            "Prepares a slip aperture outside gate exclusion zones.",
+                            "Prepares slip travel outside natural exclusion regions.",
                         )
                     }
                     UtilityDef::Command { power_w } => {
@@ -517,11 +517,18 @@ impl PartDescription {
                             "Contributes observations to the ship's fused sensor picture.",
                         )
                     }
-                    UtilityDef::Beacon { power_w } => {
+                    UtilityDef::DirectoryTransmitter { power_w } => {
                         requirements.quantity("Electrical input", power_w, Power);
                         (
-                            "Subspace beacon",
-                            "Broadcasts a destination for galactic navigation.",
+                            "Directory transmitter",
+                            "Publishes this object and its inhabited system while its transponder is lit.",
+                        )
+                    }
+                    UtilityDef::NavigationBeacon { power_w } => {
+                        requirements.quantity("Electrical input", power_w, Power);
+                        (
+                            "Navigation beacon",
+                            "Provides an authenticated reference for precise slip travel.",
                         )
                     }
                     UtilityDef::Docking {

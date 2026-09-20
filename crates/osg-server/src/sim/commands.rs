@@ -243,6 +243,8 @@ pub fn execute(
                 autopilot_enabled: enabled,
                 preferences,
                 revision: state.0.revision + 1,
+                risk_budget: travel::RiskBudget::new(preferences.max_loss_ppm),
+                goals: orders.clone(),
                 orders: orders.into_iter().map(Into::into).collect(),
                 status,
                 ..Default::default()
@@ -392,7 +394,16 @@ pub(crate) fn use_route(
     if enabled {
         queue_capacity(world, ship, 2)?;
     }
-    super::travel::apply_plan(world, ship, revision, route.plan, route.preferences, engage)?;
+    super::travel::apply_plan(
+        world,
+        ship,
+        revision,
+        route.plan,
+        route.preferences,
+        engage,
+        route.goals,
+        true,
+    )?;
     if enabled {
         enqueue(
             world,

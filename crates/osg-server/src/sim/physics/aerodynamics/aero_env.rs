@@ -4,7 +4,7 @@ use smol_str::SmolStr;
 
 use crate::sim::{
     orrery::{Celestial, Universe},
-    physics::{Velocity, WithinSoi, sim_time},
+    physics::{Velocity, WithinSoi},
     precision::{PreciseTransform, ToMicrometersExt},
 };
 
@@ -21,8 +21,10 @@ pub struct AeroEnv {
 }
 
 pub(super) fn update_aero_env(
-    orrery: Res<Universe>,
+    universe: Res<Universe>,
+    active: Res<crate::sim::orrery::activity::ActiveSystems>,
     mut objects: Query<(
+        Entity,
         &PreciseTransform,
         &Velocity,
         Option<&WithinSoi>,
@@ -32,27 +34,31 @@ pub(super) fn update_aero_env(
         Entity,
         &Celestial,
         &PreciseTransform,
-        Option<&crate::sim::orrery::activity::CelestialState>,
+        &crate::sim::orrery::activity::CelestialState,
     )>,
-    time: Res<Time>,
 ) {
-    // Fixed time names the end of this step; force inputs still describe its start.
-    let epoch = sim_time(&time) - hifitime::Duration::from_seconds(time.delta_secs_f64());
-    for (ptf, velocity, soi, mut env) in &mut objects {
+    for (entity, ptf, velocity, soi, mut env) in &mut objects {
         // Atmosphere membership is geometric, independent of gravitational SOI.
         let mut selected = soi.and_then(|s| bodies.get(s.0).ok());
         let mut density = 0.0;
-        for candidate @ (_, celestial, body_tf, state) in &bodies {
-            let body = state.map_or_else(|| orrery.get_body(&celestial.0).unwrap(), |s| &s.body);
-            if let Some(atmosphere) = &body.atmosphere {
-                let altitude = (ptf.translation_um - body_tf.translation_um)
-                    .to_meters_64()
-                    .length()
-                    - body.radius;
-                let candidate_density = atmosphere.density(altitude);
-                if candidate_density > density {
-                    density = candidate_density;
-                    selected = Some(candidate);
+        for system in active
+            .systems_for_object(&universe, entity, ptf.translation_um)
+            .iter()
+        {
+            for candidate @ (_, _, body_tf, state) in
+                bodies.iter_many(active.entities.get(system).into_iter().flatten())
+            {
+                let body = &state.body;
+                if let Some(atmosphere) = &body.atmosphere {
+                    let altitude = (ptf.translation_um - body_tf.translation_um)
+                        .to_meters_64()
+                        .length()
+                        - body.radius;
+                    let candidate_density = atmosphere.density(altitude);
+                    if candidate_density > density {
+                        density = candidate_density;
+                        selected = Some(candidate);
+                    }
                 }
             }
         }
@@ -64,27 +70,17 @@ pub(super) fn update_aero_env(
         let Some((_, celestial, body_tf, state)) = selected else {
             continue;
         };
-        let body = state.map_or_else(|| orrery.get_body(&celestial.0).unwrap(), |s| &s.body);
+        let body = &state.body;
         let relative = (ptf.translation_um - body_tf.translation_um).to_meters_64();
         env.planet = celestial.0.clone();
         env.altitude = relative.length() - body.radius;
-        env.airspeed = velocity.0
-            - state.map_or_else(
-                || {
-                    orrery
-                        .atmospheric_velocity_at_point(&celestial.0, ptf.translation_um, epoch)
-                        .unwrap_or(DVec3::ZERO)
-                },
-                |s| {
-                    let spin = if body.rotation.rotation_period != 0.0 {
-                        (body_tf.rotation * DVec3::Z).cross(relative) * std::f64::consts::TAU
-                            / body.rotation.rotation_period
-                    } else {
-                        DVec3::ZERO
-                    };
-                    s.velocity + spin
-                },
-            );
+        let spin = if body.rotation.rotation_period != 0.0 {
+            (body_tf.rotation * DVec3::Z).cross(relative) * std::f64::consts::TAU
+                / body.rotation.rotation_period
+        } else {
+            DVec3::ZERO
+        };
+        env.airspeed = velocity.0 - state.velocity - spin;
         let inverse = body_tf.rotation.inverse();
         env.planet_rel = PreciseTransform {
             translation_um: (inverse * relative).to_micrometers(),

@@ -461,7 +461,8 @@ impl SpatialHash {
     pub fn clear(&mut self) {
         self.generation = self.generation.wrapping_add(1);
         self.entries.clear();
-        self.positions = Cells::default();
+        self.positions.nodes.clear();
+        self.positions.roots.clear();
         self.luminous.clear();
     }
 
@@ -594,6 +595,40 @@ impl SpatialHash {
 
     pub fn nearest(&self, centre: GalacticPosition, radius_m: f64, count: usize) -> Vec<u32> {
         self.nearest_filtered(centre, radius_m, count, |id| Some(id as u64))
+    }
+
+    /// Brightness candidates when an emitter can lie anywhere within its entry's
+    /// radius. Used by the immutable system catalogue for unresolved stars.
+    pub fn extended_sources(
+        &self,
+        centre: GalacticPosition,
+        observer_radius_m: f64,
+        min_brightness: f64,
+    ) -> Vec<u32> {
+        let mut result = Vec::new();
+        if !observer_radius_m.is_finite()
+            || observer_radius_m < 0.
+            || !min_brightness.is_finite()
+            || min_brightness <= 0.
+        {
+            return result;
+        }
+        let mut stats = QueryStats::default();
+        for (&bucket, cells) in &self.luminous {
+            let radius = (luminosity_upper(bucket) / min_brightness).sqrt() + observer_radius_m;
+            cells.query(centre, radius, true, &mut stats, &mut |id| {
+                let entry = self.entries[&id];
+                let distance = (distance_squared(entry.position, centre).sqrt()
+                    - observer_radius_m
+                    - entry.radius_m)
+                    .max(0.0);
+                if distance == 0.0 || entry.luminosity >= min_brightness * distance * distance {
+                    result.push(id);
+                }
+            });
+        }
+        result.sort_unstable();
+        result
     }
 
     pub fn nearest_filtered(

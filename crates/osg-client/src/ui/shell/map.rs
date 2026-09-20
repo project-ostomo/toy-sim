@@ -6,6 +6,7 @@ mod camera;
 mod canvas;
 mod layout;
 mod planner;
+mod spatial;
 use layout::{ActiveRoute, Cache};
 
 #[derive(Default)]
@@ -14,7 +15,10 @@ pub(super) struct State {
     camera: camera::Camera,
     preference: Option<travel::PlanningPreferences>,
     search: String,
+    search_key: Option<(String, Option<Id>, bool, Option<[u8; 32]>)>,
+    search_results: Vec<usize>,
     sovereignty: Option<Id>,
+    inhabited_only: bool,
     cache: Cache,
     catalogue_hash: Option<[u8; 32]>,
     active: ActiveRoute,
@@ -39,34 +43,28 @@ pub(super) fn draw(
 ) {
     if state.catalogue_hash != model.navigation_hash {
         state.catalogue_hash = model.navigation_hash;
-        state.cache = Cache::default();
         state.active = ActiveRoute::default();
         state.suggested = ActiveRoute::default();
-        state.selected = None;
-        state.camera = camera::Camera::default();
     }
     match model.navigation_status {
         NavigationStatus::Unavailable => {
-            ui.weak("Waiting for the galactic catalogue.");
-            return;
+            ui.weak("Waiting for the inhabited-system directory.");
         }
         NavigationStatus::Loading => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Downloading galactic catalogue…");
+                ui.label("Synchronizing inhabited systems…");
             });
-            return;
         }
         NavigationStatus::Failed(error) => {
             ui.colored_label(
                 egui::Color32::LIGHT_RED,
-                "Galactic catalogue could not be loaded.",
+                "Inhabited-system directory could not be loaded.",
             );
             ui.weak(error);
-            if ui.button("Retry download").clicked() {
+            if ui.button("Retry synchronization").clicked() {
                 intents.push(Intent::RetryNavigation);
             }
-            return;
         }
         NavigationStatus::Ready => {}
     }
@@ -74,19 +72,21 @@ pub(super) fn draw(
 
     let catalogue = model.navigation;
     if state.cache.update(catalogue) {
+        state.search_key = None;
         state.active = ActiveRoute::default();
         state.suggested = ActiveRoute::default();
         state.selected = state
             .selected
             .filter(|id| state.cache.systems.contains_key(id));
     }
-    let preference = preferences(ui, state, model);
+    state.cache.update_inhabited(&model.inhabited);
+    let preference = preferences(ui, state, model, intents);
     ui.separator();
 
     let origin = model
         .ship
         .and_then(|ship| ship.pose.as_ref())
-        .and_then(|pose| state.cache.network.nearest(pose.position))
+        .and_then(|pose| state.cache.nearest(catalogue, pose.position))
         .or_else(|| {
             let travel::Presence::Docked { host, .. } = &model.ship?.presence else {
                 return None;
@@ -95,18 +95,12 @@ pub(super) fn draw(
                 .cache
                 .beacons
                 .get(host)
-                .map(|&index| catalogue.beacons[index].system)
+                .and_then(|&index| catalogue.beacons[index].systems.first().copied())
         });
     let orders = model.ship.map_or(&[][..], |ship| {
         &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
     });
-    state.active.update(
-        &state.cache,
-        catalogue,
-        &model.celestial_systems,
-        origin,
-        orders,
-    );
+    state.active.update(&state.cache, catalogue, origin, orders);
 
     let mut focus = None;
     let mut fit = false;
@@ -114,6 +108,7 @@ pub(super) fn draw(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("GALACTIC MAP").strong().color(ACCENT));
         ui.weak(format!("{} systems", catalogue.systems.len()));
+        ui.checkbox(&mut state.inhabited_only, "Inhabited only");
         if ui.small_button("Fit").clicked() {
             fit = true;
         }
@@ -137,7 +132,6 @@ pub(super) fn draw(
     state.suggested.update(
         &state.cache,
         catalogue,
-        &model.celestial_systems,
         origin,
         state
             .route
@@ -167,6 +161,7 @@ fn preferences(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
+    intents: &mut Vec<Intent>,
 ) -> travel::PlanningPreferences {
     let mut preference = state.preference.unwrap_or_else(|| {
         model
@@ -178,15 +173,42 @@ fn preferences(
     ui.add(egui::Slider::new(&mut percentage, 1. ..=100.).text("Fuel allowance").suffix("%"))
         .on_hover_text("Maximum estimated fuel use for the complete route, as a percentage of each remaining propulsion resource.");
     preference.fuel_fraction = percentage / 100.;
-    ui.horizontal(|ui| {
-        ui.checkbox(&mut preference.allow_wormholes, "Allow wormholes");
-        ui.checkbox(&mut preference.allow_slipdrive, "Allow slipdrive");
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Maximum ship-destruction risk");
+        ui.add(
+            egui::DragValue::new(&mut preference.max_loss_ppm)
+                .range(0. ..=1_000_000.)
+                .speed(0.1)
+                .max_decimals(6)
+                .suffix(" ppm"),
+        );
+        ui.weak(risk_equivalent(preference.max_loss_ppm));
     });
+    ui.add(
+        egui::Slider::new(&mut preference.max_loss_ppm, 0. ..=1_000_000.)
+            .logarithmic(true)
+            .smallest_positive(0.001)
+            .show_value(false),
+    )
+    .on_hover_text("Maximum estimated slip loss across the entire itinerary. Slowing cannot remove the dispersion floor. Beacon-assisted estimates assume guidance remains available.");
+    ui.checkbox(&mut preference.allow_slipdrive, "Allow slipdrive");
     if preference != previous {
         state.preference = Some(preference);
-        state.route = planner::Preview::default();
+        if let Some(action) = state.route.cancel_action() {
+            intents.push(Intent::CancelRoute(action));
+        }
     }
     preference
+}
+
+fn risk_equivalent(ppm: f64) -> String {
+    if ppm <= 0. {
+        "No modelled loss allowed".into()
+    } else if ppm >= 1_000_000. {
+        "No probability limit".into()
+    } else {
+        format!("1 in {:.0}", 1_000_000. / ppm)
+    }
 }
 
 fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut Option<Id>) {
@@ -200,12 +222,12 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut 
             .selected_text(
                 state
                     .sovereignty
-                    .and_then(|id| model.society.directory.sovereignties.get(&id))
+                    .and_then(|id| model.inhabited.sovereignties.get(&id))
                     .map_or("All sovereignties", |s| s.name.as_str()),
             )
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut state.sovereignty, None, "All sovereignties");
-                for sovereignty in model.society.directory.sovereignties.values() {
+                for sovereignty in model.inhabited.sovereignties.values() {
                     ui.selectable_value(
                         &mut state.sovereignty,
                         Some(sovereignty.id),
@@ -221,19 +243,37 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut 
         return;
     }
 
-    let matches = state
-        .cache
-        .search(model.navigation, &state.search, state.sovereignty);
-    ui.weak(format!("{} matches", matches.len()));
+    let key = (
+        state.search.trim().to_lowercase(),
+        state.sovereignty,
+        state.inhabited_only,
+        model.navigation_hash,
+    );
+    if state.search_key.as_ref() != Some(&key) {
+        state.search_results = state
+            .cache
+            .search(model.navigation, &key.0, state.sovereignty);
+        if state.inhabited_only {
+            state.search_results.retain(|&index| {
+                model
+                    .inhabited
+                    .systems
+                    .binary_search(&model.navigation.systems[index].id)
+                    .is_ok()
+            });
+        }
+        state.search_key = Some(key);
+    }
+    ui.weak(format!("{} matches", state.search_results.len()));
     egui::ScrollArea::vertical()
         .id_salt("system-search-results")
         .max_height(108.)
-        .show_rows(ui, 24., matches.len(), |ui, rows| {
+        .show_rows(ui, 24., state.search_results.len(), |ui, rows| {
             for row in rows {
-                let system = &model.navigation.systems[matches[row]];
+                let system = &model.navigation.systems[state.search_results[row]];
                 let sovereignty = system
                     .sovereignty
-                    .and_then(|id| model.society.directory.sovereignties.get(&id));
+                    .and_then(|id| model.inhabited.sovereignties.get(&id));
                 let label = format!(
                     "{}  ·  {}",
                     system.name,
@@ -270,19 +310,24 @@ fn selected_system(
     };
     let sovereignty = system
         .sovereignty
-        .and_then(|id| model.society.directory.sovereignties.get(&id));
+        .and_then(|id| model.inhabited.sovereignties.get(&id));
     ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new(&system.name).strong().size(16.));
+        ui.weak(
+            if model.inhabited.systems.binary_search(&system.id).is_ok() {
+                "Inhabited"
+            } else {
+                "No public directory transmitter"
+            },
+        );
         ui.colored_label(
             polity_color(sovereignty.map(|s| s.bloc)),
             sovereignty.map_or("Unclaimed", |s| s.name.as_str()),
         );
     });
-    let destination = catalogue
-        .beacons
-        .iter()
-        .find(|beacon| beacon.system == system.id && beacon.gate_exit.is_some())
-        .map(|beacon| travel::Order::TravelTo(travel::Destination::Beacon(beacon.id)));
+    let destination = Some(travel::Order::TravelTo(travel::Destination::Galactic(
+        system.position,
+    )));
     ui.horizontal(|ui| {
         let available = model.connected && model.ship.is_some() && destination.is_some();
         if ui
@@ -308,7 +353,7 @@ fn selected_system(
         let stations: Vec<_> = catalogue
             .beacons
             .iter()
-            .filter(|beacon| beacon.system == system.id && beacon.docking)
+            .filter(|beacon| beacon.systems.contains(&system.id) && beacon.docking)
             .collect();
         if !stations.is_empty() {
             ui.add_enabled_ui(available, |ui| {

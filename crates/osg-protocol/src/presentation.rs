@@ -29,10 +29,7 @@ fn resources(values: &[ResourceAmount]) -> bool {
 
 pub fn validate(p: &PresentationFrame) -> Result<()> {
     ensure!(
-        p.ships.len() <= 64
-            && p.combat.len() <= 16384
-            && p.celestial_systems.len() <= 256
-            && p.capabilities.len() <= 7,
+        p.ships.len() <= 64 && p.combat.len() <= 16384 && p.capabilities.len() <= 7,
         "presentation limit"
     );
     super::navigation::validate_snapshot(&p.navigation)?;
@@ -93,9 +90,8 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
             "hardware limit"
         );
         ensure!(
-            ship.slip_cooldown_s
-                .is_none_or(|seconds| seconds.is_finite() && seconds >= 0.),
-            "invalid slip cooldown"
+            ship.slip_exotic_fuel_kg.is_none_or(|kg| nonnegative(&[kg])),
+            "invalid exotic fuel reserve"
         );
         ensure!(
             ship.reactors.len() <= 4096
@@ -356,20 +352,6 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
         };
         ensure!(valid, "invalid combat event");
     }
-    if let Some(u) = &p.universe {
-        ensure!(
-            u.active_systems.len() <= 8192
-                && u.active_systems.iter().all(|s| s.reason.len() <= 256),
-            "invalid universe status"
-        );
-    }
-    let mut systems = std::collections::BTreeSet::new();
-    for system in &p.celestial_systems {
-        ensure!(
-            system.epoch_mjd_utc.is_finite() && systems.insert((system.view, system.system)),
-            "invalid celestial system reference"
-        );
-    }
     if let Some(d) = &p.diagnostics {
         ensure!(
             d.collision
@@ -385,43 +367,6 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
                     .all(|(name, time)| name.len() <= 128 && nonnegative(&[*time])),
             "invalid diagnostics"
         );
-    }
-    Ok(())
-}
-
-pub fn validate_catalogue(catalogue: &UniverseCatalogue) -> Result<()> {
-    let mut ids = std::collections::BTreeSet::new();
-    let mut body_count = 0;
-    ensure!(catalogue.systems.len() <= 65536, "universe system limit");
-    for system in &catalogue.systems {
-        ensure!(
-            ids.insert(system.id)
-                && system.name.len() <= 128
-                && position_valid(system.position)
-                && nonnegative(&[system.influence_radius_m]),
-            "invalid catalogue system"
-        );
-        body_count += system.bodies.len();
-        ensure!(body_count <= 262144, "universe body limit");
-        for body in &system.bodies {
-            ensure!(
-                ids.insert(body.id)
-                    && body.name.len() <= 128
-                    && body.kind.len() <= 64
-                    && nonnegative(&[body.radius_m, body.mass_kg]),
-                "invalid catalogue body"
-            );
-        }
-    }
-    for system in &catalogue.systems {
-        let body_ids: std::collections::BTreeSet<_> = system.bodies.iter().map(|b| b.id).collect();
-        for body in &system.bodies {
-            ensure!(
-                body.parent
-                    .is_none_or(|parent| parent != body.id && body_ids.contains(&parent)),
-                "invalid catalogue parent"
-            );
-        }
     }
     Ok(())
 }
@@ -468,10 +413,12 @@ mod tests {
             power_generated_w: 0.,
             generation_capacity_w: 0.,
             reactors: Vec::new(),
-            slip_cooldown_s: None,
             power_consumed_w: 0.,
             power_requested_w: 0.,
             slip_charge: None,
+            slip_available: false,
+            slip_exotic_fuel_kg: None,
+            slip_navigation_lock: None,
             inventory: Vec::new(),
             cargo: Vec::new(),
             cargo_capacity_m3: 0.,

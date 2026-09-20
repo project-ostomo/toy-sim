@@ -12,11 +12,11 @@ extern "C" {
 #define SHIP_ALIGNOF _Alignof
 #endif
 #if defined(__wasm__)
-#define SHIP_IMPORT(name) __attribute__((import_module("ship_v31"), import_name(name)))
+#define SHIP_IMPORT(name) __attribute__((import_module("ship_v32"), import_name(name)))
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (31)
+#define SHIP_API_VERSION (32)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
 #define SHIP_ERR_UNAVAILABLE (-4)
@@ -25,8 +25,6 @@ extern "C" {
 #define SHIP_ERR_UNSUPPORTED (-7)
 #define SHIP_CALL_GAS (100)
 #define SHIP_SCAN_GAS_PER_OBJECT (3000)
-#define SHIP_NAVIGATION_GAS_BASE (100)
-#define SHIP_NAVIGATION_GAS_PER_GATE (4096)
 #define SHIP_MAX_CONTACTS (256)
 #define SHIP_MAX_TRACKS (512)
 #define SHIP_MAX_SNAPSHOTS (8)
@@ -158,7 +156,6 @@ extern "C" {
 #define SHIP_TARGET_DIRECTION (0)
 #define SHIP_TARGET_DESTINATION (1)
 #define SHIP_TARGET_CONTACT (2)
-#define SHIP_ORDER_JUMP (0)
 #define SHIP_ORDER_GUIDANCE (1)
 #define SHIP_ORDER_TRAVEL (2)
 #define SHIP_ORDER_SUBLIGHT (3)
@@ -1021,14 +1018,16 @@ SHIP_ASSERT(SHIP_ALIGNOF(ship_contact_ref_record) == 1, "ContactRef alignment");
 typedef struct {
     uint64_t kind;
     uint8_t entity[16];
+    uint8_t system[16];
     ship_position_record position;
     uint64_t axes;
 } ship_destination_record;
 SHIP_ASSERT(offsetof(ship_destination_record, kind) == 0, "Destination.kind");
 SHIP_ASSERT(offsetof(ship_destination_record, entity) == 8, "Destination.entity");
-SHIP_ASSERT(offsetof(ship_destination_record, position) == 24, "Destination.position");
-SHIP_ASSERT(offsetof(ship_destination_record, axes) == 72, "Destination.axes");
-SHIP_ASSERT(sizeof(ship_destination_record) == 80, "Destination size");
+SHIP_ASSERT(offsetof(ship_destination_record, system) == 24, "Destination.system");
+SHIP_ASSERT(offsetof(ship_destination_record, position) == 40, "Destination.position");
+SHIP_ASSERT(offsetof(ship_destination_record, axes) == 88, "Destination.axes");
+SHIP_ASSERT(sizeof(ship_destination_record) == 96, "Destination size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_destination_record) == 8, "Destination alignment");
 typedef struct {
     uint64_t kind;
@@ -1039,8 +1038,8 @@ typedef struct {
 SHIP_ASSERT(offsetof(ship_target_record, kind) == 0, "Target.kind");
 SHIP_ASSERT(offsetof(ship_target_record, direction) == 8, "Target.direction");
 SHIP_ASSERT(offsetof(ship_target_record, destination) == 32, "Target.destination");
-SHIP_ASSERT(offsetof(ship_target_record, contact) == 112, "Target.contact");
-SHIP_ASSERT(sizeof(ship_target_record) == 144, "Target size");
+SHIP_ASSERT(offsetof(ship_target_record, contact) == 128, "Target.contact");
+SHIP_ASSERT(sizeof(ship_target_record) == 160, "Target size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_target_record) == 8, "Target alignment");
 typedef struct {
     uint64_t kind;
@@ -1050,15 +1049,21 @@ typedef struct {
     uint64_t mode;
     double range_m;
     uint64_t tick;
+    double speed_ly_s;
+    uint64_t navigation_beacon_present;
+    uint8_t navigation_beacon[16];
 } ship_order_record;
 SHIP_ASSERT(offsetof(ship_order_record, kind) == 0, "Order.kind");
 SHIP_ASSERT(offsetof(ship_order_record, entity) == 8, "Order.entity");
 SHIP_ASSERT(offsetof(ship_order_record, destination) == 24, "Order.destination");
-SHIP_ASSERT(offsetof(ship_order_record, target) == 104, "Order.target");
-SHIP_ASSERT(offsetof(ship_order_record, mode) == 248, "Order.mode");
-SHIP_ASSERT(offsetof(ship_order_record, range_m) == 256, "Order.range_m");
-SHIP_ASSERT(offsetof(ship_order_record, tick) == 264, "Order.tick");
-SHIP_ASSERT(sizeof(ship_order_record) == 272, "Order size");
+SHIP_ASSERT(offsetof(ship_order_record, target) == 120, "Order.target");
+SHIP_ASSERT(offsetof(ship_order_record, mode) == 280, "Order.mode");
+SHIP_ASSERT(offsetof(ship_order_record, range_m) == 288, "Order.range_m");
+SHIP_ASSERT(offsetof(ship_order_record, tick) == 296, "Order.tick");
+SHIP_ASSERT(offsetof(ship_order_record, speed_ly_s) == 304, "Order.speed_ly_s");
+SHIP_ASSERT(offsetof(ship_order_record, navigation_beacon_present) == 312, "Order.navigation_beacon_present");
+SHIP_ASSERT(offsetof(ship_order_record, navigation_beacon) == 320, "Order.navigation_beacon");
+SHIP_ASSERT(sizeof(ship_order_record) == 336, "Order size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_order_record) == 8, "Order alignment");
 typedef struct {
     ship_order_record action;
@@ -1069,20 +1074,20 @@ typedef struct {
     double propellant_kg;
 } ship_queued_order_record;
 SHIP_ASSERT(offsetof(ship_queued_order_record, action) == 0, "QueuedOrder.action");
-SHIP_ASSERT(offsetof(ship_queued_order_record, seconds_per_kg) == 272, "QueuedOrder.seconds_per_kg");
-SHIP_ASSERT(offsetof(ship_queued_order_record, duration_present) == 280, "QueuedOrder.duration_present");
-SHIP_ASSERT(offsetof(ship_queued_order_record, duration_ticks) == 288, "QueuedOrder.duration_ticks");
-SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_present) == 296, "QueuedOrder.propellant_present");
-SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_kg) == 304, "QueuedOrder.propellant_kg");
-SHIP_ASSERT(sizeof(ship_queued_order_record) == 312, "QueuedOrder size");
+SHIP_ASSERT(offsetof(ship_queued_order_record, seconds_per_kg) == 336, "QueuedOrder.seconds_per_kg");
+SHIP_ASSERT(offsetof(ship_queued_order_record, duration_present) == 344, "QueuedOrder.duration_present");
+SHIP_ASSERT(offsetof(ship_queued_order_record, duration_ticks) == 352, "QueuedOrder.duration_ticks");
+SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_present) == 360, "QueuedOrder.propellant_present");
+SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_kg) == 368, "QueuedOrder.propellant_kg");
+SHIP_ASSERT(sizeof(ship_queued_order_record) == 376, "QueuedOrder size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_queued_order_record) == 8, "QueuedOrder alignment");
 typedef struct {
     double fuel_fraction;
-    uint64_t allow_wormholes;
+    double max_loss_ppm;
     uint64_t allow_slipdrive;
 } ship_preferences_record;
 SHIP_ASSERT(offsetof(ship_preferences_record, fuel_fraction) == 0, "Preferences.fuel_fraction");
-SHIP_ASSERT(offsetof(ship_preferences_record, allow_wormholes) == 8, "Preferences.allow_wormholes");
+SHIP_ASSERT(offsetof(ship_preferences_record, max_loss_ppm) == 8, "Preferences.max_loss_ppm");
 SHIP_ASSERT(offsetof(ship_preferences_record, allow_slipdrive) == 16, "Preferences.allow_slipdrive");
 SHIP_ASSERT(sizeof(ship_preferences_record) == 24, "Preferences size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_preferences_record) == 8, "Preferences alignment");
@@ -1099,10 +1104,10 @@ typedef struct {
     double slip_exclusion_m;
 } ship_local_obstacle_record;
 SHIP_ASSERT(offsetof(ship_local_obstacle_record, reference) == 0, "LocalObstacle.reference");
-SHIP_ASSERT(offsetof(ship_local_obstacle_record, pose) == 144, "LocalObstacle.pose");
-SHIP_ASSERT(offsetof(ship_local_obstacle_record, radius_m) == 272, "LocalObstacle.radius_m");
-SHIP_ASSERT(offsetof(ship_local_obstacle_record, slip_exclusion_m) == 280, "LocalObstacle.slip_exclusion_m");
-SHIP_ASSERT(sizeof(ship_local_obstacle_record) == 288, "LocalObstacle size");
+SHIP_ASSERT(offsetof(ship_local_obstacle_record, pose) == 160, "LocalObstacle.pose");
+SHIP_ASSERT(offsetof(ship_local_obstacle_record, radius_m) == 288, "LocalObstacle.radius_m");
+SHIP_ASSERT(offsetof(ship_local_obstacle_record, slip_exclusion_m) == 296, "LocalObstacle.slip_exclusion_m");
+SHIP_ASSERT(sizeof(ship_local_obstacle_record) == 304, "LocalObstacle size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_local_obstacle_record) == 8, "LocalObstacle alignment");
 typedef struct {
     uint64_t count;
@@ -1110,42 +1115,6 @@ typedef struct {
 SHIP_ASSERT(offsetof(ship_orrery_reply_record, count) == 0, "OrreryReply.count");
 SHIP_ASSERT(sizeof(ship_orrery_reply_record) == 8, "OrreryReply size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_orrery_reply_record) == 8, "OrreryReply alignment");
-typedef struct {
-    uint64_t after_present;
-    uint8_t after[16];
-    uint64_t limit;
-    ship_position_record reference;
-} ship_navigation_query_record;
-SHIP_ASSERT(offsetof(ship_navigation_query_record, after_present) == 0, "NavigationQuery.after_present");
-SHIP_ASSERT(offsetof(ship_navigation_query_record, after) == 8, "NavigationQuery.after");
-SHIP_ASSERT(offsetof(ship_navigation_query_record, limit) == 24, "NavigationQuery.limit");
-SHIP_ASSERT(offsetof(ship_navigation_query_record, reference) == 32, "NavigationQuery.reference");
-SHIP_ASSERT(sizeof(ship_navigation_query_record) == 80, "NavigationQuery size");
-SHIP_ASSERT(SHIP_ALIGNOF(ship_navigation_query_record) == 8, "NavigationQuery alignment");
-typedef struct {
-    uint8_t entity[16];
-    uint8_t system[16];
-    ship_pose_record pose;
-    uint8_t exit[16];
-    ship_position_record staging;
-    uint64_t slip_ready;
-} ship_navigation_gate_record;
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, entity) == 0, "NavigationGate.entity");
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, system) == 16, "NavigationGate.system");
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, pose) == 32, "NavigationGate.pose");
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, exit) == 160, "NavigationGate.exit");
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, staging) == 176, "NavigationGate.staging");
-SHIP_ASSERT(offsetof(ship_navigation_gate_record, slip_ready) == 224, "NavigationGate.slip_ready");
-SHIP_ASSERT(sizeof(ship_navigation_gate_record) == 232, "NavigationGate size");
-SHIP_ASSERT(SHIP_ALIGNOF(ship_navigation_gate_record) == 8, "NavigationGate alignment");
-typedef struct {
-    uint64_t revision;
-    uint64_t count;
-} ship_navigation_reply_record;
-SHIP_ASSERT(offsetof(ship_navigation_reply_record, revision) == 0, "NavigationReply.revision");
-SHIP_ASSERT(offsetof(ship_navigation_reply_record, count) == 8, "NavigationReply.count");
-SHIP_ASSERT(sizeof(ship_navigation_reply_record) == 16, "NavigationReply size");
-SHIP_ASSERT(SHIP_ALIGNOF(ship_navigation_reply_record) == 8, "NavigationReply alignment");
 typedef struct {
     ship_pose_record pose;
     uint64_t handle;
@@ -1161,12 +1130,18 @@ typedef struct {
     ship_position_record destination;
     double departure_after_seconds;
     double arrival_after_seconds;
+    double speed_ly_s;
+    uint64_t navigation_beacon_present;
+    uint8_t navigation_beacon[16];
 } ship_slip_eligibility_query_record;
 SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, origin) == 0, "SlipEligibilityQuery.origin");
 SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, destination) == 48, "SlipEligibilityQuery.destination");
 SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, departure_after_seconds) == 96, "SlipEligibilityQuery.departure_after_seconds");
 SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, arrival_after_seconds) == 104, "SlipEligibilityQuery.arrival_after_seconds");
-SHIP_ASSERT(sizeof(ship_slip_eligibility_query_record) == 112, "SlipEligibilityQuery size");
+SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, speed_ly_s) == 112, "SlipEligibilityQuery.speed_ly_s");
+SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, navigation_beacon_present) == 120, "SlipEligibilityQuery.navigation_beacon_present");
+SHIP_ASSERT(offsetof(ship_slip_eligibility_query_record, navigation_beacon) == 128, "SlipEligibilityQuery.navigation_beacon");
+SHIP_ASSERT(sizeof(ship_slip_eligibility_query_record) == 144, "SlipEligibilityQuery size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_slip_eligibility_query_record) == 8, "SlipEligibilityQuery alignment");
 typedef struct {
     uint64_t ready;
@@ -1183,8 +1158,8 @@ typedef struct {
     double after_seconds;
 } ship_resolve_query_record;
 SHIP_ASSERT(offsetof(ship_resolve_query_record, destination) == 0, "ResolveQuery.destination");
-SHIP_ASSERT(offsetof(ship_resolve_query_record, after_seconds) == 80, "ResolveQuery.after_seconds");
-SHIP_ASSERT(sizeof(ship_resolve_query_record) == 88, "ResolveQuery size");
+SHIP_ASSERT(offsetof(ship_resolve_query_record, after_seconds) == 96, "ResolveQuery.after_seconds");
+SHIP_ASSERT(sizeof(ship_resolve_query_record) == 104, "ResolveQuery size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_resolve_query_record) == 8, "ResolveQuery alignment");
 typedef struct {
     uint64_t autopilot_enabled;
@@ -1206,13 +1181,13 @@ SHIP_ASSERT(offsetof(ship_travel_reply_record, revision) == 32, "TravelReply.rev
 SHIP_ASSERT(offsetof(ship_travel_reply_record, index) == 40, "TravelReply.index");
 SHIP_ASSERT(offsetof(ship_travel_reply_record, order_present) == 48, "TravelReply.order_present");
 SHIP_ASSERT(offsetof(ship_travel_reply_record, order) == 56, "TravelReply.order");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, status) == 368, "TravelReply.status");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, reason) == 376, "TravelReply.reason");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_present) == 640, "TravelReply.arrival_present");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_tick) == 648, "TravelReply.arrival_tick");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, pose) == 656, "TravelReply.pose");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, slip_ready) == 784, "TravelReply.slip_ready");
-SHIP_ASSERT(sizeof(ship_travel_reply_record) == 792, "TravelReply size");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, status) == 432, "TravelReply.status");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, reason) == 440, "TravelReply.reason");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_present) == 704, "TravelReply.arrival_present");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_tick) == 712, "TravelReply.arrival_tick");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, pose) == 720, "TravelReply.pose");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, slip_ready) == 848, "TravelReply.slip_ready");
+SHIP_ASSERT(sizeof(ship_travel_reply_record) == 856, "TravelReply size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_travel_reply_record) == 8, "TravelReply alignment");
 typedef struct {
     uint64_t id;
@@ -1252,6 +1227,8 @@ typedef struct {
     uint64_t fuel_count;
     uint64_t fuel_complete;
     ship_text256 reason;
+    double estimated_loss_ppm;
+    double exotic_fuel_kg;
 } ship_route_reply_record;
 SHIP_ASSERT(offsetof(ship_route_reply_record, id) == 0, "RouteReply.id");
 SHIP_ASSERT(offsetof(ship_route_reply_record, status) == 8, "RouteReply.status");
@@ -1266,7 +1243,9 @@ SHIP_ASSERT(offsetof(ship_route_reply_record, order_count) == 72, "RouteReply.or
 SHIP_ASSERT(offsetof(ship_route_reply_record, fuel_count) == 80, "RouteReply.fuel_count");
 SHIP_ASSERT(offsetof(ship_route_reply_record, fuel_complete) == 88, "RouteReply.fuel_complete");
 SHIP_ASSERT(offsetof(ship_route_reply_record, reason) == 96, "RouteReply.reason");
-SHIP_ASSERT(sizeof(ship_route_reply_record) == 360, "RouteReply size");
+SHIP_ASSERT(offsetof(ship_route_reply_record, estimated_loss_ppm) == 360, "RouteReply.estimated_loss_ppm");
+SHIP_ASSERT(offsetof(ship_route_reply_record, exotic_fuel_kg) == 368, "RouteReply.exotic_fuel_kg");
+SHIP_ASSERT(sizeof(ship_route_reply_record) == 376, "RouteReply size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_route_reply_record) == 8, "RouteReply alignment");
 typedef struct {
     uint64_t id;
@@ -1316,11 +1295,17 @@ typedef struct {
     uint64_t revision;
     uint64_t order;
     ship_position_record destination;
+    double speed_ly_s;
+    uint64_t navigation_beacon_present;
+    uint8_t navigation_beacon[16];
 } ship_slip_record;
 SHIP_ASSERT(offsetof(ship_slip_record, revision) == 0, "Slip.revision");
 SHIP_ASSERT(offsetof(ship_slip_record, order) == 8, "Slip.order");
 SHIP_ASSERT(offsetof(ship_slip_record, destination) == 16, "Slip.destination");
-SHIP_ASSERT(sizeof(ship_slip_record) == 64, "Slip size");
+SHIP_ASSERT(offsetof(ship_slip_record, speed_ly_s) == 64, "Slip.speed_ly_s");
+SHIP_ASSERT(offsetof(ship_slip_record, navigation_beacon_present) == 72, "Slip.navigation_beacon_present");
+SHIP_ASSERT(offsetof(ship_slip_record, navigation_beacon) == 80, "Slip.navigation_beacon");
+SHIP_ASSERT(sizeof(ship_slip_record) == 96, "Slip size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_slip_record) == 8, "Slip alignment");
 typedef struct {
     uint64_t revision;
@@ -1452,9 +1437,7 @@ typedef struct {
     double radius_m;
     uint8_t owner[16];
     uint8_t faction[16];
-    uint8_t gate_exit[16];
     double range_m;
-    double exclusion_m;
     uint32_t flags;
     uint32_t labels_offset;
     uint32_t labels_count;
@@ -1467,16 +1450,14 @@ SHIP_ASSERT(offsetof(ship_beacon_record, pose) == 16, "Beacon.pose");
 SHIP_ASSERT(offsetof(ship_beacon_record, radius_m) == 144, "Beacon.radius_m");
 SHIP_ASSERT(offsetof(ship_beacon_record, owner) == 152, "Beacon.owner");
 SHIP_ASSERT(offsetof(ship_beacon_record, faction) == 168, "Beacon.faction");
-SHIP_ASSERT(offsetof(ship_beacon_record, gate_exit) == 184, "Beacon.gate_exit");
-SHIP_ASSERT(offsetof(ship_beacon_record, range_m) == 200, "Beacon.range_m");
-SHIP_ASSERT(offsetof(ship_beacon_record, exclusion_m) == 208, "Beacon.exclusion_m");
-SHIP_ASSERT(offsetof(ship_beacon_record, flags) == 216, "Beacon.flags");
-SHIP_ASSERT(offsetof(ship_beacon_record, labels_offset) == 220, "Beacon.labels_offset");
-SHIP_ASSERT(offsetof(ship_beacon_record, labels_count) == 224, "Beacon.labels_count");
-SHIP_ASSERT(offsetof(ship_beacon_record, bays_offset) == 228, "Beacon.bays_offset");
-SHIP_ASSERT(offsetof(ship_beacon_record, bays_count) == 232, "Beacon.bays_count");
-SHIP_ASSERT(offsetof(ship_beacon_record, reserved) == 236, "Beacon.reserved");
-SHIP_ASSERT(sizeof(ship_beacon_record) == 240, "Beacon size");
+SHIP_ASSERT(offsetof(ship_beacon_record, range_m) == 184, "Beacon.range_m");
+SHIP_ASSERT(offsetof(ship_beacon_record, flags) == 192, "Beacon.flags");
+SHIP_ASSERT(offsetof(ship_beacon_record, labels_offset) == 196, "Beacon.labels_offset");
+SHIP_ASSERT(offsetof(ship_beacon_record, labels_count) == 200, "Beacon.labels_count");
+SHIP_ASSERT(offsetof(ship_beacon_record, bays_offset) == 204, "Beacon.bays_offset");
+SHIP_ASSERT(offsetof(ship_beacon_record, bays_count) == 208, "Beacon.bays_count");
+SHIP_ASSERT(offsetof(ship_beacon_record, reserved) == 212, "Beacon.reserved");
+SHIP_ASSERT(sizeof(ship_beacon_record) == 216, "Beacon size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_beacon_record) == 8, "Beacon alignment");
 typedef struct {
     uint32_t count;
@@ -1533,7 +1514,6 @@ SHIP_IMPORT("screen_end") int32_t ship_screen_end(uint64_t screen);
 SHIP_IMPORT("screen_event_read") int32_t ship_screen_event_read(uint32_t index, void * out, uint32_t bytes);
 SHIP_IMPORT("screen_event_ack") int32_t ship_screen_event_ack(uint64_t event);
 SHIP_IMPORT("orrery_read") int32_t ship_orrery_read(const ship_orrery_query_record * query, ship_local_obstacle_record * output, uint32_t capacity, ship_orrery_reply_record * reply);
-SHIP_IMPORT("navigation_query") int32_t ship_navigation_query(const ship_navigation_query_record * query, ship_navigation_gate_record * output, uint32_t capacity, ship_navigation_reply_record * reply);
 SHIP_IMPORT("contact_get") int32_t ship_contact_get(const ship_contact_ref_record * query, ship_contact_reply_record * reply);
 SHIP_IMPORT("slip_eligibility") int32_t ship_slip_eligibility(const ship_slip_eligibility_query_record * query, ship_slip_eligibility_reply_record * reply);
 SHIP_IMPORT("travel_read") int32_t ship_travel_read(ship_travel_reply_record * reply);

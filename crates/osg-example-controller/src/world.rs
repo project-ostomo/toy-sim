@@ -30,8 +30,6 @@ pub struct Executor {
     environment: Option<(u64, GalacticPosition, LocalSpace)>,
     sensor_targets: Vec<(usize, TrackId)>,
     tick: u64,
-    slip_clearance: f64,
-    slip_attempts: u8,
     pub speed_limit: f64,
     pub preferences: osg_model::transfer::TransferCost,
 }
@@ -133,8 +131,6 @@ impl Executor {
             self.next_estimate = tick;
             self.avoidance.reset();
             self.environment = None;
-            self.slip_clearance = 0.;
-            self.slip_attempts = 0;
         }
 
         self.active =
@@ -272,17 +268,21 @@ impl Executor {
                 self.estimate(tick, &state, Some(self.transfer_estimate(&contact)))?;
                 self.steer(&pose, &target, None).map(Some)
             }
-            Order::Slip { destination } => {
+            Order::Slip {
+                destination,
+                speed_ly_s,
+                navigation_beacon,
+            } => {
                 let target = resolve_at(destination, 0.)?;
                 let space = self.navigation_environment(&pose)?;
                 let departure = crate::local_guidance::outside_exclusions(
                     pose.position,
                     target.position.relative_to(pose.position),
                     &space,
-                    self.own_radius + self.slip_clearance,
+                    self.own_radius,
                 );
                 let Some(departure) = departure else {
-                    return self.steer(&pose, &pose, None).map(Some);
+                    return Err(abi::ERR_UNAVAILABLE);
                 };
                 if departure.relative_to(pose.position).length() > 1. {
                     let mut local = pose.clone();
@@ -290,10 +290,7 @@ impl Executor {
                     if let Some(obstacle) = space.obstacles.iter().find(|obstacle| {
                         obstacle.slip_exclusion_m > 0.
                             && pose.position.relative_to(obstacle.pose.position).length()
-                                < obstacle.slip_exclusion_m
-                                    + self.own_radius
-                                    + self.slip_clearance
-                                    + 10.
+                                < obstacle.slip_exclusion_m + self.own_radius + 10.
                     }) {
                         local.velocity = obstacle.pose.velocity;
                     }
@@ -310,6 +307,8 @@ impl Executor {
 
                 if slip_ready {
                     let solution = solve_slip(
+                        *speed_ly_s,
+                        *navigation_beacon,
                         |after| {
                             Ok(pose
                                 .position
@@ -319,28 +318,14 @@ impl Executor {
                             let target = resolve_at(destination, after)?;
                             Ok(target.position)
                         },
-                    );
-                    let solution = match solution {
-                        Ok(solution) => solution,
-                        Err(abi::ERR_UNAVAILABLE) if self.slip_attempts < 8 => {
-                            self.slip_attempts += 1;
-                            let volume_margin = space
-                                .obstacles
-                                .iter()
-                                .map(|obstacle| obstacle.slip_exclusion_m * 0.1)
-                                .fold(1000., f64::max);
-                            self.slip_clearance = (self.slip_clearance * 2.)
-                                .max(volume_margin)
-                                .min(osg_model::local_space::MAX_RANGE_M);
-                            return Ok(None);
-                        }
-                        Err(error) => return Err(error),
-                    };
+                    )?;
                     self.estimate(tick, &state, Some((solution.seconds, 0.)))?;
                     command(ProgramAction::Slip {
                         revision: state.revision,
                         order: state.index,
                         destination: solution.destination,
+                        speed_ly_s: *speed_ly_s,
+                        navigation_beacon: *navigation_beacon,
                     })?;
                 } else {
                     let seconds = state
@@ -351,35 +336,6 @@ impl Executor {
                     self.estimate(tick, &state, Some((seconds, 0.)))?;
                 }
                 Ok(None)
-            }
-            Order::Jump(entry) => {
-                let ProgramReply::Beacons(beacons) = query(&ProgramQuery::Beacon(*entry))? else {
-                    return Err(abi::ERR_ARGUMENT);
-                };
-                let beacon = beacons
-                    .iter()
-                    .find(|beacon| beacon.entity == *entry && beacon.gate_exit.is_some())
-                    .ok_or(abi::ERR_UNAVAILABLE)?;
-                let own_radius = self.own_radius;
-                let clearance = beacon.radius_m - own_radius - 2.;
-                if clearance <= 0. {
-                    return Err(abi::ERR_UNAVAILABLE);
-                }
-                let stand_off = beacon.radius_m + own_radius + 100.;
-                let target = crate::local_guidance::gate_target(&pose, &beacon.pose);
-                let relative = contact(&pose, &target);
-                let (time, fuel) = self.transfer_estimate(&relative);
-                self.estimate(tick, &state, Some((time + 0.1, fuel)))?;
-                let ignored = Target::Destination(Destination::Beacon(*entry));
-                let result = self.steer(&pose, &target, Some(&ignored))?;
-                let distance = beacon.pose.position.relative_to(pose.position).length();
-                let entry_limit = crate::navigation::arrival_speed(
-                    (distance - stand_off).max(0.),
-                    self.acceleration,
-                    self.turn_s + 0.1,
-                );
-                self.speed_limit = self.speed_limit.min(entry_limit);
-                Ok(Some(result))
             }
             Order::Undock => {
                 command(ProgramAction::Undock {
@@ -632,6 +588,8 @@ fn resolve_at(destination: &Destination, after_seconds: f64) -> Result<Pose, i32
 }
 
 fn solve_slip(
+    speed_ly_s: f64,
+    navigation_beacon: Option<EntityId>,
     origin_at: impl FnMut(f64) -> Result<GalacticPosition, i32>,
     destination_at: impl FnMut(f64) -> Result<GalacticPosition, i32>,
 ) -> Result<crate::slip_guidance::Solution, i32> {
@@ -648,6 +606,8 @@ fn solve_slip(
                 destination,
                 departure_after_seconds,
                 arrival_after_seconds,
+                speed_ly_s,
+                navigation_beacon,
             })?
             else {
                 return Err(abi::ERR_ARGUMENT);

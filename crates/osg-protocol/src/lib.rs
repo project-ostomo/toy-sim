@@ -7,11 +7,10 @@ use anyhow::{Context, Result, bail, ensure};
 pub use industry::validate_snapshot_content as validate_industry_snapshot_content;
 pub use industry::{decode_blueprint_upload_ack, encode_blueprint_upload_ack};
 use osg_model::*;
-pub use presentation::validate_catalogue;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u16 = 34;
+pub const VERSION: u16 = 36;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -20,6 +19,10 @@ pub const HEADER_SIZE: usize = 12;
 pub enum Message {
     State(Frame),
     Input(InputFrame),
+    Session {
+        world: Id,
+        universe: UniverseDescriptor,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -45,6 +48,7 @@ pub fn payload_length(header: &[u8]) -> Result<usize> {
     let max = match kind {
         1 => MAX_FRAME,
         2 => MAX_INPUT,
+        3 => 1024,
         _ => bail!("unsupported required message kind"),
     };
     ensure!(len <= max, "application message exceeds limit");
@@ -94,6 +98,11 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
             validate_input(input)?;
             section(&mut body, 1, input)?;
             2
+        }
+        Message::Session { world, universe } => {
+            validate_universe(universe)?;
+            section(&mut body, 1, &(*world, universe))?;
+            3
         }
     };
     let mut out = Vec::with_capacity(HEADER_SIZE + body.len());
@@ -167,6 +176,11 @@ pub fn decode(bytes: &[u8]) -> Result<Message> {
             validate_input(&input)?;
             Message::Input(input)
         }
+        3 => {
+            let (world, universe) = read(&sections, 1)?;
+            validate_universe(&universe)?;
+            Message::Session { world, universe }
+        }
 
         _ => unreachable!(),
     };
@@ -186,11 +200,29 @@ fn position_valid(position: GalacticPosition) -> bool {
         .all(|x| x.unsigned_abs() <= 1_u128 << 110)
 }
 
+fn validate_universe(universe: &UniverseDescriptor) -> Result<()> {
+    ensure!(universe.epoch_mjd_utc.is_finite(), "invalid universe epoch");
+    Ok(())
+}
+
 pub fn validate_order(order: &travel::Order) -> Result<()> {
     let destination = match order {
-        travel::Order::TravelTo(destination)
-        | travel::Order::Sublight(destination)
-        | travel::Order::Slip { destination } => Some(destination),
+        travel::Order::TravelTo(destination) | travel::Order::Sublight(destination) => {
+            Some(destination)
+        }
+        travel::Order::Slip {
+            destination,
+            speed_ly_s,
+            ..
+        } => {
+            ensure!(
+                speed_ly_s.is_finite()
+                    && *speed_ly_s > 0.
+                    && *speed_ly_s <= travel::slip::MAX_SPEED_LY_S,
+                "invalid slip speed"
+            );
+            Some(destination)
+        }
         travel::Order::Guidance(guidance) => {
             ensure!(
                 guidance.range_m.is_finite() && (0. ..=1e12).contains(&guidance.range_m),
@@ -286,17 +318,6 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
     }
     ensure!(frame.society.valid(), "invalid society snapshot");
     presentation::validate(&frame.presentation)?;
-    for system in frame
-        .presentation
-        .celestial_systems
-        .iter()
-        .chain(&frame.presentation.navigation.ephemerides)
-    {
-        ensure!(
-            frame.views.iter().any(|view| view.id == system.view),
-            "celestial system references unknown view"
-        );
-    }
     let mut publication_ships = BTreeSet::new();
     for publication in &frame.presentation.ships {
         ensure!(
@@ -425,6 +446,10 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
         );
         ensure!(
             ship.travel.preferences.valid()
+                && !ship.travel.risk_budget.max_log_loss.is_nan()
+                && ship.travel.risk_budget.max_log_loss >= 0.
+                && !ship.travel.risk_budget.spent_log_loss.is_nan()
+                && ship.travel.risk_budget.spent_log_loss >= 0.
                 && ship
                     .travel
                     .fuel_budget
@@ -497,7 +522,9 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
             Action::RouteRequest { request, .. } => routing::validate_request(request)?,
-            Action::RoutePoll { id, .. } => ensure!(*id != 0, "invalid route request id"),
+            Action::RoutePoll { id, .. } | Action::RouteCancel { id, .. } => {
+                ensure!(*id != 0, "invalid route request id")
+            }
             Action::ChatSubscribe(subscription) => ensure!(
                 subscription.revision > 0,
                 "invalid chat subscription revision"
@@ -1058,7 +1085,10 @@ mod tests {
             ),
             (
                 Destination::Relative {
-                    reference: Reference::Celestial(Id([4; 16])),
+                    reference: Reference::Celestial(travel::CelestialRef {
+                        system: Id([3; 16]),
+                        body: Id([4; 16]),
+                    }),
                     offset,
                     axes: Axes::BodyFixed,
                 },
@@ -1076,7 +1106,11 @@ mod tests {
         ];
 
         for (destination, valid) in destinations {
-            let order = Order::Slip { destination };
+            let order = Order::Slip {
+                destination,
+                speed_ly_s: 0.01,
+                navigation_beacon: None,
+            };
             let input = Message::Input(InputFrame {
                 world: Id([1; 16]),
                 sequence: 1,
@@ -1134,96 +1168,38 @@ mod tests {
     }
 
     #[test]
-    fn celestial_definitions_are_scoped_to_existing_views() {
-        let mut frame = empty_frame();
-        frame
-            .presentation
-            .celestial_systems
-            .push(CelestialSystemRef {
-                view: 7,
-                system: Id([2; 16]),
-                definition: [3; 32],
-                epoch_mjd_utc: 0.,
-                sim_time_origin_ns: 0,
-            });
-        assert!(encode(&Message::State(frame.clone())).is_err());
-        frame.views.push(ViewState {
-            focused_ship: None,
-            origin: GalacticPosition::ZERO,
-            id: 7,
-            revision: 1,
-            group: Id([4; 16]),
-            tracks: Vec::new(),
-            completion: Completion::Complete,
-        });
-        let message = Message::State(frame.clone());
+    fn session_descriptor_roundtrips_and_rejects_invalid_epoch() {
+        let mut universe = UniverseDescriptor {
+            fingerprint: [3; 32],
+            epoch_mjd_utc: 60_000.,
+            sim_time_origin_ns: 123,
+        };
+        let message = Message::Session {
+            world: Id([2; 16]),
+            universe: universe.clone(),
+        };
         assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
-        frame.presentation.celestial_systems[0].epoch_mjd_utc = f64::NAN;
-        assert!(encode(&Message::State(frame)).is_err());
+        universe.epoch_mjd_utc = f64::NAN;
+        assert!(
+            encode(&Message::Session {
+                world: Id([2; 16]),
+                universe
+            })
+            .is_err()
+        );
     }
 
     #[test]
-    fn navigation_ephemerides_require_real_views_and_bounded_unique_references() {
-        let mut frame = empty_frame();
-        let reference = CelestialSystemRef {
-            view: 7,
-            system: Id([2; 16]),
-            definition: [3; 32],
-            epoch_mjd_utc: 60_000.,
-            sim_time_origin_ns: 0,
-        };
-        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
-            .ephemerides
-            .push(reference.clone());
-        assert!(validate_frame(&frame).is_err());
-
-        frame.views = [7, 8]
-            .into_iter()
-            .map(|id| ViewState {
-                focused_ship: None,
-                origin: GalacticPosition::ZERO,
-                id,
-                revision: 1,
-                group: Id([4; 16]),
-                tracks: Vec::new(),
-                completion: Completion::Complete,
-            })
-            .collect();
-        let message = Message::State(frame.clone());
-        assert_eq!(decode(&encode(&message).unwrap()).unwrap(), message);
-
-        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
-            .ephemerides
-            .push(reference.clone());
-        assert!(validate_frame(&frame).is_err());
-
-        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
-        navigation.ephemerides[1].view = 8;
-        assert!(validate_frame(&frame).is_ok());
-
-        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
-        navigation.ephemerides[1].epoch_mjd_utc = f64::NAN;
-        assert!(validate_frame(&frame).is_err());
-
-        let navigation = std::sync::Arc::make_mut(&mut frame.presentation.navigation);
-        navigation.ephemerides = (0..256_u128)
-            .map(|index| CelestialSystemRef {
-                system: Id(index.to_le_bytes()),
-                ..reference.clone()
-            })
-            .collect();
-        navigation.ephemerides.push(CelestialSystemRef {
-            view: 8,
-            ..reference.clone()
-        });
-        assert!(validate_frame(&frame).is_ok());
-
-        std::sync::Arc::make_mut(&mut frame.presentation.navigation)
-            .ephemerides
-            .push(CelestialSystemRef {
-                system: Id(256_u128.to_le_bytes()),
-                ..reference
-            });
-        assert!(validate_frame(&frame).is_err());
+    fn slip_orders_reject_invalid_selected_speeds() {
+        for speed in [0., -1., f64::NAN, f64::INFINITY, 1.01] {
+            assert!(
+                validate_order(&travel::Order::Slip {
+                    destination: travel::Destination::Galactic(GalacticPosition::ZERO),
+                    speed_ly_s: speed,
+                    navigation_beacon: None,
+                })
+                .is_err()
+            );
+        }
     }
 }

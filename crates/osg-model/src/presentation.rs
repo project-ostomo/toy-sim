@@ -1,5 +1,6 @@
 use crate::{EntityId, GalacticPosition, GroupId, Pose, TrackId};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContactRef {
@@ -12,10 +13,8 @@ pub struct PresentationFrame {
     pub navigation: std::sync::Arc<NavigationSnapshot>,
     pub ships: Vec<ShipPresentation>,
     pub combat: Vec<CombatEvent>,
-    pub celestial_systems: Vec<CelestialSystemRef>,
     pub capabilities: Vec<DebugCapability>,
     pub diagnostics: Option<Diagnostics>,
-    pub universe: Option<UniverseStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -37,7 +36,9 @@ pub struct ShipPresentation {
     pub power_generated_w: f64,
     pub generation_capacity_w: f64,
     pub reactors: Vec<ReactorTelemetry>,
-    pub slip_cooldown_s: Option<f64>,
+    pub slip_available: bool,
+    pub slip_exotic_fuel_kg: Option<f64>,
+    pub slip_navigation_lock: Option<bool>,
     pub power_consumed_w: f64,
     pub power_requested_w: f64,
     pub slip_charge: Option<SlipChargeTelemetry>,
@@ -351,6 +352,7 @@ pub enum CombatEventKind {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CelestialPresentation {
+    pub reference: crate::travel::CelestialRef,
     pub entity: EntityId,
     pub name: String,
     pub pose: Pose,
@@ -360,7 +362,6 @@ pub struct CelestialPresentation {
     pub temperature_k: f64,
     pub color: [f32; 3],
     pub atmosphere: Option<AtmospherePresentation>,
-    pub ephemeris: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -382,11 +383,11 @@ pub enum DebugCommand {
         occlusion: bool,
     },
     InspectBody {
-        body: Option<EntityId>,
+        body: Option<crate::travel::CelestialRef>,
     },
     RelocateToBody {
         ship: EntityId,
-        body: EntityId,
+        body: crate::travel::CelestialRef,
     },
     InjectShieldHeat {
         ship: EntityId,
@@ -505,57 +506,24 @@ pub struct WeaponsInstrument {
     pub reason: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UniverseStatus {
-    pub catalogue: [u8; 32],
-    pub active_systems: Vec<ActiveSystem>,
-    pub inspected_body: Option<EntityId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct ActiveSystem {
-    pub system: EntityId,
-    pub reason: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UniverseCatalogue {
-    pub systems: Vec<UniverseSystem>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UniverseSystem {
-    pub id: EntityId,
-    pub name: String,
-    pub position: GalacticPosition,
-    pub influence_radius_m: f64,
-    pub bodies: Vec<UniverseBody>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct UniverseBody {
-    pub id: EntityId,
-    pub name: String,
-    pub kind: String,
-    pub radius_m: f64,
-    pub mass_kg: f64,
-    pub parent: Option<EntityId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct CelestialSystemRef {
-    pub view: u64,
-    pub system: EntityId,
-    pub definition: [u8; 32],
-    pub epoch_mjd_utc: f64,
-    pub sim_time_origin_ns: u64,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct NavigationSnapshot {
-    pub catalogue: Option<[u8; 32]>,
+    pub directory: Option<[u8; 32]>,
     pub beacons: Vec<NavigationBeacon>,
-    pub ephemerides: Vec<CelestialSystemRef>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InhabitedDirectory {
+    pub systems: Vec<EntityId>,
+    pub ownership: BTreeMap<EntityId, EntityId>,
+    pub sovereignties: BTreeMap<EntityId, PublicSovereignty>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublicSovereignty {
+    pub id: EntityId,
+    pub name: String,
+    pub bloc: crate::ownership::Bloc,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -576,10 +544,16 @@ pub struct NavigationSystem {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NavigationBeacon {
     pub id: EntityId,
-    pub system: EntityId,
+    pub systems: Vec<EntityId>,
     pub name: String,
     pub pose: Pose,
     pub radius_m: f64,
-    pub gate_exit: Option<EntityId>,
     pub docking: bool,
+    pub navigation: bool,
+}
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UniverseDescriptor {
+    pub fingerprint: [u8; 32],
+    pub epoch_mjd_utc: f64,
+    pub sim_time_origin_ns: u64,
 }

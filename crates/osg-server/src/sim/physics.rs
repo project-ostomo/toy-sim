@@ -10,7 +10,7 @@ use hifitime::Epoch;
 
 use crate::sim::{
     GameState,
-    orrery::{Celestial, Universe},
+    orrery::Universe,
     physics::aerodynamics::{AeroEnv, run_aero},
     precision::PreciseTransform,
     simulation::SimulationSystems,
@@ -43,8 +43,10 @@ impl Plugin for PhysicsPlugin {
 
 /// Applies all the forces and torques.
 fn apply_forces(
+    mut commands: Commands,
     mut objects: Query<
         (
+            Entity,
             &MassProps,
             &mut PreciseTransform,
             &mut Velocity,
@@ -53,11 +55,9 @@ fn apply_forces(
             &mut AccumulatedTorque,
             Option<&mut GravityAcceleration>,
             Option<&mut AccelerometerState>,
+            Option<&super::travel::ArrivalOffset>,
         ),
-        (
-            Without<collision::CollisionBody>,
-            Without<super::identity::FixedBeacon>,
-        ),
+        Without<collision::CollisionBody>,
     >,
     time: Res<Time<Fixed>>,
 ) {
@@ -65,7 +65,24 @@ fn apply_forces(
     // Symplectic Euler: kick with forces at the starting positions, then drift
     // using the updated velocity. No acceleration history survives the tick.
     objects.iter_mut().for_each(
-        |(mass, mut ptf, mut vel, mut force, mut ang_vel, mut torque, gravity, reading)| {
+        |(
+            entity,
+            mass,
+            mut ptf,
+            mut vel,
+            mut force,
+            mut ang_vel,
+            mut torque,
+            gravity,
+            reading,
+            arrival,
+        )| {
+            let dt = (dt - arrival.map_or(0.0, |offset| offset.0)).max(0.0);
+            if arrival.is_some() {
+                commands
+                    .entity(entity)
+                    .remove::<super::travel::ArrivalOffset>();
+            }
             let gravity = gravity.map_or(DVec3::ZERO, |mut g| std::mem::take(&mut g.0));
             let specific_force = force.0 / mass.mass - gravity;
             let old_w = ptf.rotation.inverse() * ang_vel.0;
@@ -185,60 +202,67 @@ pub struct HasWithinSoi(Vec<Entity>);
 fn gravity(
     commands: ParallelCommands,
     star: Res<Universe>,
+    active: Res<super::orrery::activity::ActiveSystems>,
     celestials: Query<(
         Entity,
-        &Celestial,
         &PreciseTransform,
-        Option<&crate::sim::orrery::activity::CelestialState>,
+        &crate::sim::orrery::activity::CelestialState,
     )>,
-    mut objects: Query<
-        (
-            Entity,
-            &MassProps,
-            &PreciseTransform,
-            &mut AccumulatedForce,
-            Option<&WithinSoi>,
-            Option<&mut GravityAcceleration>,
-        ),
-        Without<super::identity::FixedBeacon>,
-    >,
+    mut objects: Query<(
+        Entity,
+        &MassProps,
+        &PreciseTransform,
+        &mut AccumulatedForce,
+        Option<&WithinSoi>,
+        Option<&mut GravityAcceleration>,
+        Option<&super::travel::ArrivalOffset>,
+    )>,
+    time: Res<Time<Fixed>>,
 ) {
+    let epoch = sim_time(&time) - hifitime::Duration::from_seconds(time.timestep().as_secs_f64());
     objects.iter_mut().for_each(
-        |(object_ent, props, obj_ptf, mut force, soi, mut measured_gravity)| {
+        |(object_ent, props, obj_ptf, mut force, soi, mut measured_gravity, arrival)| {
             const GEE: f64 = GRAVITATIONAL_CONSTANT;
             let mut closest_celestial = None;
             let mut biggest_gravity = 0.0;
             let mut total_gravity = DVec3::ZERO;
-            for (cel_entity, celestial, cel_ptf, state) in celestials.iter() {
-                let applies = state.map_or_else(
-                    || star.gravity_applies(&celestial.0, obj_ptf.translation_um),
-                    |s| {
-                        obj_ptf
-                            .translation_um
-                            .relative_to(s.anchor)
-                            .length_squared()
-                            <= s.influence.powi(2)
-                    },
-                );
-                if !applies {
-                    continue;
+            for system in active
+                .systems_for_object(&star, object_ent, obj_ptf.translation_um)
+                .iter()
+            {
+                for (cel_entity, cel_ptf, state) in
+                    celestials.iter_many(active.entities.get(system).into_iter().flatten())
+                {
+                    if obj_ptf
+                        .translation_um
+                        .relative_to(state.anchor)
+                        .length_squared()
+                        > state.influence.powi(2)
+                    {
+                        continue;
+                    }
+                    let cel_mass = state.body.mass;
+                    let position = arrival
+                        .and_then(|offset| {
+                            star.solve_position(
+                                super::registry::universe_reference(state.reference),
+                                epoch + hifitime::Duration::from_seconds(offset.0),
+                            )
+                        })
+                        .unwrap_or(cel_ptf.translation_um);
+                    let obj_to_cel = position.relative_to(obj_ptf.translation_um);
+                    let r_squared = obj_to_cel.length_squared();
+                    if r_squared <= 0.0 {
+                        continue;
+                    }
+                    let f = GEE * cel_mass * props.mass / r_squared;
+                    if f > biggest_gravity {
+                        biggest_gravity = f;
+                        closest_celestial = Some(cel_entity);
+                    }
+                    force.0 += obj_to_cel.normalize() * f;
+                    total_gravity += obj_to_cel.normalize() * (f / props.mass);
                 }
-                let cel_mass = state.map_or_else(
-                    || star.get_body(&celestial.0).unwrap().mass,
-                    |s| s.body.mass,
-                );
-                let obj_to_cel = cel_ptf.translation_um.relative_to(obj_ptf.translation_um);
-                let r_squared = obj_to_cel.length_squared();
-                if r_squared <= 0.0 {
-                    continue;
-                }
-                let f = GEE * cel_mass * props.mass / r_squared;
-                if f > biggest_gravity {
-                    biggest_gravity = f;
-                    closest_celestial = Some(cel_entity);
-                }
-                force.0 += obj_to_cel.normalize() * f;
-                total_gravity += obj_to_cel.normalize() * (f / props.mass);
             }
             if let Some(ref mut measured) = measured_gravity {
                 measured.0 = total_gravity;
@@ -260,15 +284,60 @@ fn gravity(
 }
 
 pub fn sim_time<T: Default>(t: &Time<T>) -> Epoch {
-    Epoch::from_mjd_utc(osg_universe::replication::SIMULATION_EPOCH_MJD_UTC)
+    Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
         + hifitime::Duration::from_seconds(t.elapsed_secs_f64())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::orrery::Celestial;
     use crate::sim::precision::GalacticPosition;
     use std::time::Duration;
+
+    fn index_test_bodies(world: &mut World) {
+        let universe = world.resource::<Universe>().clone();
+        let mut active = super::super::orrery::activity::ActiveSystems::default();
+        for (entity, state) in world
+            .query::<(Entity, &super::super::orrery::activity::CelestialState)>()
+            .iter(world)
+        {
+            active
+                .entities
+                .entry(state.system)
+                .or_default()
+                .push(entity);
+        }
+        for (entity, pose) in world
+            .query_filtered::<(Entity, &PreciseTransform), With<MassProps>>()
+            .iter(world)
+        {
+            active.object_systems.insert(
+                entity,
+                universe
+                    .index
+                    .containing_segment(pose.translation_um, DVec3::ZERO),
+            );
+        }
+        world.insert_resource(active);
+    }
+
+    fn celestial_state(
+        universe: &Universe,
+        name: &str,
+    ) -> crate::sim::orrery::activity::CelestialState {
+        let reference = universe.authored_body(name).unwrap();
+        let system = universe.system_index(reference.system).unwrap();
+        let definition = universe.resolve_index(system).unwrap();
+        crate::sim::orrery::activity::CelestialState {
+            reference: super::super::registry::model_reference(reference),
+            body: universe.body(reference).unwrap(),
+            system,
+            anchor: definition.solver.anchor,
+            influence: definition.influence,
+            velocity: DVec3::ZERO,
+        }
+    }
 
     #[test]
     fn activating_remote_gravity_sources_does_not_change_local_forces() {
@@ -277,11 +346,18 @@ mod tests {
             toml::from_str(include_str!("../../../../tests/fixtures/remote.star.toml")).unwrap(),
         ];
         let universe = Universe::from_configs(configs, 1e-8).unwrap();
-        let remote = universe.systems[1].solver.anchor;
+        let remote = universe.systems[1].position;
+        let local_state = celestial_state(&universe, "Helion");
+        let remote_state = celestial_state(&universe, "Remote");
         let mut app = App::new();
-        app.insert_resource(universe).add_systems(Update, gravity);
-        app.world_mut()
-            .spawn((Celestial("Helion".into()), PreciseTransform::default()));
+        app.insert_resource(universe)
+            .init_resource::<Time<Fixed>>()
+            .add_systems(Update, (index_test_bodies, gravity).chain());
+        app.world_mut().spawn((
+            Celestial("Helion".into()),
+            local_state,
+            PreciseTransform::default(),
+        ));
         let ship = app
             .world_mut()
             .spawn((
@@ -297,6 +373,7 @@ mod tests {
         app.world_mut().get_mut::<AccumulatedForce>(ship).unwrap().0 = DVec3::ZERO;
         app.world_mut().spawn((
             Celestial("Remote".into()),
+            remote_state,
             PreciseTransform {
                 translation_um: remote,
                 ..default()
@@ -315,7 +392,72 @@ mod tests {
             DVec3::ZERO
         );
         assert!(app.world().get::<WithinSoi>(ship).is_none());
+
+        // A body born after activation still receives local gravity this tick.
+        let newborn = app
+            .world_mut()
+            .spawn((
+                RigidBody,
+                PreciseTransform {
+                    translation_um: GalacticPosition::ZERO.offset_by(DVec3::X * 1e11),
+                    ..default()
+                },
+            ))
+            .id();
+        use bevy::ecs::system::RunSystemOnce;
+        app.world_mut().run_system_once(gravity).unwrap();
+        assert!(
+            app.world()
+                .get::<AccumulatedForce>(newborn)
+                .unwrap()
+                .0
+                .length()
+                > 0.0
+        );
     }
+    #[test]
+    fn slip_arrival_integrates_only_the_remaining_tick() {
+        let mut app = App::new();
+        app.init_resource::<Time<Fixed>>()
+            .add_systems(Update, apply_forces);
+        let ship = app
+            .world_mut()
+            .spawn((
+                RigidBody,
+                PreciseTransform::default(),
+                Velocity(DVec3::X * 10.0),
+                super::super::travel::ArrivalOffset(0.075),
+            ))
+            .id();
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+        let x = app
+            .world()
+            .get::<PreciseTransform>(ship)
+            .unwrap()
+            .translation_um
+            .x;
+        assert!((x - 250_000).abs() <= 1);
+        assert!(
+            app.world()
+                .get::<super::super::travel::ArrivalOffset>(ship)
+                .is_none()
+        );
+        app.world_mut()
+            .resource_mut::<Time<Fixed>>()
+            .advance_by(Duration::from_millis(100));
+        app.update();
+        let x = app
+            .world()
+            .get::<PreciseTransform>(ship)
+            .unwrap()
+            .translation_um
+            .x;
+        assert!((x - 1_250_000).abs() <= 1);
+    }
+
     #[test]
     fn force_changes_apply_immediately_without_acceleration_history() {
         let mut app = App::new();
@@ -362,18 +504,21 @@ mod tests {
     fn low_orbit_energy_and_radius_remain_bounded_over_two_revolutions() {
         let universe = Universe::init(osg_universe::example_config()).unwrap();
         let scenario = &crate::sim::scenario::INITIAL_SCENARIO;
-        let planet = universe.get_body(scenario.body).unwrap();
+        let planet = universe
+            .body(universe.authored_body(scenario.body).unwrap())
+            .unwrap();
         let mu = GRAVITATIONAL_CONSTANT * planet.mass;
         // Keep this low-orbit regression independent of the startup scenario.
         let radius = planet.radius + 170_000.0;
         let period = std::f64::consts::TAU * (radius.powi(3) / mu).sqrt();
         let name = planet.name.clone();
+        let state = celestial_state(&universe, &name);
         let mut app = App::new();
         app.insert_resource(universe)
             .init_resource::<Time<Fixed>>()
-            .add_systems(Update, (gravity, apply_forces).chain());
+            .add_systems(Update, (index_test_bodies, gravity, apply_forces).chain());
         app.world_mut()
-            .spawn((Celestial(name), PreciseTransform::default()));
+            .spawn((Celestial(name), state, PreciseTransform::default()));
         let ship = app
             .world_mut()
             .spawn((
@@ -421,8 +566,14 @@ mod tests {
             let mut cfg = osg_universe::example_config();
             cfg.position_um = origin;
             let orrery = Universe::init(cfg).unwrap();
-            let body = orrery.iter().find(|b| b.atmosphere.is_some()).unwrap();
+            let definition = orrery.resolve_index(0).unwrap();
+            let body = definition
+                .solver
+                .iter()
+                .find(|b| b.atmosphere.is_some())
+                .unwrap();
             let name = body.name.clone();
+            let state = celestial_state(&orrery, &name);
             let mu = GRAVITATIONAL_CONSTANT * body.mass;
             let radius = body.radius + 30_000_000.0;
             let speed = (mu / radius).sqrt();
@@ -430,9 +581,10 @@ mod tests {
             let mut app = App::new();
             app.insert_resource(orrery)
                 .init_resource::<Time<Fixed>>()
-                .add_systems(Update, (gravity, apply_forces).chain());
+                .add_systems(Update, (index_test_bodies, gravity, apply_forces).chain());
             app.world_mut().spawn((
                 Celestial(name),
+                state,
                 PreciseTransform {
                     translation_um: origin,
                     ..default()

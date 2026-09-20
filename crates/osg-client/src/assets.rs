@@ -8,7 +8,6 @@ use bevy::{
 };
 use osg_model::Id;
 use osg_ships::{Catalogue, appearance::PreparedAppearance};
-use osg_universe::{orrery_cfg::Body, replication::SystemAsset, solver::Orrery};
 use std::path::Path;
 
 pub(crate) fn path(hash: [u8; 32]) -> String {
@@ -66,11 +65,9 @@ pub(crate) fn register_source(app: &mut App, client: AssetClient) {
 
 pub(crate) fn install(app: &mut App) {
     app.init_asset::<ShipAppearance>()
-        .init_asset::<SystemDefinition>()
         .init_asset::<NavigationDefinition>()
         .init_resource::<NavigationLoad>()
         .init_asset_loader::<ShipLoader>()
-        .init_asset_loader::<SystemLoader>()
         .init_asset_loader::<NavigationLoader>()
         .add_systems(
             Update,
@@ -87,7 +84,7 @@ pub(crate) fn install(app: &mut App) {
 }
 
 #[derive(Asset, TypePath)]
-pub(crate) struct NavigationDefinition(pub std::sync::Arc<osg_model::NavigationCatalogue>);
+pub(crate) struct NavigationDefinition(pub std::sync::Arc<osg_model::InhabitedDirectory>);
 
 #[derive(Default, TypePath)]
 struct NavigationLoader;
@@ -106,7 +103,7 @@ impl AssetLoader for NavigationLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         Ok(NavigationDefinition(std::sync::Arc::new(
-            osg_protocol::navigation::decode_catalogue(&bytes)?,
+            osg_protocol::navigation::decode_directory(&bytes)?,
         )))
     }
 }
@@ -128,11 +125,29 @@ fn synchronize_navigation(
     let Some(mut session) = session else {
         return;
     };
+    if session.navigation.systems.is_empty() {
+        if let Ok(universe) = crate::ui::celestials::shared_universe() {
+            let catalogue = osg_model::NavigationCatalogue {
+                topology_revision: 1,
+                systems: universe
+                    .systems
+                    .iter()
+                    .map(|system| osg_model::NavigationSystem {
+                        id: Id(system.id),
+                        name: system.name.to_string(),
+                        position: system.position,
+                        sovereignty: None,
+                    })
+                    .collect(),
+                beacons: session.navigation.beacons.clone(),
+            };
+            session.navigation = std::sync::Arc::new(catalogue);
+        }
+    }
     if load.generation != session.generation || load.hash != session.navigation_hash {
         load.generation = session.generation;
         load.hash = session.navigation_hash;
         load.asset = load.hash.map(|hash| server.load(path(hash)));
-        session.navigation = Default::default();
     }
     let Some(handle) = &load.asset else {
         if session.navigation_status != NavigationStatus::Unavailable {
@@ -141,8 +156,31 @@ fn synchronize_navigation(
         return;
     };
     let status = if let Some(definition) = assets.get(handle) {
-        if !std::sync::Arc::ptr_eq(&session.navigation, &definition.0) {
-            session.navigation = definition.0.clone();
+        if !std::sync::Arc::ptr_eq(&session.inhabited, &definition.0) {
+            if let Ok(universe) = crate::ui::celestials::shared_universe() {
+                if definition
+                    .0
+                    .systems
+                    .iter()
+                    .any(|id| universe.system_index(id.0).is_none())
+                {
+                    session.navigation_status =
+                        NavigationStatus::Failed("directory contains an unknown system".into());
+                    return;
+                }
+            }
+            let old = session.inhabited.clone();
+            let navigation = std::sync::Arc::make_mut(&mut session.navigation);
+            if let Ok(universe) = crate::ui::celestials::shared_universe() {
+                for id in old.ownership.keys().chain(definition.0.ownership.keys()) {
+                    if let Some(index) = universe.system_index(id.0) {
+                        navigation.systems[index].sovereignty =
+                            definition.0.ownership.get(id).copied();
+                    }
+                }
+            }
+            navigation.topology_revision = navigation.topology_revision.wrapping_add(1);
+            session.inhabited = definition.0.clone();
         }
         NavigationStatus::Ready
     } else {
@@ -158,33 +196,6 @@ fn synchronize_navigation(
 
 #[derive(Asset, TypePath)]
 pub(crate) struct ShipAppearance(pub PreparedAppearance);
-
-#[derive(Asset, TypePath)]
-pub(crate) struct SystemDefinition {
-    pub system: Id,
-    pub solver: Orrery,
-    pub bodies: Vec<(Id, Body)>,
-}
-
-impl SystemDefinition {
-    pub(crate) fn decode(bytes: &[u8]) -> anyhow::Result<Self> {
-        let definition = SystemAsset::decode(bytes)?;
-        let solver = definition.solver()?;
-        let mut bodies = Vec::with_capacity(definition.body_ids.len());
-        for identity in definition.body_ids {
-            let body = solver
-                .get_body(&identity.name)
-                .ok_or_else(|| anyhow::anyhow!("missing body in ephemeris"))?
-                .clone();
-            bodies.push((Id(identity.id), body));
-        }
-        Ok(Self {
-            system: Id(definition.system_id),
-            solver,
-            bodies,
-        })
-    }
-}
 
 #[derive(Default, TypePath)]
 struct ShipLoader;
@@ -204,26 +215,6 @@ impl AssetLoader for ShipLoader {
         reader.read_to_end(&mut bytes).await?;
         let appearance = osg_ships::appearance::ShipAppearance::from_bytes(&bytes)?;
         Ok(ShipAppearance(appearance.prepare(&Catalogue::builtin())?))
-    }
-}
-
-#[derive(Default, TypePath)]
-struct SystemLoader;
-
-impl AssetLoader for SystemLoader {
-    type Asset = SystemDefinition;
-    type Settings = ();
-    type Error = anyhow::Error;
-
-    async fn load(
-        &self,
-        reader: &mut dyn Reader,
-        _: &(),
-        _: &mut LoadContext<'_>,
-    ) -> anyhow::Result<SystemDefinition> {
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
-        SystemDefinition::decode(&bytes)
     }
 }
 

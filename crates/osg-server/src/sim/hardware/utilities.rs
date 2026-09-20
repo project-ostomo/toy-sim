@@ -1,6 +1,6 @@
 use super::*;
 use crate::sim::{
-    identity::BeaconEmitter,
+    identity::{DirectoryEmitter, NavigationBeaconEmitter},
     ownership::{self, AssetAccess, AssetOwner, Directory},
     travel::{Bay, DockingBays, Dormant},
 };
@@ -28,8 +28,47 @@ pub struct DockServiceRequest {
     pub power: bool,
 }
 
-#[derive(Component)]
-pub struct EquipmentBeacon;
+/// Rebuild derived emission state after hardware restoration, without spending energy.
+pub fn refresh_emitters(world: &mut World) {
+    let states: Vec<_> = world
+        .query::<(Entity, &PartDevices, &Hull, Has<Dormant>)>()
+        .iter(world)
+        .map(|(ship, parts, hull, dormant)| {
+            let mut directory = false;
+            let mut navigation = false;
+            if hull.0 > 0.0 && !dormant {
+                for &part in &parts.0 {
+                    let Some(device) = world.get::<Device>(part) else {
+                        continue;
+                    };
+                    if !device.0.operational || !device.0.powered {
+                        continue;
+                    }
+                    match world.get::<Utility>(part).map(|utility| &utility.0) {
+                        Some(UtilityDef::DirectoryTransmitter { .. }) => directory = true,
+                        Some(UtilityDef::NavigationBeacon { .. }) => navigation = true,
+                        _ => {}
+                    }
+                }
+            }
+            (ship, directory, navigation)
+        })
+        .collect();
+
+    for (ship, directory, navigation) in states {
+        let mut ship = world.entity_mut(ship);
+        if directory {
+            ship.insert(DirectoryEmitter);
+        } else {
+            ship.remove::<DirectoryEmitter>();
+        }
+        if navigation {
+            ship.insert(NavigationBeaconEmitter);
+        } else {
+            ship.remove::<NavigationBeaconEmitter>();
+        }
+    }
+}
 
 pub fn install_ship(
     commands: &mut Commands,
@@ -85,7 +124,8 @@ pub fn run(
             HardwareWrite,
             &mut Crew,
             &mut DockServices,
-            Has<EquipmentBeacon>,
+            Has<DirectoryEmitter>,
+            Has<NavigationBeaconEmitter>,
             &mut crate::sim::sensors::Sensor,
             Has<Dormant>,
         ),
@@ -94,11 +134,22 @@ pub fn run(
     mut parts: Query<(&Utility, &mut Device, &mut DevicePower)>,
 ) {
     let dt = time.delta_secs_f64();
-    for (ship, design, mut h, mut crew, mut services, had_beacon, mut sensor, absent) in &mut ships
+    for (
+        ship,
+        design,
+        mut h,
+        mut crew,
+        mut services,
+        had_beacon,
+        had_navigation,
+        mut sensor,
+        absent,
+    ) in &mut ships
     {
         commands.entity(ship).remove::<DockServiceRequest>();
         *services = DockServices::default();
         let mut beacon = false;
+        let mut navigation = false;
         let mut supported = 0.;
         let ids = h.parts.0.clone();
         for entity in ids {
@@ -124,7 +175,8 @@ pub fn run(
                 && matches!(
                     utility.0,
                     UtilityDef::Sensor { .. }
-                        | UtilityDef::Beacon { .. }
+                        | UtilityDef::DirectoryTransmitter { .. }
+                        | UtilityDef::NavigationBeacon { .. }
                         | UtilityDef::MissileLauncher { .. }
                 )
             {
@@ -133,7 +185,8 @@ pub fn run(
             let requested = match utility.0 {
                 UtilityDef::Command { power_w }
                 | UtilityDef::Sensor { power_w, .. }
-                | UtilityDef::Beacon { power_w }
+                | UtilityDef::DirectoryTransmitter { power_w }
+                | UtilityDef::NavigationBeacon { power_w }
                 | UtilityDef::LifeSupport { power_w, .. }
                 | UtilityDef::Workshop { power_w, .. }
                 | UtilityDef::CargoHandler { power_w, .. } => power_w,
@@ -160,7 +213,8 @@ pub fn run(
                         device.0.actual = range_m;
                     }
                 }
-                UtilityDef::Beacon { .. } => beacon |= device.0.powered,
+                UtilityDef::DirectoryTransmitter { .. } => beacon |= device.0.powered,
+                UtilityDef::NavigationBeacon { .. } => navigation |= device.0.powered,
                 UtilityDef::LifeSupport {
                     capacity,
                     supplies_kg_per_person_s,
@@ -219,13 +273,14 @@ pub fn run(
         };
 
         if beacon && !had_beacon {
-            commands
-                .entity(ship)
-                .insert((BeaconEmitter, EquipmentBeacon));
+            commands.entity(ship).insert(DirectoryEmitter);
         } else if !beacon && had_beacon {
-            commands
-                .entity(ship)
-                .remove::<(BeaconEmitter, EquipmentBeacon)>();
+            commands.entity(ship).remove::<DirectoryEmitter>();
+        }
+        if navigation && !had_navigation {
+            commands.entity(ship).insert(NavigationBeaconEmitter);
+        } else if !navigation && had_navigation {
+            commands.entity(ship).remove::<NavigationBeaconEmitter>();
         }
     }
 }
@@ -373,7 +428,10 @@ mod tests {
                 active: true,
             },
         );
-        add(&mut fixture, UtilityDef::Beacon { power_w: 1000. });
+        add(
+            &mut fixture,
+            UtilityDef::DirectoryTransmitter { power_w: 1000. },
+        );
         fixture.set_inventory(|i| i.energy_j = 200);
         step(&mut fixture);
         assert_eq!(
@@ -389,7 +447,7 @@ mod tests {
             fixture
                 .app
                 .world()
-                .get::<BeaconEmitter>(fixture.ship)
+                .get::<DirectoryEmitter>(fixture.ship)
                 .is_some()
         );
         fixture
@@ -412,7 +470,7 @@ mod tests {
             fixture
                 .app
                 .world()
-                .get::<BeaconEmitter>(fixture.ship)
+                .get::<DirectoryEmitter>(fixture.ship)
                 .is_none()
         );
         fixture.set_inventory(|i| i.energy_j = 200);
@@ -432,6 +490,68 @@ mod tests {
                 .unwrap()
                 .0,
             0.
+        );
+    }
+
+    #[test]
+    fn directory_and_navigation_hardware_fail_independently() {
+        let mut fixture = HardwareFixture::standard();
+        let directory = add(
+            &mut fixture,
+            UtilityDef::DirectoryTransmitter { power_w: 1000.0 },
+        );
+        add(
+            &mut fixture,
+            UtilityDef::NavigationBeacon { power_w: 1000.0 },
+        );
+        fixture.set_inventory(|inventory| inventory.energy_j = 1000);
+        step(&mut fixture);
+        assert!(
+            fixture
+                .app
+                .world()
+                .get::<DirectoryEmitter>(fixture.ship)
+                .is_some()
+        );
+        assert!(
+            fixture
+                .app
+                .world()
+                .get::<NavigationBeaconEmitter>(fixture.ship)
+                .is_some()
+        );
+
+        fixture
+            .app
+            .world_mut()
+            .get_mut::<Device>(directory)
+            .unwrap()
+            .0
+            .operational = false;
+        step(&mut fixture);
+        assert!(
+            fixture
+                .app
+                .world()
+                .get::<DirectoryEmitter>(fixture.ship)
+                .is_none()
+        );
+        assert!(
+            fixture
+                .app
+                .world()
+                .get::<NavigationBeaconEmitter>(fixture.ship)
+                .is_some()
+        );
+
+        fixture.set_inventory(|inventory| inventory.energy_j = 0);
+        step(&mut fixture);
+        assert!(
+            fixture
+                .app
+                .world()
+                .get::<NavigationBeaconEmitter>(fixture.ship)
+                .is_none()
         );
     }
 

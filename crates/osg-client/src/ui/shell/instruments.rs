@@ -12,7 +12,7 @@ pub(super) fn planning_progress(ui: &mut egui::Ui, travel: &travel::TravelState)
         return;
     };
     let label = match progress.stage {
-        travel::PlanningStage::LoadingCatalogue => "Loading gate catalogue",
+        travel::PlanningStage::LoadingCatalogue => "Loading navigation catalogue",
         travel::PlanningStage::BuildingGraph => "Building transfer graph",
         travel::PlanningStage::SearchingRoutes => "Comparing routes",
     };
@@ -78,7 +78,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
         "Fuel allowance: {:.0}%",
         ship.travel.preferences.fuel_fraction * 100.
     ));
-    ui.small("Change the preference in Gate Network and preview the destination to replan.");
+    ui.small("Change the preference in Navigation and preview the destination to replan.");
     fuel_budget(ui, model);
     ui.separator();
     ui.label(egui::RichText::new("Travel orders").color(ACCENT).strong());
@@ -103,7 +103,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                         egui::RichText::new(format!(
                             "{}  {}",
                             index + 1,
-                            order_label(&order.action, model.navigation, &model.celestial_systems)
+                            order_label(&order.action, model.navigation)
                         ))
                         .color(if index == ship.travel.order {
                             ACCENT
@@ -176,7 +176,6 @@ pub(super) fn order_name(order: &travel::Order) -> String {
         travel::Order::Guidance(guidance) => {
             format!("{:?} · {}", guidance.mode, distance(guidance.range_m))
         }
-        travel::Order::Jump(id) => format!("Jump via {}", short_id(*id)),
         travel::Order::TravelTo(travel::Destination::Beacon(id)) => {
             format!("Travel to beacon {}", short_id(*id))
         }
@@ -193,7 +192,8 @@ pub(super) fn order_name(order: &travel::Order) -> String {
                     reference: travel::Reference::Celestial(id),
                     ..
                 },
-        } => format!("Slip near celestial {}", short_id(*id)),
+            ..
+        } => format!("Slip near celestial {}", short_id(id.body)),
         travel::Order::Slip { .. } => "Slip transit".into(),
         travel::Order::Dock(id) => format!("Dock at {}", short_id(*id)),
         travel::Order::Undock => "Undock".into(),
@@ -201,22 +201,10 @@ pub(super) fn order_name(order: &travel::Order) -> String {
     }
 }
 
-pub(super) fn order_system(
-    order: &travel::Order,
-    navigation: &NavigationCatalogue,
-    celestial_systems: &std::collections::BTreeMap<Id, Id>,
-) -> Option<Id> {
+pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalogue) -> Option<Id> {
     use travel::{Destination, Order, Reference};
 
     let reference = match order {
-        Order::Jump(id) => {
-            let entry = navigation.beacons.iter().find(|b| b.id == *id)?;
-            return navigation
-                .beacons
-                .iter()
-                .find(|b| Some(b.id) == entry.gate_exit)
-                .map(|b| b.system);
-        }
         Order::TravelTo(Destination::Relative {
             reference: Reference::Celestial(id),
             ..
@@ -231,12 +219,14 @@ pub(super) fn order_system(
                     reference: Reference::Celestial(id),
                     ..
                 },
-        } => return celestial_systems.get(id).copied(),
+            ..
+        } => return Some(id.system),
         Order::Dock(id)
         | Order::TravelTo(Destination::Beacon(id))
         | Order::Sublight(Destination::Beacon(id))
         | Order::Slip {
             destination: Destination::Beacon(id),
+            ..
         }
         | Order::TravelTo(Destination::Relative {
             reference: Reference::Beacon(id),
@@ -252,6 +242,7 @@ pub(super) fn order_system(
                     reference: Reference::Beacon(id),
                     ..
                 },
+            ..
         } => Some(*id),
         _ => None,
     };
@@ -260,11 +251,12 @@ pub(super) fn order_system(
             .beacons
             .iter()
             .find(|b| b.id == id)
-            .map(|b| b.system);
+            .and_then(|b| b.systems.first().copied());
     }
     let position = match order {
         Order::Slip {
             destination: Destination::Galactic(destination),
+            ..
         }
         | Order::TravelTo(Destination::Galactic(destination))
         | Order::Sublight(Destination::Galactic(destination)) => *destination,
@@ -282,17 +274,12 @@ pub(super) fn order_system(
         .map(|system| system.id)
 }
 
-pub(super) fn order_label(
-    order: &travel::Order,
-    navigation: &NavigationCatalogue,
-    celestial_systems: &std::collections::BTreeMap<Id, Id>,
-) -> String {
+pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
     use travel::{Destination, Order};
 
-    let system = order_system(order, navigation, celestial_systems)
+    let system = order_system(order, navigation)
         .and_then(|id| navigation.systems.iter().find(|s| s.id == id));
     let action = match order {
-        Order::Jump(_) => "Gate",
         Order::Slip { .. } => "Slip",
         Order::Sublight(_) => "Transfer",
         Order::TravelTo(_) => "Travel",
@@ -302,7 +289,7 @@ pub(super) fn order_label(
         return format!("{action} · {}", system.name);
     }
     let reference = match order {
-        Order::Jump(id) | Order::Dock(id) | Order::TravelTo(Destination::Beacon(id)) => Some(*id),
+        Order::Dock(id) | Order::TravelTo(Destination::Beacon(id)) => Some(*id),
         _ => None,
     };
     if let Some(beacon) = reference.and_then(|id| navigation.beacons.iter().find(|b| b.id == id)) {
@@ -345,7 +332,6 @@ pub(super) fn itinerary(
     ui: &mut egui::Ui,
     state: &travel::TravelState,
     navigation: &NavigationCatalogue,
-    celestial_systems: &std::collections::BTreeMap<Id, Id>,
     now: u64,
 ) {
     let remaining = &state.orders[state.order.min(state.orders.len())..];
@@ -362,7 +348,6 @@ pub(super) fn itinerary(
     for (index, order) in remaining.iter().enumerate() {
         let current = index == 0;
         let color = match &order.action {
-            travel::Order::Jump(_) => egui::Color32::from_rgb(255, 199, 98),
             travel::Order::Slip { .. } => ACCENT,
             _ if current => TEXT,
             _ => MUTED,
@@ -382,7 +367,7 @@ pub(super) fn itinerary(
             let fill = if current { color } else { egui::Color32::TRANSPARENT };
             ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
 
-            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation, celestial_systems));
+            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation));
             ui.label(egui::RichText::new(name).size(12.).color(color));
             ui.label(
                 egui::RichText::new(eta_label(order, arrivals[index], now))

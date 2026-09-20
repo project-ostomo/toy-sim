@@ -27,7 +27,10 @@ pub enum UtilityDef {
         power_w: f64,
         active: bool,
     },
-    Beacon {
+    DirectoryTransmitter {
+        power_w: f64,
+    },
+    NavigationBeacon {
         power_w: f64,
     },
     Docking {
@@ -81,7 +84,10 @@ impl UtilityDef {
                     && max_radius_m > 0.;
             }
             Self::MissileLauncher { spec } => return spec.valid(),
-            Self::SlipDrive { power_w } | Self::Command { power_w } | Self::Beacon { power_w } => {
+            Self::SlipDrive { power_w }
+            | Self::Command { power_w }
+            | Self::DirectoryTransmitter { power_w }
+            | Self::NavigationBeacon { power_w } => {
                 vec![power_w]
             }
             Self::Sensor {

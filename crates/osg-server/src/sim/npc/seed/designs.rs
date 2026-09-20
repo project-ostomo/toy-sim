@@ -16,7 +16,7 @@ const PATROL_BLUEPRINT: &[u8] = include_bytes!(concat!(
 ));
 
 const STATION_HANGAR: u64 = 2;
-const STATION_BEACON: u64 = 4;
+const STATION_DIRECTORY_TRANSMITTER: u64 = 4;
 const STATION_REFINERY: u64 = 12;
 const STATION_CARGO_HANDLER: u64 = 17;
 
@@ -36,7 +36,7 @@ impl Designs {
 
         let mut service = base.clone();
         service.parts.retain(|part| part.id < STATION_REFINERY);
-        add_warehouse(&mut service, STATION_BEACON);
+        add_warehouse(&mut service, STATION_DIRECTORY_TRANSMITTER);
         add_launcher(&mut service, "left", "right");
 
         let mut defense = service.clone();
@@ -59,6 +59,18 @@ impl Designs {
             .find(|part| part.prototype == "storage")
             .context("NTR freighter base has no storage mount")?;
         cargo.prototype = "cargo_hold_4m".into();
+        freighter.attach("slipdrive_2m", 11, "bottom", "top", 0);
+        let water = freighter.parts[0]
+            .tanks
+            .iter_mut()
+            .find(|tank| tank.resource == "water")
+            .unwrap();
+        water.volume_m3 -= 0.5;
+        freighter.parts[0].tanks.push(Tank {
+            resource: "exotic_fuel".into(),
+            volume_m3: 0.5,
+            initial_fill: 0.0,
+        });
 
         let patrol = ShipBlueprint::from_bytes(PATROL_BLUEPRINT)?;
         let survey = expedition_patrol();
@@ -146,7 +158,7 @@ mod tests {
             for predicate in [
                 (|utility: &UtilityDef| matches!(utility, UtilityDef::Docking { .. }))
                     as fn(&UtilityDef) -> bool,
-                |utility| matches!(utility, UtilityDef::Beacon { .. }),
+                |utility| matches!(utility, UtilityDef::DirectoryTransmitter { .. }),
                 |utility| matches!(utility, UtilityDef::CargoHandler { .. }),
                 |utility| matches!(utility, UtilityDef::PowerCoupler { .. }),
                 |utility| matches!(utility, UtilityDef::Workshop { .. }),

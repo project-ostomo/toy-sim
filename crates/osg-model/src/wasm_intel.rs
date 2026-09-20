@@ -31,7 +31,6 @@ pub fn reply_fits(reply: &ProgramReply, capacity: wasm_world::ReplyCapacity) -> 
             beacons.iter().map(beacon_arena_bytes).sum(),
         ),
         ProgramReply::Orrery(bodies) => (bodies.len(), 0, 0),
-        ProgramReply::Navigation { gates, .. } => (gates.len(), 0, 0),
         ProgramReply::Route {
             status: routing::Status::Ready { plan },
             ..
@@ -170,12 +169,8 @@ pub fn encode_beacon(beacon: &Beacon, arena: &mut Vec<u8>) -> w::Beacon {
         radius_m: beacon.radius_m,
         owner: beacon.iff.owner.0,
         faction: beacon.iff.faction.unwrap_or(Id([0; 16])).0,
-        gate_exit: beacon.gate_exit.unwrap_or(Id([0; 16])).0,
         range_m: beacon.iff.range_m,
-        exclusion_m: beacon.exclusion_m,
-        flags: u32::from(beacon.iff.enabled)
-            | (u32::from(beacon.iff.faction.is_some()) << 1)
-            | (u32::from(beacon.gate_exit.is_some()) << 2),
+        flags: u32::from(beacon.iff.enabled) | (u32::from(beacon.iff.faction.is_some()) << 1),
         labels_offset,
         labels_count: beacon.iff.labels.len() as u32,
         bays_offset,
@@ -230,8 +225,6 @@ pub fn decode_beacon(record: &w::Beacon, arena: &[u8]) -> Result<Beacon, ()> {
         entity: Id(record.entity),
         pose: (&record.pose).into(),
         radius_m: record.radius_m,
-        gate_exit: (record.flags & 4 != 0).then_some(Id(record.gate_exit)),
-        exclusion_m: record.exclusion_m,
         iff: IffIdentity {
             owner: Id(record.owner),
             faction: (record.flags & 2 != 0).then_some(Id(record.faction)),
@@ -406,8 +399,6 @@ mod tests {
                     )
                 })
                 .collect(),
-            gate_exit: Some(Id([4; 16])),
-            exclusion_m: 1e6,
         };
         let mut arena = Vec::new();
         let record = encode_beacon(&beacon, &mut arena);
@@ -416,7 +407,6 @@ mod tests {
         let decoded = decode_beacon(&record, &arena).unwrap();
         assert_eq!(decoded.bays, beacon.bays);
         assert_eq!(decoded.iff, beacon.iff);
-        assert_eq!(decoded.gate_exit, beacon.gate_exit);
         assert!(decode_beacon(&record, &arena[..arena.len() - 1]).is_err());
     }
 

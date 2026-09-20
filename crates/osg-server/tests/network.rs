@@ -78,33 +78,28 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .unwrap()
         .unwrap();
     let own = initial_patrol(&first, account);
-    let catalogue_hash = first.presentation.navigation.catalogue.unwrap();
-    let catalogue_bytes =
-        tokio::time::timeout(Duration::from_secs(10), client.assets.fetch(catalogue_hash))
+    let (session_world, descriptor) = client.descriptor.borrow().clone().unwrap();
+    assert_eq!(session_world, first.world);
+    assert!(descriptor.epoch_mjd_utc.is_finite());
+    let directory_hash = first.presentation.navigation.directory.unwrap();
+    let directory_bytes =
+        tokio::time::timeout(Duration::from_secs(10), client.assets.fetch(directory_hash))
             .await
             .unwrap()
             .unwrap();
-    assert_eq!(*blake3::hash(&catalogue_bytes).as_bytes(), catalogue_hash);
-    let navigation = osg_protocol::navigation::decode_catalogue(&catalogue_bytes).unwrap();
-    let map = osg_universe::civilization::map();
-    assert_eq!(navigation.systems.len(), map.systems.len());
-    let mouths: std::collections::BTreeMap<_, _> = navigation
-        .beacons
-        .iter()
-        .filter_map(|beacon| beacon.gate_exit.map(|exit| (beacon.id, exit)))
-        .collect();
-    assert_eq!(mouths.len(), map.links.len() * 2);
-    assert!(first.presentation.navigation.beacons.len() < mouths.len());
+    assert_eq!(*blake3::hash(&directory_bytes).as_bytes(), directory_hash);
+    let directory = osg_protocol::navigation::decode_directory(&directory_bytes).unwrap();
+    assert!(!directory.systems.is_empty());
+    assert!(directory.systems.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(
-        mouths
+        first
+            .presentation
+            .navigation
+            .beacons
             .iter()
-            .all(|(entry, exit)| mouths.get(exit) == Some(entry))
+            .flat_map(|beacon| &beacon.systems)
+            .all(|system| directory.systems.binary_search(system).is_ok())
     );
-    assert!(navigation.systems.iter().all(|system| {
-        system
-            .sovereignty
-            .is_some_and(|id| first.society.directory.sovereignties.contains_key(&id))
-    }));
     let group = *first.tracks.keys().next().unwrap();
     let action = Id::new();
     client
@@ -140,10 +135,21 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         })
         .await
         .unwrap();
+    let mut last_display_state = None;
     let (observed, result) = tokio::time::timeout(Duration::from_secs(15), async {
         let mut result = None;
         loop {
             let frame = client.state.recv().await.unwrap();
+            last_display_state = Some((
+                frame.tick,
+                frame
+                    .presentation
+                    .ships
+                    .iter()
+                    .find(|item| item.ship == own.ship)
+                    .map(|item| item.computer.clone()),
+                frame.screens.clone(),
+            ));
             if let Some(received) = frame.results.iter().find(|result| result.id == action) {
                 assert!(result.is_none(), "command result delivered more than once");
                 result = Some(received.clone());
@@ -161,7 +167,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         }
     })
     .await
-    .unwrap();
+    .unwrap_or_else(|_| panic!("display publication stalled: {last_display_state:?}"));
     assert!(result.error.is_none());
     assert_eq!(observed.views.len(), 1);
     assert_eq!(observed.screens.len(), 1);
@@ -334,6 +340,7 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
         };
         assert_ne!(reset.ships[0].ship, first.ships[0].ship);
         assert!(reset.views.is_empty());
+        assert_eq!(client.descriptor.borrow().as_ref().unwrap().0, reset.world);
 
         let stale_action = Id::new();
         client
@@ -1052,9 +1059,19 @@ async fn process_restart_restores_running_world_and_advances_real_calendar() {
         assert_eq!(restored.unit_volume_m3, saved.unit_volume_m3);
         assert!(restored.amount_kg <= restored.capacity_kg);
     }
+    let mut last_restart_state = None;
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let frame = client.state.recv().await.unwrap();
+            last_restart_state = Some((
+                frame.tick,
+                frame
+                    .presentation
+                    .ships
+                    .iter()
+                    .find(|item| item.ship == ship)
+                    .map(|item| item.computer.clone()),
+            ));
             if frame.tick > saved.tick + 20
                 && frame.presentation.ships.iter().any(|item| {
                     item.ship == ship && matches!(item.computer, ComputerStatus::Running { .. })
@@ -1065,7 +1082,12 @@ async fn process_restart_restores_running_world_and_advances_real_calendar() {
         }
     })
     .await
-    .expect("restored world stopped advancing or its computer did not boot");
+    .unwrap_or_else(|_| {
+        panic!(
+            "restored world stalled: saved_tick={}, latest={last_restart_state:?}",
+            saved.tick
+        )
+    });
     drop(client);
     server.shutdown().await;
 }

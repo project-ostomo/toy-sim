@@ -59,7 +59,11 @@ pub fn populate(world: &mut World) -> Result<()> {
 
     for (index, profile) in organizations::catalogue().iter().enumerate() {
         let organization = Id(profile.id());
-        let home = registry::system_identity(&profile.home_system);
+        let home = Id(world
+            .resource::<registry::UniverseRegistry>()
+            .universe
+            .system_id_for_name(&profile.home_system)
+            .context("NPC home system missing")?);
         let slot = home_counts.entry(home).or_default();
         let local_slot = *slot;
         *slot += 1;
@@ -111,7 +115,6 @@ pub fn populate(world: &mut World) -> Result<()> {
                 &catalogue,
             )?;
             world.entity_mut(entity).insert((
-                identity::BeaconEmitter,
                 infrastructure::Landmark {
                     system: home,
                     name: format!("{} Terminal", profile.name),
@@ -201,6 +204,13 @@ pub fn populate(world: &mut World) -> Result<()> {
     world
         .run_system_once(hardware::initialize)
         .map_err(|error| anyhow::anyhow!("initialize NPC hardware: {error:?}"))?;
+    for record in &new_records {
+        for asset in &record.assets {
+            let entity = identity::lookup(world, asset.id)?;
+            vessel::seed_exotic_fuel(world, entity, 300.0)?;
+        }
+    }
+    hardware::utilities::refresh_emitters(world);
     for (entity, profile) in pending_stock {
         stock_facility(world, entity, profile, &catalogue)?;
     }
@@ -467,7 +477,7 @@ fn stock_facility(
         .0
         .capacity_m3;
 
-    let stacks = if profile.roles.contains(&OrganizationRole::Industry) {
+    let mut stacks = if profile.roles.contains(&OrganizationRole::Industry) {
         osg_ships::industry::starter_stock(catalogue)?
     } else {
         [
@@ -483,6 +493,10 @@ fn stock_facility(
         })
         .collect()
     };
+    stacks.push(osg_model::industry::ItemStack {
+        item: CargoItem::Resource("exotic_fuel".into()),
+        quantity: 10_000_000,
+    });
 
     let mut inventory = world.get_mut::<hardware::ShipInventory>(entity).unwrap();
     for stack in stacks {
@@ -496,55 +510,33 @@ fn stock_facility(
 }
 
 fn anchors(world: &mut World) -> Result<BTreeMap<Id, (PreciseTransform, DVec3)>> {
-    let mut gates = world
+    let mut installations = world
         .query_filtered::<(
             &identity::Identity,
             &infrastructure::Landmark,
             &PreciseTransform,
             &Velocity,
-        ), With<travel::Gate>>()
+        ), With<identity::NavigationBeaconEmitter>>()
         .iter(world)
         .map(|(id, landmark, pose, velocity)| (id.0, landmark.system, *pose, velocity.0))
         .collect::<Vec<_>>();
-    gates.sort_unstable_by_key(|gate| gate.0);
+    installations.sort_unstable_by_key(|installation| installation.0);
 
     let mut result = BTreeMap::new();
-    for (_, system, pose, velocity) in gates {
+    for (_, system, pose, velocity) in installations {
         result.entry(system).or_insert((pose, velocity));
     }
     let universe = world.resource::<crate::sim::orrery::Universe>();
     let epoch = crate::sim::physics::sim_time(world.resource::<Time<Fixed>>());
     for profile in organizations::catalogue() {
-        let home = registry::system_identity(&profile.home_system);
+        let home = Id(universe
+            .system_id_for_name(&profile.home_system)
+            .with_context(|| format!("unknown NPC home system: {}", profile.home_system))?);
         if result.contains_key(&home) {
             continue;
         }
-        let system = universe
-            .systems
-            .iter()
-            .find(|system| system.solver.name.as_str() == profile.home_system)
-            .with_context(|| format!("unknown NPC home system: {}", profile.home_system))?;
-        let (reference, radius) = infrastructure::gate_reference(system);
-        let body = universe
-            .get_body(reference)
-            .context("NPC orbital reference missing")?;
-        let centre = universe
-            .solve_position(reference, epoch)
-            .context("NPC orbital reference position unavailable")?;
-        let velocity = universe
-            .solve_velocity(reference, epoch)
-            .context("NPC orbital reference velocity unavailable")?;
-        let speed = (crate::sim::physics::GRAVITATIONAL_CONSTANT * body.mass / radius).sqrt();
-        result.insert(
-            home,
-            (
-                PreciseTransform {
-                    translation_um: centre.offset_by(DVec3::X * radius),
-                    ..Default::default()
-                },
-                velocity + DVec3::Y * speed,
-            ),
-        );
+        let system = universe.resolve(home.0)?;
+        result.insert(home, infrastructure::installation_frame(&system, epoch)?);
     }
     Ok(result)
 }

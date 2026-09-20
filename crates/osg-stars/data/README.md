@@ -6,7 +6,7 @@ This directory holds the star catalogue that `osg-stars` embeds with `include_by
 
 | File | Git-ignored | Description |
 | --- | --- | --- |
-| `gaia-dr3-earth-million.stars` | no | Binary `TOYSTAR` catalogue with 1,000,000 records. `StarCatalogue::embedded()` decodes it. |
+| `gaia-dr3-earth-million.stars` | no | Binary `OSGSTAR` version 2 catalogue with 1,000,000 records. `StarCatalogue::embedded()` decodes it. |
 | `gaia-dr3-earth-million.stars.json` | no | Metadata written by the importer: format version, namespace, frame, units, origin, parallax SNR threshold, calibration note, input files and row counts. |
 | `gaia-dr3-earth-million.adql` | no | The ADQL query used for the download. |
 | `gaia-dr3-earth-million.csv` | yes | Downloaded source rows. `.gitignore` excludes `*.csv` and `*.csv.gz` in this directory. The build does not need this file. |
@@ -16,7 +16,7 @@ The recorded metadata for the embedded catalogue:
 - frame: ICRS Cartesian, fixed J2016.0
 - units: integer micrometres, origin `[0, 0, 0]`
 - minimum parallax SNR: 10
-- calibration: G magnitude used as visual magnitude, approximate RGB from temperature, spectral class or BP−RP, no extinction correction
+- calibration: G magnitude used as visual magnitude; measured temperature where supplied, otherwise an approximate spectral-class or BP−RP temperature; 5772 K fallback; no extinction correction
 - input rows 1,000,000, stars 1,000,000, rejected 0, duplicates 0
 
 The query selects the 1,000,000 brightest Gaia DR3 sources with `phot_g_mean_mag < 12` and `parallax_over_error > 10`, ordered by G magnitude and then source ID:

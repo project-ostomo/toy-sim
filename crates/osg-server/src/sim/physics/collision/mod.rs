@@ -1,6 +1,5 @@
 //! Time-ordered, dissipative contacts. Swept spatial hashes find candidates;
 mod ecs;
-mod gates;
 #[cfg(test)]
 mod solver_tests;
 pub mod weapons;
@@ -322,7 +321,6 @@ enum Kind {
     },
     Contact(Hit),
     Thermal(usize),
-    Gate(usize),
 }
 
 #[derive(Clone, Copy)]
@@ -567,7 +565,6 @@ fn record_motion(body: &Body, t: f64, report: &mut Report) {
 
 #[derive(Default)]
 pub struct Report {
-    pub gate_transfers: Vec<(Entity, Entity)>,
     pub shots: Vec<weapons::ShotEvent>,
     pub beams: Vec<weapons::BeamEvent>,
     pub beam_hits: Vec<weapons::BeamHit>,
@@ -653,7 +650,6 @@ fn record_deaths(body: &mut Body, t: f64, report: &mut Report) {
 pub struct SolverWorkspace {
     pub weapons: std::collections::BTreeMap<Entity, weapons::WeaponShip>,
     pub time_s: f64,
-    gates: Vec<gates::Mouth>,
     index: SweptIndex,
 }
 
@@ -837,9 +833,6 @@ pub fn simulate_with_workspace(
         );
     report.detailed = detailed;
     for (id, body) in bodies.iter().enumerate() {
-        if let Some(event) = gates::predict(id, body, &workspace.gates, end) {
-            events.push(event);
-        }
         if let Some(event) = thermal_event(id, body, end) {
             events.push(event);
         }
@@ -848,9 +841,15 @@ pub fn simulate_with_workspace(
         for (member, m) in body.members.iter().enumerate() {
             if let Some(ship) = workspace.weapons.get(&m.entity) {
                 for weapon in 0..ship.weapons.len() {
-                    if let Some(event) =
-                        weapons::next_event(id, member, weapon, ship, workspace.time_s, 0.0, end)
-                    {
+                    if let Some(event) = weapons::next_event(
+                        id,
+                        member,
+                        weapon,
+                        ship,
+                        workspace.time_s,
+                        body.time,
+                        end,
+                    ) {
                         events.push(event);
                     }
                 }
@@ -922,15 +921,6 @@ pub fn simulate_with_workspace(
                 let (left, right) = bodies.split_at_mut(event.b);
                 resolve(&mut left[event.a], &mut right[0], hit, event.t, &mut report);
             }
-            Kind::Gate(mouth) => {
-                gates::cross(
-                    bodies,
-                    event.a,
-                    &workspace.gates[mouth],
-                    event.t,
-                    &mut report,
-                );
-            }
             Kind::Thermal(member) => {
                 let b = &mut bodies[event.a];
                 record_motion(b, event.t, &mut report);
@@ -955,9 +945,6 @@ pub fn simulate_with_workspace(
         for &id in &changed {
             if !bodies[id].alive() {
                 continue;
-            }
-            if let Some(event) = gates::predict(id, &bodies[id], &workspace.gates, end) {
-                events.push(event);
             }
             if let Some(event) = thermal_event(id, &bodies[id], end) {
                 events.push(event);
@@ -1026,22 +1013,24 @@ pub fn activate(bodies: &mut [Body]) {
         return;
     }
 
+    let last_start = bodies.iter().map(|body| body.time).fold(0.0, f64::max);
     let proxies: Vec<_> = bodies
         .iter()
         .enumerate()
         .filter(|(_, b)| b.alive())
-        .map(|(i, b)| b.proxy(i, 0.0))
+        .map(|(i, b)| b.proxy(i, last_start))
         .collect();
     let index = SweptIndex::build(&proxies);
     for (a, member) in pending {
         let anchor = bodies[a].position;
+        let start = bodies[a].time;
         let radius = bodies[a].collision_radius(member, true);
         let blocked = index
-            .neighbors(bodies[a].proxy(a, 0.0))
+            .neighbors(bodies[a].proxy(a, start))
             .into_iter()
             .any(|b| {
                 let b = &bodies[b as usize];
-                if b.launch_owner == Some(bodies[a].members[member].entity) {
+                if b.time > start || b.launch_owner == Some(bodies[a].members[member].entity) {
                     return false;
                 }
                 b.members
@@ -1049,7 +1038,10 @@ pub fn activate(bodies: &mut [Body]) {
                     .enumerate()
                     .filter(|(_, m)| !m.destroyed)
                     .any(|(mb, m)| {
-                        b.position.relative_to(anchor).length_squared()
+                        b.position
+                            .offset_by(b.velocity * (start - b.time))
+                            .relative_to(anchor)
+                            .length_squared()
                             < (radius + b.collision_radius(mb, m.shielded())).powi(2)
                     })
             });

@@ -1,9 +1,11 @@
+key = "authored/helion"
 name = "Helion system"
 # Fixed galactic anchor, in integer micrometres.
 position_um = ["0", "0", "0"]
 
 # Orbital angles are radians; epochs are in MJD.
 [[bodies]]
+key = "body/1"
 name = "Helion"
 class = "star"
 lumens = 3.6e28
@@ -12,6 +14,7 @@ radius = "696000 km"
 rotation_period = "25 d"
 
 [[bodies]]
+key = "body/2"
 name = "Helion I Neris"
 class = "planet"
 parent = "Helion"
@@ -53,6 +56,7 @@ ground_albedo = [0.38, 0.31, 0.24]
 
 
 [[bodies]]
+key = "body/3"
 name = "Helion I a Ione"
 class = "planet"
 parent = "Helion I Neris"
@@ -79,6 +83,7 @@ biosphere = false
 
 
 [[bodies]]
+key = "body/4"
 name = "Helion I b Cinder"
 class = "planet"
 parent = "Helion I Neris"
@@ -105,6 +110,7 @@ biosphere = false
 
 
 [[bodies]]
+key = "body/5"
 name = "Helion I c Vela"
 class = "planet"
 parent = "Helion I Neris"
@@ -131,6 +137,7 @@ biosphere = false
 
 
 [[bodies]]
+key = "body/6"
 name = "Helion I d Rime"
 class = "planet"
 parent = "Helion I Neris"
@@ -157,6 +164,7 @@ biosphere = false
 
 
 [[bodies]]
+key = "body/7"
 name = "Helion I e Orin"
 class = "planet"
 parent = "Helion I Neris"

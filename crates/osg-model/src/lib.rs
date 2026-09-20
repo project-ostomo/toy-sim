@@ -5,7 +5,6 @@ pub mod firmware;
 pub mod industry;
 pub mod llm;
 pub mod local_space;
-pub mod navigation;
 pub mod optical;
 pub mod ownership;
 pub mod presentation;
@@ -280,6 +279,11 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
+    RouteCancel {
+        ship: EntityId,
+        authority_revision: u64,
+        id: u64,
+    },
     RouteRequest {
         ship: EntityId,
         authority_revision: u64,
@@ -393,16 +397,13 @@ pub enum ProgramQuery {
     RoutePoll {
         id: u64,
     },
-    Navigation {
-        after: Option<EntityId>,
-        limit: u16,
-        reference: GalacticPosition,
-    },
     SlipEligibility {
         origin: GalacticPosition,
         destination: GalacticPosition,
         departure_after_seconds: f64,
         arrival_after_seconds: f64,
+        speed_ly_s: f64,
+        navigation_beacon: Option<EntityId>,
     },
     Travel,
     Contact(ContactRef),
@@ -423,24 +424,12 @@ pub enum ProgramQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct NavigationGate {
-    pub entity: EntityId,
-    pub system: EntityId,
-    pub pose: Pose,
-    pub exit: EntityId,
-    pub staging: GalacticPosition,
-    pub slip_ready: bool,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Beacon {
     pub radius_m: f64,
     pub entity: EntityId,
     pub pose: Pose,
     pub iff: IffIdentity,
     pub bays: BTreeMap<u32, Pose>,
-    pub gate_exit: Option<EntityId>,
-    pub exclusion_m: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -449,10 +438,6 @@ pub enum ProgramReply {
     Route {
         id: u64,
         status: routing::Status,
-    },
-    Navigation {
-        revision: u64,
-        gates: Vec<NavigationGate>,
     },
     Contact {
         pose: Pose,
@@ -500,6 +485,8 @@ pub enum ProgramAction {
         revision: u64,
         order: usize,
         destination: GalacticPosition,
+        speed_ly_s: f64,
+        navigation_beacon: Option<EntityId>,
     },
     ReserveBay {
         revision: u64,

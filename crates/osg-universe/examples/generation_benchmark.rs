@@ -1,19 +1,18 @@
-use osg_universe::{bundled_configs, civilization, orrery_cfg::BodyClass, universe::Universe};
+use osg_universe::{civilization, orrery_cfg::BodyClass, universe::Universe};
 use std::collections::BTreeMap;
 use std::time::Instant;
 
 fn main() {
     let start = Instant::now();
-    let map = civilization::map();
+    let universe = Universe::bundled().expect("valid universe catalogue");
     println!(
-        "map: systems={} links={} elapsed_ms={:.2}",
-        map.systems.len(),
-        map.links.len(),
+        "catalogue: systems={} generated={} elapsed_ms={:.2}",
+        universe.systems.len(),
+        universe.cached_definitions(),
         start.elapsed().as_secs_f64() * 1000.0
     );
 
     let start = Instant::now();
-    let configs = bundled_configs().expect("valid inhabited systems");
     let mut classes = BTreeMap::new();
     let mut atmospheres = 0;
     let mut bodies = 0;
@@ -22,8 +21,10 @@ fn main() {
     let mut minimum_fraction = f64::INFINITY;
     let mut maximum_fraction = 0.0_f64;
     let mut maximum_optical_depth = 0.0_f64;
-    for config in &configs {
-        for body in &config.bodies {
+    for settlement in &civilization::map().systems {
+        let id = universe.system_id_for_name(&settlement.name).unwrap();
+        let definition = universe.resolve(id).expect("valid initial settlement");
+        for body in definition.solver.iter() {
             bodies += 1;
             atmospheres += usize::from(body.atmosphere.is_some());
             if let Some(atmosphere) = &body.atmosphere {
@@ -61,11 +62,9 @@ fn main() {
     println!(
         "atmosphere bounds: height_m={minimum_height:.1}..{maximum_height:.1} height/radius={minimum_fraction:.6}..{maximum_fraction:.6} maximum_blue_optical_depth={maximum_optical_depth:.2}"
     );
-    let start = Instant::now();
-    let universe = Universe::from_configs(configs, 1e-8).expect("consistent universe");
     println!(
-        "solvers+spatial index: physical_bodies={} elapsed_ms={:.2}",
-        universe.iter().count(),
-        start.elapsed().as_secs_f64() * 1000.0
+        "resolved settlement systems={} retained_definitions={}",
+        civilization::map().systems.len(),
+        universe.cached_definitions()
     );
 }

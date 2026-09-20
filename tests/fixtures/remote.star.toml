@@ -1,7 +1,9 @@
+key = "authored/remote"
 name = "Remote system"
 position_um = ["61713551629827340000000", "0", "0"]
 
 [[bodies]]
+key = "body/1"
 name = "Remote"
 class = "star"
 lumens = 3.6e28
@@ -9,6 +11,7 @@ mass = "1 massSol"
 radius = "696000 km"
 
 [[bodies]]
+key = "body/2"
 name = "Remote I"
 class = "planet"
 parent = "Remote"

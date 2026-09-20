@@ -45,21 +45,35 @@ mod barrage {
         let dt = 1.0 / crate::sim::simulation::TICK_RATE_HZ;
         let last_tick = (30.0 / dt).round() as usize;
         let sources: Vec<_> = universe
-            .iter()
-            .filter(|body| universe.gravity_applies(&body.name, player))
+            .containing_segment(player, DVec3::ZERO)
+            .into_iter()
+            .flat_map(|index| {
+                let definition = universe.resolve_index(index).unwrap();
+                definition
+                    .solver
+                    .iter()
+                    .filter(|body| {
+                        !matches!(
+                            body.class_params,
+                            osg_universe::orrery_cfg::BodyClass::Barycenter
+                        )
+                    })
+                    .map(|body| (definition.body_id(&body.name).unwrap(), body.mass))
+                    .collect::<Vec<_>>()
+            })
             .collect();
         let gravity: Vec<Vec<_>> = (0..last_tick)
             .map(|tick| {
                 let time = epoch + hifitime::Duration::from_seconds(tick as f64 * dt);
                 sources
                     .iter()
-                    .map(|body| {
+                    .map(|&(reference, mass)| {
                         (
                             universe
-                                .solve_position(&body.name, time)
+                                .solve_position(reference, time)
                                 .unwrap()
                                 .relative_to(player),
-                            crate::sim::physics::GRAVITATIONAL_CONSTANT * body.mass,
+                            crate::sim::physics::GRAVITATIONAL_CONSTANT * mass,
                         )
                     })
                     .collect()
@@ -143,7 +157,8 @@ impl InitialScenario {
 
     pub fn validate(&self, universe: &crate::sim::orrery::Universe) -> anyhow::Result<()> {
         let body = universe
-            .get_body(self.body)
+            .authored_body(self.body)
+            .and_then(|reference| universe.body(reference))
             .ok_or_else(|| anyhow::anyhow!("unknown starting body {}", self.body))?;
         self.relative_state(body.radius, body.mass)?;
         let atmosphere_height = body.atmosphere.as_ref().map_or(0.0, |a| a.height);
@@ -182,15 +197,14 @@ impl InitialScenario {
         universe: &crate::sim::orrery::Universe,
         epoch: hifitime::Epoch,
     ) -> anyhow::Result<(DVec3, DVec3)> {
-        let body = universe
-            .get_body(self.body)
+        let reference = universe
+            .authored_body(self.body)
             .ok_or_else(|| anyhow::anyhow!("starting body unavailable"))?;
-        let system = universe
-            .system_for(self.body)
-            .ok_or_else(|| anyhow::anyhow!("starting system unavailable"))?;
-        let star = &universe.systems[system].star_name;
+        let body = universe.body(reference).expect("starting body");
+        let system = universe.resolve(reference.system)?;
+        let star = system.body_id(&system.star_name).expect("system star");
         let planet_position = universe
-            .solve_position(self.body, epoch)
+            .solve_position(reference, epoch)
             .ok_or_else(|| anyhow::anyhow!("starting planet ephemeris unavailable"))?;
         let star_position = universe
             .solve_position(star, epoch)
@@ -263,14 +277,16 @@ mod tests {
     fn initial_orbit_stays_on_the_dayside_with_circular_tangential_velocity() {
         let universe = crate::sim::orrery::Universe::init(osg_universe::example_config()).unwrap();
         let scenario = &INITIAL_SCENARIO;
-        let body = universe.get_body(scenario.body).unwrap();
-        let system = universe.system_for(scenario.body).unwrap();
-        let star_name = &universe.systems[system].star_name;
+        let reference = universe.authored_body(scenario.body).unwrap();
+        let body = universe.body(reference).unwrap();
+        let system = universe.resolve(reference.system).unwrap();
+        let star_name = &system.star_name;
+        let star_reference = system.body_id(star_name).unwrap();
         for days in [0., 1., 1234.] {
             let epoch = hifitime::Epoch::from_mjd_utc(days);
             let (offset, velocity) = scenario.sunlit_state(&universe, epoch).unwrap();
-            let planet = universe.solve_position(scenario.body, epoch).unwrap();
-            let star = universe.solve_position(star_name, epoch).unwrap();
+            let planet = universe.solve_position(reference, epoch).unwrap();
+            let star = universe.solve_position(star_reference, epoch).unwrap();
             let ship = planet.offset_by(offset);
             let sunward = star.relative_to(planet).normalize();
             let radius = body.radius + scenario.altitude;
@@ -281,8 +297,8 @@ mod tests {
             assert!((velocity.length() - expected_speed).abs() < 1e-9);
             assert!(offset.normalize().dot(sunward) > 1. - 1e-12);
             assert!(offset.normalize().dot(velocity.normalize()).abs() < 1e-12);
-            for occluder in universe.iter().filter(|body| &body.name != star_name) {
-                let center = universe.solve_position(&occluder.name, epoch).unwrap();
+            for occluder in system.solver.iter().filter(|body| &body.name != star_name) {
+                let center = system.solver.solve_position(&occluder.name, epoch).unwrap();
                 assert!(
                     !crate::sim::spatial::sphere_blocks(
                         star.relative_to(ship),

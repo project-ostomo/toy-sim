@@ -1,21 +1,15 @@
 use super::*;
 use crate::state::{NavigationStatus, SessionInfo};
 use bevy::asset::io::memory::{Dir, MemoryAssetReader};
-use osg_model::{GalacticPosition, NavigationCatalogue, NavigationSystem};
 use std::time::{Duration, Instant};
 
-fn catalogue(name: &str) -> ([u8; 32], Vec<u8>) {
-    let catalogue = NavigationCatalogue {
-        topology_revision: 1,
-        systems: vec![NavigationSystem {
-            id: Id([1; 16]),
-            name: name.into(),
-            position: GalacticPosition::ZERO,
-            sovereignty: None,
-        }],
-        beacons: Vec::new(),
+fn catalogue(index: usize) -> ([u8; 32], Vec<u8>) {
+    let universe = crate::ui::celestials::shared_universe().unwrap();
+    let catalogue = osg_model::InhabitedDirectory {
+        systems: vec![Id(universe.systems[index].id)],
+        ..Default::default()
     };
-    let bytes = osg_protocol::navigation::encode_catalogue(&catalogue).unwrap();
+    let bytes = osg_protocol::navigation::encode_directory(&catalogue).unwrap();
     (*blake3::hash(&bytes).as_bytes(), bytes)
 }
 
@@ -58,8 +52,8 @@ fn wait(app: &mut App, predicate: impl Fn(&World) -> bool) {
 #[test]
 fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded_map() {
     let (mut app, directory) = app();
-    let (first_hash, first_bytes) = catalogue("Old map");
-    let (second_hash, second_bytes) = catalogue("Current map");
+    let (first_hash, first_bytes) = catalogue(0);
+    let (second_hash, second_bytes) = catalogue(1);
     app.world_mut()
         .resource_mut::<SessionInfo>()
         .navigation_hash = Some(first_hash);
@@ -77,7 +71,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     assert!(
         app.world()
             .resource::<SessionInfo>()
-            .navigation
+            .inhabited
             .systems
             .is_empty()
     );
@@ -92,7 +86,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     assert!(
         app.world()
             .resource::<SessionInfo>()
-            .navigation
+            .inhabited
             .systems
             .is_empty()
     );
@@ -100,12 +94,15 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     wait(&mut app, |world| {
         world.resource::<SessionInfo>().navigation_status == NavigationStatus::Ready
     });
-    let installed = app.world().resource::<SessionInfo>().navigation.clone();
-    assert_eq!(installed.systems[0].name, "Current map");
+    let installed = app.world().resource::<SessionInfo>().inhabited.clone();
+    assert_eq!(
+        installed.systems[0],
+        Id(crate::ui::celestials::shared_universe().unwrap().systems[1].id)
+    );
     app.update();
     assert!(std::sync::Arc::ptr_eq(
         &installed,
-        &app.world().resource::<SessionInfo>().navigation
+        &app.world().resource::<SessionInfo>().inhabited
     ));
 
     *app.world_mut().resource_mut::<SessionInfo>() = SessionInfo {
@@ -116,7 +113,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     assert!(
         app.world()
             .resource::<SessionInfo>()
-            .navigation
+            .inhabited
             .systems
             .is_empty()
     );
@@ -129,7 +126,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
 #[test]
 fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
     let (mut app, directory) = app();
-    let (hash, bytes) = catalogue("Recovered map");
+    let (hash, bytes) = catalogue(0);
     deliver(&app, &directory, hash, vec![0xff]);
     app.world_mut()
         .resource_mut::<SessionInfo>()
@@ -143,7 +140,7 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
     assert!(
         app.world()
             .resource::<SessionInfo>()
-            .navigation
+            .inhabited
             .systems
             .is_empty()
     );
@@ -152,9 +149,46 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
         world.resource::<SessionInfo>().navigation_status == NavigationStatus::Ready
     });
     assert_eq!(
-        app.world().resource::<SessionInfo>().navigation.systems[0].name,
-        "Recovered map"
+        app.world().resource::<SessionInfo>().inhabited.systems[0],
+        Id(crate::ui::celestials::shared_universe().unwrap().systems[0].id)
     );
+}
+
+#[test]
+fn ownership_only_directory_replacement_updates_and_clears_map_sovereignty() {
+    let (mut app, storage) = app();
+    let universe = crate::ui::celestials::shared_universe().unwrap();
+    let system = Id(universe.systems[0].id);
+    let sovereignty = Id([77; 16]);
+    let mut directory = osg_model::InhabitedDirectory {
+        systems: vec![system],
+        ownership: [(system, sovereignty)].into(),
+        sovereignties: [(
+            sovereignty,
+            osg_model::PublicSovereignty {
+                id: sovereignty,
+                name: "Test sovereignty".into(),
+                bloc: Default::default(),
+            },
+        )]
+        .into(),
+    };
+    for expected in [Some(sovereignty), None] {
+        if expected.is_none() {
+            directory.ownership.clear();
+        }
+        let bytes = osg_protocol::navigation::encode_directory(&directory).unwrap();
+        let hash = *blake3::hash(&bytes).as_bytes();
+        deliver(&app, &storage, hash, bytes);
+        app.world_mut()
+            .resource_mut::<SessionInfo>()
+            .navigation_hash = Some(hash);
+        wait(&mut app, |world| {
+            let info = world.resource::<SessionInfo>();
+            info.navigation_status == NavigationStatus::Ready
+                && info.navigation.systems[0].sovereignty == expected
+        });
+    }
 }
 
 #[test]

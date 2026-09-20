@@ -1,8 +1,10 @@
+key = "authored/sol"
 # Orbital and rotation angles are radians; epochs are MJD.
 name = "Sol"
 position_um = ["37842920000000000000000", "0", "0"]
 
 [[bodies]]
+key = "body/1"
 name = "Sun"
 class = "star"
 lumens = 3.6e28
@@ -13,6 +15,7 @@ obliquity = 0.1265363707695889
 rotation_epoch = 51544.5
 
 [[bodies]]
+key = "body/2"
 name = "Mercury"
 class = "planet"
 parent = "Sun"
@@ -46,6 +49,7 @@ biosphere = false
 
 
 [[bodies]]
+key = "body/3"
 name = "Venus"
 class = "planet"
 parent = "Sun"
@@ -93,6 +97,7 @@ ground_albedo = [0.45, 0.32, 0.18]
 
 
 [[bodies]]
+key = "body/4"
 name = "Earth"
 class = "planet"
 parent = "Sun"
@@ -140,6 +145,7 @@ ground_albedo = [0.3, 0.24, 0.16]
 
 
 [[bodies]]
+key = "body/5"
 name = "Mars"
 class = "planet"
 parent = "Sun"
@@ -187,6 +193,7 @@ ground_albedo = [0.5, 0.24, 0.12]
 
 
 [[bodies]]
+key = "body/6"
 name = "Jupiter"
 class = "planet"
 parent = "Sun"
@@ -234,6 +241,7 @@ ground_albedo = [0.62, 0.49, 0.34]
 
 
 [[bodies]]
+key = "body/7"
 name = "Saturn"
 class = "planet"
 parent = "Sun"
@@ -281,6 +289,7 @@ ground_albedo = [0.67, 0.57, 0.38]
 
 
 [[bodies]]
+key = "body/8"
 name = "Uranus"
 class = "planet"
 parent = "Sun"
@@ -328,6 +337,7 @@ ground_albedo = [0.23, 0.5, 0.54]
 
 
 [[bodies]]
+key = "body/9"
 name = "Neptune"
 class = "planet"
 parent = "Sun"

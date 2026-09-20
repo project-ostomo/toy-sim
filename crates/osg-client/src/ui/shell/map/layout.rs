@@ -1,18 +1,21 @@
 use super::*;
-use osg_model::navigation::GateNetwork;
 use osg_universe::civilization::LIGHT_YEAR_M;
 use std::collections::BTreeMap;
 
 #[derive(Default)]
 pub(super) struct Cache {
     revision: Option<u64>,
-    pub network: GateNetwork,
     pub systems: BTreeMap<Id, usize>,
     pub beacons: BTreeMap<Id, usize>,
     pub positions: Vec<glam::DVec3>,
     pub names: Vec<String>,
-    pub links: Vec<(usize, usize, Id, Id)>,
     pub bounds: glam::DVec3,
+    pub tree: spatial::Tree,
+    pub inhabited_tree: spatial::Tree,
+    inhabited: Option<std::sync::Arc<osg_model::InhabitedDirectory>>,
+    origin: GalacticPosition,
+    center: glam::DVec3,
+    catalogue_storage: Option<(usize, usize, Option<Id>, Option<Id>)>,
 }
 
 impl Cache {
@@ -21,49 +24,40 @@ impl Cache {
             return false;
         }
         self.revision = Some(catalogue.topology_revision);
-        self.network = GateNetwork::from_catalogue(catalogue);
-        self.systems = catalogue
-            .systems
-            .iter()
-            .enumerate()
-            .map(|(i, s)| (s.id, i))
-            .collect();
         self.beacons = catalogue
             .beacons
             .iter()
             .enumerate()
             .map(|(i, b)| (b.id, i))
             .collect();
+        let storage = (
+            catalogue.systems.as_ptr() as usize,
+            catalogue.systems.len(),
+            catalogue.systems.first().map(|s| s.id),
+            catalogue.systems.last().map(|s| s.id),
+        );
+        if self.catalogue_storage == Some(storage) {
+            return true;
+        }
+        self.catalogue_storage = Some(storage);
+        self.inhabited = None;
+        self.systems = catalogue
+            .systems
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.id, i))
+            .collect();
         self.names = catalogue
             .systems
             .iter()
             .map(|system| system.name.to_lowercase())
             .collect();
-        self.links.clear();
-        for beacon in &catalogue.beacons {
-            let Some(exit) = beacon
-                .gate_exit
-                .and_then(|id| self.beacons.get(&id))
-                .map(|&index| &catalogue.beacons[index])
-            else {
-                continue;
-            };
-            if beacon.id > exit.id || exit.gate_exit != Some(beacon.id) {
-                continue;
-            }
-            if let Some((&a, &b)) = self
-                .systems
-                .get(&beacon.system)
-                .zip(self.systems.get(&exit.system))
-            {
-                self.links.push((a, b, beacon.id, exit.id));
-            }
-        }
         let anchor = self
             .systems
             .first_key_value()
             .map(|(_, &index)| catalogue.systems[index].position)
             .unwrap_or_default();
+        self.origin = anchor;
         self.positions = catalogue
             .systems
             .iter()
@@ -71,6 +65,8 @@ impl Cache {
             .collect();
         if self.positions.is_empty() {
             self.bounds = glam::DVec3::ONE;
+            self.center = glam::DVec3::ZERO;
+            self.tree = spatial::Tree::default();
             return true;
         }
         let (lo, hi) = self.positions.iter().fold(
@@ -81,14 +77,46 @@ impl Cache {
             |(lo, hi), &p| (lo.min(p), hi.max(p)),
         );
         let center = (lo + hi) * 0.5;
+        self.center = center;
         for position in &mut self.positions {
             *position -= center;
         }
         self.bounds = (hi - lo).max(glam::DVec3::ONE);
+        self.tree = spatial::Tree::new(&self.positions);
         true
     }
 }
 impl Cache {
+    pub fn update_inhabited(&mut self, directory: &std::sync::Arc<osg_model::InhabitedDirectory>) {
+        if self
+            .inhabited
+            .as_ref()
+            .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, directory))
+        {
+            return;
+        }
+        let indices = directory
+            .systems
+            .iter()
+            .filter_map(|id| self.systems.get(id).copied())
+            .collect();
+        self.inhabited_tree = spatial::Tree::from_indices(&self.positions, indices);
+        self.inhabited = Some(directory.clone());
+    }
+
+    pub fn nearest(
+        &self,
+        catalogue: &NavigationCatalogue,
+        position: GalacticPosition,
+    ) -> Option<Id> {
+        self.tree
+            .nearest(
+                &self.positions,
+                position.relative_to(self.origin) / LIGHT_YEAR_M - self.center,
+            )
+            .map(|index| catalogue.systems[index].id)
+    }
+
     pub fn search(
         &self,
         catalogue: &NavigationCatalogue,
@@ -114,25 +142,15 @@ impl Cache {
         matches
     }
 
-    fn order_system(
-        &self,
-        catalogue: &NavigationCatalogue,
-        celestial_systems: &BTreeMap<Id, Id>,
-        order: &travel::Order,
-    ) -> Option<Id> {
+    fn order_system(&self, catalogue: &NavigationCatalogue, order: &travel::Order) -> Option<Id> {
         use travel::{Destination, Order, Reference};
         match order {
-            Order::Jump(id) => self
-                .beacons
-                .get(id)
-                .and_then(|&index| catalogue.beacons[index].gate_exit)
-                .and_then(|id| self.beacons.get(&id))
-                .map(|&index| catalogue.beacons[index].system),
             Order::Dock(id)
             | Order::TravelTo(Destination::Beacon(id))
             | Order::Sublight(Destination::Beacon(id))
             | Order::Slip {
                 destination: Destination::Beacon(id),
+                ..
             }
             | Order::TravelTo(Destination::Relative {
                 reference: Reference::Beacon(id),
@@ -148,16 +166,18 @@ impl Cache {
                         reference: Reference::Beacon(id),
                         ..
                     },
+                ..
             } => self
                 .beacons
                 .get(id)
-                .map(|&index| catalogue.beacons[index].system),
+                .and_then(|&index| catalogue.beacons[index].systems.first().copied()),
             Order::Slip {
                 destination: Destination::Galactic(destination),
+                ..
             }
             | Order::TravelTo(Destination::Galactic(destination))
             | Order::Sublight(Destination::Galactic(destination)) => {
-                self.network.nearest(*destination)
+                self.nearest(catalogue, *destination)
             }
             Order::TravelTo(Destination::Relative {
                 reference: Reference::Celestial(id),
@@ -173,7 +193,8 @@ impl Cache {
                         reference: Reference::Celestial(id),
                         ..
                     },
-            } => celestial_systems.get(id).copied(),
+                ..
+            } => Some(id.system),
             _ => None,
         }
     }
@@ -183,8 +204,6 @@ impl Cache {
 pub(super) struct ActiveRoute {
     origin: Option<Id>,
     actions: Vec<travel::Order>,
-    celestial_systems: BTreeMap<Id, Id>,
-    pub gates: BTreeSet<Id>,
     pub systems: BTreeSet<usize>,
     pub slips: Vec<(usize, usize)>,
     pub stops: Vec<(usize, usize)>,
@@ -195,12 +214,10 @@ impl ActiveRoute {
         &mut self,
         cache: &Cache,
         catalogue: &NavigationCatalogue,
-        celestial_systems: &BTreeMap<Id, Id>,
         origin: Option<Id>,
         orders: &[travel::QueuedOrder],
     ) {
         if self.origin == origin
-            && self.celestial_systems == *celestial_systems
             && self
                 .actions
                 .iter()
@@ -209,15 +226,13 @@ impl ActiveRoute {
             return;
         }
         self.origin = origin;
-        self.celestial_systems.clone_from(celestial_systems);
         self.actions = orders.iter().map(|stage| stage.action.clone()).collect();
-        self.gates.clear();
         self.systems.clear();
         self.slips.clear();
         self.stops.clear();
         let mut cursor = origin;
         for (order_index, action) in self.actions.iter().enumerate() {
-            let next = cache.order_system(catalogue, celestial_systems, action);
+            let next = cache.order_system(catalogue, action);
             if let Some(&system_index) = next.and_then(|id| cache.systems.get(&id)) {
                 if self
                     .stops
@@ -226,9 +241,6 @@ impl ActiveRoute {
                 {
                     self.stops.push((order_index + 1, system_index));
                 }
-            }
-            if let travel::Order::Jump(id) = action {
-                self.gates.insert(*id);
             }
             if let Some((&a, &b)) = cursor
                 .zip(next)

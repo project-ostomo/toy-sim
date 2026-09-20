@@ -434,40 +434,43 @@ pub fn query(world: &mut World, organization: &NpcOrganization, query: &Query) -
                     "pose": beacon.pose,
                     "radius_m": beacon.radius_m,
                     "has_docking": !beacon.bays.is_empty(),
-                    "gate_exit": beacon.gate_exit.map(|id| id.to_string()),
-                    "exclusion_m": beacon.exclusion_m,
                 })).collect::<Vec<_>>(),
                 "after": beacons.last().map(|beacon| beacon.entity.to_string()),
             })
         }
         Query::Navigation { ship, after, limit } => {
             let ship = id(ship)?;
-            let ProgramReply::Travel { pose, .. } =
+            let ProgramReply::Travel { .. } =
                 world_query(world, organization, ship, ProgramQuery::Travel)?
             else {
                 anyhow::bail!("travel observation unavailable");
             };
-            let query = ProgramQuery::Navigation {
-                after: after.as_deref().map(id).transpose()?,
-                limit: page_size(*limit)? as u16,
-                reference: pose.position,
-            };
-            let ProgramReply::Navigation { revision, gates } =
-                world_query(world, organization, ship, query)?
-            else {
-                anyhow::bail!("navigation unavailable");
-            };
+            let ship = crate::sim::identity::lookup(world, ship)?;
+            let after = after.as_deref().map(id).transpose()?;
+            let limit = page_size(*limit)?;
+            crate::sim::infrastructure::publish_navigation(world);
+            let publication = world.resource::<crate::sim::infrastructure::NavigationPublication>();
+            let beacons: Vec<_> = publication
+                .beacons
+                .values()
+                .filter(|beacon| {
+                    after.is_none_or(|after| beacon.id > after)
+                        && beacon.navigation
+                        && crate::sim::infrastructure::authenticated_navigation_beacon(
+                            world, ship, beacon.id,
+                        )
+                })
+                .take(limit)
+                .collect();
             json!({
-                "revision": revision,
-                "gates": gates.iter().map(|gate| json!({
-                    "beacon": gate.entity.to_string(),
-                    "system": gate.system.to_string(),
-                    "exit": gate.exit.to_string(),
-                    "pose": gate.pose,
-                    "staging": gate.staging,
-                    "slip_ready": gate.slip_ready,
+                "revision": publication.revision,
+                "beacons": beacons.iter().map(|beacon| json!({
+                    "beacon": beacon.id.to_string(),
+                    "systems": beacon.systems.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                    "pose": beacon.pose,
+                    "name": beacon.name,
                 })).collect::<Vec<_>>(),
-                "after": gates.last().map(|gate| gate.entity.to_string()),
+                "after": beacons.last().map(|beacon| beacon.id.to_string()),
             })
         }
         Query::Facilities { after, limit } => {

@@ -12,29 +12,10 @@ impl Universe {
         Self(
             BUNDLED
                 .get_or_init(|| {
-                    let mut universe = universe::Universe::from_configs(
-                        osg_universe::bundled_configs().expect("bundled systems"),
-                        super::physics::GRAVITY_CUTOFF,
-                    )
-                    .expect("valid universe");
-                    let mut entries = universe.index.entries.clone();
-                    for (entry, system) in entries.iter_mut().zip(&universe.systems) {
-                        entry.influence = entry
-                            .influence
-                            .max(super::infrastructure::gate_activation_extent(system));
-                    }
-                    universe.index =
-                        std::sync::Arc::new(osg_universe::catalogue::CatalogueIndex::new(entries));
-                    std::sync::Arc::new(universe)
+                    std::sync::Arc::new(universe::Universe::bundled().expect("valid universe"))
                 })
                 .clone(),
         )
-    }
-
-    pub fn is_bundled(&self) -> bool {
-        BUNDLED
-            .get()
-            .is_some_and(|bundled| std::sync::Arc::ptr_eq(&self.0, bundled))
     }
 
     pub fn from_configs(configs: Vec<orrery_cfg::OrreryCfg>, cutoff: f64) -> anyhow::Result<Self> {
@@ -79,7 +60,7 @@ impl Plugin for OrreryPlugin {
 
 // Forces have already sampled the old ephemerides; publish end-of-tick poses now.
 fn move_orrery(
-    universe: Res<Universe>,
+    active: Res<activity::ActiveSystems>,
     time: Res<Time<Fixed>>,
     mut bodies: Query<(
         &Celestial,
@@ -88,12 +69,18 @@ fn move_orrery(
     )>,
 ) {
     let epoch = sim_time(&time);
-    for (body, mut pose, mut state) in &mut bodies {
-        let solver = &universe.systems[state.system].solver;
-        pose.translation_um = solver.solve_position(&body.0, epoch).unwrap();
-        pose.rotation = solver.solve_rotation(&body.0, epoch).unwrap();
-        state.velocity = solver.solve_velocity(&body.0, epoch).unwrap();
-    }
+    bodies
+        .par_iter_mut()
+        .for_each(|(body, mut pose, mut state)| {
+            let definition = active
+                .definitions
+                .get(&state.system)
+                .expect("active system");
+            let solver = &definition.solver;
+            pose.translation_um = solver.solve_position(&body.0, epoch).unwrap();
+            pose.rotation = solver.solve_rotation(&body.0, epoch).unwrap();
+            state.velocity = solver.solve_velocity(&body.0, epoch).unwrap();
+        });
 }
 #[derive(Component, Default)]
 pub struct Celestial(pub SmolStr);

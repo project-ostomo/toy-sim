@@ -206,51 +206,6 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
 
     metered!(
         linker,
-        "navigation_query",
-        |mut caller: Caller<'_, Host>, pointer: u32, output: u32, capacity: u32, header: u32| {
-            let record: a::NavigationQuery = read(&caller, pointer)?;
-            let query = ProgramQuery::try_from(&record).map_err(|_| w::ERR_ARGUMENT)?;
-            if record.limit > u64::from(capacity) {
-                return Err(w::ERR_BUFFER.into());
-            }
-            validate_array::<a::NavigationGate>(&caller, output, capacity)?;
-            validate_array::<a::NavigationReply>(&caller, header, 1)?;
-            prepare(
-                &caller,
-                query,
-                ReplyCapacity {
-                    records: capacity as usize,
-                    ..Default::default()
-                },
-                size_of::<a::NavigationQuery>(),
-                size_of::<a::NavigationReply>()
-                    + record.limit as usize * size_of::<a::NavigationGate>(),
-            )
-        },
-        {
-            status((|| {
-                let ProgramReply::Navigation { revision, gates } = execute(&mut caller)? else {
-                    return Err(w::ERR_ARGUMENT.into());
-                };
-                if gates.len() > capacity as usize {
-                    return Err(w::ERR_BUFFER.into());
-                }
-                let values: Vec<a::NavigationGate> = gates.iter().map(Into::into).collect();
-                emit_array(&mut caller, output, &values)?;
-                emit_record(
-                    &mut caller,
-                    header,
-                    &a::NavigationReply {
-                        revision,
-                        count: values.len() as u64,
-                    },
-                )
-            })())
-        }
-    )?;
-
-    metered!(
-        linker,
         "route_request",
         |mut caller: Caller<'_, Host>,
          pointer: u32,

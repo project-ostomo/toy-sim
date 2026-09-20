@@ -1,5 +1,5 @@
 {
-  "format_version": 1,
+  "format_version": 2,
   "namespace": "Gaia DR3 (1)",
   "frame": "ICRS Cartesian, fixed J2016.0",
   "units": "integer micrometres",
@@ -9,7 +9,7 @@
     0
   ],
   "min_parallax_snr": 10.0,
-  "calibration": "G-as-visual; approximate temperature/class/BP-RP RGB; no extinction",
+  "calibration": "G-as-visual; measured temperature or approximate spectral/BP-RP temperature; 5772 K fallback; no extinction",
   "input_files": [
     "crates/osg-stars/data/gaia-dr3-earth-million.csv"
   ],

@@ -4,10 +4,11 @@ pub mod civilization;
 pub mod generation;
 pub mod organizations;
 pub mod orrery_cfg;
-pub mod replication;
 pub mod solver;
 pub mod surface;
 pub mod universe;
+
+pub const SIMULATION_EPOCH_MJD_UTC: f64 = 0.0;
 
 mod precision {
     pub use osg_space::{GalacticPosition, ToMicrometersExt};
@@ -88,47 +89,4 @@ pub fn handcrafted_configs() -> Vec<orrery_cfg::OrreryCfg> {
             toml::from_str(text).expect("valid bundled authored system")
         })
         .collect()
-}
-
-pub fn bundled_configs() -> anyhow::Result<Vec<orrery_cfg::OrreryCfg>> {
-    let mut configs = handcrafted_configs();
-    let map = civilization::map();
-    let authored = configs.len();
-    for (config, settlement) in configs.iter_mut().zip(&map.systems) {
-        anyhow::ensure!(
-            config.name == settlement.name,
-            "authored system ordering mismatch"
-        );
-        config.position_um = settlement.position;
-        if matches!(
-            config.name.as_str(),
-            "Vesper system"
-                | "Aurora system"
-                | "Lyra system"
-                | "Cinder system"
-                | "Meridian system"
-                | "Havoc system"
-                | "Elysium system"
-                | "Terminus system"
-        ) {
-            generation::populate_bundled_system(config, &settlement.catalogue_id)?;
-        }
-    }
-    for (star, settlement) in civilization::stars().iter().zip(&map.systems[authored..]) {
-        anyhow::ensure!(
-            star.id == settlement.catalogue_id,
-            "catalogue ordering mismatch"
-        );
-        let mut config = generation::system(star, &settlement.name);
-        config.position_um = settlement.position;
-        configs.push(config);
-    }
-    anyhow::ensure!(
-        configs.len() == map.systems.len(),
-        "incomplete inhabited map"
-    );
-    for config in &configs {
-        config.validate_system()?;
-    }
-    Ok(configs)
 }

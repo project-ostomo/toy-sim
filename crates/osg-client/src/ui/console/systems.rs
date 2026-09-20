@@ -211,13 +211,7 @@ fn power_flow(
         )
     } else if matches!(ship.presence, travel::Presence::SlipTransit(_)) {
         ("In transit".into(), 1., "Slip transit in progress".into())
-    } else if let Some(seconds) = d.slip_cooldown_s.filter(|seconds| *seconds > 0.) {
-        (
-            format!("Cooldown {:.0}s", seconds.ceil()),
-            0.,
-            "Slipdrive cooling down".into(),
-        )
-    } else if d.slip_cooldown_s.is_some() {
+    } else if d.slip_available {
         ("Ready".into(), 1., "Slipdrive ready".into())
     } else {
         ("Not fitted".into(), 0., "No slipdrive installed".into())

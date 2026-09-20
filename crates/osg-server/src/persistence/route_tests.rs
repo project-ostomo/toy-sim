@@ -19,12 +19,6 @@ fn paused_server_route_survives_computer_restart_with_its_full_fuel_budget() {
         .single(world)
         .unwrap();
     let ship_id = id(world, ship).unwrap();
-    let (gate, exit) = world
-        .query::<(&identity::Identity, &travel::Gate)>()
-        .iter(world)
-        .next()
-        .map(|(identity, gate)| (identity.0, gate.paired))
-        .unwrap();
     let station = world
         .query::<(&identity::Identity, &travel::DockingBays)>()
         .iter(world)
@@ -39,16 +33,24 @@ fn paused_server_route_survives_computer_restart_with_its_full_fuel_budget() {
         autopilot_enabled: false,
         preferences: PlanningPreferences {
             fuel_fraction: 0.42,
+            max_loss_ppm: 12.5,
             ..Default::default()
+        },
+        risk_budget: osg_model::travel::RiskBudget {
+            max_log_loss: osg_model::travel::slip::log_loss_from_ppm(12.5),
+            spent_log_loss: osg_model::travel::slip::log_loss_from_ppm(4.0),
         },
         revision: 27,
         order: 1,
         orders: vec![
             QueuedOrder::estimated(Order::WaitUntil(1), 1.).with_propellant(0.),
-            QueuedOrder::estimated(Order::Jump(gate), 240.).with_propellant(123.),
+            QueuedOrder::estimated(Order::Sublight(Destination::Galactic(destination)), 240.)
+                .with_propellant(123.),
             QueuedOrder::estimated(
                 Order::Slip {
-                    destination: Destination::Beacon(exit),
+                    destination: Destination::Galactic(destination),
+                    speed_ly_s: 0.001,
+                    navigation_beacon: None,
                 },
                 60.,
             )
@@ -143,6 +145,10 @@ fn interrupted_server_planning_restarts_from_saved_requested_orders_while_paused
     world.entity_mut(ship).insert(travel::Travel(TravelState {
         autopilot_enabled: false,
         revision: 31,
+        goals: request
+            .iter()
+            .map(|stage: &QueuedOrder| stage.action.clone())
+            .collect(),
         orders: request.clone(),
         status: Status::Planning,
         ..Default::default()
@@ -174,6 +180,7 @@ fn interrupted_server_planning_restarts_from_saved_requested_orders_while_paused
                 Order::Sublight(Destination::Galactic(target))
                 | Order::Slip {
                     destination: Destination::Galactic(target),
+                    ..
                 } => *target == destination,
                 _ => false,
             }));

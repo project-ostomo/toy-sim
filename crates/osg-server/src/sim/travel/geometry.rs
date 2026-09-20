@@ -1,4 +1,4 @@
-use super::{Dormant, Gate};
+use super::Dormant;
 use crate::sim::{
     precision::{GalacticPosition, PreciseTransform},
     spatial::SpatialBody,
@@ -16,18 +16,11 @@ pub struct TravelGeometry {
 }
 
 pub fn refresh(world: &mut World) {
-    let mut query = world.query_filtered::<(
-        Entity,
-        &PreciseTransform,
-        Option<&SpatialBody>,
-        Option<&Gate>,
-    ), Without<Dormant>>();
+    let mut query =
+        world.query_filtered::<(Entity, &PreciseTransform, &SpatialBody), Without<Dormant>>();
     let entries: Vec<_> = query
         .iter(world)
-        .filter_map(|(entity, transform, body, gate)| {
-            let radius = extent(body, gate)?;
-            Some((entity, transform.translation_um, radius))
-        })
+        .map(|(entity, transform, body)| (entity, transform.translation_um, body.radius_m))
         .collect();
     let mut geometry = world
         .remove_resource::<TravelGeometry>()
@@ -48,18 +41,6 @@ pub fn refresh(world: &mut World) {
     world.insert_resource(geometry);
 }
 
-fn extent(body: Option<&SpatialBody>, gate: Option<&Gate>) -> Option<f64> {
-    let physical = body.map(|body| body.radius_m);
-    let exclusion = gate
-        .filter(|gate| gate.enabled)
-        .map(|gate| gate.exclusion_m);
-    match (physical, exclusion) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        (Some(radius), None) | (None, Some(radius)) => Some(radius),
-        (None, None) => None,
-    }
-}
-
 pub fn update(world: &mut World, entity: Entity) {
     if !world.contains_resource::<TravelGeometry>() {
         return;
@@ -68,8 +49,9 @@ pub fn update(world: &mut World, entity: Entity) {
         None
     } else {
         world.get::<PreciseTransform>(entity).and_then(|transform| {
-            extent(world.get::<SpatialBody>(entity), world.get::<Gate>(entity))
-                .map(|radius| (transform.translation_um, radius))
+            world
+                .get::<SpatialBody>(entity)
+                .map(|body| (transform.translation_um, body.radius_m))
         })
     };
     let mut geometry = world.resource_mut::<TravelGeometry>();
@@ -136,18 +118,6 @@ pub fn candidates(
     )
 }
 
-pub fn mouth_candidates(world: &World, position: GalacticPosition, radius: f64) -> Vec<Entity> {
-    let geometry = world.resource::<TravelGeometry>();
-    geometry
-        .index
-        .intersecting_sphere(position, radius)
-        .ids
-        .into_iter()
-        .map(|slot| geometry.entities[slot as usize])
-        .filter(|&entity| world.get::<Gate>(entity).is_some_and(|gate| gate.enabled))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,14 +135,12 @@ mod tests {
                 },
             ))
             .id();
-        let gate = world
+        let obstacle = world
             .spawn((
                 PreciseTransform::default(),
-                Gate {
-                    paired: osg_model::Id::new(),
-                    radius_m: 100.,
-                    exclusion_m: 1e7,
-                    enabled: true,
+                SpatialBody {
+                    radius_m: 1e7,
+                    occludes: true,
                 },
             ))
             .id();
@@ -188,16 +156,16 @@ mod tests {
         update(&mut world, star);
         let far = GalacticPosition::ZERO.offset_by(DVec3::X * 1e15);
         world
-            .get_mut::<PreciseTransform>(gate)
+            .get_mut::<PreciseTransform>(obstacle)
             .unwrap()
             .translation_um = far;
-        update(&mut world, gate);
+        update(&mut world, obstacle);
         assert!(
             candidates(&mut world, GalacticPosition::ZERO, 1.)
                 .unwrap()
                 .is_empty()
         );
-        assert_eq!(candidates(&mut world, far, 1.).unwrap(), vec![gate]);
+        assert_eq!(candidates(&mut world, far, 1.).unwrap(), vec![obstacle]);
     }
 
     #[test]
@@ -232,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn exclusion_queries_match_sphere_intersections_and_never_return_a_truncated_list() {
+    fn obstacle_queries_match_sphere_intersections_and_never_return_a_truncated_list() {
         let mut world = World::new();
         let origin = GalacticPosition::new(1 << 90, -(1 << 90), 1 << 86);
         let mut obstacles = Vec::new();
@@ -249,11 +217,9 @@ mod tests {
                         translation_um: position,
                         ..Default::default()
                     },
-                    Gate {
-                        paired: osg_model::Id::new(),
-                        radius_m: 1.0,
-                        exclusion_m: radius_m,
-                        enabled: true,
+                    SpatialBody {
+                        radius_m,
+                        occludes: true,
                     },
                 ))
                 .id();
@@ -272,9 +238,6 @@ mod tests {
                 .collect();
             expected.sort_unstable();
             assert_eq!(actual, expected);
-            let mut mouths = mouth_candidates(&world, origin, radius);
-            mouths.sort_unstable();
-            assert_eq!(mouths, expected);
         }
         for _ in 0..4097 {
             world.spawn((

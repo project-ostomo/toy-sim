@@ -48,7 +48,7 @@ fn program(header: u32) -> Vec<u8> {
         id: 42,
         preferences: world::Preferences {
             fuel_fraction: 0.5,
-            allow_wormholes: 1,
+            max_loss_ppm: 100.0,
             allow_slipdrive: 1,
         },
     };
@@ -58,7 +58,7 @@ fn program(header: u32) -> Vec<u8> {
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     wat::parse_str(format!(
         r#"(module
-            (import "ship_v31" "route_request" (func $query (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "ship_v32" "route_request" (func $query (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
             (memory (export "memory") 1)
             (data (i32.const 0) "{data}")
             (func (export "ship_api_version") (result i32) i32.const {version})

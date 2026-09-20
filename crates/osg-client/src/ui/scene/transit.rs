@@ -11,8 +11,8 @@ use bevy::{
     },
     shader::ShaderRef,
 };
-use osg_model::{Id, travel::Presence};
-use std::collections::{HashMap, HashSet};
+use osg_model::travel::Presence;
+use std::collections::HashSet;
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct TransitMaterial {
@@ -52,15 +52,12 @@ impl Material for TransitMaterial {
 #[derive(Resource)]
 struct Effects {
     sphere: Handle<Mesh>,
-    gate: Handle<TransitMaterial>,
     slip: Handle<TransitMaterial>,
     wall: Handle<StandardMaterial>,
     strip: Handle<StandardMaterial>,
     hangar: Handle<Mesh>,
     ring: Handle<Mesh>,
 }
-#[derive(Component)]
-struct GateMesh(Id);
 #[derive(Component)]
 struct Chamber(bool);
 
@@ -78,9 +75,6 @@ fn setup(
 ) {
     commands.insert_resource(Effects {
         sphere: meshes.add(Sphere::new(1.).mesh().uv(96, 64)),
-        gate: materials.add(TransitMaterial {
-            parameters: Vec4::new(0., 0., 1.8, 0.),
-        }),
         slip: materials.add(TransitMaterial {
             parameters: Vec4::new(0., 1., 1., 0.),
         }),
@@ -104,23 +98,14 @@ fn setup(
 fn update(
     mut commands: Commands,
     clock: Res<RenderTime>,
-    beacons: Query<(&crate::state::NavigationObject, &DisplayPose)>,
     effects: Res<Effects>,
-    server: Res<AssetServer>,
     mut materials: ResMut<Assets<TransitMaterial>>,
     views: Query<(Entity, &ViewCamera, &ViewObservation)>,
     owned: Query<(&OwnedShip, &DisplayPose)>,
-    mut gates: Query<(Entity, &ViewMember, &GateMesh, &mut Transform)>,
-    mut rooms: Query<(Entity, &ViewMember, &Chamber, &mut Transform), Without<GateMesh>>,
+    mut rooms: Query<(Entity, &ViewMember, &Chamber, &mut Transform)>,
 ) {
     let time = (clock.display_ns as f64 * 1e-9 % 10000.) as f32;
-    materials.get_mut(&effects.gate).unwrap().parameters.x = time;
     materials.get_mut(&effects.slip).unwrap().parameters.x = time;
-    let existing: HashMap<_, _> = gates
-        .iter()
-        .map(|(entity, member, gate, _)| ((member.0, gate.0), entity))
-        .collect();
-    let mut retained = HashSet::new();
     let mut retained_rooms = HashSet::new();
     for (view, camera, observation) in &views {
         let focused = owned
@@ -227,62 +212,6 @@ fn update(
                 retained_rooms.insert(entity);
             }
             continue;
-        }
-        for (gate, pose) in &beacons {
-            let gate = &gate.0;
-            if gate.gate_exit.is_none() {
-                continue;
-            }
-            let relative = pose.0.position.relative_to(camera.origin);
-            if relative.length() > 1e7 {
-                continue;
-            }
-            let transform = Transform::from_translation(relative.as_vec3());
-            let entity = if let Some(&entity) = existing.get(&(view, gate.id)) {
-                if let Ok((_, _, _, mut current)) = gates.get_mut(entity) {
-                    *current = transform;
-                }
-                entity
-            } else {
-                let entity = commands
-                    .spawn((
-                        GateMesh(gate.id),
-                        ViewMember(view),
-                        ViewLayer(camera.layer),
-                        RenderLayers::layer(camera.layer),
-                        transform,
-                        Visibility::default(),
-                    ))
-                    .id();
-                commands.entity(entity).with_children(|parent| {
-                    parent.spawn(WorldAssetRoot(
-                        server.load("models/stations/wormhole-frame-512m.glb#Scene0"),
-                    ));
-                    parent.spawn((
-                        Mesh3d(effects.sphere.clone()),
-                        MeshMaterial3d(effects.gate.clone()),
-                        Transform::from_scale(Vec3::splat(gate.radius_m as f32)),
-                    ));
-                    parent.spawn((
-                        PointLight {
-                            color: Color::srgb(0.25, 0.55, 1.),
-                            intensity: 2e10,
-                            range: gate.radius_m as f32 * 2.,
-                            radius: 80.,
-                            shadow_maps_enabled: true,
-                            ..default()
-                        },
-                        Transform::default(),
-                    ));
-                });
-                entity
-            };
-            retained.insert(entity);
-        }
-    }
-    for (entity, ..) in &gates {
-        if !retained.contains(&entity) {
-            commands.entity(entity).despawn();
         }
     }
     for (entity, ..) in &rooms {

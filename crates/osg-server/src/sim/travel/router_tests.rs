@@ -119,6 +119,8 @@ fn computer_reads_only_the_current_order_and_cannot_complete_a_stale_queue() {
             revision: 7,
             order: 1,
             destination,
+            speed_ly_s: 0.01,
+            navigation_beacon: None,
         },
     ] {
         assert!(dispatch(world, ship, action).is_err());
@@ -175,16 +177,43 @@ fn completed_server_plan_atomically_replaces_the_queue_and_stale_results_are_rej
             complete: true,
             ..Default::default()
         },
+        estimated_loss_ppm: 0.0,
+        beacon_assumptions: Vec::new(),
+        exotic_fuel_kg: 0.0,
     };
-    apply_plan(world, ship, 7, plan.clone(), Default::default(), false).unwrap();
+    let goals = vec![Order::TravelTo(Destination::Galactic(destination))];
+    apply_plan(
+        world,
+        ship,
+        7,
+        plan.clone(),
+        Default::default(),
+        false,
+        goals.clone(),
+        true,
+    )
+    .unwrap();
     let applied = world.get::<Travel>(ship).unwrap().0.clone();
     assert_eq!(applied.orders, orders);
     assert_eq!(applied.order, 0);
     assert_eq!(applied.revision, 8);
     assert_eq!(applied.status, Status::Paused);
     assert_eq!(applied.fuel_budget, Some(plan.fuel_budget.clone()));
+    assert_eq!(applied.goals, goals);
 
-    assert!(apply_plan(world, ship, 7, plan, Default::default(), true).is_err());
+    assert!(
+        apply_plan(
+            world,
+            ship,
+            7,
+            plan,
+            Default::default(),
+            true,
+            goals.clone(),
+            true
+        )
+        .is_err()
+    );
     assert_eq!(world.get::<Travel>(ship).unwrap().0, applied);
 
     let incomplete = osg_model::routing::Plan {
@@ -193,9 +222,62 @@ fn completed_server_plan_atomically_replaces_the_queue_and_stale_results_are_rej
         topology_revision: 0,
         orders: vec![Order::TravelTo(Destination::Galactic(destination)).into()],
         fuel_budget: Default::default(),
+        estimated_loss_ppm: 0.0,
+        beacon_assumptions: Vec::new(),
+        exotic_fuel_kg: 0.0,
     };
-    assert!(apply_plan(world, ship, 8, incomplete, Default::default(), true).is_err());
+    assert!(
+        apply_plan(
+            world,
+            ship,
+            8,
+            incomplete,
+            Default::default(),
+            true,
+            goals,
+            true
+        )
+        .is_err()
+    );
     assert_eq!(world.get::<Travel>(ship).unwrap().0, applied);
+
+    world
+        .get_mut::<Travel>(ship)
+        .unwrap()
+        .0
+        .risk_budget
+        .spend(25.0);
+    let remaining = world.get::<Travel>(ship).unwrap().0.risk_budget;
+    let replacement = osg_model::routing::Plan {
+        planned_tick: tick(world),
+        travel_revision: 8,
+        topology_revision: 0,
+        orders: vec![Order::Sublight(Destination::Galactic(destination)).into()],
+        fuel_budget: FuelBudget {
+            complete: true,
+            ..Default::default()
+        },
+        estimated_loss_ppm: 0.0,
+        beacon_assumptions: Vec::new(),
+        exotic_fuel_kg: 0.0,
+    };
+    apply_plan(
+        world,
+        ship,
+        8,
+        replacement,
+        PlanningPreferences {
+            max_loss_ppm: 1000.0,
+            ..Default::default()
+        },
+        false,
+        applied.goals,
+        false,
+    )
+    .unwrap();
+    let replanned = &world.get::<Travel>(ship).unwrap().0;
+    assert_eq!(replanned.risk_budget, remaining);
+    assert_eq!(replanned.preferences.max_loss_ppm, 100.0);
 }
 
 #[test]
@@ -290,6 +372,10 @@ fn server_plans_the_whole_paused_queue_before_any_flight_computer_runs() {
             Order::TravelTo(Destination::Galactic(second)),
         ],
         false,
+        PlanningPreferences {
+            max_loss_ppm: 1000.0,
+            ..Default::default()
+        },
     );
 
     app.update();
@@ -327,6 +413,8 @@ fn server_plans_the_whole_paused_queue_before_any_flight_computer_runs() {
                 ]
             );
             assert_eq!(queue.order, 0);
+            assert_eq!(queue.preferences.max_loss_ppm, 1000.0);
+            assert!((queue.risk_budget.remaining_ppm() - 1000.0).abs() < 1e-9);
             assert!(queue.fuel_budget.is_some());
             assert_eq!(
                 world.get::<PreciseTransform>(ship).unwrap().translation_um,
@@ -427,7 +515,7 @@ fn rejected_dock_does_not_complete_the_order() {
     let station_id = world.get::<Identity>(station).unwrap().0;
     world.entity_mut(station).remove::<vessel::ShipSoftware>();
     world.entity_mut(station).insert((
-        BeaconEmitter,
+        identity::DirectoryEmitter,
         DockingBays(vec![Bay {
             centre_m: [50., 0., 0.],
             rotation: [0., 0., 0., 1.],
@@ -576,150 +664,14 @@ fn autopilot_locks_manual_controls_and_off_cuts_thrust() {
     assert!(!app.world().get::<Travel>(ship).unwrap().0.autopilot_enabled);
 }
 
-#[test]
-fn fitted_slipdrive_is_selected_and_flies_a_faster_route() {
-    let (mut app, old_ship, account) = fixture();
-    let world = app.world_mut();
-    let origin = world
-        .get::<PreciseTransform>(old_ship)
-        .unwrap()
-        .translation_um;
-    world.despawn(old_ship);
-    let design = osg_ships::expedition_patrol()
-        .compile(&world.resource::<vessel::ShipCatalogue>().0)
-        .unwrap();
-    let ship = vessel::spawn_ship(
-        world,
-        Arc::new(design),
-        PreciseTransform {
-            translation_um: origin,
-            rotation: DQuat::IDENTITY,
-        },
-        DVec3::NEG_Z * 100.,
-        "Slip routing fixture".into(),
-    )
-    .unwrap();
-    identity::attach_ship(world, ship, account).unwrap();
-    let destination = origin.offset_by(DVec3::NEG_Z * LIGHT_YEAR_M);
-    world.entity_mut(ship).insert(Travel(TravelState {
-        autopilot_enabled: true,
-        revision: 1,
-        orders: vec![Order::TravelTo(Destination::Galactic(destination))]
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-        status: Status::Planning,
-        ..Default::default()
-    }));
-    let mut planned_slip = false;
-    let mut transited = false;
-    for _ in 0..12000 {
-        app.update();
-        let world = app.world();
-        let travel = &world.get::<Travel>(ship).unwrap().0;
-        planned_slip |= travel
-            .orders
-            .iter()
-            .any(|leg| matches!(&leg.action, Order::Slip { .. }));
-        transited |= world.get::<Transit>(ship).is_some();
-        if travel.status == Status::Completed {
-            assert!(planned_slip && transited);
-            assert!(
-                ship_pose(world, ship)
-                    .unwrap()
-                    .position
-                    .relative_to(destination)
-                    .length()
-                    <= 2.
-            );
-            return;
-        }
-    }
-    let world = app.world();
-    panic!(
-        "slip route failed: {:?}, drive {:?}, fault {:?}",
-        world.get::<Travel>(ship).unwrap().0,
-        world.get::<SlipDrive>(ship),
-        world
-            .get::<vessel::ShipSoftware>(ship)
-            .unwrap()
-            .controller
-            .fault
-    );
-}
-
-fn nearby_gate_fixture() -> (App, Entity, Entity, Id, usize) {
-    let (mut app, previous, account) = fixture();
-    let world = app.world_mut();
-    let origin = *world.get::<PreciseTransform>(previous).unwrap();
-    world.despawn(previous);
-
-    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
-    let water = catalogue
-        .resources
-        .iter()
-        .position(|r| r.id == "water")
-        .unwrap();
-    let design = osg_ships::ntr_patrol().compile(catalogue).unwrap();
-    let ship = vessel::spawn_ship(
-        world,
-        Arc::new(design),
-        origin,
-        DVec3::ZERO,
-        "Local NTR transfer".into(),
-    )
-    .unwrap();
-    identity::attach_ship(world, ship, account).unwrap();
-
-    let gate_id = Id::new();
-    let exit_id = Id::new();
-    let mut entrance = None;
-    for (id, paired, offset) in [
-        (gate_id, exit_id, DVec3::NEG_Z * 20_000.),
-        (exit_id, gate_id, DVec3::X * 1e9),
-    ] {
-        let entity = world
-            .spawn((
-                PreciseTransform {
-                    translation_um: origin.translation_um.offset_by(offset),
-                    ..default()
-                },
-                Velocity(DVec3::ZERO),
-                BeaconEmitter,
-                identity::Transponder(osg_model::IffIdentity {
-                    owner: account,
-                    faction: None,
-                    labels: BTreeSet::from(["Nearby gate".into()]),
-                    enabled: true,
-                    range_m: 1e8,
-                }),
-                crate::sim::ownership::AssetOwner(osg_model::ownership::Principal::Player(account)),
-                crate::sim::spatial::SpatialBody {
-                    radius_m: 300.,
-                    occludes: false,
-                },
-                Gate {
-                    paired,
-                    radius_m: 300.,
-                    exclusion_m: 10_000_000.,
-                    enabled: true,
-                },
-            ))
-            .id();
-        identity::register(world, entity, id);
-        if id == gate_id {
-            entrance = Some(entity);
-        }
-    }
-    let gate = entrance.unwrap();
-    (app, ship, gate, account, water)
-}
-
-fn submit_local_order(app: &mut App, ship: Entity, account: Id, order: Order) {
-    submit_orders(app, ship, account, vec![order], true);
-}
-
-fn submit_orders(app: &mut App, ship: Entity, account: Id, orders: Vec<Order>, engage: bool) {
+fn submit_orders(
+    app: &mut App,
+    ship: Entity,
+    account: Id,
+    orders: Vec<Order>,
+    engage: bool,
+    preferences: PlanningPreferences,
+) {
     let world = app.world_mut();
     let ship_id = world.get::<Identity>(ship).unwrap().0;
     let connection = session::connect(
@@ -742,7 +694,7 @@ fn submit_orders(app: &mut App, ship: Entity, account: Id, orders: Vec<Order>, e
                     ship: ship_id,
                     authority_revision: 1,
                     command: ShipCommand::SetTravel {
-                        preferences: Default::default(),
+                        preferences,
                         engage,
                         expected_revision,
                         orders,
@@ -754,123 +706,4 @@ fn submit_orders(app: &mut App, ship: Entity, account: Id, orders: Vec<Order>, e
     .unwrap();
     let frame = session::frame(world, connection).unwrap();
     assert!(frame.results.iter().all(|result| result.error.is_none()));
-}
-
-#[test]
-fn local_gate_approach_uses_ntr_fuel_to_close_range_inside_the_slip_exclusion_zone() {
-    let (mut app, ship, gate, account, water) = nearby_gate_fixture();
-    let gate_id = app.world().get::<Identity>(gate).unwrap().0;
-    let initial_fuel = app
-        .world()
-        .get::<hardware::ShipInventory>(ship)
-        .unwrap()
-        .0
-        .quantities[water];
-    submit_local_order(
-        &mut app,
-        ship,
-        account,
-        Order::Guidance(Guidance {
-            mode: GuidanceMode::Approach,
-            target: Target::Destination(Destination::Beacon(gate_id)),
-            range_m: 400.,
-        }),
-    );
-
-    let mut first_active = None;
-    for step in 0..6_000 {
-        app.update();
-        let world = app.world();
-        let travel = &world.get::<Travel>(ship).unwrap().0;
-        assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
-        assert_eq!(travel.orders.len(), 1);
-        assert_eq!(
-            travel.orders[0].action,
-            Order::Guidance(Guidance {
-                mode: GuidanceMode::Approach,
-                target: Target::Destination(Destination::Beacon(gate_id)),
-                range_m: 400.,
-            })
-        );
-        if travel.status == Status::Active {
-            first_active.get_or_insert(step);
-        }
-        let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
-        let target = world.get::<PreciseTransform>(gate).unwrap().translation_um;
-        assert!(
-            position.relative_to(target).length() < 20_050.,
-            "flew away from local target"
-        );
-        assert!(
-            position.relative_to(target).z > 300.,
-            "approach crossed the gate instead of stopping on the arrival side"
-        );
-        assert_eq!(world.get::<PresenceState>(ship).unwrap().0, Presence::Space);
-        if travel.status == Status::Completed {
-            break;
-        }
-    }
-
-    let world = app.world();
-    let travel = &world.get::<Travel>(ship).unwrap().0;
-    let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
-    let target = world.get::<PreciseTransform>(gate).unwrap().translation_um;
-    let remaining = world
-        .get::<hardware::ShipInventory>(ship)
-        .unwrap()
-        .0
-        .quantities[water];
-    assert!(
-        first_active.is_some_and(|step| step < 100),
-        "{first_active:?}"
-    );
-    assert_eq!(travel.status, Status::Completed, "{travel:?}");
-    assert!((position.relative_to(target).length() - 400.).abs() < 5.);
-    assert!(world.get::<Velocity>(ship).unwrap().0.length() < 0.5);
-    assert!(remaining < initial_fuel, "NTR did not burn propellant");
-    assert!(
-        remaining > initial_fuel / 2,
-        "local approach consumed {}/{initial_fuel}kg",
-        initial_fuel - remaining
-    );
-}
-
-#[test]
-fn travel_to_gate_finishes_at_the_physical_beacon_instead_of_the_slip_boundary() {
-    let (mut app, ship, gate, account, _) = nearby_gate_fixture();
-    let gate_id = app.world().get::<Identity>(gate).unwrap().0;
-    submit_local_order(
-        &mut app,
-        ship,
-        account,
-        Order::TravelTo(Destination::Beacon(gate_id)),
-    );
-
-    for _ in 0..4_000 {
-        app.update();
-        let travel = &app.world().get::<Travel>(ship).unwrap().0;
-        assert!(!matches!(travel.status, Status::Blocked(_)), "{travel:?}");
-        if travel.status != Status::Planning {
-            assert_eq!(
-                travel.orders.len(),
-                1,
-                "local gate arrival must remain one strategic command"
-            );
-            let Some(stage) = travel.orders.last() else {
-                panic!("route has no arrival stage");
-            };
-            let Order::Guidance(Guidance {
-                mode: GuidanceMode::Approach,
-                target: Target::Destination(Destination::Beacon(id)),
-                range_m: stand_off,
-            }) = &stage.action
-            else {
-                panic!("unexpected arrival stage: {:?}", stage.action);
-            };
-            assert_eq!(*id, gate_id);
-            assert!((400.0..500.0).contains(stand_off), "{stand_off}");
-            return;
-        }
-    }
-    panic!("local gate route never finished planning");
 }

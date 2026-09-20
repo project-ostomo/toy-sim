@@ -181,6 +181,8 @@ impl ScanSource for MovingSlip {
                     index: 4,
                     order: Some(
                         Order::Slip {
+                            speed_ly_s: 0.01,
+                            navigation_beacon: None,
                             destination: self.destination.clone(),
                         }
                         .into(),
@@ -287,6 +289,7 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
                 revision,
                 order,
                 destination,
+                ..
             } => {
                 assert_eq!((*revision, *order), (1, 4));
                 Some(*destination)

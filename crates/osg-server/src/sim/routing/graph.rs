@@ -1,457 +1,347 @@
 use super::*;
-use osg_model::travel::{Axes, Destination, Reference};
-use std::{
-    cmp::Ordering,
-    collections::{BTreeMap, BinaryHeap},
-};
+use osg_model::travel::{Axes, CelestialRef, Destination, Reference, slip};
+use std::collections::{BTreeMap, BinaryHeap};
 
-#[derive(Clone, Copy, Debug)]
-pub(super) enum EdgeKind {
-    Sublight,
-    Slip,
-    Jump(usize),
+#[derive(Clone)]
+pub(super) struct Leg {
+    pub target: CaptureTarget,
+    pub speed_ly_s: f64,
+    pub max_loss_ppm: f64,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(super) struct Edge {
-    pub from: usize,
-    pub to: usize,
-    pub kind: EdgeKind,
-    pub time_s: f64,
-    pub fuel_kg: f64,
-}
-
-pub(super) struct Node {
-    pub pose: Pose,
-    pub destination: Destination,
-    pub gate: Option<usize>,
-    system: Option<Id>,
-    slip: Option<bool>,
-}
-
-pub(super) struct Graph<'a> {
-    pub nodes: Vec<Node>,
-    gates: &'a [RouteGate],
-    groups: BTreeMap<Id, Vec<usize>>,
-    exits: Vec<Option<usize>>,
-}
-
-#[derive(Clone, Copy)]
-struct QueueEntry {
-    node: usize,
-    cost: f64,
-}
-
-impl PartialEq for QueueEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.node == other.node && self.cost == other.cost
+impl Leg {
+    pub fn destination(&self) -> Destination {
+        Destination::Relative {
+            reference: Reference::Celestial(self.target.reference),
+            offset: GalacticPosition::default(),
+            axes: Axes::Galactic,
+        }
     }
 }
-impl Eq for QueueEntry {}
-impl PartialOrd for QueueEntry {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+
+struct State {
+    pose: Pose,
+    parent: Option<(usize, Leg)>,
+    depth: usize,
+    seconds: f64,
+    fuel: f64,
+    exotic: f64,
+    loss: f64,
+}
+
+// Edges enter the queue using cheap catalogue estimates. Resolve clearance and
+// forecast the transit only when an edge reaches the front of the queue.
+struct Edge {
+    priority: f64,
+    parent: usize,
+    target: CaptureTarget,
+    loss: f64,
+}
+
+impl PartialEq for Edge {
+    fn eq(&self, other: &Self) -> bool {
+        self.priority == other.priority
+    }
+}
+impl Eq for Edge {}
+impl PartialOrd for Edge {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
 }
-impl Ord for QueueEntry {
-    fn cmp(&self, other: &Self) -> Ordering {
-        other
-            .cost
-            .total_cmp(&self.cost)
-            .then_with(|| other.node.cmp(&self.node))
+impl Ord for Edge {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        other.priority.total_cmp(&self.priority)
     }
 }
 
-impl<'a> Graph<'a> {
-    pub fn new(
-        origin: Pose,
-        target: Pose,
-        destination: Destination,
-        gates: &'a [RouteGate],
-        performance: &ShipPerformance,
-    ) -> Result<Self> {
-        ensure!(
-            gates.len() <= 16_384,
-            "navigation catalogue exceeds route limit"
-        );
-        let indices: BTreeMap<_, _> = gates
-            .iter()
-            .enumerate()
-            .map(|(index, gate)| (gate.navigation.entity, index))
-            .collect();
-        ensure!(indices.len() == gates.len(), "duplicate navigation mouth");
-        let nearest = |pose: &Pose| {
-            gates
-                .iter()
-                .min_by(|a, b| {
-                    a.navigation
-                        .pose
-                        .position
-                        .relative_to(pose.position)
-                        .length_squared()
-                        .total_cmp(
-                            &b.navigation
-                                .pose
-                                .position
-                                .relative_to(pose.position)
-                                .length_squared(),
-                        )
-                })
-                .map(|gate| gate.navigation.system)
-        };
-        let mut nodes = Vec::with_capacity(2 + 2 * gates.len());
-        nodes.push(Node {
-            system: nearest(&origin),
-            destination: Destination::Galactic(origin.position),
-            pose: origin,
-            gate: None,
-            slip: (performance.slip_power_w <= 0.0).then_some(false),
-        });
-        nodes.push(Node {
-            system: nearest(&target),
-            destination,
-            pose: target,
-            gate: None,
-            slip: (performance.slip_power_w <= 0.0).then_some(false),
-        });
+fn itinerary(states: &[State], mut index: usize) -> Vec<Leg> {
+    let mut legs = Vec::new();
+    while let Some((parent, leg)) = &states[index].parent {
+        legs.push(leg.clone());
+        index = *parent;
+    }
+    legs.reverse();
+    legs
+}
 
-        let mut groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
-        let mut exits = Vec::with_capacity(gates.len());
-        for (index, gate) in gates.iter().enumerate() {
-            let navigation = &gate.navigation;
-            groups.entry(navigation.system).or_default().push(index);
-            let exit = indices.get(&navigation.exit).copied().filter(|&exit| {
-                gates[exit].navigation.exit == navigation.entity
-                    && gate.aperture_radius_m > performance.radius_m + 2.0
-                    && gates[exit].aperture_radius_m > performance.radius_m + 2.0
-            });
-            exits.push(exit);
-            nodes.push(Node {
-                pose: navigation.pose.clone(),
-                destination: Destination::Beacon(navigation.entity),
-                gate: Some(index),
-                system: Some(navigation.system),
-                slip: Some(false),
-            });
-        }
-        for (index, gate) in gates.iter().enumerate() {
-            let navigation = &gate.navigation;
-            let mut pose = navigation.pose.clone();
-            pose.position = navigation.staging;
-            nodes.push(Node {
-                pose,
-                destination: Destination::Relative {
-                    reference: Reference::Beacon(navigation.entity),
-                    offset: GalacticPosition::from_meters(
-                        navigation.staging.relative_to(navigation.pose.position),
-                    ),
-                    axes: Axes::Galactic,
-                },
-                gate: Some(index),
-                system: Some(navigation.system),
-                slip: (!navigation.slip_ready || performance.slip_power_w <= 0.0).then_some(false),
-            });
-        }
-        Ok(Self {
-            nodes,
-            gates,
-            groups,
-            exits,
+// A goal-directed estimate, not an optimality bound: capture radii, different
+// risk allocations and intermediate assisted systems can change the best speed.
+fn remaining_seconds(
+    position: GalacticPosition,
+    goal: &Pose,
+    target: Option<&CaptureTarget>,
+    ppm: f64,
+) -> f64 {
+    let distance = goal.position.relative_to(position).length();
+    let speed = target
+        .and_then(|target| {
+            slip::fastest_speed_ly_s(
+                target.radius_m,
+                distance,
+                ppm,
+                target.navigation_beacon.is_some(),
+            )
         })
-    }
+        .unwrap_or_else(|| {
+            (slip::DISPERSION_FLOOR_RAD / slip::DISPERSION_SPEED_COEFFICIENT).sqrt()
+        });
+    distance / slip::LY_M / speed
+}
 
-    fn slip_allowed(
-        &mut self,
-        node: usize,
-        environment: &impl RouteEnvironment,
-        work: &mut Work,
-    ) -> Result<bool> {
-        if let Some(allowed) = self.nodes[node].slip {
-            return Ok(allowed);
-        }
-        work.charge(ENVIRONMENT_WORK, environment)?;
-        let position = self.nodes[node].pose.position;
-        let allowed = environment.slip(position, position, 0.0, 0.0)?.ready;
-        self.nodes[node].slip = Some(allowed);
-        Ok(allowed)
+pub(super) fn search(
+    request: &RouteRequest,
+    environment: &impl RouteEnvironment,
+    work: &mut Work,
+    weights: TransferCost,
+    origin: &Pose,
+    goal: &Pose,
+    destination: &Destination,
+    start_s: f64,
+    remaining_log_loss: f64,
+) -> Result<Vec<Leg>> {
+    let performance = &request.performance;
+    let local = transfer(performance, weights, origin, goal);
+    let mut best_cost = local.0 + weights.seconds_per_kg * local.1;
+    if start_s + local.0 > osg_model::travel::MAX_PREDICTION_SECONDS {
+        best_cost = f64::INFINITY;
     }
-
-    pub fn direct(
-        &mut self,
-        request: &RouteRequest,
-        environment: &impl RouteEnvironment,
-        work: &mut Work,
-        weights: osg_model::transfer::TransferCost,
-    ) -> Result<Vec<Edge>> {
-        let local = transfer(
-            &request.performance,
-            weights,
-            &self.nodes[0].pose,
-            &self.nodes[1].pose,
+    let mut best = Vec::new();
+    if !request.preferences.allow_slipdrive
+        || performance.slip_power_w <= 0.0
+        || remaining_log_loss <= 0.0
+    {
+        ensure!(
+            best_cost.is_finite(),
+            "destination unreachable with available propulsion"
         );
-        let mut best_cost = local.0 + weights.seconds_per_kg * local.1;
-        let mut best = vec![Edge {
-            from: 0,
-            to: 1,
-            kind: EdgeKind::Sublight,
-            time_s: local.0,
-            fuel_kg: local.1,
-        }];
-        if !request.preferences.allow_slipdrive || request.performance.slip_power_w <= 0.0 {
-            return Ok(best);
-        }
-
-        let candidates = |endpoint: usize| {
-            let mut nodes = vec![endpoint];
-            if let Some(gates) = self.nodes[endpoint]
-                .system
-                .and_then(|system| self.groups.get(&system))
-            {
-                nodes.extend(gates.iter().map(|gate| 2 + self.gates.len() + gate));
-            }
-            nodes
-        };
-        let departures = candidates(0);
-        let arrivals = candidates(1);
-        for from in departures {
-            work.charge(1, environment)?;
-            if !self.slip_allowed(from, environment, work)? {
-                continue;
-            }
-            let departure = transfer(
-                &request.performance,
-                weights,
-                &self.nodes[0].pose,
-                &self.nodes[from].pose,
-            );
-            for &to in &arrivals {
-                work.charge(1, environment)?;
-                let (preparation, transit) = crate::sim::travel::slip_times(
-                    self.nodes[from].pose.position,
-                    self.nodes[to].pose.position,
-                    request.performance.mass_kg,
-                    request.performance.slip_power_w,
-                    None,
-                    0,
-                );
-                let rendezvous = slip_rendezvous(
-                    &request.performance,
-                    weights,
-                    &self.nodes[from].pose,
-                    &self.nodes[to].pose,
-                );
-                let arrival = transfer(
-                    &request.performance,
-                    weights,
-                    &self.nodes[to].pose,
-                    &self.nodes[1].pose,
-                );
-                let slip = (preparation + transit + rendezvous.0, rendezvous.1);
-                let cost = departure.0
-                    + slip.0
-                    + arrival.0
-                    + weights.seconds_per_kg * (departure.1 + slip.1 + arrival.1);
-                if cost >= best_cost {
-                    continue;
-                }
-                best_cost = cost;
-                best.clear();
-                if from != 0 {
-                    best.push(Edge {
-                        from: 0,
-                        to: from,
-                        kind: EdgeKind::Sublight,
-                        time_s: departure.0,
-                        fuel_kg: departure.1,
-                    });
-                }
-                best.push(Edge {
-                    from,
-                    to,
-                    kind: EdgeKind::Slip,
-                    time_s: slip.0,
-                    fuel_kg: slip.1,
-                });
-                if to != 1 {
-                    best.push(Edge {
-                        from: to,
-                        to: 1,
-                        kind: EdgeKind::Sublight,
-                        time_s: arrival.0,
-                        fuel_kg: arrival.1,
-                    });
-                }
-            }
-        }
-        ensure!(best_cost.is_finite(), "no reachable direct transfer");
-        Ok(best)
+        return Ok(best);
     }
 
-    pub fn search(
-        &mut self,
-        request: &RouteRequest,
-        environment: &impl RouteEnvironment,
-        work: &mut Work,
-        weights: osg_model::transfer::TransferCost,
-    ) -> Result<Vec<Edge>> {
-        work.charge(self.nodes.len() as u64, environment)?;
-        let mut costs = vec![f64::INFINITY; self.nodes.len()];
-        let mut previous = vec![None::<Edge>; self.nodes.len()];
-        let mut queue = BinaryHeap::new();
-        let mut settled = vec![false; self.nodes.len()];
-        costs[0] = 0.0;
-        queue.push(QueueEntry { node: 0, cost: 0.0 });
+    let remaining_log_loss = remaining_log_loss.min(1e100);
+    let target = environment.capture_target(destination, start_s)?;
+    let goal_reference = target.as_ref().map(|target| target.reference);
+    let charge = (slip::CHARGE_J_PER_KG * performance.mass_kg / performance.slip_power_w)
+        .max(slip::MIN_CHARGE_SECONDS);
+    let deadline = work.deadline - std::time::Duration::from_millis(500);
+    let mut queue = BinaryHeap::new();
+    let mut states = vec![State {
+        pose: origin.clone(),
+        parent: None,
+        depth: 0,
+        seconds: 0.0,
+        fuel: 0.0,
+        exotic: 0.0,
+        loss: 0.0,
+    }];
+    let mut candidates: BTreeMap<Option<CelestialRef>, Vec<CaptureTarget>> = BTreeMap::new();
+    let mut expand = Some(0);
+    let mut forecasts = 0;
+    let mut first_solution = None;
+    let search_limit = work
+        .limit
+        .saturating_sub(ENVIRONMENT_WORK * MAX_ORDERS as u64 * 32);
 
-        while let Some(current) = queue.pop() {
-            work.charge(1, environment)?;
-            if settled[current.node] || current.cost != costs[current.node] {
-                continue;
-            }
-            if current.node == 1 {
-                let mut path = Vec::new();
-                let mut node = 1;
-                while node != 0 {
-                    let edge = previous[node]
-                        .ok_or_else(|| anyhow::anyhow!("route predecessor unavailable"))?;
-                    path.push(edge);
-                    node = edge.from;
-                }
-                path.reverse();
-                return Ok(path);
-            }
-            settled[current.node] = true;
-            let from = current.node;
-            let local = self.nodes[from]
-                .system
-                .and_then(|system| self.groups.get(&system))
-                .cloned()
-                .unwrap_or_default();
-            let mut edges = Vec::with_capacity(2 + 2 * local.len());
-            edges.push((1, EdgeKind::Sublight));
-            for gate in local {
-                if request.preferences.allow_wormholes
-                    && let Some(exit) = self.exits[gate]
-                {
-                    edges.push((2 + exit, EdgeKind::Jump(gate)));
-                }
-                if request.preferences.allow_slipdrive && request.performance.slip_power_w > 0.0 {
-                    edges.push((2 + self.gates.len() + gate, EdgeKind::Sublight));
-                }
-            }
-
-            for (to, kind) in edges {
-                work.charge(1, environment)?;
-                if from == to || settled[to] {
-                    continue;
-                }
-                let (time, fuel) = match kind {
-                    EdgeKind::Jump(entry) => {
-                        let gate = &self.gates[entry];
-                        let mouth = &gate.navigation.pose;
-                        let outward = self.nodes[from]
-                            .pose
-                            .position
-                            .relative_to(mouth.position)
-                            .try_normalize()
-                            .unwrap_or(DVec3::Z);
-                        let mut checkpoint = mouth.clone();
-                        checkpoint.position = mouth.position.offset_by(
-                            outward
-                                * (gate.aperture_radius_m + request.performance.radius_m + 100.0),
-                        );
-                        let approach = transfer(
-                            &request.performance,
-                            weights,
-                            &self.nodes[from].pose,
-                            &checkpoint,
-                        );
-                        let crossing = transfer(&request.performance, weights, &checkpoint, mouth);
-                        let mut clearance = self.nodes[to].pose.clone();
-                        clearance.position = clearance.position.offset_by(DVec3::Z * 98.0);
-                        let departure = transfer(
-                            &request.performance,
-                            weights,
-                            &self.nodes[to].pose,
-                            &clearance,
-                        );
-                        (
-                            approach.0 + crossing.0 + departure.0 + 0.1,
-                            approach.1 + crossing.1 + departure.1,
-                        )
+    loop {
+        ensure!(!environment.cancelled(), "route computation cancelled");
+        if std::time::Instant::now() >= deadline
+            || forecasts >= 512
+            || work.spent + ENVIRONMENT_WORK >= search_limit
+            || first_solution
+                .is_some_and(|time: std::time::Instant| time.elapsed().as_millis() >= 100)
+        {
+            break;
+        }
+        if let Some(parent) = expand.take() {
+            let state = &states[parent];
+            if state.depth < 32 && state.loss < remaining_log_loss {
+                let key = state.parent.as_ref().map(|(_, leg)| leg.target.reference);
+                if !candidates.contains_key(&key) {
+                    let mut neighbors =
+                        environment.candidates(state.pose.position, goal.position, 96)?;
+                    if let Some(target) = &target {
+                        neighbors.retain(|neighbor| neighbor.reference != target.reference);
+                        neighbors.push(target.clone());
                     }
-                    _ => transfer(
-                        &request.performance,
-                        weights,
-                        &self.nodes[from].pose,
-                        &self.nodes[to].pose,
-                    ),
-                };
-                let cost = current.cost + time + weights.seconds_per_kg * fuel;
-                if cost < costs[to] {
-                    costs[to] = cost;
-                    previous[to] = Some(Edge {
-                        from,
-                        to,
-                        kind,
-                        time_s: time,
-                        fuel_kg: fuel,
-                    });
-                    queue.push(QueueEntry { node: to, cost });
+                    candidates.insert(key, neighbors);
                 }
-            }
-
-            if !request.preferences.allow_slipdrive
-                || !self.slip_allowed(from, environment, work)?
-            {
-                continue;
-            }
-            for to in std::iter::once(1).chain(2 + self.gates.len()..self.nodes.len()) {
-                work.charge(1, environment)?;
-                if from == to || settled[to] {
-                    continue;
-                }
-                let distance = self.nodes[to]
-                    .pose
-                    .position
-                    .relative_to(self.nodes[from].pose.position)
-                    .length();
-                if distance <= 1.0 {
-                    continue;
-                }
-                let (preparation, transit) = crate::sim::travel::slip_times_for_distance(
-                    distance,
-                    request.performance.mass_kg,
-                    request.performance.slip_power_w,
-                    None,
-                    0,
-                );
-                if current.cost + preparation + transit >= costs[1].min(costs[to]) {
-                    continue;
-                }
-                let rendezvous = slip_rendezvous(
-                    &request.performance,
-                    weights,
-                    &self.nodes[from].pose,
-                    &self.nodes[to].pose,
-                );
-                let cost = current.cost
-                    + preparation
-                    + transit
-                    + rendezvous.0
-                    + weights.seconds_per_kg * rendezvous.1;
-                if cost < costs[to] {
-                    costs[to] = cost;
-                    previous[to] = Some(Edge {
-                        from,
-                        to,
-                        kind: EdgeKind::Slip,
-                        time_s: preparation + transit + rendezvous.0,
-                        fuel_kg: rendezvous.1,
-                    });
-                    queue.push(QueueEntry { node: to, cost });
+                for next in &candidates[&key] {
+                    let mut ancestor = Some(parent);
+                    let mut cycle = false;
+                    while let Some(index) = ancestor {
+                        ancestor = states[index].parent.as_ref().and_then(|(previous, leg)| {
+                            cycle |= leg.target.reference == next.reference;
+                            (!cycle).then_some(*previous)
+                        });
+                    }
+                    if cycle || next.radius_m <= next.surface_radius_m + performance.radius_m {
+                        continue;
+                    }
+                    let distance = next.pose.position.relative_to(state.pose.position).length();
+                    // Alternative risk allocations share the frontier and discovery.
+                    for divisor in [1., 2., 4., 8., 32.] {
+                        let loss = (remaining_log_loss - state.loss) / divisor;
+                        let ppm = slip::ppm_from_log_loss(loss);
+                        let Some(speed) = slip::fastest_speed_ly_s(
+                            next.radius_m,
+                            distance,
+                            ppm,
+                            next.navigation_beacon.is_some(),
+                        ) else {
+                            continue;
+                        };
+                        let flight = distance / slip::LY_M / speed;
+                        let priority = state.seconds
+                            + weights.seconds_per_kg * state.fuel
+                            + charge
+                            + flight
+                            + 2.0
+                                * remaining_seconds(next.pose.position, goal, target.as_ref(), ppm);
+                        queue.push(Edge {
+                            priority,
+                            parent,
+                            target: next.clone(),
+                            loss,
+                        });
+                    }
                 }
             }
         }
-        anyhow::bail!("no reachable route with the available propulsion and public gates")
+        if queue.len() > 8192 {
+            queue = queue
+                .into_sorted_vec()
+                .into_iter()
+                .rev()
+                .take(4096)
+                .collect();
+        }
+        let Some(edge) = queue.pop() else { break };
+        work.charge(ENVIRONMENT_WORK, environment)?;
+        let state = &states[edge.parent];
+        let mut departure = state.pose.clone();
+        let mut burn = (0.0, 0.0);
+        let mut cleared = false;
+        for _ in 0..16 {
+            work.charge(ENVIRONMENT_WORK, environment)?;
+            let next = environment.departure(
+                &departure,
+                edge.target.pose.position,
+                start_s + state.seconds + burn.0,
+            )?;
+            if next.position == departure.position {
+                cleared = true;
+                break;
+            }
+            let step = transfer(performance, weights, &departure, &next);
+            burn.0 += step.0;
+            burn.1 += step.1;
+            departure = next;
+        }
+        if !cleared {
+            continue;
+        }
+        let departure_after = start_s + state.seconds + burn.0 + charge;
+        let destination = Destination::Relative {
+            reference: Reference::Celestial(edge.target.reference),
+            offset: GalacticPosition::default(),
+            axes: Axes::Galactic,
+        };
+        let target = environment
+            .capture_target(&destination, departure_after)?
+            .unwrap_or(edge.target);
+        let distance = target
+            .pose
+            .position
+            .relative_to(departure.position)
+            .length();
+        let ppm = slip::ppm_from_log_loss(edge.loss);
+        let Some(speed) = slip::fastest_speed_ly_s(
+            target.radius_m,
+            distance,
+            ppm,
+            target.navigation_beacon.is_some(),
+        ) else {
+            continue;
+        };
+        let flight = distance / slip::LY_M / speed;
+        let exotic =
+            state.exotic + slip::exotic_fuel_kg(performance.mass_kg, distance / slip::LY_M);
+        if exotic > performance.exotic_available_kg * request.preferences.fuel_fraction {
+            continue;
+        }
+        let seconds = state.seconds + burn.0 + charge + flight;
+        let fuel = state.fuel + burn.1;
+        let cost = seconds + weights.seconds_per_kg * fuel;
+        if !cost.is_finite() || cost >= best_cost {
+            continue;
+        }
+        forecasts += 1;
+        match environment.slip(
+            departure.position,
+            target.pose.position,
+            departure_after,
+            departure_after + flight,
+            speed,
+        ) {
+            Ok(estimate) if estimate.ready => {}
+            _ => continue,
+        }
+        let outward = departure
+            .position
+            .relative_to(target.pose.position)
+            .normalize_or_zero();
+        let pose = Pose {
+            position: target.pose.position.offset_by(outward * target.radius_m),
+            velocity: departure.velocity,
+            ..target.pose.clone()
+        };
+        let finish = transfer(performance, weights, &pose, goal);
+        let total = cost + finish.0 + weights.seconds_per_kg * finish.1;
+        let reaches_goal = Some(target.reference) == goal_reference;
+        let next = State {
+            pose,
+            parent: Some((
+                edge.parent,
+                Leg {
+                    target,
+                    speed_ly_s: speed,
+                    max_loss_ppm: ppm,
+                },
+            )),
+            depth: state.depth + 1,
+            seconds,
+            fuel,
+            exotic,
+            loss: state.loss + edge.loss,
+        };
+        // Only compare identical physical arrival states. A cheaper arrival at
+        // another time can face different moving obstacles and is not dominant.
+        if states.iter().any(|previous| {
+            previous.pose == next.pose
+                && previous.seconds == next.seconds
+                && previous.fuel <= next.fuel
+                && previous.exotic <= next.exotic
+                && previous.loss <= next.loss
+                && previous.depth <= next.depth
+        }) {
+            continue;
+        }
+        let index = states.len();
+        states.push(next);
+        if total < best_cost
+            && start_s + seconds + finish.0 <= osg_model::travel::MAX_PREDICTION_SECONDS
+        {
+            best_cost = total;
+            best = itinerary(&states, index);
+            if reaches_goal || finish.0 < 3600. {
+                first_solution.get_or_insert_with(std::time::Instant::now);
+            }
+        }
+        expand = Some(index);
     }
+    ensure!(
+        best_cost.is_finite(),
+        "no route found within the search budget and resource allowances"
+    );
+    Ok(best)
 }

@@ -101,7 +101,11 @@ pub fn step(world: &mut World) {
     let mut bodies = Vec::with_capacity(roots.len());
     for (id, (entity, p, m, v, w, force, torque)) in roots.iter().copied().enumerate() {
         lookup.insert(entity, id);
-        let momentum = p.rotation * (m.inertia * (p.rotation.inverse() * w)) + torque * dt;
+        let start = world
+            .get::<crate::sim::travel::ArrivalOffset>(entity)
+            .map_or(0.0, |offset| offset.0.clamp(0.0, dt));
+        let duration = dt - start;
+        let momentum = p.rotation * (m.inertia * (p.rotation.inverse() * w)) + torque * duration;
         bodies.push(Body {
             projectile: world.get::<Projectile>(entity).is_some(),
             launch_owner: world.get::<Projectile>(entity).and_then(|p| p.launch_owner),
@@ -109,8 +113,8 @@ pub fn step(world: &mut World) {
             entity,
             position: p.translation_um,
             rotation: p.rotation,
-            time: 0.0,
-            velocity: v + force / m.mass * dt,
+            time: start,
+            velocity: v + force / m.mass * duration,
             momentum,
             mass: m.mass,
             inertia_inv: m.inertia_inv,
@@ -146,6 +150,7 @@ pub fn step(world: &mut World) {
                 .radius
                 .max(local_position.length() + geometry.shield_radius);
             bodies[id].feature = bodies[id].feature.min(geometry.feature);
+            let start = bodies[id].time;
             bodies[id].members.push(Member {
                 entity,
                 geometry,
@@ -156,7 +161,7 @@ pub fn step(world: &mut World) {
                 hull,
                 thermal,
                 model,
-                thermal_time: 0.0,
+                thermal_time: start,
                 destroyed: false,
             });
         }
@@ -210,6 +215,12 @@ pub fn step(world: &mut World) {
         if design.0.weapon_parts.is_empty() {
             continue;
         }
+        if world
+            .get::<crate::sim::travel::ArrivalOffset>(entity)
+            .is_some()
+        {
+            continue;
+        }
         let Some(hardware) = hardware::snapshot(world, entity) else {
             continue;
         };
@@ -235,11 +246,9 @@ pub fn step(world: &mut World) {
             },
         );
     }
-    let gates = gates::gather(world);
     let (report, mut combat) =
         world.resource_scope(|world, mut workspace: Mut<SolverWorkspace>| {
             workspace.weapons = combat;
-            workspace.gates = gates;
             workspace.time_s = epoch;
             let report = simulate_with_workspace(&mut bodies, dt, &mut workspace, &mut || {
                 world.entity_allocator().alloc()
@@ -292,6 +301,7 @@ pub fn step(world: &mut World) {
             .get::<GravityAcceleration>(body.entity)
             .map_or(DVec3::ZERO, |g| g.0);
         let mut entity = world.entity_mut(body.entity);
+        entity.remove::<crate::sim::travel::ArrivalOffset>();
         entity.get_mut::<PreciseTransform>().unwrap().translation_um = body.position;
         entity.get_mut::<PreciseTransform>().unwrap().rotation = body.rotation;
         entity.get_mut::<Velocity>().unwrap().0 = body.velocity;
@@ -356,9 +366,6 @@ pub fn step(world: &mut World) {
                 p.thermal = member.thermal;
             }
         }
-    }
-    for &(ship, entry) in &report.gate_transfers {
-        crate::sim::travel::gate_transferred(world, ship, entry);
     }
     crate::sim::combat::ingest(world, &report, epoch);
     for destruction in &report.destroyed {

@@ -6,7 +6,6 @@ use std::{
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
 use osg_model::{EntityId, GalacticPosition, Id, chat::*};
-use osg_spatial::{Entry, SpatialHash};
 
 use super::{identity, simulation::SimulationCounters};
 
@@ -18,8 +17,6 @@ pub struct ChatService(Arc<Mutex<State>>);
 #[derive(Default)]
 struct State {
     tick: u64,
-    index: SpatialHash,
-    indexed: Vec<EntityId>,
     sites: BTreeMap<EntityId, Site>,
     inboxes: BTreeMap<EntityId, Inbox>,
     pending: VecDeque<(GalacticPosition, Arc<ChatMessage>)>,
@@ -112,9 +109,15 @@ impl ChatService {
     pub fn flush(&self) {
         let mut state = self.0.lock().expect("chat service poisoned");
         while let Some((position, message)) = state.pending.pop_front() {
-            let recipients = state.index.within_radius(position, LOCAL_RADIUS_M).ids;
-            for slot in recipients {
-                let recipient = state.indexed[slot as usize];
+            let recipients: Vec<_> = state
+                .sites
+                .iter()
+                .filter_map(|(id, site)| {
+                    (site.position.relative_to(position).length_squared() <= LOCAL_RADIUS_M.powi(2))
+                        .then_some(*id)
+                })
+                .collect();
+            for recipient in recipients {
                 let inbox = state.inboxes.entry(recipient).or_default();
                 inbox.sequence = inbox
                     .sequence
@@ -240,21 +243,7 @@ pub fn refresh(world: &mut World) {
     let service = world.resource::<ChatService>();
     let mut state = service.0.lock().expect("chat service poisoned");
     state.tick = world.resource::<SimulationCounters>().ticks;
-    state.index.clear();
-    state.indexed.clear();
     state.inboxes.retain(|id, _| sites.contains_key(id));
-    for (id, site) in &sites {
-        let slot = state.indexed.len();
-        state.indexed.push(*id);
-        state.index.insert(
-            slot as u32,
-            Entry {
-                position: site.position,
-                radius_m: 0.0,
-                luminosity: 0.0,
-            },
-        );
-    }
     state.sites = sites;
 }
 
@@ -268,21 +257,9 @@ mod tests {
         service.flush();
         let mut state = service.0.lock().unwrap();
         state.tick = tick;
-        state.index.clear();
-        state.indexed.clear();
         state.sites.clear();
         for &(id, distance) in locations {
             let position = GalacticPosition::from_meters(DVec3::X * distance);
-            let slot = state.indexed.len();
-            state.indexed.push(id);
-            state.index.insert(
-                slot as u32,
-                Entry {
-                    position,
-                    radius_m: 0.0,
-                    luminosity: 0.0,
-                },
-            );
             state.sites.insert(
                 id,
                 Site {

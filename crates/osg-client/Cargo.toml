@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = []
 profile = ["ui", "bevy/trace_chrome"]
-ui = ["dep:bevy", "dep:osg-ui", "dep:osg-ship-view", "dep:osg-stars", "dep:osg-space", "dep:osg-universe", "dep:hifitime"]
+ui = ["dep:bevy", "dep:osg-ui", "dep:osg-ship-view", "dep:osg-stars", "dep:osg-space", "dep:hifitime"]
 
 [dependencies]
 bevy = { workspace = true, optional = true }
@@ -30,7 +30,7 @@ osg-stars = { path = "../osg-stars", optional = true }
 
 osg-space = { path = "../osg-space", optional = true }
 
-osg-universe = { path = "../osg-universe", optional = true }
+osg-universe = { path = "../osg-universe" }
 hifitime = { version = "4.3.1", optional = true }
 
 [[bin]]

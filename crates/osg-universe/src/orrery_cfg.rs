@@ -4,6 +4,7 @@ use smol_str::SmolStr;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OrreryCfg {
+    pub key: SmolStr,
     pub name: SmolStr,
     #[serde(default)]
     pub position_um: crate::precision::GalacticPosition,
@@ -13,6 +14,9 @@ pub struct OrreryCfg {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct Body {
+    /// Stable local identity, independent of the displayed name.
+    #[serde(default)]
+    pub key: SmolStr,
     pub name: SmolStr,
     #[serde(flatten)]
     pub class_params: BodyClass,

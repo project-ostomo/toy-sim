@@ -1,15 +1,17 @@
-use super::{hardware, identity, physics, precision, registry, spatial, travel, vessel};
-use anyhow::Result;
+use super::{hardware, identity, ownership, physics, precision, registry, spatial, travel, vessel};
+use anyhow::{Context, Result};
 use bevy::{ecs::system::RunSystemOnce, math::DVec3, prelude::*};
-use osg_model::*;
-use std::sync::Arc;
+use osg_model::{
+    Id, industry,
+    ownership::{AccessPolicy, Permission, Principal},
+};
+use std::{collections::BTreeMap, sync::Arc};
 
-pub(crate) mod exclusion;
-mod navigation;
 #[cfg(test)]
-use navigation::catalogue;
+#[path = "infrastructure/docking_tests.rs"]
+mod docking_tests;
+mod navigation;
 pub use navigation::{NavigationPublication, navigation_snapshot, publish_navigation};
-pub(crate) use navigation::{capture_navigation, restore_navigation};
 
 #[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Landmark {
@@ -17,142 +19,36 @@ pub struct Landmark {
     pub name: String,
 }
 
-#[derive(Component, Clone, serde::Serialize, serde::Deserialize)]
-pub struct GateOrbit {
-    pub system: usize,
-    body: String,
-    offset: DVec3,
-    axis: DVec3,
-    rate: f64,
-    epoch_seconds: f64,
-}
-
-impl GateOrbit {
-    pub(crate) fn pose(
-        &self,
-        universe: &osg_universe::universe::Universe,
-        epoch: hifitime::Epoch,
-    ) -> Option<(GalacticPosition, DVec3)> {
-        let seconds = (epoch - hifitime::Epoch::from_mjd_utc(0.0)).to_seconds();
-        let angle = self.rate * (seconds - self.epoch_seconds);
-        let offset = bevy::math::DQuat::from_axis_angle(self.axis, angle) * self.offset;
-        let position = universe.solve_position(&self.body, epoch)?;
-        let motion = universe.solve_velocity(&self.body, epoch)?;
-        Some((
-            position.offset_by(offset),
-            motion + self.axis.cross(offset) * self.rate,
-        ))
-    }
-
-    pub(crate) fn envelope(
-        &self,
-        universe: &osg_universe::universe::Universe,
-    ) -> Option<(GalacticPosition, f64)> {
-        let system = universe.systems.get(self.system)?;
-        let mut radius = self.offset.length();
-        let mut body = system.solver.get_body(&self.body)?;
-        loop {
-            radius += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
-            let Some(parent) = &body.parent else {
-                break;
-            };
-            body = system.solver.get_body(parent)?;
-        }
-        Some((system.solver.anchor, radius))
-    }
-
-    pub(crate) fn valid(&self, universe: &osg_universe::universe::Universe) -> bool {
-        universe.system_for(&self.body) == Some(self.system)
-            && self.offset.is_finite()
-            && self.offset.length_squared() > 0.0
-            && self.axis.is_normalized()
-            && self.rate.is_finite()
-            && self.rate >= 0.0
-            && self.epoch_seconds.is_finite()
-    }
-}
-
-pub fn move_gates(
-    universe: Res<super::orrery::Universe>,
-    time: Res<Time<Fixed>>,
-    mut gates: Query<(
-        &GateOrbit,
-        &mut precision::PreciseTransform,
-        &mut physics::Velocity,
-    )>,
-) {
-    let epoch = physics::sim_time(&time);
-    let mut references = std::collections::HashMap::new();
-    for (orbit, mut pose, mut velocity) in &mut gates {
-        let angle = orbit.rate * (time.elapsed_secs_f64() - orbit.epoch_seconds);
-        let offset = bevy::math::DQuat::from_axis_angle(orbit.axis, angle) * orbit.offset;
-        let reference = references.entry(orbit.body.as_str()).or_insert_with(|| {
-            universe
-                .solve_position(&orbit.body, epoch)
-                .zip(universe.solve_velocity(&orbit.body, epoch))
-        });
-        if let Some((position, motion)) = *reference {
-            pose.translation_um = position.offset_by(offset);
-            velocity.0 = motion + orbit.axis.cross(offset) * orbit.rate;
-        }
-    }
-}
-
-pub fn enforce_exclusion(world: &mut World) {
-    let mouths = exclusion::candidates(world);
-    let mut unstable = Vec::new();
-    for (entity, position, exclusion) in mouths {
-        let candidates = travel::geometry::mouth_candidates(world, position, exclusion);
-        for other in candidates {
-            if entity == other {
-                continue;
-            }
-            let overlap = match (
-                world.get::<travel::Gate>(other),
-                world.get::<precision::PreciseTransform>(other),
-            ) {
-                (Some(gate), Some(pose)) => {
-                    gate.enabled
-                        && pose.translation_um.relative_to(position).length()
-                            < exclusion + gate.exclusion_m
-                }
-                _ => false,
-            };
-            if overlap {
-                unstable.extend([entity, other]);
-            }
-        }
-    }
-    unstable.sort_unstable();
-    unstable.dedup();
-    for entity in unstable {
-        world.get_mut::<travel::Gate>(entity).unwrap().enabled = false;
-        travel::geometry::update(world, entity);
-        warn!(
-            ?entity,
-            "Wormhole mouth lost stability: exclusion volumes overlap"
-        );
-    }
+/// Authentication is independent of whether the installation advertises itself publicly.
+pub fn authenticated_navigation_beacon(world: &World, ship: Entity, beacon: Id) -> bool {
+    let Ok(beacon) = identity::lookup(world, beacon) else {
+        return false;
+    };
+    let Some(owner) = world.get::<ownership::AssetOwner>(ship) else {
+        return false;
+    };
+    world
+        .get::<identity::NavigationBeaconEmitter>(beacon)
+        .is_some()
+        && world.get::<travel::Dormant>(beacon).is_none()
+        && ownership::principal_access(world, owner.0, beacon, Permission::Navigate)
 }
 
 pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
     let owner = Id::new();
-    let organization = super::ownership::organization_id("Helion Flight Cooperative");
-    super::ownership::affiliate(world, owner, Some(organization))?;
+    let organization = ownership::organization_id("Helion Flight Cooperative");
+    ownership::affiliate(world, owner, Some(organization))?;
     let player_pose = *world.get::<precision::PreciseTransform>(player).unwrap();
     let velocity = world.get::<physics::Velocity>(player).unwrap().0;
-    let universe = world
-        .resource::<registry::UniverseRegistry>()
-        .universe
-        .clone();
+    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let design = osg_ships::ShipBlueprint::from_bytes(include_bytes!(
         "../../../../assets/ships/neris-anchorage.ship"
     ))?
-    .compile(&world.resource::<vessel::ShipCatalogue>().0)?;
+    .compile(&catalogue)?;
     let station_pose = precision::PreciseTransform {
         translation_um: player_pose
             .translation_um
-            .offset_by(player_pose.rotation * DVec3::new(0., 0., -5000.)),
+            .offset_by(player_pose.rotation * DVec3::new(0.0, 0.0, -5000.0)),
         rotation: player_pose.rotation,
     };
     let station = vessel::spawn_ship(
@@ -162,1377 +58,391 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         velocity,
         "Neris Anchorage".into(),
     )?;
-    world
-        .run_system_once(hardware::initialize)
-        .map_err(|error| anyhow::anyhow!("hardware initialization failed: {error:?}"))?;
     identity::attach_ship(world, station, owner)?;
-    world
-        .entity_mut(station)
-        .insert(super::ownership::AssetOwner(
-            ownership::Principal::Organization(organization),
-        ));
+    let system = world
+        .resource::<registry::UniverseRegistry>()
+        .universe
+        .system_id_for_name("Helion system")
+        .context("Helion system missing")?;
     world.entity_mut(station).insert((
-        identity::BeaconEmitter,
+        ownership::AssetOwner(Principal::Organization(organization)),
         Landmark {
-            system: registry::system_identity("Helion system"),
+            system: Id(system),
             name: "Neris Anchorage".into(),
         },
     ));
     world
-        .get_mut::<identity::Transponder>(station)
-        .unwrap()
-        .0
-        .labels
-        .insert("Neris Anchorage".into());
-    let design = &world.get::<vessel::ShipDesign>(station).unwrap().0;
-    let bays = design
-        .parts
-        .iter()
-        .filter_map(|part| {
-            let osg_ships::Equipment::Utility {
-                utility:
-                    osg_ships::utilities::UtilityDef::Docking {
-                        radius_m,
-                        mass_capacity_kg,
-                    },
-            } = part.definition.equipment
-            else {
-                return None;
-            };
-            Some(travel::Bay {
-                centre_m: (part.centre - design.centre).to_array(),
-                rotation: bevy::math::DQuat::from_mat3(&part.rotation).to_array(),
-                radius_m,
-                mass_capacity_kg,
-                public: true,
-                allowed: Default::default(),
-                reservation: None,
-            })
-        })
-        .collect();
-    world.entity_mut(station).insert(travel::DockingBays(bays));
-    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
-    let resource = catalogue
-        .resources
-        .iter()
-        .position(|r| r.id == "repair_material");
-    if let Some(resource) = resource {
-        let item = industry::CargoItem::Resource("repair_material".into());
-        for (entity, allocation) in [(station, 20_000), (player, 100)] {
-            let capacity = world
-                .get::<vessel::ShipDesign>(entity)
-                .unwrap()
-                .0
-                .capacity_m3;
-            let mut inventory = world.get_mut::<hardware::ShipInventory>(entity).unwrap();
-            let room = ((capacity - inventory.0.cargo_volume(&catalogue)).max(0.)
-                / catalogue.resources[resource].volume_m3)
-                .floor() as u64;
-            let quantity = allocation.min(room);
-            if quantity > 0 {
-                inventory
-                    .0
-                    .insert_item(&item, quantity, capacity, &catalogue)?;
-            }
+        .run_system_once(hardware::initialize)
+        .map_err(|error| anyhow::anyhow!("hardware initialization failed: {error:?}"))?;
+    if let Some(mut bays) = world.get_mut::<travel::DockingBays>(station) {
+        for bay in &mut bays.0 {
+            bay.public = true;
         }
     }
+    for (resource, quantity) in [("repair_material", 20_000), ("exotic_fuel", 10_000_000)] {
+        let capacity = world
+            .get::<vessel::ShipDesign>(station)
+            .unwrap()
+            .0
+            .capacity_m3;
+        world
+            .get_mut::<hardware::ShipInventory>(station)
+            .unwrap()
+            .0
+            .insert_item(
+                &industry::CargoItem::Resource(resource.into()),
+                quantity,
+                capacity,
+                &catalogue,
+            )?;
+    }
+    let capacity = world
+        .get::<vessel::ShipDesign>(player)
+        .unwrap()
+        .0
+        .capacity_m3;
+    let repair = catalogue
+        .resources
+        .iter()
+        .find(|resource| resource.id == "repair_material")
+        .context("repair material unavailable")?;
+    let mut inventory = world.get_mut::<hardware::ShipInventory>(player).unwrap();
+    let available = ((capacity - inventory.0.cargo_volume(&catalogue)).max(0.0) / repair.volume_m3)
+        .floor() as u64;
+    inventory.0.insert_item(
+        &industry::CargoItem::Resource("repair_material".into()),
+        available.min(100),
+        capacity,
+        &catalogue,
+    )?;
+    super::industry::synchronize_mass(world, &[player]);
 
     let account = world.get::<identity::Control>(player).unwrap().account;
     super::industry::seed_demo(world, station, account)?;
-    spawn_gates(world, &universe, player_pose, velocity)?;
+    spawn_navigation_installations(world)?;
+    hardware::utilities::refresh_emitters(world);
     Ok(())
 }
 
-fn gate_operator(world: &mut World, sovereignty: &str) -> Result<(Id, Id)> {
+fn operator(world: &mut World, sovereignty: &str) -> Result<(Id, Id)> {
     use osg_model::ownership::Organization;
 
     let name = match sovereignty {
         "USE" => "Unifleet Station Services".to_owned(),
         "Helion Commonwealth" => "Helion Flight Cooperative".to_owned(),
         "St Raphael Commonwealth" => "St Raphael Trade Confraternity".to_owned(),
-        name => format!("{name} Gate Services"),
+        name => format!("{name} Navigation Services"),
     };
-    let organization = super::ownership::organization_id(&name);
+    let organization = ownership::organization_id(&name);
     world
-        .resource_mut::<super::ownership::Directory>()
+        .resource_mut::<ownership::Directory>()
         .0
         .organizations
         .entry(organization)
         .or_insert_with(|| Organization {
             id: organization,
             name,
-            sovereignty: super::ownership::sovereignty_id(sovereignty),
+            sovereignty: ownership::sovereignty_id(sovereignty),
             officers: Default::default(),
             open_membership: false,
         });
-    let account = super::ownership::principal_id("gate operator", sovereignty);
-    super::ownership::affiliate(world, account, Some(organization))?;
+    let account = ownership::principal_id("navigation operator", sovereignty);
+    ownership::affiliate(world, account, Some(organization))?;
     identity::add_account(world, account, false);
     Ok((account, organization))
 }
 
-pub fn gate_reference(system: &osg_universe::universe::SystemDefinition) -> (&str, f64) {
-    let mut stars: Vec<_> = system
-        .solver
+pub(crate) fn installation_frame(
+    system: &osg_universe::universe::SystemDefinition,
+    epoch: hifitime::Epoch,
+) -> Result<(precision::PreciseTransform, DVec3)> {
+    use super::orrery::BodyClass;
+
+    let solver = &system.solver;
+    let mut references: Vec<_> = solver
         .iter()
-        .filter_map(|body| {
-            if let super::orrery::BodyClass::Star { lumens } = body.class_params {
-                Some((body, lumens))
-            } else {
-                None
-            }
+        .filter(|body| {
+            matches!(
+                body.class_params,
+                BodyClass::Star { .. } | BodyClass::Barycenter
+            )
         })
         .collect();
-    stars.sort_by(|a, b| b.1.total_cmp(&a.1));
-    for (star, _) in &stars {
-        let radius = 1.5e11_f64.max(star.radius * 4.0);
+    references.sort_by(|a, b| {
+        let rank = |body: &osg_universe::orrery_cfg::Body| {
+            matches!(body.class_params, BodyClass::Barycenter)
+        };
+        rank(a)
+            .cmp(&rank(b))
+            .then_with(|| b.mass.total_cmp(&a.mass))
+    });
+
+    for reference in references {
+        let extent = solver
+            .iter()
+            .filter(|body| matches!(body.class_params, BodyClass::Star { .. }))
+            .filter_map(|star| {
+                let mut reach = star.radius;
+                let mut body = star;
+                loop {
+                    if body.name == reference.name {
+                        return Some(reach);
+                    }
+                    reach += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
+                    body = solver.get_body(body.parent.as_ref()?)?;
+                }
+            })
+            .fold(0.0, f64::max);
         let mut stable_radius = f64::INFINITY;
-        let mut child = *star;
+        let mut child = reference;
         let mut inner_extent = 0.0;
-        while let Some(parent) = child
-            .parent
-            .as_ref()
-            .and_then(|name| system.solver.get_body(name))
-        {
-            let companion = system
-                .solver
-                .iter()
-                .find(|body| body.parent.as_ref() == Some(&parent.name) && body.name != child.name);
-            if let Some(companion) = companion {
+        while let Some(parent) = child.parent.as_ref().and_then(|name| solver.get_body(name)) {
+            for companion in solver.iter().filter(|body| {
+                body.parent.as_ref() == Some(&parent.name) && body.name != child.name
+            }) {
                 let separation = child.orbit.semi_major + companion.orbit.semi_major;
                 let periapsis =
                     separation * (1.0 - child.orbit.eccentricity.max(companion.orbit.eccentricity));
-                let bound = 0.1 * periapsis * (star.mass / parent.mass).cbrt() - inner_extent;
+                let bound = 0.1 * periapsis * (reference.mass / parent.mass).cbrt() - inner_extent;
                 stable_radius = stable_radius.min(bound);
             }
             inner_extent += child.orbit.semi_major * (1.0 + child.orbit.eccentricity);
             child = parent;
         }
-        if radius + 1e7 < stable_radius {
-            return (star.name.as_str(), radius);
+        let radius = (extent * 4.0).max(1.5e11).min(stable_radius * 0.5);
+        if radius < extent * 4.0 || !radius.is_finite() {
+            continue;
         }
-    }
-    let stellar_extent = stars
-        .iter()
-        .map(|(body, _)| orbital_extent(system, body))
-        .fold(0.0, f64::max);
-    (
-        system.root_name.as_str(),
-        (stellar_extent * 4.0).max(1.5e11),
-    )
-}
-
-fn orbital_extent<'a>(
-    system: &'a osg_universe::universe::SystemDefinition,
-    body: &'a super::orrery::orrery_cfg::Body,
-) -> f64 {
-    let mut extent = body.radius;
-    let mut ancestor = Some(body);
-    while let Some(body) = ancestor {
-        extent += body.orbit.semi_major * (1.0 + body.orbit.eccentricity);
-        ancestor = body
-            .parent
-            .as_ref()
-            .and_then(|parent| system.solver.get_body(parent));
-    }
-    extent
-}
-
-pub fn gate_activation_extent(system: &osg_universe::universe::SystemDefinition) -> f64 {
-    let (reference, radius) = gate_reference(system);
-    orbital_extent(system, system.solver.get_body(reference).unwrap()) + radius + 1e10
-}
-
-fn spawn_gates(
-    world: &mut World,
-    universe: &osg_universe::universe::Universe,
-    player_pose: precision::PreciseTransform,
-    player_velocity: DVec3,
-) -> Result<()> {
-    use anyhow::ensure;
-
-    let map = osg_universe::civilization::map();
-    ensure!(
-        universe.systems.len() == map.systems.len(),
-        "inhabited map and universe differ"
-    );
-    let mut operators = std::collections::HashMap::new();
-    for system in &map.systems {
-        if !operators.contains_key(&system.sovereignty) {
-            let operator = gate_operator(world, &system.sovereignty)?;
-            operators.insert(system.sovereignty.clone(), operator);
+        let centre = solver
+            .solve_position(&reference.name, epoch)
+            .context("system position missing")?;
+        if centre.relative_to(solver.anchor).length() + radius > system.influence {
+            continue;
         }
+        let velocity = solver
+            .solve_velocity(&reference.name, epoch)
+            .context("system velocity missing")?;
+        let speed = (physics::GRAVITATIONAL_CONSTANT * reference.mass / radius).sqrt();
+        return Ok((
+            precision::PreciseTransform {
+                translation_um: centre.offset_by(DVec3::X * radius),
+                ..Default::default()
+            },
+            velocity + DVec3::Y * speed,
+        ));
     }
-    let mut degrees = vec![0; map.systems.len()];
-    for link in &map.links {
-        degrees[link.a] += 1;
-        degrees[link.b] += 1;
-    }
-    let mut slots = vec![0; map.systems.len()];
+    anyhow::bail!("no orbital location inside influence of {}", solver.name)
+}
+
+fn navigation_design(
+    catalogue: &osg_ships::Catalogue,
+) -> Result<Arc<osg_ships::CompiledShipDesign>> {
+    let mut blueprint = osg_ships::ShipBlueprint {
+        name: "Navigation installation".into(),
+        ..Default::default()
+    };
+    blueprint.attach("station_core_32m", 0, "", "", 0);
+    blueprint.attach("directory_transmitter_48m", 1, "aft", "fore", 0);
+    blueprint.attach("navigation_beacon_4m", 2, "left", "right", 0);
+    blueprint.attach("reactor_hot_4m", 1, "left", "right", 0);
+    blueprint.attach("radiator_32m", 4, "left", "right", 0);
+    blueprint.attach("battery", 1, "top", "bottom", 0);
+    blueprint.attach("command_2m", 1, "bottom", "top", 0);
+    blueprint.parts[0].tanks = vec![
+        osg_ships::Tank {
+            resource: "reactor_fuel".into(),
+            volume_m3: 2.0,
+            initial_fill: 1.0,
+        },
+        osg_ships::Tank {
+            resource: "spent_fuel".into(),
+            volume_m3: 2.0,
+            initial_fill: 0.0,
+        },
+    ];
+    Ok(Arc::new(blueprint.compile(catalogue)?))
+}
+
+fn spawn_navigation_installations(world: &mut World) -> Result<()> {
+    let universe = world
+        .resource::<registry::UniverseRegistry>()
+        .universe
+        .clone();
+    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
+    let design = navigation_design(&catalogue)?;
     let epoch = physics::sim_time(world.resource::<Time<Fixed>>());
-    let epoch_seconds = world.resource::<Time<Fixed>>().elapsed_secs_f64();
-    for link in &map.links {
-        let ids = [
-            registry::gate_identity(
-                &map.systems[link.a].catalogue_id,
-                &map.systems[link.b].catalogue_id,
-            ),
-            registry::gate_identity(
-                &map.systems[link.b].catalogue_id,
-                &map.systems[link.a].catalogue_id,
-            ),
-        ];
-        for (side, index) in [link.a, link.b].into_iter().enumerate() {
-            let system = &universe.systems[index];
-            let settlement = &map.systems[index];
-            ensure!(
-                system.solver.name.as_str() == settlement.name,
-                "map system order differs"
-            );
-            let remote = &universe.systems[if side == 0 { link.b } else { link.a }];
-            let (owner, organization) = operators[&settlement.sovereignty];
-            let slot = slots[index];
-            slots[index] += 1;
-            let starting_system = system.solver.name == "Helion system";
-            let (gate_reference, orbit_radius) = gate_reference(system);
-            let reference = if starting_system {
-                super::scenario::INITIAL_SCENARIO.body
-            } else {
-                gate_reference
-            };
-            let body = universe.get_body(reference).unwrap();
-            let centre = universe.solve_position(reference, epoch).unwrap();
-            let body_velocity = universe.solve_velocity(reference, epoch).unwrap();
-            let (offset, axis) = if starting_system {
-                let first = player_pose
-                    .translation_um
-                    .offset_by(DVec3::new(20000., 0., -10000.));
-                let base = first.relative_to(centre);
-                let axis = base
-                    .cross(player_velocity - body_velocity)
-                    .normalize_or(DVec3::Z);
-                let angle = slot as f64 * std::f64::consts::TAU / degrees[index] as f64;
-                (bevy::math::DQuat::from_axis_angle(axis, angle) * base, axis)
-            } else {
-                let radius = orbit_radius;
-                let angle = slot as f64 * 6e7 / radius;
-                (DVec3::new(angle.cos(), angle.sin(), 0.0) * radius, DVec3::Z)
-            };
-            let position = centre.offset_by(offset);
-            let radius = if starting_system {
-                player_pose
-                    .translation_um
-                    .offset_by(DVec3::new(20000., 0., -10000.))
-                    .relative_to(centre)
-                    .length()
-            } else {
-                orbit_radius
-            };
-            let rate = (physics::GRAVITATIONAL_CONSTANT * body.mass / radius.powi(3)).sqrt();
-            let name = format!("{} gate", remote.solver.name);
-            let entity = world
-                .spawn((
-                    precision::PreciseTransform {
-                        translation_um: position,
-                        ..Default::default()
-                    },
-                    identity::Control {
-                        account: owner,
-                        revision: 1,
-                    },
-                    super::ownership::AssetOwner(ownership::Principal::Organization(organization)),
-                    super::ownership::AssetAccess::default(),
-                    identity::Transponder(IffIdentity {
-                        owner,
-                        faction: Some(organization),
-                        labels: [name.clone()].into(),
-                        enabled: true,
-                        range_m: 1e12,
-                    }),
-                    identity::BeaconEmitter,
-                    identity::FixedBeacon,
-                    physics::Velocity(body_velocity + axis.cross(offset) * rate),
-                    GateOrbit {
-                        system: index,
-                        body: reference.into(),
-                        offset,
-                        axis,
-                        rate,
-                        epoch_seconds,
-                    },
-                    spatial::SpatialBody {
-                        radius_m: 256.,
-                        occludes: false,
-                    },
-                    travel::Gate {
-                        paired: ids[1 - side],
-                        radius_m: 220.,
-                        exclusion_m: travel::GATE_EXCLUSION_M,
-                        enabled: true,
-                    },
-                    Landmark {
-                        system: registry::system_identity(&system.solver.name),
-                        name,
-                    },
-                ))
-                .id();
-            identity::register(world, entity, ids[side]);
-        }
+    let mut operators = BTreeMap::new();
+    for settlement in &osg_universe::civilization::map().systems {
+        let system = universe
+            .system_id_for_name(&settlement.name)
+            .with_context(|| format!("unknown initial settlement {}", settlement.name))?;
+        let definition = universe.resolve(system)?;
+        let (pose, velocity) = installation_frame(&definition, epoch)?;
+        let (account, organization) = if let Some(operator) = operators.get(&settlement.sovereignty)
+        {
+            *operator
+        } else {
+            let value = operator(world, &settlement.sovereignty)?;
+            operators.insert(settlement.sovereignty.clone(), value);
+            value
+        };
+        let mut state = osg_ships::ShipState::new(&design, &catalogue);
+        state.inventory.energy_j = design.battery_j;
+        let (mass, inertia) = state.mass_properties(&design, &catalogue);
+        let name = format!("{} navigation beacon", settlement.name);
+        let entity = world
+            .spawn((
+                vessel::Vessel {
+                    vessel_name: name.clone().into(),
+                },
+                vessel::ShipDesign(design.clone()),
+                hardware::bundle(&design, state),
+                travel::Travel::default(),
+                travel::PresenceState::default(),
+                travel::StoredMass::default(),
+                physics::AngularVelocity(DVec3::ZERO),
+                pose,
+                physics::Velocity(velocity),
+                physics::aerodynamics::AeroModel::new(design.semi_axes),
+                physics::MassProps {
+                    mass,
+                    inertia,
+                    inertia_inv: inertia.inverse(),
+                },
+                spatial::SpatialBody {
+                    radius_m: design.radius,
+                    occludes: true,
+                },
+                super::sensors::Sensor::default(),
+                Landmark {
+                    system: Id(system),
+                    name,
+                },
+            ))
+            .id();
+        identity::attach_ship(world, entity, account)?;
+        world.entity_mut(entity).insert((
+            ownership::AssetOwner(Principal::Organization(organization)),
+            ownership::AssetAccess(AccessPolicy {
+                public: [Permission::Navigate].into(),
+                grants: Vec::new(),
+            }),
+        ));
     }
+    world
+        .run_system_once(hardware::initialize)
+        .map_err(|error| anyhow::anyhow!("initialize navigation hardware: {error:?}"))?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, Instant};
-
-    fn finish_route_planning(world: &mut World, ship: Entity) -> osg_model::travel::TravelState {
-        use osg_model::travel::Status;
-
-        let started = Instant::now();
-        let deadline = started + Duration::from_secs(30);
-        loop {
-            travel::plan_orders(world);
-            super::super::route_service::advance(world);
-            travel::plan_orders(world);
-
-            let state = world.get::<travel::Travel>(ship).unwrap();
-            match &state.0.status {
-                Status::Planning => {
-                    assert!(state.0.planning.is_some(), "planning must report progress");
-                }
-                Status::Active => {
-                    eprintln!("server route completed in {:?}", started.elapsed());
-                    return state.0.clone();
-                }
-                status => panic!("route planning failed: {status:?}"),
-            }
-            assert!(
-                Instant::now() < deadline,
-                "route worker did not finish within 30 seconds: {:?}",
-                state.0.planning
-            );
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
 
     #[test]
-    fn terminus_plans_warn_for_fuel_exhaustion_and_offer_slower_economical_routes() {
-        check_terminus_allowances(true);
-    }
+    fn wide_binary_installations_remain_within_system_influence() {
+        use osg_universe::orrery_cfg::{Body, BodyClass, Orbit, OrreryCfg};
 
-    #[test]
-    fn slip_only_terminus_plans_respect_fuel_without_searching_the_gate_network() {
-        check_terminus_allowances(false);
-    }
-
-    fn check_terminus_allowances(allow_wormholes: bool) {
-        use osg_model::travel::{Destination, Order, PlanningPreferences, Status, TravelState};
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        let opponents: Vec<_> = app
-            .world_mut()
-            .query_filtered::<Entity, (
-                With<vessel::ShipSoftware>,
-                Without<vessel::ControlledVessel>,
-            )>()
-            .iter(app.world())
-            .collect();
-        for entity in opponents {
-            app.world_mut()
-                .entity_mut(entity)
-                .remove::<vessel::ShipSoftware>();
-        }
-        for _ in 0..100 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let terminus = registry::system_identity("Terminus system");
-        let destination = world
-            .query::<(&identity::Identity, &Landmark)>()
-            .iter(world)
-            .find(|(_, landmark)| landmark.system == terminus)
-            .unwrap()
-            .0
-            .0;
-        let mut budgets = Vec::new();
-        let mut durations = Vec::new();
-        for fuel_fraction in [1., 0.5, 0.25] {
-            let revision = app
-                .world()
-                .get::<travel::Travel>(player)
-                .unwrap()
-                .0
-                .revision
-                + 1;
-            app.world_mut()
-                .entity_mut(player)
-                .insert(travel::Travel(TravelState {
-                    autopilot_enabled: true,
-                    revision,
-                    preferences: PlanningPreferences {
-                        fuel_fraction,
-                        allow_wormholes,
-                        ..Default::default()
-                    },
-                    orders: vec![Order::TravelTo(Destination::Beacon(destination)).into()],
-                    status: Status::Planning,
-                    ..Default::default()
-                }));
-            let started = std::time::Instant::now();
-            if !allow_wormholes {
-                loop {
-                    let world = app.world_mut();
-                    travel::plan_orders(world);
-                    super::super::route_service::advance(world);
-                    travel::plan_orders(world);
-                    let status = &world.get::<travel::Travel>(player).unwrap().0.status;
-                    assert!(
-                        started.elapsed().as_secs_f64() < 5.0,
-                        "direct planning stalled"
-                    );
-                    match status {
-                        Status::Planning => std::thread::sleep(Duration::from_millis(1)),
-                        Status::Blocked(reason) => {
-                            assert!(reason.contains("fuel allowance"), "{reason}");
-                            eprintln!(
-                                "direct slip reported insufficient fuel in {:?}",
-                                started.elapsed()
-                            );
-                            return;
-                        }
-                        Status::Active => break,
-                        other => panic!("unexpected route status {other:?}"),
-                    }
-                }
-            }
-            let state = finish_route_planning(app.world_mut(), player);
-            if !allow_wormholes {
-                assert!(
-                    started.elapsed().as_secs_f64() < 5.0,
-                    "direct slip planning took {:?}",
-                    started.elapsed()
-                );
-                assert!(
-                    state
-                        .orders
-                        .iter()
-                        .all(|order| !matches!(order.action, Order::Jump(_)))
-                );
-            }
-            let budget = state.fuel_budget.unwrap();
-            assert!(
-                budget.complete && !budget.resources.is_empty(),
-                "{budget:?}"
-            );
-            assert!(
-                state
-                    .orders
-                    .iter()
-                    .any(|stage| matches!(stage.action, Order::Slip { .. }))
-            );
-            let duration_ticks = state
-                .orders
-                .iter()
-                .map(|stage| stage.estimated_duration_ticks)
-                .collect::<Option<Vec<_>>>()
-                .expect("every strategic stage has an ETA")
-                .into_iter()
-                .sum::<u64>();
-            eprintln!("fuel allowance {fuel_fraction}: {duration_ticks} ticks; {budget:?}");
-            durations.push(duration_ticks);
-            budgets.push(budget);
-        }
-        for (budget, fraction) in budgets.iter().zip([1., 0.5, 0.25]) {
-            assert!(
-                budget
-                    .resources
-                    .iter()
-                    .all(|r| r.required_kg <= r.available_kg * fraction + 1e-6)
-            );
-        }
-        assert!(
-            durations.windows(2).all(|pair| pair[0] <= pair[1]),
-            "{durations:?}"
-        );
-        let required = |budget: &osg_model::travel::FuelBudget| {
-            budget.resources.iter().map(|r| r.required_kg).sum::<f64>()
+        let root = Body {
+            key: "root".into(),
+            name: "Wide pair".into(),
+            class_params: BodyClass::Barycenter,
+            mass: 4e30,
+            ..Default::default()
         };
-        assert!(required(&budgets[2]) <= required(&budgets[1]));
-        assert!(required(&budgets[1]) <= required(&budgets[0]));
+        let mut bodies = vec![root];
+        for (name, anomaly) in [("Primary", 0.0), ("Companion", 180.0)] {
+            bodies.push(Body {
+                key: name.into(),
+                name: name.into(),
+                parent: Some("Wide pair".into()),
+                class_params: BodyClass::Star { lumens: 1e26 },
+                mass: 2e30,
+                radius: 1e9,
+                orbit: Orbit {
+                    semi_major: 3e15,
+                    period: std::f64::consts::TAU
+                        * (6e15_f64.powi(3) / (physics::GRAVITATIONAL_CONSTANT * 4e30)).sqrt(),
+                    mean_anomaly: anomaly,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+        }
+        let universe = osg_universe::universe::Universe::init(OrreryCfg {
+            key: "wide-system".into(),
+            name: "Wide system".into(),
+            bodies,
+            position_um: Default::default(),
+        })
+        .unwrap();
+        let system = universe.resolve_index(0).unwrap();
+        let (pose, velocity) =
+            installation_frame(&system, hifitime::Epoch::from_mjd_utc(0.0)).unwrap();
+        assert!(velocity.is_finite());
+        assert_eq!(
+            universe.containing_segment(pose.translation_um, DVec3::ZERO),
+            vec![0]
+        );
     }
 
     #[test]
-    fn stock_computer_plans_terminus_from_default_spawn() {
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        for _ in 0..100 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let terminus = registry::system_identity("Terminus system");
-        let destination = world
-            .query::<(&identity::Identity, &Landmark)>()
-            .iter(world)
-            .find(|(_, landmark)| landmark.system == terminus)
+    fn navigation_permission_is_independent_of_public_directory_visibility() {
+        let mut world = World::new();
+        identity::initialize(&mut world, &[]);
+        let ship = world
+            .spawn(ownership::AssetOwner(Principal::Player(Id::new())))
+            .id();
+        let beacon = world
+            .spawn((
+                ownership::AssetOwner(Principal::Player(Id::new())),
+                ownership::AssetAccess(AccessPolicy {
+                    public: [Permission::Navigate].into(),
+                    grants: Vec::new(),
+                }),
+                identity::NavigationBeaconEmitter,
+            ))
+            .id();
+        let id = Id::new();
+        identity::register(&mut world, beacon, id);
+        assert!(!identity::public_directory_emitter(&world, beacon));
+        assert!(authenticated_navigation_beacon(&world, ship, id));
+
+        world
+            .get_mut::<ownership::AssetAccess>(beacon)
             .unwrap()
             .0
-            .0;
+            .public
+            .clear();
+        assert!(!authenticated_navigation_beacon(&world, ship, id));
         world
-            .entity_mut(player)
-            .insert(travel::Travel(osg_model::travel::TravelState {
-                autopilot_enabled: true,
-                revision: 1,
-                orders: vec![
-                    osg_model::travel::Order::TravelTo(osg_model::travel::Destination::Beacon(
-                        destination,
-                    )),
-                    osg_model::travel::Order::WaitUntil(999_999),
-                ]
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-                status: osg_model::travel::Status::Planning,
-                ..default()
-            }));
-        let state = finish_route_planning(app.world_mut(), player);
-        assert!(!state.orders.is_empty());
-        assert!(state.orders.iter().any(|stage| matches!(
-            &stage.action,
-            osg_model::travel::Order::Slip {
-                destination: osg_model::travel::Destination::Beacon(_)
+            .get_mut::<ownership::AssetAccess>(beacon)
+            .unwrap()
+            .0
+            .public
+            .insert(Permission::Navigate);
+        world
+            .entity_mut(beacon)
+            .remove::<identity::NavigationBeaconEmitter>();
+        assert!(!authenticated_navigation_beacon(&world, ship, id));
+    }
+
+    #[test]
+    fn seeded_navigation_design_has_both_real_transmitters() {
+        use osg_ships::{Equipment, utilities::UtilityDef};
+        let catalogue = osg_ships::Catalogue::builtin();
+        let design = navigation_design(&catalogue).unwrap();
+        assert!(design.parts.iter().any(|part| matches!(
+            part.definition.equipment,
+            Equipment::Utility {
+                utility: UtilityDef::DirectoryTransmitter { .. }
             }
         )));
-        assert!(
-            !state.orders.iter().any(|stage| matches!(
-                &stage.action,
-                osg_model::travel::Order::Sublight(osg_model::travel::Destination::Relative { .. })
-            )),
-            "local exclusion checkpoints belong to the flight computer"
-        );
-        assert!(!state.orders.windows(2).any(|pair| pair[0] == pair[1]));
-        assert_eq!(
-            state.orders.last().map(|stage| &stage.action),
-            Some(&osg_model::travel::Order::WaitUntil(999_999))
-        );
-        assert!(
-            !state
-                .orders
-                .iter()
-                .any(|order| matches!(&order.action, osg_model::travel::Order::TravelTo(_)))
-        );
-        assert!(
-            state
-                .orders
-                .iter()
-                .all(|stage| stage.estimated_duration_ticks.is_some())
-        );
-        let arrivals: Vec<_> = state
-            .stage_arrivals(0)
-            .into_iter()
-            .collect::<Option<_>>()
-            .unwrap();
-        assert!(arrivals.windows(2).all(|pair| pair[0] <= pair[1]));
-        assert!(state.revision > 1);
-
-        app.update();
-        let software = app.world().get::<vessel::ShipSoftware>(player).unwrap();
-        assert!(
-            software.controller.fault.is_none(),
-            "route execution fault {:?}, gas used {} / {}",
-            software.controller.fault,
-            software.last_gas_used,
-            software.last_gas_limit
-        );
-        assert!(matches!(
-            app.world().get::<travel::Travel>(player).unwrap().0.status,
-            osg_model::travel::Status::Active
-        ));
-    }
-
-    #[test]
-    fn overlapping_macromouths_cannot_remain_stable() {
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        let world = app.world_mut();
-        let mouths: Vec<_> = world
-            .query_filtered::<Entity, With<travel::Gate>>()
-            .iter(world)
-            .take(2)
-            .collect();
-        let position = world
-            .get::<precision::PreciseTransform>(mouths[0])
-            .unwrap()
-            .translation_um;
-        world
-            .get_mut::<precision::PreciseTransform>(mouths[1])
-            .unwrap()
-            .translation_um = position.offset_by(DVec3::X * 1e6);
-        travel::geometry::refresh(world);
-        enforce_exclusion(world);
-        for mouth in mouths {
-            assert!(!world.get::<travel::Gate>(mouth).unwrap().enabled);
-        }
-    }
-
-    #[test]
-    fn default_network_isolates_sol_and_fixed_gates_have_no_physics_bodies() {
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        app.update();
-        let world = app.world_mut();
-        let catalogue = catalogue(world);
-        assert_eq!(catalogue.systems.len(), 3000);
-        assert_eq!(
-            catalogue
-                .beacons
-                .iter()
-                .filter(|b| b.gate_exit.is_some())
-                .count(),
-            osg_universe::civilization::map().links.len() * 2
-        );
-        let network = osg_model::navigation::GateNetwork::from_catalogue(&catalogue);
-        let neighbors: std::collections::HashMap<_, _> = network
-            .regions
-            .iter()
-            .map(|region| (region.id, &region.gates))
-            .collect();
-        let mut reachable = std::collections::HashSet::new();
-        let mut pending = vec![catalogue.systems[0].id];
-        while let Some(system) = pending.pop() {
-            if reachable.insert(system) {
-                pending.extend(neighbors[&system].iter().map(|gate| gate.destination));
+        assert!(design.parts.iter().any(|part| matches!(
+            part.definition.equipment,
+            Equipment::Utility {
+                utility: UtilityDef::NavigationBeacon { .. }
             }
-        }
-        assert!(!reachable.contains(&registry::system_identity("Sol")));
-        for system in &catalogue.systems {
-            let mouths: Vec<_> = catalogue
-                .beacons
-                .iter()
-                .filter(|b| b.system == system.id && b.gate_exit.is_some())
-                .collect();
-            if system.id == registry::system_identity("Sol") {
-                assert!(mouths.is_empty());
-            } else {
-                assert!(mouths.len() <= 6);
-            }
-            assert!(system.sovereignty.is_some());
-            for pair in mouths.windows(2) {
-                assert!(
-                    pair[0]
-                        .pose
-                        .position
-                        .relative_to(pair[1].pose.position)
-                        .length()
-                        > 2e7
-                );
-            }
-        }
-        let gates: Vec<_> = world
-            .query_filtered::<Entity, With<travel::Gate>>()
-            .iter(world)
-            .collect();
-        for gate in gates {
-            assert!(world.get::<physics::RigidBody>(gate).is_none());
-            assert!(world.get::<physics::AccumulatedForce>(gate).is_none());
-            assert!(world.get::<GateOrbit>(gate).is_some());
-        }
-        let station = catalogue.beacons.iter().find(|b| b.docking).unwrap();
-        let station = identity::lookup(world, station.id).unwrap();
-        assert!(world.get::<travel::DockingBays>(station).unwrap().0[0].public);
-    }
-
-    #[test]
-    fn generated_system_activation_gate_hops_and_checkpoint_preserve_topology() {
-        let account = Id::new();
-        let mut app = super::super::provision(&[account], None, None).unwrap();
-        for _ in 0..3 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let player_id = world.get::<identity::Identity>(player).unwrap().0;
-        let universe = world
-            .resource::<registry::UniverseRegistry>()
-            .universe
-            .clone();
-        let generated = universe
-            .systems
-            .iter()
-            .enumerate()
-            .skip(10)
-            .find(|(_, system)| {
-                system.solver.iter().any(|body| {
-                    matches!(
-                        body.class_params,
-                        super::super::orrery::BodyClass::Barycenter
-                    )
-                })
-            })
-            .map(|(index, _)| index)
-            .unwrap();
-        let mut system = generated;
-        for _ in 0..3 {
-            let world = app.world_mut();
-            let entry = world
-                .query::<(Entity, &GateOrbit)>()
-                .iter(world)
-                .find(|(_, orbit)| orbit.system == system)
-                .unwrap()
-                .0;
-            let entry_pose = *world.get::<precision::PreciseTransform>(entry).unwrap();
-            let entry_velocity = world.get::<physics::Velocity>(entry).unwrap().0;
-            let exit =
-                identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
-            let next_system = world.get::<GateOrbit>(exit).unwrap().system;
-            let aperture = world.get::<travel::Gate>(entry).unwrap().radius_m;
-            world
-                .get_mut::<precision::PreciseTransform>(player)
-                .unwrap()
-                .translation_um = entry_pose
-                .translation_um
-                .offset_by(DVec3::X * (aperture + 1.0));
-            world.get_mut::<physics::Velocity>(player).unwrap().0 =
-                entry_velocity - DVec3::X * 50.0;
-            world.get_mut::<travel::Travel>(player).unwrap().0 = Default::default();
-            app.update();
-            let world = app.world();
-            let exit_pose = world
-                .get::<precision::PreciseTransform>(exit)
-                .unwrap()
-                .translation_um;
-            let pose = world
-                .get::<precision::PreciseTransform>(player)
-                .unwrap()
-                .translation_um;
-            assert!(
-                pose.relative_to(exit_pose).length() < 1000.0,
-                "physical gate passage did not reach exit: entry_system={system} destination_system={next_system} entry_distance={} exit_distance={} entry_enabled={} exit_enabled={} active={:?} velocity={:?} hull={:?} influence={} orbit_radius={}",
-                pose.relative_to(entry_pose.translation_um).length(),
-                pose.relative_to(exit_pose).length(),
-                world.get::<travel::Gate>(entry).unwrap().enabled,
-                world.get::<travel::Gate>(exit).unwrap().enabled,
-                world
-                    .resource::<super::super::orrery::activity::ActiveSystems>()
-                    .entities
-                    .keys(),
-                world.get::<physics::Velocity>(player).unwrap().0 - entry_velocity,
-                world.get::<hardware::Hull>(player).unwrap().0,
-                universe.systems[system].influence,
-                entry_pose
-                    .translation_um
-                    .relative_to(universe.systems[system].solver.anchor)
-                    .length()
-            );
-            app.update();
-            let active = app
-                .world()
-                .resource::<super::super::orrery::activity::ActiveSystems>();
-            assert!(active.entities.contains_key(&next_system));
-            assert!(active.entities.len() <= 3);
-            system = next_system;
-        }
-        let world = app.world_mut();
-        for celestial in world
-            .query::<&super::super::orrery::activity::CelestialState>()
-            .iter(world)
-        {
-            assert!(!matches!(
-                celestial.body.class_params,
-                super::super::orrery::BodyClass::Barycenter
-            ));
-        }
-        let active = world.resource::<super::super::orrery::activity::ActiveSystems>();
-        let optical = world.resource::<spatial::SpatialIndex>();
-        for (entity, orbit) in world
-            .iter_entities()
-            .filter_map(|entity| Some((entity.id(), entity.get::<GateOrbit>()?)))
-        {
-            assert_eq!(
-                optical.object_index(entity).is_some(),
-                active.entities.contains_key(&orbit.system)
-            );
-        }
-        publish_navigation(world);
-        let before = catalogue(world);
-        let saved = crate::persistence::world::capture(world).unwrap();
-        crate::persistence::world::restore(world, &saved).unwrap();
-        let after = catalogue(world);
-        assert_eq!(before, after);
-        assert!(identity::lookup(world, player_id).is_ok());
-        app.update();
-        assert_eq!(
-            catalogue(app.world_mut()).topology_revision,
-            before.topology_revision
-        );
-    }
-
-    #[test]
-    #[ignore]
-    fn inhabited_map_snapshot_and_tick_profile() {
-        use bevy::ecs::system::RunSystemOnce;
-        use std::{io::Write, time::Instant};
-        let account = Id::new();
-        let started = Instant::now();
-        let mut app = super::super::provision(&[account], None, None).unwrap();
-        let startup_ms = started.elapsed().as_secs_f64() * 1000.0;
-        for _ in 0..5 {
-            app.update();
-        }
-        let session = super::super::session::connect(
-            app.world_mut(),
-            account,
-            crate::blueprint_uploads::BlueprintUploads::default(),
-        )
-        .unwrap();
-        let mut encoder = zstd::stream::Encoder::new(Vec::new(), 3).unwrap();
-        encoder.window_log(21).unwrap();
-        let mut tick_ms = Vec::new();
-        let mut publication_ms = Vec::new();
-        let mut compression_ms = Vec::new();
-        let mut wire_bytes = Vec::new();
-        let mut raw_bytes = 0;
-        for _ in 0..30 {
-            let started = Instant::now();
-            app.update();
-            tick_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            let started = Instant::now();
-            publish_navigation(app.world_mut());
-            let frame = super::super::session::frame(app.world_mut(), session).unwrap();
-            let bytes = osg_protocol::encode(&osg_protocol::Message::State(frame)).unwrap();
-            publication_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            raw_bytes = bytes.len();
-            let started = Instant::now();
-            let before = encoder.get_ref().len();
-            encoder.write_all(&bytes).unwrap();
-            encoder.flush().unwrap();
-            compression_ms.push(started.elapsed().as_secs_f64() * 1000.0);
-            wire_bytes.push(encoder.get_ref().len() - before);
-        }
-        let started = Instant::now();
-        for _ in 0..30 {
-            app.world_mut().run_system_once(spatial::rebuild).unwrap();
-        }
-        let optical_ms = started.elapsed().as_secs_f64() * 1000.0 / 30.0;
-        let mut stage_ms = Vec::new();
-        let started = Instant::now();
-        for _ in 0..30 {
-            app.world_mut().run_system_once(move_gates).unwrap();
-        }
-        stage_ms.push((
-            "move gates",
-            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
-        ));
-        let started = Instant::now();
-        for _ in 0..30 {
-            travel::geometry::refresh(app.world_mut());
-        }
-        stage_ms.push((
-            "travel hash",
-            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
-        ));
-        let started = Instant::now();
-        for _ in 0..30 {
-            enforce_exclusion(app.world_mut());
-        }
-        stage_ms.push(("exclusion", started.elapsed().as_secs_f64() * 1000.0 / 30.0));
-        let mut publication_schedule = Schedule::default();
-        publication_schedule.add_systems(super::super::services::publish_indexes);
-        publication_schedule.run(app.world_mut());
-        let started = Instant::now();
-        for _ in 0..30 {
-            publication_schedule.run(app.world_mut());
-        }
-        stage_ms.push((
-            "public indexes",
-            started.elapsed().as_secs_f64() * 1000.0 / 30.0,
-        ));
-        eprintln!("map stage times: {stage_ms:?}");
-        let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
-        eprintln!(
-            "inhabited map: startup={startup_ms:.2}ms tick_mean={:.2}ms tick_max={:.2}ms optical={optical_ms:.2}ms publication={:.2}ms compression={:.2}ms raw={raw_bytes} first_wire={} steady_wire={} mouths={} optical_objects={}",
-            mean(&tick_ms),
-            tick_ms.iter().copied().fold(0.0, f64::max),
-            mean(&publication_ms),
-            mean(&compression_ms),
-            wire_bytes[0],
-            wire_bytes[1..].iter().sum::<usize>() / 29,
-            osg_universe::civilization::map().links.len() * 2,
-            app.world()
-                .resource::<spatial::SpatialIndex>()
-                .objects
-                .len()
-        );
-    }
-
-    #[test]
-    fn docking_removes_physics_and_private_pose_follows_the_station() {
-        let account = Id::new();
-        let mut app = super::super::provision(&[account], None, None).unwrap();
-        app.update();
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let station = world
-            .query_filtered::<Entity, With<travel::DockingBays>>()
-            .single(world)
-            .unwrap();
-        let berth = travel::reserve_bay(world, player, station, 0).unwrap();
-        world.entity_mut(player).insert((
-            precision::PreciseTransform {
-                translation_um: berth.position,
-                rotation: bevy::math::DQuat::from_array(berth.rotation),
-            },
-            physics::Velocity(DVec3::from_array(berth.velocity)),
-            physics::AngularVelocity(DVec3::ZERO),
-        ));
-        travel::dock(world, player, station, 0).unwrap();
-        assert!(world.get::<physics::RigidBody>(player).is_none());
-        world
-            .get_mut::<precision::PreciseTransform>(station)
-            .unwrap()
-            .translation_um = world
-            .get::<precision::PreciseTransform>(station)
-            .unwrap()
-            .translation_um
-            .offset_by(DVec3::X * 1000.);
-        let private = super::super::session::ship_pose(world, player).unwrap();
-        assert!((private.position.relative_to(berth.position) - DVec3::X * 1000.).length() < 0.001);
-        travel::geometry::refresh(world);
-        let destination = private.position.offset_by(DVec3::Z * 1000.);
-        world.get_mut::<travel::Travel>(player).unwrap().0 = osg_model::travel::TravelState {
-            autopilot_enabled: true,
-            revision: 1,
-            orders: vec![osg_model::travel::Order::TravelTo(
-                osg_model::travel::Destination::Galactic(destination),
-            )]
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-            status: osg_model::travel::Status::Planning,
-            ..default()
-        };
-        travel::advance(world);
-        assert!(world.get::<physics::RigidBody>(player).is_none());
-        assert!(world.get::<travel::DockedIn>(player).is_some());
-
-        let planned = finish_route_planning(world, player);
-        assert!(matches!(
-            planned.orders[0].action,
-            osg_model::travel::Order::Undock
-        ));
-        assert!(world.get::<physics::RigidBody>(player).is_none());
-        travel::advance(world);
-
-        assert!(world.get::<physics::RigidBody>(player).is_some());
-        assert!(
-            world
-                .get::<physics::collision::CollisionBody>(player)
-                .is_some()
-        );
-        assert_eq!(world.get::<travel::Travel>(player).unwrap().0.order, 1);
-        assert!(world.get::<travel::DockedIn>(player).is_none());
-        assert!(matches!(
-            world.get::<travel::PresenceState>(player).unwrap().0,
-            osg_model::travel::Presence::Space
-        ));
-    }
-    #[test]
-    fn stock_computer_flies_from_the_starting_scenario_through_a_gate() {
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        app.update();
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let entry = world
-            .query_filtered::<Entity, With<travel::Gate>>()
-            .iter(world)
-            .min_by_key(|entity| {
-                world
-                    .get::<precision::PreciseTransform>(*entity)
-                    .unwrap()
-                    .translation_um
-                    .relative_to(
-                        world
-                            .get::<precision::PreciseTransform>(player)
-                            .unwrap()
-                            .translation_um,
-                    )
-                    .length() as u64
-            })
-            .unwrap();
-        let exit =
-            identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
-        let entry_id = world.get::<identity::Identity>(entry).unwrap().0;
-        world
-            .entity_mut(player)
-            .insert(travel::Travel(osg_model::travel::TravelState {
-                autopilot_enabled: true,
-                revision: 1,
-                orders: vec![osg_model::travel::Order::Jump(entry_id)]
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-                status: osg_model::travel::Status::Planning,
-                ..default()
-            }));
-        let departure = world
-            .get::<precision::PreciseTransform>(player)
-            .unwrap()
-            .translation_um;
-        let entry_position = world
-            .get::<precision::PreciseTransform>(entry)
-            .unwrap()
-            .translation_um;
-        assert!(departure.relative_to(entry_position).length() > 20_000.);
-        for _ in 0..6000 {
-            app.update();
-            if app.world().get::<travel::Travel>(player).unwrap().0.status
-                == osg_model::travel::Status::Completed
-            {
-                let world = app.world();
-                let position = world
-                    .get::<precision::PreciseTransform>(player)
-                    .unwrap()
-                    .translation_um;
-                let mouth = world
-                    .get::<precision::PreciseTransform>(exit)
-                    .unwrap()
-                    .translation_um;
-                let gate = world.get::<travel::Gate>(exit).unwrap();
-                let radius = world.get::<vessel::ShipDesign>(player).unwrap().0.radius;
-                assert!(position.relative_to(mouth).length() > gate.radius_m + radius);
-                let relative_velocity = world.get::<physics::Velocity>(player).unwrap().0
-                    - world.get::<physics::Velocity>(exit).unwrap().0;
-                assert!(relative_velocity.length() <= osg_model::travel::GATE_ENTRY_SPEED_M_S);
-                assert!(position.relative_to(mouth).dot(relative_velocity) > 0.);
-                let fuel = world
-                    .resource::<vessel::ShipCatalogue>()
-                    .0
-                    .resources
-                    .iter()
-                    .position(|resource| resource.id == "micropulse_charge")
-                    .unwrap();
-                assert!(
-                    world
-                        .get::<hardware::ShipInventory>(player)
-                        .unwrap()
-                        .0
-                        .quantities[fuel]
-                        > 0
-                );
-                return;
-            }
-        }
-        panic!(
-            "gate jump did not complete: {:?}, nav {:?}, hull {:?}, inventory {:?}",
-            app.world().get::<travel::Travel>(player).unwrap().0,
-            app.world()
-                .get::<vessel::ShipSoftware>(player)
-                .unwrap()
-                .controller
-                .state
-                .navigation,
-            app.world().get::<hardware::Hull>(player).unwrap().0,
-            app.world()
-                .get::<hardware::ShipInventory>(player)
-                .unwrap()
-                .0
-        );
-    }
-
-    #[test]
-    fn terminus_route_keeps_flying_outward_after_the_first_gate_transit() {
-        use osg_model::travel::{Destination, Order, Status, TravelState};
-        use osg_ship_api::abi;
-
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        for _ in 0..100 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let entry = world
-            .query_filtered::<(Entity, &Landmark), With<travel::Gate>>()
-            .iter(world)
-            .min_by_key(|(entity, _)| {
-                world
-                    .get::<precision::PreciseTransform>(*entity)
-                    .unwrap()
-                    .translation_um
-                    .relative_to(
-                        world
-                            .get::<precision::PreciseTransform>(player)
-                            .unwrap()
-                            .translation_um,
-                    )
-                    .length() as u64
-            })
-            .unwrap()
-            .0;
-        let exit =
-            identity::lookup(world, world.get::<travel::Gate>(entry).unwrap().paired).unwrap();
-        let terminus = registry::system_identity("Terminus system");
-        let destination = world
-            .query::<(&identity::Identity, &Landmark)>()
-            .iter(world)
-            .find(|(_, landmark)| landmark.system == terminus)
-            .unwrap()
-            .0
-            .0;
-        world
-            .get_mut::<vessel::ShipSoftware>(player)
-            .unwrap()
-            .controller
-            .instrument_interest = abi::INTEREST_PATHS | abi::INTEREST_MARKERS;
-        world.get_mut::<travel::Travel>(player).unwrap().0 = TravelState {
-            autopilot_enabled: true,
-            revision: 1,
-            orders: vec![Order::TravelTo(Destination::Beacon(destination)).into()],
-            status: Status::Planning,
-            ..default()
-        };
-
-        let mut crossed_at = None;
-        let mut arrival_distance = 0.0;
-        let mut returned_at = None;
-        for elapsed in 0..6500 {
-            app.update();
-            let world = app.world();
-            let software = world.get::<vessel::ShipSoftware>(player).unwrap();
-            let state = &world.get::<travel::Travel>(player).unwrap().0;
-            assert!(
-                software.controller.fault.is_none(),
-                "computer fault at tick {elapsed}, crossed {crossed_at:?}, travel {state:?}: {:?}",
-                software.controller.fault
-            );
-            let position = world
-                .get::<precision::PreciseTransform>(player)
-                .unwrap()
-                .translation_um;
-            let exit_pose = world
-                .get::<precision::PreciseTransform>(exit)
-                .unwrap()
-                .translation_um;
-            let distance = position.relative_to(exit_pose).length();
-            if crossed_at.is_none() && distance < 1000.0 {
-                crossed_at = Some(elapsed);
-                arrival_distance = distance;
-                eprintln!("First transit at tick {elapsed}: {state:?}");
-            }
-            if let Some(crossed) = crossed_at {
-                if distance >= 1e9 && returned_at.is_none() {
-                    returned_at = Some(elapsed);
-                    eprintln!("Unexpected return at tick {elapsed}: {state:?}");
-                }
-                assert!(
-                    state.autopilot_enabled,
-                    "autopilot stopped after transit: {state:?}"
-                );
-                if elapsed % 100 == 0 {
-                    let velocity = world.get::<physics::Velocity>(player).unwrap().0
-                        - world.get::<physics::Velocity>(exit).unwrap().0;
-                    eprintln!(
-                        "Post-transit tick {elapsed}: range {distance}, velocity {velocity}, {state:?}"
-                    );
-                }
-                if elapsed >= crossed + 400 {
-                    assert!(
-                        returned_at.is_none(),
-                        "ship returned through exit at {returned_at:?}"
-                    );
-                    let coast_distance = osg_model::travel::GATE_ENTRY_SPEED_M_S * 40.0;
-                    assert!(
-                        distance > arrival_distance + coast_distance + 1000.0,
-                        "exit transfer did not accelerate away: range {distance}, {state:?}"
-                    );
-                    assert_eq!(state.status, Status::Active);
-                    assert!(state.order > 0);
-                    return;
-                }
-            }
-        }
-        panic!(
-            "first gate transit did not occur: {:?}",
-            app.world().get::<travel::Travel>(player).unwrap().0
-        );
-    }
-
-    #[test]
-    fn stock_computer_docks_from_default_spawn_without_entering_station() {
-        let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
-        app.update();
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let station = world
-            .query_filtered::<Entity, With<travel::DockingBays>>()
-            .single(world)
-            .unwrap();
-        let hostile: Vec<_> = world
-            .query_filtered::<Entity, (
-                With<vessel::Vessel>,
-                Without<Landmark>,
-                Without<vessel::ControlledVessel>,
-            )>()
-            .iter(world)
-            .collect();
-        for ship in hostile {
-            world.despawn(ship);
-        }
-        let station_id = world.get::<identity::Identity>(station).unwrap().0;
-        world
-            .entity_mut(player)
-            .insert((travel::Travel(osg_model::travel::TravelState {
-                autopilot_enabled: true,
-                revision: 1,
-                orders: vec![osg_model::travel::Order::Dock(station_id)]
-                    .into_iter()
-                    .map(Into::into)
-                    .collect(),
-                status: osg_model::travel::Status::Planning,
-                ..default()
-            }),));
-        let minimum_distance = world.get::<vessel::ShipDesign>(station).unwrap().0.radius
-            + world.get::<vessel::ShipDesign>(player).unwrap().0.radius;
-        for _ in 0..3000 {
-            app.update();
-            if matches!(
-                app.world().get::<travel::PresenceState>(player).unwrap().0,
-                osg_model::travel::Presence::Docked { .. }
-            ) {
-                return;
-            }
-            let world = app.world();
-            let player_pose = super::super::session::ship_pose(world, player).unwrap();
-            let station_pose = super::super::session::ship_pose(world, station).unwrap();
-            assert!(
-                player_pose
-                    .position
-                    .relative_to(station_pose.position)
-                    .length()
-                    >= minimum_distance,
-                "autopilot entered station collision envelope: player {player_pose:?}, station {station_pose:?}, travel {:?}, navigation {:?}",
-                world.get::<travel::Travel>(player).unwrap().0,
-                world
-                    .get::<vessel::ShipSoftware>(player)
-                    .unwrap()
-                    .controller
-                    .state
-                    .navigation,
-            );
-        }
-        let world = app.world();
-        let software = world.get::<vessel::ShipSoftware>(player).unwrap();
-        panic!(
-            "did not dock: {:?}, fault {:?}, navigation {:?}, hull {}, delta {:?}",
-            world.get::<travel::Travel>(player).unwrap().0,
-            software.controller.fault,
-            software.controller.state.navigation,
-            world.get::<hardware::Hull>(player).unwrap().0,
-            super::super::session::ship_pose(world, player)
-                .unwrap()
-                .position
-                .relative_to(
-                    super::super::session::ship_pose(world, station)
-                        .unwrap()
-                        .position
-                )
-        );
-    }
-    #[test]
-    fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
-        let account = Id::new();
-        let mut app = super::super::provision(&[account], None, None).unwrap();
-        app.update();
-        let world = app.world_mut();
-        let player = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let station = world
-            .query_filtered::<Entity, With<travel::DockingBays>>()
-            .single(world)
-            .unwrap();
-        let design = world.get::<vessel::ShipDesign>(player).unwrap().0.clone();
-        let other = vessel::spawn_ship(
-            world,
-            design,
-            precision::PreciseTransform::default(),
-            DVec3::ZERO,
-            "Docked tender".into(),
-        )
-        .unwrap();
-        identity::attach_ship(world, other, account).unwrap();
-        for ship in [player, other] {
-            let berth = travel::reserve_bay(world, ship, station, 0).unwrap();
-            world.entity_mut(ship).insert((
-                precision::PreciseTransform {
-                    translation_um: berth.position,
-                    rotation: bevy::math::DQuat::from_array(berth.rotation),
-                },
-                physics::Velocity(DVec3::from_array(berth.velocity)),
-                physics::AngularVelocity(DVec3::ZERO),
-            ));
-            travel::dock(world, ship, station, 0).unwrap();
-            assert!(world.get::<physics::RigidBody>(ship).is_none());
-        }
-        assert_eq!(world.get::<travel::StoredShips>(station).unwrap().len(), 2);
-        let tanks = world
-            .get::<hardware::ShipInventory>(player)
-            .unwrap()
-            .0
-            .quantities
-            .clone();
-        let stored_mass = world.get::<travel::StoredMass>(station).unwrap().0;
-        crate::sim::industry::transfer(
-            world,
-            account,
-            player,
-            other,
-            osg_model::industry::CargoItem::Resource("repair_material".into()),
-            20,
-        )
-        .unwrap();
-        assert_eq!(
-            world
-                .get::<hardware::ShipInventory>(player)
-                .unwrap()
-                .0
-                .quantities,
-            tanks
-        );
-        assert_eq!(
-            world.get::<travel::StoredMass>(station).unwrap().0,
-            stored_mass
-        );
-        assert!(
-            crate::sim::industry::transfer(
-                world,
-                account,
-                player,
-                other,
-                osg_model::industry::CargoItem::Resource("water".into()),
-                1
-            )
-            .is_err()
-        );
+        )));
     }
 }

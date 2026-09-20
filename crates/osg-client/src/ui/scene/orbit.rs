@@ -7,7 +7,7 @@ use super::projection;
 use super::{ViewCamera, camera::CameraOptions};
 use crate::state::{
     Celestial, CelestialSystem, Contact, DisplayPose, OwnedShip, PresentationSet, RenderTime,
-    ShipDetails, SystemSubscription, ViewObservation,
+    ShipDetails, ViewObservation, ViewSystems,
 };
 use crate::ui::celestials::SystemDefinition;
 use bevy::prelude::*;
@@ -61,7 +61,7 @@ fn refresh_views(
     clock: Res<RenderTime>,
     mut views: Query<(
         &ViewObservation,
-        &SystemSubscription,
+        &ViewSystems,
         &mut ViewOptions,
         &mut CameraOptions,
     )>,
@@ -69,7 +69,6 @@ fn refresh_views(
     contacts: Query<(&Contact, &DisplayPose)>,
     celestials: Query<(&Celestial, &CelestialSystem, &DisplayPose)>,
     definitions: Query<&SystemDefinition>,
-    definition_assets: Res<Assets<crate::assets::SystemDefinition>>,
 ) {
     for (observation, systems, mut options, mut framing) in &mut views {
         let view = &observation.0;
@@ -103,10 +102,7 @@ fn refresh_views(
             .iter()
             .filter(|(body, system, _)| {
                 body.0.gravitational_parameter > 0.
-                    && systems
-                        .0
-                        .iter()
-                        .any(|reference| reference.system == system.0)
+                    && systems.0.iter().any(|reference| *reference == system.0)
             })
             .max_by(|(a, _, a_pose), (b, _, b_pose)| {
                 let acceleration = |body: &CelestialPresentation, pose: &Pose| {
@@ -122,9 +118,9 @@ fn refresh_views(
             .map(|(body, _, pose)| (&body.0, &pose.0));
         if let Some((body, pose)) = primary {
             reframe_instruments(&mut instruments, pose.position, |time| {
-                definitions.iter().find_map(|definition| {
-                    definition.body_position(body.entity, time, &definition_assets)
-                })
+                definitions
+                    .iter()
+                    .find_map(|definition| definition.body_position(body.entity, time))
             });
         }
         refresh(
@@ -260,7 +256,7 @@ fn draw_coasts(
         &Projection,
         &ViewCamera,
         &ViewOptions,
-        &SystemSubscription,
+        &ViewSystems,
     )>,
     bodies: Query<(&Celestial, &CelestialSystem, &DisplayPose)>,
 ) -> Result {
@@ -298,7 +294,7 @@ fn draw_coasts(
         };
         let occluders: Vec<_> = bodies
             .iter()
-            .filter(|(_, system, _)| systems.0.iter().any(|entry| entry.system == system.0))
+            .filter(|(_, system, _)| systems.0.iter().any(|entry| *entry == system.0))
             .map(|(body, _, pose)| {
                 (
                     pose.0.position.relative_to(options.curve_anchor),
@@ -487,6 +483,10 @@ mod tests {
                 ..primary_pose.clone()
             };
             let body = CelestialPresentation {
+                reference: osg_model::travel::CelestialRef {
+                    system: osg_model::Id::default(),
+                    body: osg_model::Id::default(),
+                },
                 entity: Id::default(),
                 name: "Moving primary".into(),
                 pose: primary_pose.clone(),
@@ -496,7 +496,6 @@ mod tests {
                 temperature_k: 300.,
                 color: [1.; 3],
                 atmosphere: None,
-                ephemeris: None,
             };
             let clock = RenderTime {
                 display_ns: (seconds * 1e9) as u64,

@@ -144,6 +144,7 @@ pub fn system(star: &CatalogueStar, name: &str) -> OrreryCfg {
         bodies.push(component);
         group_index = bodies.len();
         bodies.push(Body {
+            key: format!("{}/barycenter/{}", star.id, companion.id).into(),
             name: root_name.into(),
             class_params: BodyClass::Barycenter,
             mass: total_mass,
@@ -180,6 +181,7 @@ pub fn system(star: &CatalogueStar, name: &str) -> OrreryCfg {
     }
 
     OrreryCfg {
+        key: star.id.clone().into(),
         name: name.into(),
         position_um: GalacticPosition::from_meters(
             DVec3::from_array(star.position_ly) * LIGHT_YEAR_M,
@@ -217,7 +219,15 @@ pub(crate) fn populate_bundled_system(
     config.validate_system()
 }
 
-fn stellar_body(name: &str, identity: &str, luminosity: f64, temperature: f64) -> Body {
+#[derive(Clone, Copy, Debug)]
+pub struct StellarProperties {
+    pub mass: f64,
+    pub radius: f64,
+    pub kind: StellarKind,
+    pub spectral_class: SpectralClass,
+}
+
+pub fn stellar_properties(luminosity: f64, temperature: f64) -> StellarProperties {
     assert!(luminosity.is_finite() && luminosity > 0.0);
     assert!(temperature.is_finite() && temperature > 0.0);
     let radius_solar = luminosity.sqrt() * (5772.0 / temperature).powi(2);
@@ -261,27 +271,67 @@ fn stellar_body(name: &str, identity: &str, luminosity: f64, temperature: f64) -
         _ => SpectralClass::M,
     };
 
+    StellarProperties {
+        mass: solar_mass * SOLAR_MASS,
+        radius: radius_solar * SOLAR_RADIUS,
+        kind,
+        spectral_class: class,
+    }
+}
+
+/// Bounds use only stellar inputs and the generator's maximum population sizes.
+/// No planetary properties or orbital ephemerides are generated here.
+pub fn system_bounds(star: &CatalogueStar) -> (f64, f64) {
+    let primary = stellar_properties(star.luminosity_solar, star.temperature_k);
+    let mut stellar_mass = primary.mass;
+    let mut extent = primary.radius;
+    let mut outer = 120.0 * AU;
+    let mut companions: Vec<_> = star.companions.iter().collect();
+    companions.sort_by(|a, b| {
+        a.separation_au
+            .total_cmp(&b.separation_au)
+            .then(a.id.cmp(&b.id))
+    });
+    for companion in companions {
+        let properties = stellar_properties(companion.luminosity_solar, companion.temperature_k);
+        let semi_major =
+            (companion.separation_au * AU).max((extent * 8.0 + properties.radius * 8.0) / 0.75);
+        extent += semi_major * 1.25;
+        outer = outer.max(semi_major * 0.1);
+        stellar_mass += properties.mass;
+    }
+    let hosts = 1 + star.companions.len() + usize::from(!star.companions.is_empty());
+    // Ten planets per host, each at most 1000 Earth masses. The factor also
+    // bounds all their moons. Twice the orbital extent bounds moon excursions.
+    let mass = stellar_mass + hosts as f64 * 10.0 * 1000.0 * EARTH_MASS * 1.1;
+    (extent + 2.0 * outer + SOLAR_RADIUS, mass)
+}
+
+fn stellar_body(name: &str, identity: &str, luminosity: f64, temperature: f64) -> Body {
+    let properties = stellar_properties(luminosity, temperature);
+    let solar_mass = properties.mass / SOLAR_MASS;
     let mut random = rng("stellar-age", identity);
-    let age_limit = if matches!(kind, StellarKind::MainSequence) {
+    let age_limit = if matches!(properties.kind, StellarKind::MainSequence) {
         (8e9 * solar_mass / luminosity).clamp(1e7, 12e9)
     } else {
         12e9
     };
     Body {
+        key: identity.into(),
         name: name.into(),
         class_params: BodyClass::Star {
             lumens: luminosity * osg_stars::SOLAR_LUMENS,
         },
-        mass: solar_mass * SOLAR_MASS,
-        radius: radius_solar * SOLAR_RADIUS,
-        spectral_class: Some(class),
-        surface_color: class.linear_rgb(),
+        mass: properties.mass,
+        radius: properties.radius,
+        spectral_class: Some(properties.spectral_class),
+        surface_color: properties.spectral_class.linear_rgb(),
         rotation: Rotation {
             rotation_period: 25.0 * 86400.0 / solar_mass.sqrt(),
             ..Default::default()
         },
         stellar: Some(StellarParameters {
-            kind,
+            kind: properties.kind,
             effective_temperature_k: temperature,
             age_years: log_range(&mut random, age_limit * 0.05, age_limit),
         }),
@@ -418,6 +468,7 @@ fn append_planets(bodies: &mut Vec<Body>, host: &PlanetHost) {
             ) * 3600.0
         };
         let planet = Body {
+            key: identity.clone().into(),
             name: format!("{} {}", host.body.name, index + 1).into(),
             parent: Some(host.body.name.clone()),
             class_params: BodyClass::Planet,
@@ -674,6 +725,7 @@ fn append_moons(
             icy,
         );
         let moon = Body {
+            key: identity.clone().into(),
             name: format!("{} {}", planet.name, char::from(b'a' + index as u8)).into(),
             parent: Some(planet.name.clone()),
             mass,

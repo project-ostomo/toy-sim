@@ -58,10 +58,18 @@ pub struct WorldEpoch(pub Id);
 pub struct SensorSeed(pub [u8; 32]);
 
 #[derive(Component)]
-pub struct BeaconEmitter;
+pub struct DirectoryEmitter;
 
 #[derive(Component)]
-pub struct FixedBeacon;
+pub struct NavigationBeaconEmitter;
+
+pub fn public_directory_emitter(world: &World, entity: Entity) -> bool {
+    world.get::<DirectoryEmitter>(entity).is_some()
+        && world
+            .get::<Transponder>(entity)
+            .is_some_and(|transponder| transponder.0.enabled)
+        && world.get::<super::travel::Dormant>(entity).is_none()
+}
 
 #[derive(Component)]
 pub struct Appearance(pub [u8; 32]);
@@ -85,6 +93,10 @@ impl AppearanceAssets {
             .expect("asset store poisoned")
             .get(hash)
             .cloned()
+    }
+
+    pub(crate) fn remove(&self, hash: &[u8; 32]) {
+        self.0.write().expect("asset store poisoned").remove(hash);
     }
 
     pub fn extend<T: Into<Arc<[u8]>>>(&self, assets: impl IntoIterator<Item = ([u8; 32], T)>) {
@@ -194,10 +206,10 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
 pub fn identify_celestials(
     mut commands: Commands,
     mut index: ResMut<IdentityIndex>,
-    bodies: Query<(Entity, &super::orrery::Celestial), Without<Identity>>,
+    bodies: Query<(Entity, &super::orrery::activity::CelestialState), Without<Identity>>,
 ) {
     for (entity, celestial) in &bodies {
-        let id = super::registry::identity(&celestial.0);
+        let id = super::registry::celestial_identity(celestial.reference);
         commands.entity(entity).insert(Identity(id));
         index.0.insert(id, entity);
     }

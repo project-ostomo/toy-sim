@@ -11,8 +11,8 @@ import struct
 PARSEC_UM = 3.085677581491367e22
 SOLAR_LUMENS = 3.6e28
 HEADER = struct.Struct('<8sIIQIIQ')
-MAGIC = b'TOYSTAR\0'
-RECORD_BYTES = 76
+MAGIC = b'OSGSTAR\0'
+RECORD_BYTES = 84
 
 def number(row, key):
     try:
@@ -24,11 +24,14 @@ def number(row, key):
 # Deliberately approximate display palette; no claim of calibrated spectral RGB.
 PALETTE = [(30000, (.60,.72,1)), (15000, (.70,.80,1)), (8500, (.86,.90,1)),
            (6500, (1,.97,.92)), (5500, (1,.90,.76)), (4200, (1,.75,.51)), (3000, (1,.56,.30))]
-def colour(temp, spectral, bp_rp):
+def generation_temperature(temp, spectral, bp_rp):
+    """Use measured temperature, then coarse spectral/colour estimates."""
+    if temp is not None and temp <= 0:
+        temp = None
     if temp is None and spectral and spectral[0].upper() in 'OBAFGKM':
         temp = PALETTE['OBAFGKM'.index(spectral[0].upper())][0]
     if temp is None and bp_rp is not None:
-        # Coarse observed-colour fallback, not a temperature inference.
+        # Deliberately approximate temperature for procedural world generation.
         anchors = [(-.4, 30000), (-.2, 15000), (0., 8500), (.4, 6500), (.8, 5500), (1.5, 4200), (3., 3000)]
         temp = anchors[-1][1]
         for (x0,t0),(x1,t1) in zip(anchors, anchors[1:]):
@@ -36,8 +39,9 @@ def colour(temp, spectral, bp_rp):
                 f = min(1., max(0., (bp_rp-x0)/(x1-x0)))
                 temp = t0 + f*(t1-t0)
                 break
-    if temp is None:
-        return (1., 1., 1.)
+    return 5772.0 if temp is None else temp
+
+def colour(temp):
     rgb = PALETTE[-1][1]
     for (t0,c0),(t1,c1) in zip(PALETTE, PALETTE[1:]):
         if temp >= t1:
@@ -74,10 +78,11 @@ def record(row, origin, min_snr):
         return None
     if not all(-2**126 <= v < 2**126 for v in xyz) or not math.isfinite(luminosity) or luminosity <= 0:
         return None
-    rgb = colour(number(row,'teff_gspphot'), row.get('spectraltype_esphs'), number(row,'bp_rp'))
+    temp = generation_temperature(number(row,'teff_gspphot'), row.get('spectraltype_esphs'), number(row,'bp_rp'))
+    rgb = colour(temp)
     return (struct.pack('<Q', source_id)
             + b''.join(v.to_bytes(16, 'little', signed=True) for v in xyz)
-            + struct.pack('<d3f', luminosity, *rgb))
+            + struct.pack('<d3fd', luminosity, *rgb, temp))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -97,7 +102,7 @@ def main():
     count = processed = rejected = duplicates = 0
     try:
         with temporary.open('wb') as output:
-            output.write(HEADER.pack(MAGIC, 1, RECORD_BYTES, 0, 1, 1, 1))
+            output.write(HEADER.pack(MAGIC, 2, RECORD_BYTES, 0, 1, 1, 1))
             for path in args.csv:
                 opener = gzip.open if path.suffix == '.gz' else open
                 with opener(path, 'rt', newline='') as source:
@@ -125,15 +130,15 @@ def main():
                         if processed % 100000 == 0:
                             print(f'{processed} input rows, {count} stars', flush=True)
             output.seek(0)
-            output.write(HEADER.pack(MAGIC, 1, RECORD_BYTES, count, 1, 1, 1))
+            output.write(HEADER.pack(MAGIC, 2, RECORD_BYTES, count, 1, 1, 1))
         temporary.replace(args.output)
     finally:
         temporary.unlink(missing_ok=True)
     metadata = {
-        'format_version': 1, 'namespace': 'Gaia DR3 (1)',
+        'format_version': 2, 'namespace': 'Gaia DR3 (1)',
         'frame': 'ICRS Cartesian, fixed J2016.0', 'units': 'integer micrometres',
         'origin_um': args.origin_um, 'min_parallax_snr': args.min_parallax_snr,
-        'calibration': 'G-as-visual; approximate temperature/class/BP-RP RGB; no extinction',
+        'calibration': 'G-as-visual; measured temperature or approximate spectral/BP-RP temperature; 5772 K fallback; no extinction',
         'input_files': [str(p) for p in args.csv], 'input_rows': processed,
         'stars': count, 'rejected': rejected, 'duplicates': duplicates,
     }

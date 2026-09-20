@@ -431,7 +431,8 @@ pub fn restore_retained(world: &mut World, parent: Entity) {
         super::spatial::SpatialBody,
         super::sensors::Sensor,
         super::sensors::SensorContacts,
-        identity::BeaconEmitter,
+        identity::DirectoryEmitter,
+        identity::NavigationBeaconEmitter,
     )>();
     if let Some(mut software) = world.get_mut::<ShipSoftware>(parent) {
         software.world_source = None;

@@ -63,11 +63,41 @@ impl CatalogueIndex {
             .collect()
     }
 
+    pub fn intersecting_sphere(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
+        self.spatial
+            .intersecting_sphere(centre, radius)
+            .ids
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
+    }
+
     pub fn nearest(&self, origin: GalacticPosition) -> Option<usize> {
         self.spatial
             .nearest(origin, f64::INFINITY, 1)
             .first()
             .map(|&id| id as usize)
+    }
+
+    pub fn illumination_sources(
+        &self,
+        origin: GalacticPosition,
+        radius: f64,
+        threshold: f64,
+    ) -> Vec<usize> {
+        self.spatial
+            .extended_sources(origin, radius, threshold)
+            .into_iter()
+            .map(|id| id as usize)
+            .collect()
+    }
+
+    pub fn nearest_many(&self, origin: GalacticPosition, count: usize) -> Vec<usize> {
+        self.spatial
+            .nearest(origin, f64::INFINITY, count)
+            .into_iter()
+            .map(|index| index as usize)
+            .collect()
     }
 
     pub fn nearest_distance(&self, origin: GalacticPosition) -> f64 {

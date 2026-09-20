@@ -17,7 +17,7 @@ mod surfaces;
 
 use crate::state::{
     Celestial, CelestialSystem, DisplayPose, DisplayVisual, Optical, OwnedShip, PresentationSet,
-    SystemSubscription, ViewObservation,
+    ViewObservation, ViewSystems,
 };
 use bevy::{camera::visibility::RenderLayers, prelude::*};
 use osg_model::GalacticPosition;
@@ -332,7 +332,7 @@ fn sync_ships(
 
 fn sync_celestials(
     mut commands: Commands,
-    views: Query<(Entity, &ViewCamera, &SystemSubscription)>,
+    views: Query<(Entity, &ViewCamera, &ViewSystems)>,
     bodies: Query<(
         Entity,
         &Celestial,
@@ -355,7 +355,7 @@ fn sync_celestials(
             continue;
         }
         for (source, body, pose, system, surface) in &bodies {
-            if !systems.0.iter().any(|entry| entry.system == system.0) {
+            if !systems.0.iter().any(|entry| *entry == system.0) {
                 continue;
             }
             if body.0.luminosity_lumens > 0. {
@@ -547,22 +547,6 @@ fn apply_visuals(
         transform.rotation = Quat::from_rotation_y(state.yaw_rad as f32)
             * Quat::from_rotation_x(state.pitch_rad as f32);
     }
-}
-
-#[cfg(test)]
-pub(super) fn install_celestial_render_test(app: &mut App) {
-    app.init_resource::<Assets<Mesh>>()
-        .init_resource::<surfaces::SurfaceCache>()
-        .init_resource::<Assets<StandardMaterial>>()
-        .init_resource::<Assets<bevy::light::atmosphere::ScatteringMedium>>()
-        .add_systems(
-            Update,
-            (camera::setup_views, sync_celestials)
-                .chain()
-                .after(crate::ui::celestials::CelestialSystems::Evaluate),
-        );
-    lighting::install(app);
-    atmosphere::install(app);
 }
 
 #[cfg(test)]

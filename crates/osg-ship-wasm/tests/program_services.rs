@@ -180,7 +180,7 @@ fn guest(body: &str, max_tokens: u32) -> Vec<u8> {
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     wat::parse_str(format!(
         r#"(module
-        (import "ship_v31" "llm_submit" (func $submit (param i64 i32 i32 i32) (result i32)))
+        (import "ship_v32" "llm_submit" (func $submit (param i64 i32 i32 i32) (result i32)))
         (memory (export "memory") 2)
         (data (i32.const 0) "{data}")
         (func (export "ship_api_version") (result i32) i32.const {version})
@@ -240,7 +240,7 @@ fn invalid_submit_request_never_admits_a_request() {
 fn poll_cpu_gas_tracks_reply_bytes_and_missile_and_display_callbacks_can_call_services() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v31" "llm_poll" (func $poll (param i64 i32 i32 i32) (result i32)))
+        (import "ship_v32" "llm_poll" (func $poll (param i64 i32 i32 i32) (result i32)))
         (memory (export "memory") 2)
         (func (export "ship_api_version") (result i32) i32.const {version})
         (func $read i64.const 1 i32.const 0 i32.const 65568 i32.const 70000 call $poll drop)

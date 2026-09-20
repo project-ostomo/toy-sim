@@ -101,14 +101,12 @@ fn binary_components_share_period_and_preserve_center_of_mass() {
     }
     let root_name = root.name.clone();
     let universe = Universe::init(config).unwrap();
-    assert_eq!(
-        universe
-            .iter()
-            .filter(|body| matches!(body.class_params, BodyClass::Barycenter))
-            .count(),
-        0
-    );
-    assert!(universe.get_body(&root_name).is_some());
+    let definition = universe.resolve_index(0).unwrap();
+    let root = definition.body_id(&root_name).unwrap();
+    assert!(matches!(
+        universe.body(root).unwrap().class_params,
+        BodyClass::Barycenter
+    ));
 }
 
 #[test]
@@ -236,43 +234,38 @@ fn generated_orbits_respect_spacing_hill_roche_and_atmosphere_relations() {
 }
 
 #[test]
-fn complete_inhabited_map_validates_preserves_authored_bodies_and_sol_plane() {
-    let started = std::time::Instant::now();
-    let configs = crate::bundled_configs().unwrap();
-    assert_eq!(configs.len(), crate::civilization::INHABITED_SYSTEMS);
-    let count: usize = configs.iter().map(|config| config.bodies.len()).sum();
-    assert!(count > 20_000, "{count} generated bodies");
-    let sol = configs.iter().find(|system| system.name == "Sol").unwrap();
-    let earth = sol.bodies.iter().find(|body| body.name == "Earth").unwrap();
+fn full_catalogue_is_lazy_and_resolves_authored_and_distant_systems() {
+    let universe = Universe::bundled().unwrap();
+    assert_eq!(universe.systems.len(), 1_001_760);
+    assert_eq!(universe.cached_definitions(), 0);
+    let sol = universe
+        .resolve(universe.system_id_for_name("Sol").unwrap())
+        .unwrap();
+    let earth = sol.solver.get_body("Earth").unwrap();
     assert!(earth.orbit.inclination < 1e-5);
     assert!((earth.rotation.obliquity - 23.439281_f64.to_radians()).abs() < 1e-14);
-    for (authored, config) in crate::handcrafted_configs().iter().zip(&configs) {
-        assert_eq!(authored.name, config.name);
-        assert_eq!(
-            serde_json::to_string(&authored.bodies).unwrap(),
-            serde_json::to_string(&config.bodies[..authored.bodies.len()]).unwrap()
-        );
+    for (index, _) in universe.systems.iter().enumerate().step_by(7919) {
+        let definition = universe.resolve_index(index).unwrap();
+        assert!(definition.influence <= universe.systems[index].influence_bound);
+        for body in definition.solver.iter() {
+            assert!(definition.body_id(&body.name).is_some());
+        }
     }
-    let universe = Universe::from_configs(configs, 1e-8).unwrap();
-    assert_eq!(universe.systems.len(), 3000);
-    let physical = universe.iter().count();
-    assert!(physical <= count);
-    eprintln!(
-        "Generated and validated 3000 systems: {count} bodies, {physical} physical, {:?}",
-        started.elapsed()
-    );
+    assert!(universe.cached_definitions() <= 128);
 }
 
 #[test]
 fn bundled_stellar_stubs_gain_planets_without_replacing_stars_or_custom_configs() {
     let authored = crate::handcrafted_configs();
-    let bundled = crate::bundled_configs().unwrap();
-    let second = crate::bundled_configs().unwrap();
     let mut completed = 0;
-    for ((original, populated), repeated) in authored.iter().zip(&bundled).zip(&second) {
+    for original in &authored {
         if original.bodies.len() > 1 {
             continue;
         }
+        let mut populated = original.clone();
+        populate_bundled_system(&mut populated, &original.key).unwrap();
+        let mut repeated = original.clone();
+        populate_bundled_system(&mut repeated, &original.key).unwrap();
         completed += 1;
         assert!(
             populated.bodies.len() >= 4,
@@ -309,7 +302,7 @@ fn bundled_stellar_stubs_gain_planets_without_replacing_stars_or_custom_configs(
     let mut custom = authored[2].clone();
     custom.name = "Deliberately barren custom system".into();
     let custom = Universe::init(custom).unwrap();
-    assert_eq!(custom.iter().count(), 1);
+    assert_eq!(custom.resolve_index(0).unwrap().solver.iter().count(), 1);
 }
 
 #[test]

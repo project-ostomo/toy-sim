@@ -295,6 +295,7 @@ mod tests {
             id: osg_stars::StarId::gaia(1),
             position: GalacticPosition::from_meters(DVec3::Z * distance),
             luminosity: 3.6e28,
+            temperature_k: 5772.,
             colour: [1.0, 0.8, 0.6],
         };
         let snapshot = Snapshot::new(
@@ -345,6 +346,7 @@ mod tests {
             id: osg_stars::StarId::gaia(1),
             position: GalacticPosition::from_meters(DVec3::Z * distance),
             luminosity: osg_stars::SOLAR_LUMENS,
+            temperature_k: 5772.,
             colour: [1.0; 3],
         };
         let snapshot = Snapshot::new(
@@ -397,12 +399,14 @@ mod tests {
             id: osg_stars::StarId::gaia(1),
             position: GalacticPosition::from_meters(DVec3::Z * near),
             luminosity: osg_stars::SOLAR_LUMENS,
+            temperature_k: 5772.,
             colour: [1.0; 3],
         };
         let distant = Star {
             id: osg_stars::StarId::gaia(2),
             position: GalacticPosition::from_meters(DVec3::X * far),
             luminosity: osg_stars::SOLAR_LUMENS,
+            temperature_k: 5772.,
             colour: [1.0; 3],
         };
         let diverted = Snapshot::new(

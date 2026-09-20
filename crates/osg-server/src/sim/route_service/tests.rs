@@ -7,6 +7,78 @@ use crate::sim::{
 use bevy::math::DVec3;
 use osg_model::travel::{Destination, Order, PlanningPreferences};
 
+#[test]
+#[ignore = "full seeded world route performance measurement"]
+fn seeded_routes_performance() {
+    let account = Id::new();
+    let mut app = crate::sim::provision(&[account], Some(account), None).unwrap();
+    crate::sim::npc::seed::populate(app.world_mut()).unwrap();
+    for _ in 0..3 {
+        app.update();
+    }
+    let ship = app
+        .world_mut()
+        .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+        .iter(app.world())
+        .next()
+        .unwrap();
+    crate::sim::infrastructure::publish_navigation(app.world_mut());
+    let origin = app
+        .world()
+        .get::<PreciseTransform>(ship)
+        .unwrap()
+        .translation_um;
+    let universe = app
+        .world()
+        .resource::<crate::sim::orrery::Universe>()
+        .0
+        .clone();
+    let mut destinations: Vec<_> = app
+        .world()
+        .resource::<crate::sim::infrastructure::NavigationPublication>()
+        .directory
+        .systems
+        .iter()
+        .filter_map(|id| {
+            let system = &universe.systems[universe.system_index(id.0)?];
+            let distance =
+                system.position.relative_to(origin).length() / osg_model::travel::slip::LY_M;
+            (distance > 0.1).then_some((distance, system.position))
+        })
+        .collect();
+    destinations.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for distance in [1., 10., 100.] {
+        let (actual, position) = destinations
+            .iter()
+            .min_by(|a, b| (a.0 - distance).abs().total_cmp(&(b.0 - distance).abs()))
+            .unwrap();
+        let request = Request {
+            id: 1,
+            orders: vec![Order::TravelTo(Destination::Galactic(*position))],
+            preferences: PlanningPreferences::default(),
+        };
+        let admitted = caller(app.world(), ship).unwrap();
+        let (input, mut environment) = prepare(
+            app.world_mut(),
+            admitted,
+            &request,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        environment.prepare().unwrap();
+        let started = std::time::Instant::now();
+        let (result, work) = routing::plan_metered(&input, &environment);
+        eprintln!(
+            "seeded route distance_ly={actual:.3} elapsed_ms={:.2} work={work} result={:?}",
+            started.elapsed().as_secs_f64() * 1000.,
+            result
+                .as_ref()
+                .map(|plan| (plan.orders.len(), plan.estimated_loss_ppm))
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+}
+
 fn identity() -> Caller {
     Caller {
         world: Id::new(),

@@ -90,6 +90,47 @@ fn sphere_sweeps_have_stable_entry_and_exit_times() {
 }
 
 #[test]
+fn arriving_body_interacts_only_after_its_capture_time() {
+    let mut world = World::new();
+    let passing = object(
+        &mut world,
+        SharedShape::ball(1.0),
+        1.0,
+        2.0,
+        DVec3::NEG_X * 5.0,
+        DVec3::X * 100.0,
+        100.0,
+    );
+    let mut arriving = object(
+        &mut world,
+        SharedShape::ball(1.0),
+        1.0,
+        2.0,
+        DVec3::ZERO,
+        DVec3::Y * 40.0,
+        100.0,
+    );
+    arriving.time = 0.075;
+    arriving.members[0].thermal_time = 0.075;
+    let mut bodies = vec![passing, arriving];
+    let mut report = Report::default();
+    let before_arrival = weapons::BeamEvent {
+        owner: Entity::PLACEHOLDER,
+        position: GalacticPosition::from_meters(DVec3::new(-10.0, -1.0, 0.0)),
+        direction: DVec3::X,
+        range_m: 20.0,
+        energy_j: 100.0,
+        divergence_rad: 0.0,
+        duration_s: 0.001,
+    };
+    assert!(weapons::resolve_beam(before_arrival, &mut bodies[1..], 0.05, &mut report).is_none());
+    let report = simulate(&mut bodies, 0.1);
+    assert_eq!(report.impacts, 0);
+    assert!((bodies[0].position.to_meters_64() - DVec3::X * 5.0).length() < 1e-6);
+    assert!((bodies[1].position.to_meters_64() - DVec3::Y).length() < 1e-6);
+}
+
+#[test]
 fn head_on_contact_conserves_momentum_and_accounts_for_heat_once() {
     let mut world = World::new();
     let mut bodies = vec![

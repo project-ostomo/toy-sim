@@ -1,7 +1,7 @@
 use crate::{EntityId, GalacticPosition, Id};
 use serde::{Deserialize, Serialize};
 
-pub const GATE_ENTRY_SPEED_M_S: f64 = 100.0;
+pub mod slip;
 pub const DOCKING_CLEARANCE_M: f64 = 100.0;
 pub const DOCKING_SPEED_M_S: f64 = 10.0;
 pub const MAX_PREDICTION_SECONDS: f64 = 365.25 * 86_400.0;
@@ -23,8 +23,14 @@ pub enum Axes {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Reference {
-    Celestial(EntityId),
+    Celestial(CelestialRef),
     Beacon(EntityId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CelestialRef {
+    pub system: Id,
+    pub body: Id,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -40,11 +46,14 @@ pub enum Destination {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Order {
-    Jump(EntityId),
     Guidance(Guidance),
     TravelTo(Destination),
     Sublight(Destination),
-    Slip { destination: Destination },
+    Slip {
+        destination: Destination,
+        speed_ly_s: f64,
+        navigation_beacon: Option<EntityId>,
+    },
     Dock(EntityId),
     Undock,
     WaitUntil(u64),
@@ -53,7 +62,7 @@ pub enum Order {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanningPreferences {
     pub fuel_fraction: f64,
-    pub allow_wormholes: bool,
+    pub max_loss_ppm: f64,
     pub allow_slipdrive: bool,
 }
 
@@ -61,7 +70,7 @@ impl Default for PlanningPreferences {
     fn default() -> Self {
         Self {
             fuel_fraction: 0.5,
-            allow_wormholes: true,
+            max_loss_ppm: 100.0,
             allow_slipdrive: true,
         }
     }
@@ -69,7 +78,10 @@ impl Default for PlanningPreferences {
 
 impl PlanningPreferences {
     pub fn valid(self) -> bool {
-        self.fuel_fraction.is_finite() && (0.01..=1.).contains(&self.fuel_fraction)
+        self.fuel_fraction.is_finite()
+            && (0.01..=1.).contains(&self.fuel_fraction)
+            && self.max_loss_ppm.is_finite()
+            && (0.0..=1_000_000.0).contains(&self.max_loss_ppm)
     }
 }
 
@@ -175,14 +187,52 @@ pub struct PlanningProgress {
 pub struct TravelState {
     pub autopilot_enabled: bool,
     pub preferences: PlanningPreferences,
+    pub risk_budget: RiskBudget,
+    pub goals: Vec<Order>,
     pub fuel_budget: Option<FuelBudget>,
     pub planning: Option<PlanningProgress>,
-    pub search_limited: bool,
     pub revision: u64,
     pub orders: Vec<QueuedOrder>,
     pub order: usize,
     pub status: Status,
     pub estimated_arrival_tick: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RiskBudget {
+    pub max_log_loss: f64,
+    pub spent_log_loss: f64,
+}
+
+impl Default for RiskBudget {
+    fn default() -> Self {
+        Self::new(PlanningPreferences::default().max_loss_ppm)
+    }
+}
+
+impl RiskBudget {
+    pub fn new(max_loss_ppm: f64) -> Self {
+        Self {
+            max_log_loss: slip::log_loss_from_ppm(max_loss_ppm),
+            spent_log_loss: 0.0,
+        }
+    }
+
+    pub fn remaining_log_loss(self) -> f64 {
+        if self.max_log_loss == f64::INFINITY {
+            f64::INFINITY
+        } else {
+            (self.max_log_loss - self.spent_log_loss).max(0.0)
+        }
+    }
+
+    pub fn remaining_ppm(self) -> f64 {
+        slip::ppm_from_log_loss(self.remaining_log_loss())
+    }
+
+    pub fn spend(&mut self, loss_ppm: f64) {
+        self.spent_log_loss += slip::log_loss_from_ppm(loss_ppm);
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -263,6 +313,38 @@ pub struct Guidance {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn itinerary_allowance_survives_spending_and_replanning() {
+        let mut budget = RiskBudget::new(100.0);
+        budget.spend(40.0);
+        let remaining = budget.remaining_ppm();
+        assert!(remaining > 60.0 && remaining < 60.01);
+        budget.spend(remaining);
+        assert!(budget.remaining_ppm() < 1e-10);
+        let mut unlimited = RiskBudget::new(1_000_000.0);
+        unlimited.spend(1_000_000.0);
+        assert_eq!(unlimited.remaining_ppm(), 1_000_000.0);
+
+        for risk in [0.0, 0.001, 100.0, 1_000_000.0] {
+            assert!(
+                PlanningPreferences {
+                    max_loss_ppm: risk,
+                    ..Default::default()
+                }
+                .valid()
+            );
+        }
+        for risk in [-1.0, 1_000_001.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                !PlanningPreferences {
+                    max_loss_ppm: risk,
+                    ..Default::default()
+                }
+                .valid()
+            );
+        }
+    }
 
     #[test]
     fn fuel_allowance_validates_fraction_and_checks_each_tank() {

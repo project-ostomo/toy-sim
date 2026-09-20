@@ -114,6 +114,7 @@ struct Running {
 struct Workers(Vec<Running>);
 
 pub struct ReadyRoute {
+    pub goals: Vec<osg_model::travel::Order>,
     pub plan: Plan,
     pub preferences: osg_model::travel::PlanningPreferences,
 }
@@ -294,7 +295,7 @@ pub fn caller(world: &World, ship: Entity) -> Result<Caller> {
             .revision,
         topology_revision: world
             .get_resource::<NavigationPublication>()
-            .map_or(0, |publication| publication.catalogue.topology_revision),
+            .map_or(0, |publication| publication.revision),
         origin: Origin::Explicit,
     })
 }
@@ -323,6 +324,22 @@ fn submit_origin(
 
 pub fn poll(world: &World, ship: Entity, id: u64) -> Result<Status> {
     poll_origin(world, ship, id, Origin::Explicit)
+}
+
+pub fn cancel(world: &World, ship: Entity, id: u64) -> Result<()> {
+    let caller = caller(world, ship)?;
+    if let Some(service) = world.get_resource::<RouteService>() {
+        let key = Key {
+            scope: caller.scope(),
+            request: id,
+        };
+        let mut state = service.0.lock().unwrap();
+        if let Some(entry) = state.entries.remove(&key) {
+            entry.cancel.store(true, Ordering::Relaxed);
+        }
+        state.queue.retain(|queued| *queued != key);
+    }
+    Ok(())
 }
 
 pub fn poll_automatic(world: &World, ship: Entity, id: u64) -> Result<Status> {
@@ -389,6 +406,14 @@ fn ready_origin(
         .collect::<Option<Vec<_>>>()
         .map(|values| values.into_iter().sum());
     plan.fuel_budget = fuel_budget(world, ship, total);
+    let performance = performance::performance(world, ship)?;
+    plan.fuel_budget
+        .resources
+        .push(osg_model::travel::FuelRequirement {
+            resource: osg_model::travel::slip::EXOTIC_RESOURCE.to_owned(),
+            required_kg: plan.exotic_fuel_kg,
+            available_kg: performance.exotic_available_kg,
+        });
     ensure!(
         plan.fuel_budget
             .resources
@@ -398,6 +423,7 @@ fn ready_origin(
         "Fuel allowance no longer covers this route; request a new preview"
     );
     Ok(ReadyRoute {
+        goals: entry.request.orders.clone(),
         plan,
         preferences: entry.request.preferences,
     })
@@ -512,6 +538,9 @@ pub fn advance(world: &mut World) {
                                     topology_revision: admitted.topology_revision,
                                     orders: result.orders,
                                     fuel_budget: result.fuel_budget,
+                                    estimated_loss_ppm: result.estimated_loss_ppm,
+                                    beacon_assumptions: result.beacon_assumptions,
+                                    exotic_fuel_kg: result.exotic_fuel_kg,
                                 };
                                 if plan.orders.len() > dto::MAX_ORDERS {
                                     failed("expanded route exceeds response limit")
@@ -562,7 +591,12 @@ fn prepare(
         "route inputs changed before planning"
     );
 
-    let input = performance::request(world, ship, request)?;
+    let mut input = performance::request(world, ship, request)?;
+    if admitted.origin == Origin::Automatic {
+        if let Some(travel) = world.get::<travel::Travel>(ship) {
+            input.preferences.max_loss_ppm = travel.0.risk_budget.remaining_ppm();
+        }
+    }
     let environment =
         services::route_environment::Environment::capture(world, ship, cancel, &input)?;
     Ok((input, environment))

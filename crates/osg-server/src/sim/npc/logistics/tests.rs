@@ -57,7 +57,7 @@ impl Fixture {
         );
         for station in [source, destination] {
             world.entity_mut(station).remove::<vessel::ShipSoftware>();
-            world.entity_mut(station).insert(identity::BeaconEmitter);
+            world.entity_mut(station).insert(identity::DirectoryEmitter);
             for bay in &mut world.get_mut::<travel::DockingBays>(station).unwrap().0 {
                 bay.public = true;
             }
@@ -392,17 +392,10 @@ fn physical_roundtrip(frame_velocity: DVec3) {
         fixture.put_resource(station, "water", 20_000);
     }
     sim::infrastructure::publish_navigation(&mut fixture.world);
-    let catalogue = &fixture
+    let publication = &fixture
         .world
-        .resource::<sim::infrastructure::NavigationPublication>()
-        .catalogue;
-    assert_eq!(catalogue.beacons.len(), 2);
-    assert!(
-        catalogue
-            .beacons
-            .iter()
-            .all(|beacon| beacon.gate_exit.is_none())
-    );
+        .resource::<sim::infrastructure::NavigationPublication>();
+    assert_eq!(publication.beacons.len(), 2);
 
     let Fixture {
         world,

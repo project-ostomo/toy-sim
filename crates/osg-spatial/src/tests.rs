@@ -15,6 +15,31 @@ fn random_entry(rng: &mut ChaCha20Rng, origin: GalacticPosition) -> Entry {
 }
 
 #[test]
+fn extended_light_sources_include_off_centre_companions() {
+    let observer = GalacticPosition::new(1_i128 << 100, -(1_i128 << 100), -1);
+    let mut index = SpatialHash::default();
+    index.insert(
+        0,
+        Entry {
+            position: observer.offset_by(DVec3::X * 1e12),
+            radius_m: 1e12 - 1e6,
+            luminosity: 1e6,
+        },
+    );
+    assert!(index.visible(observer, 1e-8).ids.is_empty());
+    assert_eq!(index.extended_sources(observer, 0., 1e-8), vec![0]);
+    assert!(
+        index
+            .extended_sources(observer.offset_by(-DVec3::X * 1e9), 0., 1e-8)
+            .is_empty()
+    );
+    assert_eq!(
+        index.extended_sources(observer.offset_by(-DVec3::X * 1e9), 1e9, 1e-8),
+        vec![0]
+    );
+}
+
+#[test]
 fn range_visibility_and_nearest_match_brute_force_at_galactic_coordinates() {
     let origin = GalacticPosition::new(1_i128 << 105, -(1_i128 << 105), -1);
     let mut rng = ChaCha20Rng::seed_from_u64(1234);

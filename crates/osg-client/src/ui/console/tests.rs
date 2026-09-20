@@ -51,7 +51,9 @@ pub(in crate::ui) fn details() -> ShipPresentation {
         power_generated_w: 2e6,
         generation_capacity_w: 200_000_000.,
         reactors: Vec::new(),
-        slip_cooldown_s: Some(0.),
+        slip_available: true,
+        slip_exotic_fuel_kg: Some(100.),
+        slip_navigation_lock: None,
         power_consumed_w: 2.4e6,
         power_requested_w: 100_000_000.,
         slip_charge: Some(osg_model::presentation::SlipChargeTelemetry {

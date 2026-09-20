@@ -13,6 +13,18 @@ pub(in super::super) struct Preview {
 }
 
 impl Preview {
+    pub fn cancel_action(&mut self) -> Option<Action> {
+        let action = self.context.zip(self.request.as_ref()).map(
+            |((ship, authority_revision, _), request)| Action::RouteCancel {
+                ship,
+                authority_revision,
+                id: request.id,
+            },
+        );
+        *self = Self::default();
+        action
+    }
+
     pub fn begin(
         &mut self,
         ship: &ShipTelemetry,
@@ -21,6 +33,9 @@ impl Preview {
         preferences: travel::PlanningPreferences,
         outgoing: &mut Outgoing,
     ) {
+        if let Some(action) = self.cancel_action() {
+            outgoing.push(action);
+        }
         let mut queue = if append {
             ship.travel
                 .orders
@@ -70,7 +85,9 @@ impl Preview {
     ) {
         let context = ship.map(|ship| (ship.ship, ship.authority_revision, ship.travel.revision));
         if self.context != context {
-            *self = Self::default();
+            if let Some(action) = self.cancel_action() {
+                outgoing.push(action);
+            }
             return;
         }
         if let Some(result) = self
@@ -228,7 +245,21 @@ pub(super) fn draw(
                     },
                 ));
             });
-            ui.small("The flight computer generates each local maneuver during flight; route times and fuel are estimates.");
+            ui.label("Best route found");
+            ui.small("Search is bounded. The flight computer generates local maneuvers during flight; route times and fuel are estimates.");
+            if let Some(request) = &preview.request {
+                ui.label(format!(
+                    "Estimated slip loss: {:.3} ppm · maximum {:.3} ppm",
+                    plan.estimated_loss_ppm, request.preferences.max_loss_ppm,
+                ));
+            }
+            ui.label(format!("Exotic fuel: {:.3} kg", plan.exotic_fuel_kg));
+            if !plan.beacon_assumptions.is_empty() {
+                ui.small(format!(
+                    "Estimate assumes {} navigation beacon(s) remain available throughout their assisted jumps.",
+                    plan.beacon_assumptions.len(),
+                ));
+            }
             if plan.fuel_budget.exhausted() {
                 ui.colored_label(
                     THREAT,
@@ -251,11 +282,7 @@ pub(super) fn draw(
                     ui.label(format!(
                         "{}  {}",
                         index + 1,
-                        instruments::order_label(
-                            &stage.action,
-                            model.navigation,
-                            &model.celestial_systems
-                        )
+                        instruments::order_label(&stage.action, model.navigation,)
                     ));
                     ui.monospace(instruments::eta_label(stage, arrival, plan.planned_tick));
                 });
@@ -287,6 +314,9 @@ mod tests {
                         available_kg: 10.,
                     }],
                 },
+                estimated_loss_ppm: 42.,
+                beacon_assumptions: Vec::new(),
+                exotic_fuel_kg: 1.25,
             },
         }
     }
@@ -301,6 +331,29 @@ mod tests {
                 status,
             }),
         }
+    }
+
+    #[test]
+    fn cancelling_preview_rejects_late_results_and_cancels_server_work() {
+        let ship = ship();
+        let mut outgoing = Outgoing::default();
+        let mut preview = Preview::default();
+        preview.begin(
+            &ship,
+            vec![travel::Order::Undock],
+            false,
+            Default::default(),
+            &mut outgoing,
+        );
+        let late = result(&preview, ready(&ship));
+        let request_id = preview.request.as_ref().unwrap().id;
+
+        assert!(
+            matches!(preview.cancel_action(), Some(Action::RouteCancel { id, .. }) if id == request_id)
+        );
+        preview.update(Some(&ship), &[late], &mut outgoing, Duration::ZERO);
+        assert!(preview.commit(&ship).is_none());
+        assert!(preview.plan().is_none());
     }
 
     #[test]
@@ -407,7 +460,7 @@ mod tests {
         let mut ship = ship();
         ship.travel.orders = vec![
             travel::Order::Undock.into(),
-            travel::Order::Jump(Id([2; 16])).into(),
+            travel::Order::TravelTo(travel::Destination::Beacon(Id([2; 16]))).into(),
             travel::Order::Dock(Id([3; 16])).into(),
         ];
         ship.travel.order = 1;
@@ -433,7 +486,7 @@ mod tests {
         assert_eq!(
             request.orders,
             vec![
-                travel::Order::Jump(Id([2; 16])),
+                travel::Order::TravelTo(travel::Destination::Beacon(Id([2; 16]))),
                 travel::Order::Dock(Id([3; 16])),
                 destination,
             ]
@@ -640,7 +693,14 @@ mod tests {
             }
         }
         assert!(intents.is_empty());
-        for expected in ["Engage route", "1  Undock", "ETA ~00:20", "FUEL EXHAUSTION"] {
+        for expected in [
+            "Engage route",
+            "1  Undock",
+            "ETA ~00:20",
+            "FUEL EXHAUSTION",
+            "Estimated slip loss: 42.000 ppm · maximum 100.000 ppm",
+            "Exotic fuel: 1.250 kg",
+        ] {
             assert!(
                 labels.iter().any(|label| label.contains(expected)),
                 "missing {expected}: {labels:?}"

@@ -11,6 +11,13 @@ pub(super) fn receive(
     loop {
         match transport.endpoint.state.try_recv() {
             Ok(frame) => {
+                info.universe_descriptor = transport
+                    .endpoint
+                    .descriptor
+                    .borrow()
+                    .as_ref()
+                    .filter(|(world, _)| *world == frame.world)
+                    .map(|(_, descriptor)| descriptor.clone());
                 if playback.0.world != Some(frame.world) {
                     outgoing.clear();
                 }

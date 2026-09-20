@@ -101,7 +101,7 @@ fn ship_weapons_can_mount_on_station_equipment_ports() {
         "station_end_32m",
         "station_habitat_200m",
         "station_hangar_64m",
-        "station_beacon_48m",
+        "directory_transmitter_48m",
     ] {
         let mut ship = ShipBlueprint::default();
         ship.attach(prototype, 0, "", "", 0);

@@ -24,7 +24,7 @@ pub(super) fn draw(
             (INDUSTRY, Icon::Industry, "Industry"),
             (CHAT, Icon::Broadcast, "Local chat"),
             (NAVIGATION, Icon::Navigation, "Navigation"),
-            (MAP, Icon::Planet, "Gate network map"),
+            (MAP, Icon::Planet, "Navigation map"),
             (SOCIETY, Icon::Shield, "Society and ownership"),
         ] {
             if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
@@ -170,32 +170,18 @@ pub(super) fn draw(
                             }
                         });
                         instruments::planning_progress(ui, &ship.travel);
-                        if ship.travel.search_limited {
-                            ui.label(
-                                egui::RichText::new("Estimated route · search budget reached")
-                                    .size(11.)
-                                    .color(MUTED),
-                            )
-                            .on_hover_text(
-                                "The planner published its best validated route after reaching the search budget. A faster or more economical route may exist.",
-                            );
-                        }
                         if ship
                             .travel
                             .fuel_budget
                             .as_ref()
                             .is_some_and(|budget| budget.exhausted())
                         {
-                            ui.colored_label(
-                                THREAT,
-                                "FUEL EXHAUSTION RISK · replan in Gate Network",
-                            );
+                            ui.colored_label(THREAT, "FUEL EXHAUSTION RISK · replan in Navigation");
                         }
                         instruments::itinerary(
                             ui,
                             &ship.travel,
                             model.navigation,
-                            &model.celestial_systems,
                             model.time_ns / 100_000_000,
                         );
                         if let Some(arrival) = ship

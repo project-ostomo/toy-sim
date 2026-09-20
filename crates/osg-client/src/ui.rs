@@ -1,4 +1,4 @@
-mod celestials;
+pub(crate) mod celestials;
 mod console;
 mod contacts;
 mod input;

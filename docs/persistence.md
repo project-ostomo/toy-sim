@@ -43,12 +43,15 @@ operation.
 The world record includes stable identities, political affiliations and standing
 overrides, asset owners and access grants, information groups and sensor tracks,
 ship designs and resources, physical poses and motion, damage and thermal state,
-docking relationships, gates, slip transit, and the simulation clock. Ship programs
+docking relationships, committed slip transit, and the simulation clock. Ship programs
 are stored once per content hash, alongside each computer's explicit persistent
 data. Runtime execution stacks restart on recovery, including computers suspended
 inside a callback. Only explicitly committed durable guest data survives. The
 host navigation queue, current stage, autopilot toggle, per-stage estimates, route
-fuel budget and slip charging work survive. The active arrival estimate is cleared
+fuel budget, original and spent itinerary risk, and slip charging work survive.
+Slip direction, speed, retained velocity, distance travelled, fuel accounting,
+and both departure and beacon-loss error samples survive without resampling.
+The active arrival estimate is cleared
 until guidance reports a fresh value. Actuator commands restart from their boot
 defaults while the computer comes online. A trapped program still
 uses the normal fault/reset behavior. The durable guest API is
@@ -147,7 +150,7 @@ despawning; ordinary lookups then report that the object is unavailable. Invalid
 account or organization references, scalar bounds and oversized planning context
 are rejected before replacing world entities.
 
-Saved programs must implement the current ABI 31. Restore validates each
+Saved programs must implement the current ABI 32. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
 
@@ -157,34 +160,32 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 6. SQLite’s table schema and the
+The current named `world` section has version 9. SQLite’s table schema and the
 outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.
 
-A world record stores both the public universe-catalogue hash and a BLAKE3
-fingerprint over the public organization lore catalogue, ordered system IDs and
-their complete definition asset hashes. Restore compares both against the loaded
-universe before mutating the world. The definition fingerprint catches orbital
-and physical changes that might leave the catalogue summary unchanged. The ship-resource catalogue and
-persistent references are validated separately.
+A world record stores a BLAKE3 fingerprint over organization lore and the shared
+universe fingerprint. The universe fingerprint covers astronomical inputs,
+authored definitions, and generator revision without generating system bodies.
+Restore compares it against the loaded universe before mutating the world.
+The ship-resource catalogue and persistent references are validated separately.
 
-The 3,000-system map therefore requires a new saved world when replacing the old
-ten-system universe. Startup reports an incompatible world section or a changed
-catalogue and asks for an explicit new database. Preserve the previous state and
+The lazy universe and natural-capture travel format require a new saved world.
+Startup reports an incompatible world section or a changed catalogue and asks
+for an explicit new database. Preserve the previous state and
 choose a new `--state-dir` for the debug launcher, or another `[persistence].path`
 for a dedicated server. A normal restart with unchanged definitions restores the
 same world. Moving or deleting the original ship blueprint file remains safe
 because the ship design itself is stored in the checkpoint.
 
-Gate records retain their generated-system index, checked against the referenced
-body and system during restore. The world record also stores the versioned static
-navigation-catalogue bytes. They are decoded and validated before world mutation,
-then installed in the shared asset store. Retaining their reference beacon poses
-preserves the catalogue's content hash across a normal restart despite orbital
-motion. Publication replaces that catalogue when topology or structural metadata
-changes. Active celestial ECS entities are reconstructed from restored vessels;
-immutable global definitions remain available even when their systems are inactive.
+Snapshots retain actual equipment, transponder settings, inventories, charging
+progress, committed slip trajectories, sampled errors, and itinerary risk.
+Directory emitter markers, public inhabited membership, and active celestial
+entities are rebuilt from restored objects. A restart never runs the initial
+infrastructure placement recipe or replenishes destroyed installations.
+Destroyed objects retain whether a physical wreck exists. A ship lost during
+slip does not gain a wreck or activate a system when restored.
 
 ## Local debug worlds
 

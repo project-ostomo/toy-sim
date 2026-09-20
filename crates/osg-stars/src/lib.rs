@@ -27,6 +27,8 @@ pub struct Star {
     pub position: GalacticPosition,
     /// Approximate intrinsic luminous output in lumens.
     pub luminosity: f64,
+    /// Effective temperature used for astronomical generation, in kelvin.
+    pub temperature_k: f64,
     /// Linear RGB multipliers normalized to unit luminance.
     pub colour: [f32; 3],
 }
@@ -35,6 +37,11 @@ impl Star {
         anyhow::ensure!(
             self.luminosity.is_finite() && self.luminosity > 0.,
             "invalid luminosity for {:?}",
+            self.id
+        );
+        anyhow::ensure!(
+            self.temperature_k.is_finite() && self.temperature_k > 0.0,
+            "invalid temperature for {:?}",
             self.id
         );
         anyhow::ensure!(

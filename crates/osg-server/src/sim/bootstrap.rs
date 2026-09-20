@@ -81,6 +81,7 @@ fn provision_inner(
             format!("Explorer {}", index + 1),
         )?;
         identity::attach_ship(world, ship, account)?;
+        vessel::seed_exotic_fuel(world, ship, 300.0)?;
     }
     let unowned = world
         .query_filtered::<Entity, (With<vessel::Vessel>, Without<identity::Identity>)>()
@@ -105,10 +106,13 @@ fn provision_inner(
     }
     super::infrastructure::spawn(world, player)?;
     travel::geometry::refresh(world);
-    super::infrastructure::enforce_exclusion(world);
     let mut publish = Schedule::default();
     publish.add_systems(
         (
+            super::hardware::generators,
+            super::hardware::avionics,
+            super::hardware::utilities::run,
+            super::spatial::rebuild,
             identity::identify_celestials,
             intelligence::acquire,
             intelligence::coast,
@@ -195,16 +199,16 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                 }
             }
             DebugCommand::InspectBody { body } => {
-                let name = body.and_then(|id| {
+                let reference = body.filter(|reference| {
                     world
                         .resource::<super::registry::UniverseRegistry>()
-                        .names
-                        .get(&id)
-                        .cloned()
+                        .universe
+                        .body(super::registry::universe_reference(*reference))
+                        .is_some()
                 });
                 world
                     .resource_mut::<super::orrery::activity::UniverseDebug>()
-                    .inspect = name;
+                    .inspect = reference;
             }
             DebugCommand::RelocateToBody { ship, body } => {
                 let Ok(entity) = identity::lookup(world, ship) else {
@@ -214,11 +218,14 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                     continue;
                 }
                 let registry = world.resource::<super::registry::UniverseRegistry>();
-                let Some(name) = registry.names.get(&body).cloned() else {
+                let Some(definition) = registry
+                    .universe
+                    .body(super::registry::universe_reference(body))
+                else {
                     continue;
                 };
                 if matches!(
-                    registry.universe.get_body(&name).unwrap().class_params,
+                    definition.class_params,
                     super::orrery::BodyClass::Star { .. }
                 ) {
                     continue;
@@ -226,7 +233,7 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                 let time = physics::sim_time(world.resource::<Time<Fixed>>());
                 let (pose, velocity) = super::orrery::activity::arrival(
                     world.resource::<super::orrery::Universe>(),
-                    &name,
+                    body,
                     time,
                 );
                 world

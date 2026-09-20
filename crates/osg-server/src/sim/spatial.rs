@@ -38,19 +38,17 @@ impl Plugin for SpatialPlugin {
 
 pub(crate) fn rebuild(
     mut index: ResMut<SpatialIndex>,
-    active: Option<Res<super::orrery::activity::ActiveSystems>>,
     bodies: Query<
         (
             Entity,
             &PreciseTransform,
             &SpatialBody,
             Has<super::orrery::Celestial>,
+            Option<&super::orrery::activity::CelestialState>,
             Option<&super::orrery::Star>,
             Option<&super::vessel::ShipDesign>,
             Option<&super::hardware::ShipThermal>,
             Option<&super::hardware::PartDevices>,
-            Option<&super::travel::Gate>,
-            Option<&super::infrastructure::GateOrbit>,
         ),
         (
             Without<crate::sim::physics::collision::Projectile>,
@@ -58,59 +56,47 @@ pub(crate) fn rebuild(
         ),
     >,
     devices: Query<&super::hardware::Device>,
+    universe: Option<Res<super::orrery::Universe>>,
+    time: Option<Res<Time<Fixed>>>,
 ) {
-    if std::sync::Arc::get_mut(&mut index.0).is_none() {
-        *index = SpatialIndex::default();
-    }
     index.clear();
-    let mut sources = osg_spatial::SpatialHash::default();
-    let mut intrinsic = Vec::new();
-    for (entity, pose, body, celestial, star, design, thermal, parts, gate, orbit) in &bodies {
-        if orbit.is_some_and(|orbit| {
-            active
-                .as_ref()
-                .is_some_and(|active| !active.entities.contains_key(&orbit.system))
-        }) {
-            continue;
-        }
-        let id = index.objects.len();
-        let mut emitted = star.map_or_else(
+    index
+        .sky
+        .set_universe(universe.map(|universe| universe.0.clone()));
+    index.sky.epoch = time.as_ref().map_or_else(hifitime::Epoch::default, |time| {
+        super::physics::sim_time(&**time)
+    });
+    for (entity, pose, body, celestial, celestial_state, star, design, thermal, parts) in &bodies {
+        let emitted = star.map_or_else(
             || lighting::emitted_luminosity(design, thermal, parts, &devices),
             |star| star.lumens / lighting::LUMENS_PER_OPTICAL_WATT,
         );
-        if gate.is_some_and(|gate| gate.enabled) {
-            emitted += 2e10 / lighting::LUMENS_PER_OPTICAL_WATT;
+        if star.is_some() {
+            index.sky.local.push(lighting::Light {
+                position: pose.translation_um,
+                radius: body.radius_m,
+                power: emitted,
+            });
         }
-        if star.is_some() || gate.is_some_and(|gate| gate.enabled) {
-            sources.insert(
-                id as u32,
-                osg_spatial::Entry {
-                    position: pose.translation_um,
-                    radius_m: body.radius_m,
-                    luminosity: emitted,
-                },
-            );
-        }
-        intrinsic.push(emitted);
-        index.insert(SpatialObject {
-            optical_luminosity_w: emitted,
+        let object = SpatialObject {
+            optical_luminosity_w: if celestial { 0.0 } else { emitted },
             entity,
             position: pose.translation_um,
             radius_m: body.radius_m,
             occludes: body.occludes,
             optical_occludes: body.occludes && design.is_none(),
-        });
+        };
         if celestial {
-            index.exclude_sensor_target(entity);
+            index.insert_celestial(
+                object,
+                celestial_state.map_or(usize::MAX, |state| state.system),
+            );
+        } else {
+            index.insert(object);
         }
     }
-    let mut source_cache = lighting::SourceCache::default();
-    for (id, emitted) in intrinsic.into_iter().enumerate() {
-        let candidates =
-            lighting::nearby_sources(index.objects[id].position, &sources, &mut source_cache);
-        let reflected = lighting::reflection_sources(&index, id, &sources, candidates);
-        index.set_illumination(id, emitted, reflected);
-    }
+    index.finish_geometry();
+    // Exact illumination is evaluated only when an optical observer requests it.
 }
 
 #[cfg(test)]
@@ -119,6 +105,39 @@ mod tests {
     use crate::sim::precision::GalacticPosition;
     use bevy::math::DVec3;
     use rand::{RngExt, SeedableRng};
+
+    #[test]
+    fn uninstantiated_stars_illuminate_cold_ships() {
+        let universe =
+            super::super::orrery::Universe::init(osg_universe::example_config()).unwrap();
+        let anchor = universe.systems[0].position;
+        let mut app = App::new();
+        app.insert_resource(universe)
+            .init_resource::<SpatialIndex>()
+            .add_systems(Update, rebuild);
+        let position = anchor.offset_by(DVec3::X * 149_597_870_700.);
+        let ship = app
+            .world_mut()
+            .spawn((
+                PreciseTransform {
+                    translation_um: position,
+                    ..Default::default()
+                },
+                SpatialBody {
+                    radius_m: 100.,
+                    occludes: false,
+                },
+            ))
+            .id();
+        app.update();
+        let index = app.world().resource::<SpatialIndex>();
+        let target = index.object_index(ship).unwrap();
+        let observer = position.offset_by(-DVec3::X * 1000.);
+        assert!(index.visible(observer, 1e-12).contains(&target));
+        assert!(index.observed_luminosity(target, observer) > 0.);
+        assert!(index.fully_occluded(ship, target, anchor.offset_by(-DVec3::X * 149_597_870_700.)));
+        assert_eq!(index.objects.len(), 1);
+    }
 
     #[test]
     fn regional_queries_match_brute_force_at_negative_and_galactic_coordinates() {
@@ -249,6 +268,23 @@ mod sensor_target_tests {
         app.init_resource::<SpatialIndex>()
             .add_systems(Update, rebuild);
         let observer = app.world_mut().spawn_empty().id();
+        let star = app
+            .world_mut()
+            .spawn((
+                super::super::orrery::Star {
+                    lumens: 1e12,
+                    color_temp: 5772.0,
+                },
+                PreciseTransform {
+                    translation_um: GalacticPosition::ZERO.offset_by(DVec3::Y * 10.0),
+                    ..Default::default()
+                },
+                SpatialBody {
+                    radius_m: 1.0,
+                    occludes: true,
+                },
+            ))
+            .id();
         let planet = app
             .world_mut()
             .spawn((
@@ -278,6 +314,12 @@ mod sensor_target_tests {
             .id();
         app.update();
         let index = app.world().resource::<SpatialIndex>();
+        assert!(
+            index
+                .visible(GalacticPosition::ZERO, 1e-12)
+                .iter()
+                .all(|&id| index.objects[id].entity != star)
+        );
         let sensor = sensors::Sensor {
             range_m: 100.0,
             occlusion: false,

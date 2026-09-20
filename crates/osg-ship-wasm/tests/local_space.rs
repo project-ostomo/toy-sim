@@ -71,7 +71,7 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     let program = wat::parse_str(format!(
         r#"(module
-            (import "ship_v31" "orrery_read" (func $query (param i32 i32 i32 i32) (result i32)))
+            (import "ship_v32" "orrery_read" (func $query (param i32 i32 i32 i32) (result i32)))
             (memory (export "memory") 4)
             (data (i32.const 0) "{data}")
             (func (export "ship_api_version") (result i32) i32.const {version})

@@ -119,7 +119,11 @@ fn organization_checkpoint_recovers_pending_provider_identity_and_physical_dutie
     else {
         panic!("default station belongs to an organization");
     };
-    let home_system = world.resource::<registry::UniverseRegistry>().definitions[0].0;
+    let home_system = Id(world
+        .resource::<registry::UniverseRegistry>()
+        .universe
+        .systems[0]
+        .id);
     let tick = world.resource::<simulation::SimulationCounters>().ticks;
     let mut state = NpcOrganization::new(
         organization,
@@ -143,7 +147,7 @@ fn organization_checkpoint_recovers_pending_provider_identity_and_physical_dutie
     state.last_action_id = 73;
     state.revision = 4;
     state.query_rounds = 1;
-    state.tool_results = vec!["The public route contains two gates".into()];
+    state.tool_results = vec!["The route contains two natural captures".into()];
     state.pending = Some(PendingDecision {
         request: LlmRequest {
             id: 9,

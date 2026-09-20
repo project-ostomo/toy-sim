@@ -2,8 +2,8 @@
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v31";
-pub const VERSION: u32 = 31;
+pub const IMPORT_MODULE: &str = "ship_v32";
+pub const VERSION: u32 = 32;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -12,8 +12,6 @@ pub const ERR_HANDLE: i32 = -6;
 pub const ERR_UNSUPPORTED: i32 = -7;
 pub const CALL_GAS: u64 = 100;
 pub const SCAN_GAS_PER_OBJECT: u64 = 3000;
-pub const NAVIGATION_GAS_BASE: u64 = 100;
-pub const NAVIGATION_GAS_PER_GATE: u64 = 4096;
 pub const MAX_CONTACTS: u32 = 256;
 pub const MAX_TRACKS: u32 = 512;
 pub const MAX_SNAPSHOTS: u32 = 8;
@@ -1313,7 +1311,7 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v31")]
+    #[link(wasm_import_module = "ship_v32")]
     unsafe extern "C" {
         pub fn llm_submit(id: u64, input: *const u8, bytes: u32, max_tokens: u32) -> i32;
         pub fn llm_poll(

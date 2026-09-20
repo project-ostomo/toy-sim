@@ -31,14 +31,14 @@ fn catalogue() -> NavigationCatalogue {
         {
             catalogue.beacons.push(NavigationBeacon {
                 id: id(10000 + index * 2 + usize::from(next > index)),
-                system: id(index),
-                name: format!("Gate to {next}"),
+                systems: vec![id(index)],
+                name: format!("Navigation beacon {next}"),
                 pose: Pose {
                     position,
                     ..Default::default()
                 },
                 radius_m: 100.,
-                gate_exit: Some(id(10000 + next * 2 + usize::from(index > next))),
+                navigation: true,
                 docking: false,
             });
         }
@@ -56,8 +56,8 @@ pub(super) fn model<'a>(
         industry_ready: true,
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
-        celestial_systems: Default::default(),
         navigation: catalogue,
+        inhabited: Default::default(),
         society,
         ships: ship.into_iter().collect(),
         rows: Vec::new(),
@@ -75,13 +75,12 @@ pub(super) fn model<'a>(
 }
 
 #[test]
-fn large_layout_is_stable_cached_and_contains_only_reciprocal_gate_links() {
+fn large_layout_is_stable_and_cached() {
     let mut catalogue = catalogue();
     let mut cache = Cache::default();
     let start = Instant::now();
     assert!(cache.update(&catalogue));
     eprintln!("3000-system layout construction: {:?}", start.elapsed());
-    assert_eq!(cache.links.len(), 2999);
     let positions: std::collections::BTreeMap<_, _> = catalogue
         .systems
         .iter()
@@ -112,44 +111,6 @@ fn large_layout_is_stable_cached_and_contains_only_reciprocal_gate_links() {
     for (index, system) in catalogue.systems.iter().enumerate() {
         assert_eq!(positions[&system.id], cache.positions[index]);
     }
-    assert_eq!(cache.network.regions.len(), 3000);
-    assert_eq!(
-        cache
-            .network
-            .regions
-            .iter()
-            .map(|region| region.gates.len())
-            .sum::<usize>(),
-        5998
-    );
-    for &(a, b, entry, exit) in &cache.links {
-        let entry_beacon = &catalogue.beacons[cache.beacons[&entry]];
-        let exit_beacon = &catalogue.beacons[cache.beacons[&exit]];
-        assert_eq!(entry_beacon.gate_exit, Some(exit));
-        assert_eq!(exit_beacon.gate_exit, Some(entry));
-        assert_eq!(entry_beacon.system, catalogue.systems[a].id);
-        assert_eq!(exit_beacon.system, catalogue.systems[b].id);
-    }
-
-    let (_, _, entry, exit) = cache.links[0];
-    catalogue.beacons[cache.beacons[&exit]].gate_exit = None;
-    catalogue.topology_revision += 1;
-    assert!(cache.update(&catalogue));
-    assert_eq!(cache.links.len(), 2998);
-    assert!(
-        cache
-            .links
-            .iter()
-            .all(|&(_, _, a, b)| a != entry && b != entry && a != exit && b != exit)
-    );
-    assert!(
-        cache
-            .network
-            .regions
-            .iter()
-            .flat_map(|region| &region.gates)
-            .all(|gate| gate.entry != entry && gate.entry != exit)
-    );
 }
 
 #[test]
@@ -184,32 +145,21 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
         1000
     );
     let orders: Vec<travel::QueuedOrder> = vec![
-        travel::Order::Jump(id(10001)).into(),
+        travel::Order::TravelTo(travel::Destination::Galactic(catalogue.systems[1].position))
+            .into(),
         travel::Order::Slip {
             destination: travel::Destination::Galactic(catalogue.systems[2999].position),
+            speed_ly_s: 0.01,
+            navigation_beacon: None,
         }
         .into(),
     ];
     let mut active = ActiveRoute::default();
-    active.update(
-        &cache,
-        &catalogue,
-        &Default::default(),
-        Some(id(0)),
-        &orders,
-    );
-    assert_eq!(active.gates, BTreeSet::from([id(10001)]));
+    active.update(&cache, &catalogue, Some(id(0)), &orders);
     assert_eq!(active.slips, [(1, 2999)]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
-    active.update(
-        &cache,
-        &catalogue,
-        &Default::default(),
-        Some(id(1)),
-        &orders[1..],
-    );
-    assert!(active.gates.is_empty());
+    active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
     assert_eq!(active.slips, [(1, 2999)]);
 }
 
@@ -219,7 +169,7 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
     let beacon = catalogue
         .beacons
         .iter_mut()
-        .find(|beacon| beacon.system == id(2999))
+        .find(|beacon| beacon.systems.contains(&id(2999)))
         .unwrap();
     let destination_beacon = beacon.id;
     beacon.pose.position = GalacticPosition::ZERO;
@@ -238,9 +188,13 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
         active.update(
             &cache,
             &catalogue,
-            &Default::default(),
             Some(id(0)),
-            &[travel::Order::Slip { destination }.into()],
+            &[travel::Order::Slip {
+                destination,
+                speed_ly_s: 0.01,
+                navigation_beacon: None,
+            }
+            .into()],
         );
         assert_eq!(active.slips, [(0, 2999)]);
         assert_eq!(active.systems, BTreeSet::from([0, 2999]));
@@ -248,34 +202,30 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
 }
 
 #[test]
-fn celestial_slip_route_resolves_when_its_ephemeris_arrives() {
+fn celestial_slip_route_resolves_without_ephemeris_download() {
     let catalogue = catalogue();
     let mut cache = Cache::default();
     cache.update(&catalogue);
     let body = id(90000);
     let orders = [travel::Order::Slip {
         destination: travel::Destination::Relative {
-            reference: travel::Reference::Celestial(body),
+            reference: travel::Reference::Celestial(travel::CelestialRef {
+                system: id(2999),
+                body,
+            }),
             offset: GalacticPosition::ZERO,
             axes: travel::Axes::Galactic,
         },
+        speed_ly_s: 0.01,
+        navigation_beacon: None,
     }
     .into()];
     let mut active = ActiveRoute::default();
-    active.update(
-        &cache,
-        &catalogue,
-        &Default::default(),
-        Some(id(0)),
-        &orders,
-    );
-    assert!(active.slips.is_empty());
-
-    let membership = std::collections::BTreeMap::from([(body, id(2999))]);
-    active.update(&cache, &catalogue, &membership, Some(id(0)), &orders);
+    active.update(&cache, &catalogue, Some(id(0)), &orders);
     assert_eq!(active.slips, [(0, 2999)]);
+
     assert_eq!(
-        instruments::order_label(&orders[0].action, &catalogue, &membership),
+        instruments::order_label(&orders[0].action, &catalogue),
         "Slip · System 2999"
     );
 }
@@ -397,7 +347,21 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
     let catalogue = catalogue();
     let society = ownership::SocietySnapshot::default();
     let ship = crate::ui::tests::ship(id(9000)).0;
-    let model = model(&catalogue, &society, Some(&ship));
+    let mut model = model(&catalogue, &society, Some(&ship));
+    let sovereign = id(5002);
+    model.inhabited = std::sync::Arc::new(osg_model::InhabitedDirectory {
+        systems: vec![id(2999)],
+        ownership: [(id(2999), sovereign)].into(),
+        sovereignties: [(
+            sovereign,
+            osg_model::PublicSovereignty {
+                id: sovereign,
+                name: "Public sovereignty".into(),
+                bloc: ownership::Bloc::Union,
+            },
+        )]
+        .into(),
+    });
     let context = egui::Context::default();
     osg_ui::theme::install(&context);
     let mut state = State {
@@ -444,7 +408,7 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
         }
         values
     }
-    for text in ["System 2999  ·  Unclaimed", "Plan destination"] {
+    for text in ["System 2999  ·  Public sovereignty", "Plan destination"] {
         let mut values = Vec::new();
         for _ in 0..3 {
             values = render(&context, &mut state, &model, Vec::new(), &mut intents);
@@ -477,6 +441,6 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
     assert!(intents.iter().any(|intent| matches!(intent,
         Intent::PlanRoute(orders, false, preference)
             if preference.fuel_fraction == 0.42 && matches!(&orders[..],
-                [travel::Order::TravelTo(travel::Destination::Beacon(destination))]
-                    if *destination == id(15998)))));
+                [travel::Order::TravelTo(travel::Destination::Galactic(destination))]
+                    if *destination == catalogue.systems[2999].position))));
 }

@@ -68,7 +68,7 @@ fn main() -> Result<()> {
     station.attach("station_core_32m", 0, "", "", 0);
     station.attach("station_hangar_64m", 1, "fore", "aft", 0);
     station.attach("station_habitat_200m", 1, "aft", "fore", 0);
-    station.attach("station_beacon_48m", 3, "aft", "fore", 0);
+    station.attach("directory_transmitter_48m", 3, "aft", "fore", 0);
     station.attach("reactor_hot_4m", 1, "left", "right", 0);
     station.attach("radiator_32m", 5, "left", "right", 0);
     station.attach("station_life_support_8m", 1, "right", "left", 0);

@@ -2,15 +2,35 @@ use super::*;
 use crate::sim::hardware::{DeviceSettings, HardwareClock, ShipInventory};
 use crate::sim::physics::{AccumulatedForce, AccumulatedTorque};
 
+#[test]
+fn starter_exotic_supply_reaches_three_hundred_light_years_with_loaded_mass() {
+    let catalogue = Catalogue::builtin();
+    let design = expedition_patrol().compile(&catalogue).unwrap();
+    let mut state = ShipState::new(&design, &catalogue);
+    let initial_mass = state.mass_properties(&design, &catalogue).0;
+    seed_exotic_inventory(&mut state.inventory, initial_mass, &catalogue, 300.0).unwrap();
+    let resource = catalogue
+        .resources
+        .iter()
+        .position(|r| r.id == "exotic_fuel")
+        .unwrap();
+    let fuel_kg =
+        state.inventory.quantities[resource] as f64 * catalogue.resources[resource].mass_kg;
+    let loaded_mass = state.mass_properties(&design, &catalogue).0;
+    let range = osg_model::travel::slip::exotic_range_ly(loaded_mass, fuel_kg);
+    assert!((300.0..300.001).contains(&range), "range: {range}");
+    assert!(state.inventory.quantities[resource] > 0);
+}
+
 fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v30" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v30" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v30" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v30" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v32" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship_v32" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship_v32" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship_v32" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
       (func (export "ship_api_version") (result i32) i32.const {})
       (func (export "ship_tick")
@@ -274,6 +294,8 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
         travel::SlipDrive {
             preparation: Some(travel::Preparation {
                 destination: Default::default(),
+                speed_ly_s: 0.01,
+                navigation_beacon: None,
                 started: 0,
                 mass: 100.,
                 work_j: 100.,
@@ -624,7 +646,7 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
 fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
         (memory (export "memory") 1)
         (func (export "ship_api_version") (result i32) i32.const {})
         (func (export "ship_tick") (local $remaining i32)
@@ -711,8 +733,8 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
 fn shared_missile_callbacks_resume_and_rotate_within_the_parent_account_budget() {
     let program = wat::parse_str(format!(
         r#"(module
-            (import "ship_v30" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v30" "missile_control" (func $control (param i32 i32) (result i32)))
+            (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+            (import "ship_v32" "missile_control" (func $control (param i32 i32) (result i32)))
             (memory (export "memory") 1)
             (global $ship_calls (mut i32) (i32.const 0))
             (func (export "ship_api_version") (result i32) i32.const {})

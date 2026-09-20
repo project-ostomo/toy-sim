@@ -231,6 +231,7 @@ enum Intent {
     Queue(Vec<travel::Order>, bool),
     PlanRoute(Vec<travel::Order>, bool, travel::PlanningPreferences),
     RetryRoute,
+    CancelRoute(Action),
     CommitRoute,
     EditQueue(Vec<travel::Order>),
     Command(ShipCommand, &'static str),
@@ -281,7 +282,7 @@ fn draw(
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     mut views: Query<(
         &ViewObservation,
-        &SystemSubscription,
+        &ViewSystems,
         &mut scene::CameraOptions,
         &mut scene::ViewOptions,
     )>,
@@ -332,6 +333,7 @@ fn draw(
                 .unwrap_or_else(|| format!("Contact {}", short_id(track.id)));
             let kind = super::contacts::kind(&track.tags).to_owned();
             rows.push(Row {
+                celestial: None,
                 target: SelectedTarget::Contact(contact.1),
                 contact: Some(contact.1),
                 name,
@@ -358,11 +360,7 @@ fn draw(
             });
         }
         for (body, pose, system) in &bodies {
-            if !systems
-                .0
-                .iter()
-                .any(|reference| reference.system == system.0)
-            {
+            if !systems.0.iter().any(|reference| *reference == system.0) {
                 continue;
             }
             let range = pose.0.position.relative_to(origin).length();
@@ -382,6 +380,7 @@ fn draw(
             }
 
             rows.push(Row {
+                celestial: Some(body.0.reference),
                 target: SelectedTarget::Celestial(body.0.entity),
                 contact: None,
                 name: body.0.name.clone(),
@@ -410,21 +409,21 @@ fn draw(
             continue;
         }
         rows.push(Row {
+            celestial: None,
             target: SelectedTarget::Beacon(beacon.id),
             contact: view.and_then(|(view, ..)| {
                 contacts.iter().find_map(|(contact, _)| {
-                    (beacon.gate_exit.is_none()
-                        && contact.0.entity == Some(beacon.id)
+                    (contact.0.entity == Some(beacon.id)
                         && contact.1.group == view.0.group
                         && view.0.tracks.contains(&contact.0.id))
                     .then_some(contact.1)
                 })
             }),
             name: beacon.name.clone(),
-            kind: if beacon.gate_exit.is_some() {
-                "Stargate"
+            kind: if beacon.navigation {
+                "Navigation beacon"
             } else {
-                "Station"
+                "Directory transmitter"
             }
             .into(),
             offset,
@@ -432,11 +431,10 @@ fn draw(
             speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
             radius: beacon.radius_m,
             can_look: offset.length() <= scene::LOOK_AT_RANGE_M
-                && (beacon.gate_exit.is_some()
-                    || optical.iter().any(|object| {
-                        Some(object.0.view) == selection.view
-                            && object.0.known_entity == Some(beacon.id)
-                    })),
+                && optical.iter().any(|object| {
+                    Some(object.0.view) == selection.view
+                        && object.0.known_entity == Some(beacon.id)
+                }),
             affiliation: contacts
                 .iter()
                 .find(|(contact, _)| contact.0.entity == Some(beacon.id))
@@ -458,12 +456,9 @@ fn draw(
         industry: &session.industry.snapshot,
         industry_ready: session.industry.ready(),
         navigation: &session.navigation,
+        inhabited: session.inhabited.clone(),
         navigation_status: &session.navigation_status,
         navigation_hash: session.navigation_hash,
-        celestial_systems: bodies
-            .iter()
-            .map(|(body, _, system)| (body.0.entity, system.0))
-            .collect(),
         society: &session.society,
         rows,
         ship: telemetry,
@@ -607,6 +602,9 @@ fn draw(
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     shell.map.route.retry(ship, &mut outgoing);
                 }
+            }
+            Intent::CancelRoute(action) => {
+                outgoing.push(action);
             }
             Intent::CommitRoute => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
@@ -789,9 +787,9 @@ fn commands_for(
                 SelectedTarget::Beacon(id) => {
                     travel::Target::Destination(travel::Destination::Beacon(id))
                 }
-                SelectedTarget::Celestial(id) => {
+                SelectedTarget::Celestial(_) => {
                     travel::Target::Destination(travel::Destination::Relative {
-                        reference: travel::Reference::Celestial(id),
+                        reference: travel::Reference::Celestial(row.celestial?),
                         offset: GalacticPosition::ZERO,
                         axes: travel::Axes::Galactic,
                     })

@@ -167,22 +167,11 @@ pub(super) fn selected_item(
                     append,
                 ));
             }
-            let gate = row.is_some_and(|r| r.kind == "Stargate");
             if ui
-                .add_enabled(
-                    can_control,
-                    egui::Button::new(if gate { "Jump" } else { "Dock" }),
-                )
+                .add_enabled(can_control, egui::Button::new("Dock"))
                 .clicked()
             {
-                intents.push(Intent::Queue(
-                    vec![if gate {
-                        travel::Order::Jump(id)
-                    } else {
-                        travel::Order::Dock(id)
-                    }],
-                    append,
-                ));
+                intents.push(Intent::Queue(vec![travel::Order::Dock(id)], append));
             }
             ui.weak("Shift: add to queue");
         });

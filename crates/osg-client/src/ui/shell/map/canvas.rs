@@ -39,65 +39,62 @@ pub(super) fn draw(
 
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 2., egui::Color32::from_rgb(9, 17, 26));
-    let projected: Vec<_> = state
-        .cache
-        .positions
-        .iter()
-        .map(|position| state.camera.project(*position, rect))
-        .collect();
-    let positions: Vec<_> = projected.iter().map(|&(position, _)| position).collect();
-    reference_plane(&painter, rect, state);
     let selected = state.selected.or(origin);
-    let search = state.search.trim().to_lowercase();
-    let matching: Vec<_> = model
-        .navigation
-        .systems
-        .iter()
-        .enumerate()
-        .map(|(index, system)| {
-            state
-                .sovereignty
-                .is_none_or(|id| system.sovereignty == Some(id))
-                && (search.is_empty() || state.cache.names[index].contains(&search))
-        })
-        .collect();
     let mut highlighted = state.active.systems.clone();
     highlighted.extend(state.suggested.systems.iter().copied());
-    for &(a, b, entry, exit) in &state.cache.links {
-        let planned = state.active.gates.contains(&entry) || state.active.gates.contains(&exit);
-        let suggested =
-            state.suggested.gates.contains(&entry) || state.suggested.gates.contains(&exit);
-        if planned || suggested {
-            highlighted.extend([a, b]);
-        }
-        let (a_pos, b_pos) = (positions[a], positions[b]);
-        if !rect.intersects(egui::Rect::from_two_pos(a_pos, b_pos)) {
-            continue;
-        }
-        let color = if planned {
-            egui::Color32::from_rgb(255, 199, 98)
-        } else if suggested {
-            ACCENT
-        } else if selected.is_some_and(|id| {
-            model.navigation.systems[a].id == id || model.navigation.systems[b].id == id
-        }) {
-            egui::Color32::from_rgb(95, 124, 144)
-        } else if matching[a] && matching[b] {
-            egui::Color32::from_rgb(42, 64, 80)
-        } else {
-            egui::Color32::from_rgb(21, 32, 41)
-        };
-        let width = if planned {
-            2.5
-        } else if suggested {
-            1.5
-        } else {
-            0.7
-        };
-        painter.line_segment([a_pos, b_pos], egui::Stroke::new(width, color));
-    }
+    let tree = if state.inhabited_only {
+        &state.cache.inhabited_tree
+    } else {
+        &state.cache.tree
+    };
+    let mut samples = tree.visible(&state.cache.positions, &state.camera, rect);
+    samples.extend(highlighted.iter().copied());
+    samples.extend(
+        state
+            .active
+            .stops
+            .iter()
+            .chain(&state.suggested.stops)
+            .map(|&(_, index)| index),
+    );
+    samples.extend(
+        selected
+            .and_then(|id| state.cache.systems.get(&id))
+            .copied(),
+    );
+    samples.extend(origin.and_then(|id| state.cache.systems.get(&id)).copied());
+    let projected: std::collections::BTreeMap<_, _> = samples
+        .into_iter()
+        .map(|index| {
+            (
+                index,
+                state.camera.project(state.cache.positions[index], rect),
+            )
+        })
+        .collect();
+    let positions: std::collections::BTreeMap<_, _> = projected
+        .iter()
+        .map(|(&index, &(position, _))| (index, position))
+        .collect();
+    reference_plane(&painter, rect, state);
+    let search = state.search.trim().to_lowercase();
+    let matching: std::collections::BTreeMap<_, _> = positions
+        .keys()
+        .map(|&index| {
+            let system = &model.navigation.systems[index];
+            (
+                index,
+                state
+                    .sovereignty
+                    .is_none_or(|id| system.sovereignty == Some(id))
+                    && (search.is_empty() || state.cache.names[index].contains(&search))
+                    && (!state.inhabited_only
+                        || model.inhabited.systems.binary_search(&system.id).is_ok()),
+            )
+        })
+        .collect();
     for &(a, b) in state.active.slips.iter().chain(&state.suggested.slips) {
-        let (a, b) = (positions[a], positions[b]);
+        let (a, b) = (positions[&a], positions[&b]);
         if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
             continue;
         }
@@ -120,24 +117,23 @@ pub(super) fn draw(
 
     let mut visible: Vec<_> = positions
         .iter()
-        .enumerate()
-        .filter_map(|(index, &position)| rect.expand(10.).contains(position).then_some(index))
+        .filter_map(|(&index, &position)| rect.expand(10.).contains(position).then_some(index))
         .collect();
     let hovered = response.hover_pos().and_then(|pointer| {
         visible
             .iter()
             .copied()
             .filter(|&index| {
-                (matching[index]
+                (matching[&index]
                     || highlighted.contains(&index)
                     || selected == Some(model.navigation.systems[index].id))
-                    && positions[index].distance_sq(pointer) <= 81.
+                    && positions[&index].distance_sq(pointer) <= 81.
             })
             .min_by(|&a, &b| {
-                positions[a]
+                positions[&a]
                     .distance_sq(pointer)
-                    .total_cmp(&positions[b].distance_sq(pointer))
-                    .then_with(|| projected[b].1.total_cmp(&projected[a].1))
+                    .total_cmp(&positions[&b].distance_sq(pointer))
+                    .then_with(|| projected[&b].1.total_cmp(&projected[&a].1))
             })
     });
     if response.clicked() {
@@ -154,9 +150,12 @@ pub(super) fn draw(
         response.on_hover_ui_at_pointer(|ui| {
             let system = &model.navigation.systems[index];
             ui.strong(&system.name);
+            if model.inhabited.systems.binary_search(&system.id).is_ok() {
+                ui.label("Inhabited · public directory transmitter");
+            }
             if let Some(sovereignty) = system
                 .sovereignty
-                .and_then(|id| model.society.directory.sovereignties.get(&id))
+                .and_then(|id| model.inhabited.sovereignties.get(&id))
             {
                 ui.label(&sovereignty.name);
             }
@@ -164,12 +163,12 @@ pub(super) fn draw(
         });
     }
     let radius = (2.0 + state.camera.scale.sqrt() as f32 * 0.25).clamp(2., 5.);
-    visible.sort_unstable_by(|&a, &b| projected[a].1.total_cmp(&projected[b].1));
+    visible.sort_unstable_by(|&a, &b| projected[&a].1.total_cmp(&projected[&b].1));
     let depth_span = state.cache.bounds.length().max(1.);
     let mut labels = Vec::new();
     for index in visible {
         let system = &model.navigation.systems[index];
-        let position = positions[index];
+        let position = positions[&index];
         let own = origin == Some(system.id);
         let chosen = selected == Some(system.id);
         let route = highlighted.contains(&index);
@@ -177,16 +176,19 @@ pub(super) fn draw(
         let mut color = polity_color(
             system
                 .sovereignty
-                .and_then(|id| model.society.directory.sovereignties.get(&id))
+                .and_then(|id| model.inhabited.sovereignties.get(&id))
                 .map(|s| s.bloc),
         );
-        if !matching[index] && !own && !chosen && !route {
+        if !matching[&index] && !own && !chosen && !route {
             color = color.gamma_multiply(0.25);
         } else if !own && !chosen && !route && !hovered {
-            let depth = (projected[index].1 / depth_span + 0.5).clamp(0., 1.);
+            let depth = (projected[&index].1 / depth_span + 0.5).clamp(0., 1.);
             color = color.gamma_multiply((0.45 + 0.55 * depth) as f32);
         }
         painter.circle_filled(position, radius, color);
+        if model.inhabited.systems.binary_search(&system.id).is_ok() {
+            painter.circle_stroke(position, radius + 1.5, egui::Stroke::new(1., color));
+        }
         if own {
             painter.circle_stroke(
                 position,
@@ -197,7 +199,7 @@ pub(super) fn draw(
         if chosen {
             painter.circle_stroke(position, radius + 6., egui::Stroke::new(1.5, ACCENT));
         }
-        if own || chosen || hovered || (state.camera.scale >= 20. && matching[index]) || route {
+        if own || chosen || hovered || (state.camera.scale >= 20. && matching[&index]) || route {
             labels.push((!(own || chosen || hovered), !route, index, color));
         }
     }
@@ -212,7 +214,7 @@ pub(super) fn draw(
         };
         let galley =
             painter.layout_no_wrap(system.name.clone(), egui::FontId::proportional(11.), color);
-        let position = positions[index] + egui::vec2(-galley.size().x * 0.5, radius + 5.);
+        let position = positions[&index] + egui::vec2(-galley.size().x * 0.5, radius + 5.);
         let bounds = egui::Rect::from_min_size(position, galley.size()).expand(3.);
         let cells = label_cells(bounds);
         if ordinary && cells.iter().any(|cell| occupied.contains(cell)) {
@@ -227,7 +229,7 @@ pub(super) fn draw(
         &state.active
     };
     for &(number, index) in &route.stops {
-        let position = positions[index];
+        let position = positions[&index];
         if rect.contains(position) {
             painter.text(
                 position + egui::vec2(radius + 5., -radius - 3.),
@@ -304,6 +306,7 @@ pub(super) fn legend(ui: &mut egui::Ui) {
         }
         ui.colored_label(egui::Color32::from_rgb(255, 199, 98), "Queued route");
         ui.colored_label(egui::Color32::from_rgb(221, 135, 240), "Slip");
+        ui.weak("◎ Inhabited");
         ui.weak("Right-drag rotate · Middle-drag / Shift+right-drag pan · Scroll zoom · Double-click focus");
     });
 }

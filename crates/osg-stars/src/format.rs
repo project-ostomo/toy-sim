@@ -6,8 +6,8 @@ use std::{
     path::Path,
 };
 pub const HEADER_BYTES: u64 = 40;
-pub const RECORD_BYTES: u64 = 76;
-const MAGIC: &[u8; 8] = b"TOYSTAR\0";
+pub const RECORD_BYTES: u64 = 84;
+const MAGIC: &[u8; 8] = b"OSGSTAR\0";
 impl StarCatalogue {
     /// Sequentially load fixed-size records, then build the in-memory index.
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
@@ -22,15 +22,30 @@ impl StarCatalogue {
     }
     /// Build an index from the million-star Gaia DR3 catalogue embedded in this crate.
     pub fn embedded() -> Result<Self> {
-        Self::from_bytes(include_bytes!("../data/gaia-dr3-earth-million.stars"))
+        Self::from_bytes(Self::embedded_bytes())
     }
+
+    pub fn embedded_bytes() -> &'static [u8] {
+        include_bytes!("../data/gaia-dr3-earth-million.stars")
+    }
+
+    /// Load records without constructing a second spatial index.
+    pub fn embedded_records() -> Result<Vec<Star>> {
+        let bytes = Self::embedded_bytes();
+        Self::decode_records(bytes, bytes.len() as u64)
+    }
+
     fn read_records(mut reader: impl Read, size: u64) -> Result<Self> {
+        Self::from_stars(Self::decode_records(&mut reader, size)?)
+    }
+
+    fn decode_records(mut reader: impl Read, size: u64) -> Result<Vec<Star>> {
         let mut h = [0; HEADER_BYTES as usize];
         reader.read_exact(&mut h)?;
-        ensure!(&h[..8] == MAGIC, "not a TOYSTAR catalogue");
+        ensure!(&h[..8] == MAGIC, "not an OSGSTAR catalogue");
         let u32_at = |n| u32::from_le_bytes(h[n..n + 4].try_into().unwrap());
         let u64_at = |n| u64::from_le_bytes(h[n..n + 8].try_into().unwrap());
-        ensure!(u32_at(8) == 1, "unsupported star format version");
+        ensure!(u32_at(8) == 2, "unsupported star format version");
         ensure!(
             u32_at(12) == RECORD_BYTES as u32,
             "unsupported star record size"
@@ -69,10 +84,12 @@ impl StarCatalogue {
                 colour: std::array::from_fn(|i| {
                     f32::from_le_bytes(r[64 + i * 4..68 + i * 4].try_into().unwrap())
                 }),
+                temperature_k: f64::from_le_bytes(r[76..84].try_into().unwrap()),
             };
+            star.validate()?;
             stars.push(star);
         }
-        Self::from_stars(stars)
+        Ok(stars)
     }
     /// Write one namespace in the portable flat format. Indexes are never serialized.
     pub fn save(&self, path: impl AsRef<Path>, namespace: u64) -> Result<()> {
@@ -82,7 +99,7 @@ impl StarCatalogue {
         );
         let mut out = BufWriter::new(File::create(path)?);
         out.write_all(MAGIC)?;
-        out.write_all(&1u32.to_le_bytes())?;
+        out.write_all(&2u32.to_le_bytes())?;
         out.write_all(&(RECORD_BYTES as u32).to_le_bytes())?;
         out.write_all(&(self.len() as u64).to_le_bytes())?;
         out.write_all(&1u32.to_le_bytes())?; // Micrometres.
@@ -97,6 +114,7 @@ impl StarCatalogue {
             for c in s.colour {
                 out.write_all(&c.to_le_bytes())?;
             }
+            out.write_all(&s.temperature_k.to_le_bytes())?;
         }
         out.flush()?;
         Ok(())

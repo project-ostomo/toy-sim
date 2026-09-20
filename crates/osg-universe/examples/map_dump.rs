@@ -1,7 +1,7 @@
 use std::io::Write;
 
-/// Dumps the inhabited civilization map as JSON for offline tools, including
-/// the procedurally generated planets of every system.
+/// Dumps initial settlement placement as JSON for offline tools, including
+/// the procedurally generated planets at those locations.
 fn main() -> anyhow::Result<()> {
     let map = osg_universe::civilization::map();
     let stars = osg_universe::civilization::stars();
@@ -84,32 +84,15 @@ fn main() -> anyhow::Result<()> {
         }));
     }
 
-    let links: Vec<serde_json::Value> = map
-        .links
-        .iter()
-        .map(|link| {
-            serde_json::json!({
-                "a": link.a,
-                "b": link.b,
-                "kind": format!("{:?}", link.kind),
-            })
-        })
-        .collect();
-
     let json = serde_json::json!({
         "generation_version": map.generation_version,
         "systems": systems,
-        "links": links,
     });
     let mut file = std::io::BufWriter::new(std::fs::File::create(
         "/tmp/opencode/inhabited-map-dump.json",
     )?);
     serde_json::to_writer(&mut file, &json)?;
     file.flush()?;
-    println!(
-        "wrote {} systems, {} links",
-        map.systems.len(),
-        map.links.len()
-    );
+    println!("wrote {} initial settlements", map.systems.len());
     Ok(())
 }

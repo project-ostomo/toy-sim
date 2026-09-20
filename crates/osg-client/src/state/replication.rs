@@ -49,6 +49,7 @@ pub(super) fn reset(
         world: playback.0.world,
         generation: session.generation + 1,
         status: std::mem::take(&mut session.status),
+        universe_descriptor: session.universe_descriptor.take(),
         ..default()
     };
     commands.trigger(SessionReset);
@@ -92,12 +93,41 @@ pub(super) fn apply(
     info.capabilities = frame.presentation.capabilities.clone();
     info.groups = frame.tracks.keys().copied().collect();
     info.diagnostics = frame.presentation.diagnostics.clone();
-    info.universe = frame.presentation.universe.clone();
-    info.navigation_ephemerides = frame.presentation.navigation.ephemerides.clone();
-    let catalogue = frame.presentation.navigation.catalogue;
+    let catalogue = frame.presentation.navigation.directory;
+    if info.navigation.beacons != frame.presentation.navigation.beacons {
+        let navigation = std::sync::Arc::make_mut(&mut info.navigation);
+        if navigation
+            .beacons
+            .iter()
+            .map(|beacon| (beacon.id, &beacon.systems))
+            .ne(frame
+                .presentation
+                .navigation
+                .beacons
+                .iter()
+                .map(|beacon| (beacon.id, &beacon.systems)))
+        {
+            navigation.topology_revision = navigation.topology_revision.wrapping_add(1);
+        }
+        navigation.beacons = frame.presentation.navigation.beacons.clone();
+    }
     if info.navigation_hash != catalogue {
         info.navigation_hash = catalogue;
-        info.navigation = Default::default();
+        if catalogue.is_none() {
+            let owned: Vec<_> = info.inhabited.ownership.keys().copied().collect();
+            if let Ok(universe) = crate::ui::celestials::shared_universe() {
+                let navigation = std::sync::Arc::make_mut(&mut info.navigation);
+                for id in owned {
+                    if let Some(index) = universe.system_index(id.0) {
+                        if let Some(system) = navigation.systems.get_mut(index) {
+                            system.sovereignty = None;
+                        }
+                    }
+                }
+                navigation.topology_revision = navigation.topology_revision.wrapping_add(1);
+            }
+            info.inhabited = Default::default();
+        }
         info.navigation_status = if catalogue.is_some() {
             NavigationStatus::Loading
         } else {
@@ -244,16 +274,9 @@ pub(super) fn apply(
     for view in &frame.views {
         seen.insert(view.id);
         let entity = indexed(&mut commands, &mut replication.views, view.id);
-        let systems = frame
-            .presentation
-            .celestial_systems
-            .iter()
-            .filter(|system| system.view == view.id)
-            .cloned()
-            .collect();
         commands
             .entity(entity)
-            .insert((ViewObservation(view.clone()), SystemSubscription(systems)));
+            .insert(ViewObservation(view.clone()));
     }
     retain(&mut commands, &mut replication.views, &seen);
 
@@ -279,7 +302,7 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn navigation_ephemerides_do_not_expand_camera_subscriptions() {
+    fn replication_preserves_locally_selected_systems() {
         let mut app = app();
         let group = Id([2; 16]);
         let track = Id([3; 16]);
@@ -293,37 +316,21 @@ mod tests {
             tracks: vec![track],
             completion: Completion::Complete,
         });
-        let reference = CelestialSystemRef {
-            view: 41,
-            system: Id([8; 16]),
-            definition: [9; 32],
-            epoch_mjd_utc: 0.,
-            sim_time_origin_ns: 0,
-        };
-        std::sync::Arc::make_mut(&mut first.presentation.navigation).ephemerides =
-            vec![reference.clone()];
         step(&mut app, 0.1, Some(first.clone()));
-        assert_eq!(
-            app.world().resource::<SessionInfo>().navigation_ephemerides,
-            [reference]
-        );
-        let mut subscriptions = app.world_mut().query::<&SystemSubscription>();
-        assert!(subscriptions.single(app.world()).unwrap().0.is_empty());
+        let mut views = app
+            .world_mut()
+            .query_filtered::<Entity, With<ViewObservation>>();
+        let view = views.single(app.world()).unwrap();
+        let system = Id([8; 16]);
+        app.world_mut()
+            .entity_mut(view)
+            .insert(ViewSystems(vec![system]));
 
         first.tick = 2;
         first.sequence = 2;
         first.sim_time_ns = 200_000_000;
-        std::sync::Arc::make_mut(&mut first.presentation.navigation)
-            .ephemerides
-            .clear();
         step(&mut app, 0.2, Some(first));
-        assert!(
-            app.world()
-                .resource::<SessionInfo>()
-                .navigation_ephemerides
-                .is_empty()
-        );
-        assert!(subscriptions.single(app.world()).unwrap().0.is_empty());
+        assert_eq!(app.world().get::<ViewSystems>(view).unwrap().0, [system]);
     }
 
     #[test]
@@ -333,18 +340,17 @@ mod tests {
         let track = Id([3; 16]);
         let beacon = NavigationBeacon {
             id: Id([4; 16]),
-            system: Id([5; 16]),
+            systems: vec![Id([5; 16])],
             name: "Live station".into(),
             pose: Pose::default(),
             radius_m: 100.,
-            gate_exit: None,
+            navigation: false,
             docking: true,
         };
         let mut first = snapshot(1, group, track, 0.);
         first.presentation.navigation = std::sync::Arc::new(NavigationSnapshot {
-            catalogue: Some([6; 32]),
+            directory: Some([6; 32]),
             beacons: vec![beacon.clone()],
-            ephemerides: Vec::new(),
         });
         step(&mut app, 0.1, Some(first.clone()));
         assert_eq!(
@@ -373,9 +379,8 @@ mod tests {
 
         let mut replacement = snapshot(3, group, track, 0.);
         replacement.presentation.navigation = std::sync::Arc::new(NavigationSnapshot {
-            catalogue: Some([7; 32]),
+            directory: Some([7; 32]),
             beacons: Vec::new(),
-            ephemerides: Vec::new(),
         });
         step(&mut app, 0.3, Some(replacement));
         assert!(

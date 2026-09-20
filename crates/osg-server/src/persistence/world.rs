@@ -19,9 +19,7 @@ struct WorldRecord {
     gas: gas::GasLedgerSnapshot,
     rate: f64,
     sensor_seed: [u8; 32],
-    catalogue: [u8; 32],
     definitions: [u8; 32],
-    navigation: Vec<u8>,
     resource_ids: Vec<String>,
     elapsed_ns: u64,
     tick: u64,
@@ -29,7 +27,6 @@ struct WorldRecord {
     accounts: Vec<AccountRecord>,
     npc_organizations: Vec<npc::state::NpcOrganization>,
     ships: Vec<ShipRecord>,
-    gates: Vec<GateRecord>,
     tracks: Vec<TrackRecord>,
     programs: BTreeMap<[u8; 32], Vec<u8>>,
     projectiles: Vec<ProjectileRecord>,
@@ -91,10 +88,9 @@ struct ShipRecord {
     group: Option<Id>,
     travel: TravelState,
     presence: Presence,
+    physical_body: bool,
     stored_mass: f64,
     dormant_thermal_s: f64,
-    beacon: bool,
-    fixed: bool,
     controlled: bool,
     bays: Option<Vec<travel::Bay>>,
     drive: Option<travel::SlipDrive>,
@@ -112,20 +108,6 @@ struct PartRecord {
     index: usize,
     reactor: Option<(f64, f64, bool)>,
     thermal_engine_decay_j: Option<f64>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct GateRecord {
-    id: Id,
-    pose: Pose,
-    gate: travel::Gate,
-    orbit: Option<infrastructure::GateOrbit>,
-    landmark: Option<infrastructure::Landmark>,
-    control: Option<ControlRecord>,
-    iff: Option<IffIdentity>,
-    radius_m: f64,
-    owner: ownership::AssetOwner,
-    access: ownership::AssetAccess,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -174,14 +156,12 @@ fn pose(world: &World, entity: Entity) -> Result<Pose> {
 fn definition_fingerprint(world: &World) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame immutable world definitions v1");
     hash.update(&osg_universe::organizations::fingerprint());
-    for (id, definition) in world
-        .resource::<registry::UniverseRegistry>()
-        .definitions
-        .iter()
-    {
-        hash.update(&id.0);
-        hash.update(definition);
-    }
+    hash.update(
+        &world
+            .resource::<registry::UniverseRegistry>()
+            .universe
+            .fingerprint,
+    );
     *hash.finalize().as_bytes()
 }
 
@@ -192,9 +172,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         gas: world.resource::<gas::GasLedger>().snapshot()?,
         rate: world.resource::<crate::sim::session::Clock>().rate,
         sensor_seed: world.resource::<identity::SensorSeed>().0,
-        catalogue: world.resource::<registry::UniverseRegistry>().catalogue,
         definitions: definition_fingerprint(world),
-        navigation: infrastructure::capture_navigation(world),
         resource_ids: world
             .resource::<vessel::ShipCatalogue>()
             .0
@@ -212,11 +190,12 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         accounts: Vec::new(),
         npc_organizations: Vec::new(),
         ships: Vec::new(),
-        gates: Vec::new(),
         tracks: Vec::new(),
         programs: BTreeMap::new(),
         projectiles: Vec::new(),
     };
+    let mut blueprints = std::collections::HashMap::<usize, String>::new();
+    let mut design_programs = std::collections::HashMap::<usize, [u8; 32]>::new();
     let mut identities = world
         .resource::<identity::IdentityIndex>()
         .0
@@ -244,17 +223,35 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             });
         }
         if let Some(design) = world.get::<vessel::ShipDesign>(entity) {
-            let mut blueprint = design.0.blueprint.clone();
-            blueprint.firmware = osg_ships::Firmware::Standard;
+            // Compiled designs are immutable and shared by installations. Cache
+            // their encoding for this capture, without changing the save format.
+            let design_key = std::sync::Arc::as_ptr(&design.0) as usize;
+            if let std::collections::hash_map::Entry::Vacant(entry) = blueprints.entry(design_key) {
+                let mut blueprint = design.0.blueprint.clone();
+                blueprint.firmware = osg_ships::Firmware::Standard;
+                entry.insert(toml::to_string(&blueprint)?);
+            }
             let controller = world
                 .get::<vessel::ShipSoftware>(entity)
                 .map(|software| software.controller.checkpoint());
-            let program_bytes = controller.as_ref().map_or_else(
-                || design.0.blueprint.controller_bytes().to_vec(),
-                |checkpoint| checkpoint.program.clone(),
-            );
-            let program = *blake3::hash(&program_bytes).as_bytes();
-            record.programs.entry(program).or_insert(program_bytes);
+            let program = if let Some(controller) = &controller {
+                let program = *blake3::hash(&controller.program).as_bytes();
+                record
+                    .programs
+                    .entry(program)
+                    .or_insert_with(|| controller.program.clone());
+                program
+            } else {
+                *design_programs.entry(design_key).or_insert_with(|| {
+                    let bytes = design.0.blueprint.controller_bytes();
+                    let program = *blake3::hash(bytes).as_bytes();
+                    record
+                        .programs
+                        .entry(program)
+                        .or_insert_with(|| bytes.to_vec());
+                    program
+                })
+            };
             let software =
                 world
                     .get::<vessel::ShipSoftware>(entity)
@@ -286,7 +283,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     .context("ship has no vessel")?
                     .vessel_name
                     .to_string(),
-                blueprint: toml::to_string(&blueprint)?,
+                blueprint: blueprints[&design_key].clone(),
                 program,
                 pose: pose(world, entity)?,
                 hardware,
@@ -341,14 +338,16 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     .get::<travel::PresenceState>(entity)
                     .map(|presence| presence.0.clone())
                     .unwrap_or(Presence::Space),
+                physical_body: world.get::<spatial::SpatialBody>(entity).is_some()
+                    || world
+                        .get::<travel::DormantMotion>(entity)
+                        .is_some_and(travel::DormantMotion::has_physical_body),
                 stored_mass: world
                     .get::<travel::StoredMass>(entity)
                     .map_or(0.0, |mass| mass.0),
                 dormant_thermal_s: world
                     .get::<hardware::DormantThermalElapsed>(entity)
                     .map_or(0.0, |elapsed| elapsed.0),
-                beacon: world.get::<identity::BeaconEmitter>(entity).is_some(),
-                fixed: world.get::<identity::FixedBeacon>(entity).is_some(),
                 controlled: world.get::<vessel::ControlledVessel>(entity).is_some(),
                 bays: world
                     .get::<travel::DockingBays>(entity)
@@ -372,28 +371,6 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                 dock_services: world
                     .get::<hardware::utilities::DockServiceRequest>(entity)
                     .map_or((false, false), |request| (request.cargo, request.power)),
-            });
-        } else if let Some(gate) = world.get::<travel::Gate>(entity) {
-            record.gates.push(GateRecord {
-                id: stable_id,
-                pose: pose(world, entity)?,
-                gate: gate.clone(),
-                orbit: world.get::<infrastructure::GateOrbit>(entity).cloned(),
-                landmark: world.get::<infrastructure::Landmark>(entity).cloned(),
-                control: control(world, entity),
-                iff: world
-                    .get::<identity::Transponder>(entity)
-                    .map(|iff| iff.0.clone()),
-                radius_m: world
-                    .get::<spatial::SpatialBody>(entity)
-                    .map_or(gate.radius_m, |body| body.radius_m),
-                owner: *world
-                    .get::<ownership::AssetOwner>(entity)
-                    .context("gate owner unavailable")?,
-                access: world
-                    .get::<ownership::AssetAccess>(entity)
-                    .cloned()
-                    .unwrap_or_default(),
             });
         }
     }
@@ -461,7 +438,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         .map(|record| record.id)
         .chain(record.accounts.iter().map(|record| record.id))
         .chain(record.ships.iter().map(|record| record.id))
-        .chain(record.gates.iter().map(|record| record.id))
         .chain(
             record
                 .npc_organizations
@@ -476,7 +452,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     let groups: BTreeSet<_> = record.groups.iter().map(|group| group.id).collect();
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
-    let gates: BTreeMap<_, _> = record.gates.iter().map(|gate| (gate.id, gate)).collect();
     validate_missiles(&record.ships, &ships)?;
     ensure!(
         groups.contains(&PUBLIC_GROUP),
@@ -685,21 +660,62 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             ship.transit.is_some() == matches!(ship.presence, Presence::SlipTransit(_)),
             "slip transit state is inconsistent"
         );
+        ensure!(
+            ship.travel.preferences.valid()
+                && !ship.travel.risk_budget.max_log_loss.is_nan()
+                && ship.travel.risk_budget.max_log_loss >= 0.0
+                && !ship.travel.risk_budget.spent_log_loss.is_nan()
+                && ship.travel.risk_budget.spent_log_loss >= 0.0,
+            "invalid saved itinerary risk"
+        );
         if let Some(transit) = &ship.transit {
             ensure!(
-                transit.departed <= transit.next_attempt,
-                "invalid transit clock"
+                transit.departed <= transit.advanced_tick
+                    && transit.advanced_tick <= record.tick.saturating_add(1)
+                    && transit.speed_ly_s.is_finite()
+                    && transit.speed_ly_s > 0.0
+                    && transit.speed_ly_s <= osg_model::travel::slip::MAX_SPEED_LY_S
+                    && transit.departure_mass_kg.is_finite()
+                    && transit.departure_mass_kg > 0.0
+                    && transit.distance_ly.is_finite()
+                    && transit.distance_ly >= 0.0
+                    && transit.consumed_fuel_g.is_finite()
+                    && transit.consumed_fuel_g >= 0.0
+                    && transit.beacon_loss_error.is_some() == transit.navigation_beacon.is_some()
+                    && (!transit.beacon_lost || transit.navigation_beacon.is_some())
+                    && transit.capture_radius_m.is_finite()
+                    && transit.capture_radius_m >= 0.0
+                    && !transit.planned_log_loss.is_nan()
+                    && transit.planned_log_loss >= 0.0
+                    && transit
+                        .direction
+                        .iter()
+                        .chain(&transit.retained_velocity)
+                        .chain(&transit.departure_error)
+                        .all(|value| value.is_finite())
+                    && (DVec3::from_array(transit.direction).length_squared() - 1.0).abs() < 1e-5
+                    && transit
+                        .beacon_loss_error
+                        .is_none_or(|error| error.iter().all(|value| value.is_finite())),
+                "invalid saved slip trajectory"
             );
         }
         if let Some(drive) = &ship.drive {
             ensure!(
-                drive.power_w.is_finite() && drive.power_w >= 0.,
+                drive.power_w.is_finite()
+                    && drive.power_w >= 0.
+                    && drive.fuel_fraction_g.is_finite()
+                    && (0.0..1.0).contains(&drive.fuel_fraction_g),
                 "invalid slip power"
             );
             if let Some(preparation) = &drive.preparation {
                 ensure!(
                     preparation.mass.is_finite()
                         && preparation.mass > 0.
+                        && preparation.speed_ly_s.is_finite()
+                        && preparation.speed_ly_s > 0.0
+                        && preparation.speed_ly_s <= osg_model::travel::slip::MAX_SPEED_LY_S
+                        && preparation.started <= record.tick
                         && preparation.work_j.is_finite()
                         && preparation.work_j >= 0.
                         && preparation.required_j.is_finite()
@@ -747,33 +763,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             current = ships.get(&host).context("containment host unavailable")?;
         }
     }
-    for gate in &record.gates {
-        ensure!(
-            gates
-                .get(&gate.gate.paired)
-                .is_some_and(|paired| paired.gate.paired == gate.id),
-            "gate pair unavailable or inconsistent"
-        );
-        ensure!(
-            gate.orbit.as_ref().is_none_or(
-                |orbit| orbit.valid(&world.resource::<registry::UniverseRegistry>().universe)
-            ),
-            "invalid saved gate orbit",
-        );
-        ensure!(
-            valid_pose(&gate.pose)
-                && gate.radius_m.is_finite()
-                && gate.radius_m > 0.0
-                && gate.gate.radius_m.is_finite()
-                && gate.gate.radius_m > 0.0
-                && gate.gate.exclusion_m.is_finite()
-                && gate.gate.exclusion_m >= gate.gate.radius_m
-                && access_valid(&gate.owner, &gate.access)
-                && control_valid(&gate.control)
-                && iff_valid(&gate.iff),
-            "invalid saved gate"
-        );
-    }
     let mut tracks = BTreeSet::new();
     for track in &record.tracks {
         ensure!(
@@ -809,12 +798,7 @@ fn validate_npc(world: &World, record: &WorldRecord) -> Result<()> {
     use std::collections::BTreeSet;
 
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
-    let systems: BTreeSet<_> = world
-        .resource::<registry::UniverseRegistry>()
-        .definitions
-        .iter()
-        .map(|(id, _)| *id)
-        .collect();
+    let universe = &world.resource::<registry::UniverseRegistry>().universe;
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
     let mut organizations = BTreeSet::new();
 
@@ -828,7 +812,7 @@ fn validate_npc(world: &World, record: &WorldRecord) -> Result<()> {
                     .contains_key(&organization.organization)
                 && record.directory.players.contains_key(&organization.officer)
                 && accounts.contains(&organization.officer)
-                && systems.contains(&organization.home_system)
+                && universe.system_index(organization.home_system.0).is_some()
                 && record
                     .gas
                     .accounts
@@ -873,7 +857,6 @@ fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
         .map(|group| group.id)
         .chain(record.accounts.iter().map(|account| account.id))
         .chain(record.ships.iter().map(|ship| ship.id))
-        .chain(record.gates.iter().map(|gate| gate.id))
         .chain(record.directory.players.keys().copied())
         .chain(record.directory.organizations.keys().copied())
         .chain(record.directory.sovereignties.keys().copied())
@@ -967,8 +950,7 @@ fn valid_pose(pose: &Pose) -> bool {
 pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let record: WorldRecord = postcard::from_bytes(bytes)?;
     ensure!(
-        record.catalogue == world.resource::<registry::UniverseRegistry>().catalogue
-            && record.definitions == definition_fingerprint(world),
+        record.definitions == definition_fingerprint(world),
         "world catalogue differs from saved universe; explicitly start a new database for a different universe"
     );
     let resources = world
@@ -983,7 +965,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         "resource catalogue differs from snapshot"
     );
     validate(world, &record)?;
-    osg_protocol::navigation::decode_catalogue(&record.navigation)?;
     let ledger = gas::GasLedger::from_snapshot(record.gas)?;
     crate::sim::route_service::reset(world);
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
@@ -1004,7 +985,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         .clear();
     *world.resource_mut::<orrery::activity::ActiveSystems>() = default();
     world.remove_resource::<infrastructure::NavigationPublication>();
-    world.remove_resource::<infrastructure::exclusion::CertifiedExclusion>();
     world
         .resource_mut::<crate::sim::session::Events>()
         .0
@@ -1183,12 +1163,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             let group = identity::lookup(world, group)?;
             world.entity_mut(entity).insert(identity::Membership(group));
         }
-        if ship.beacon {
-            world.entity_mut(entity).insert(identity::BeaconEmitter);
-        }
-        if ship.fixed {
-            world.entity_mut(entity).insert(identity::FixedBeacon);
-        }
         if ship.controlled {
             world.entity_mut(entity).insert(vessel::ControlledVessel);
         }
@@ -1242,6 +1216,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         relationships.push((
             entity,
             ship.presence,
+            ship.physical_body,
             ship.spatial_instance,
             ship.dormant_thermal_s,
             ship.retained_computer,
@@ -1276,22 +1251,22 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             if let Some(installed) = world.get::<travel::SlipDrive>(entity) {
                 drive.power_w = installed.power_w;
             }
-            if let Some(preparation) = &mut drive.preparation {
-                let origin = world
-                    .get::<precision::PreciseTransform>(entity)
-                    .unwrap()
-                    .translation_um;
-                preparation.required_j =
-                    travel::slip_energy_j(origin, preparation.destination, preparation.mass)
-                        .max(preparation.work_j);
-            }
             world.entity_mut(entity).insert(drive);
         }
     }
-    for (entity, presence, instance, dormant_thermal_s, retained_computer) in relationships {
+    for (entity, presence, physical_body, instance, dormant_thermal_s, retained_computer) in
+        relationships
+    {
         if let Presence::Docked { host, .. } | Presence::StoredInWreck(host) = presence {
             let host = identity::lookup(world, host)?;
             world.entity_mut(entity).insert(travel::DockedIn(host));
+        }
+        if presence == Presence::Destroyed && !physical_body {
+            world.entity_mut(entity).remove::<(
+                spatial::SpatialBody,
+                physics::RigidBody,
+                physics::collision::CollisionBody,
+            )>();
         }
         if presence != Presence::Space {
             travel::set_dormant(world, entity, presence);
@@ -1312,45 +1287,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             .is_some_and(|missile| !missile.guidance_enabled)
         {
             missiles::disable_guidance(world, entity);
-        }
-    }
-    for gate in record.gates {
-        let entity = world
-            .spawn((
-                precision::PreciseTransform {
-                    translation_um: gate.pose.position,
-                    rotation: DQuat::from_array(gate.pose.rotation),
-                },
-                physics::Velocity(DVec3::from_array(gate.pose.velocity)),
-                identity::BeaconEmitter,
-                identity::FixedBeacon,
-                spatial::SpatialBody {
-                    radius_m: gate.radius_m,
-                    occludes: false,
-                },
-                travel::Gate {
-                    exclusion_m: travel::GATE_EXCLUSION_M,
-                    ..gate.gate
-                },
-                gate.owner,
-                gate.access,
-            ))
-            .id();
-        identity::register(world, entity, gate.id);
-        if let Some(control) = gate.control {
-            world.entity_mut(entity).insert(identity::Control {
-                account: control.account,
-                revision: control.revision,
-            });
-        }
-        if let Some(iff) = gate.iff {
-            world.entity_mut(entity).insert(identity::Transponder(iff));
-        }
-        if let Some(landmark) = gate.landmark {
-            world.entity_mut(entity).insert(landmark);
-        }
-        if let Some(orbit) = gate.orbit {
-            world.entity_mut(entity).insert(orbit);
         }
     }
     for organization in record.npc_organizations {
@@ -1409,11 +1345,12 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             .chain(),
     );
     activate.run(world);
+    hardware::utilities::refresh_emitters(world);
+    infrastructure::publish_navigation(world);
     let mut publish = Schedule::default();
-    publish.add_systems(intelligence::publish);
+    publish.add_systems((intelligence::publish, crate::sim::services::publish_indexes).chain());
     publish.run(world);
     travel::geometry::refresh(world);
-    infrastructure::restore_navigation(world, &record.navigation)?;
     industry::refresh_publication(world);
     Ok(())
 }
@@ -1434,6 +1371,65 @@ mod route_tests;
 mod tests {
     use super::*;
     use osg_model::travel::{Order, QueuedOrder, Status};
+
+    fn saved_transit(origin: osg_model::GalacticPosition, tick: u64) -> travel::Transit {
+        travel::Transit {
+            origin,
+            position: origin,
+            destination: origin.offset_by(DVec3::X * 1e12),
+            departed: tick,
+            advanced_tick: tick,
+            direction: DVec3::X.to_array(),
+            speed_ly_s: 0.001,
+            retained_velocity: [12.0, 34.0, 56.0],
+            departure_mass_kg: 100_000.0,
+            distance_ly: 0.25,
+            consumed_fuel_g: 189.46457081379975,
+            navigation_beacon: Some(Id::new()),
+            beacon_lost: true,
+            departure_error: [1e-7, -2e-7],
+            beacon_loss_error: Some([3e-7, 4e-7]),
+            intended_capture: None,
+            risk_target: None,
+            capture_radius_m: 0.0,
+            planned_log_loss: 0.00001,
+        }
+    }
+
+    #[test]
+    fn destroyed_ship_restore_preserves_physical_wreck_or_slip_loss() {
+        let account = Id::new();
+        let mut app = crate::sim::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let ship_id = id(world, ship).unwrap();
+
+        travel::set_dormant(world, ship, Presence::Destroyed);
+        let bytes = capture(world).unwrap();
+        restore(world, &bytes).unwrap();
+        let ship = identity::lookup(world, ship_id).unwrap();
+        assert!(
+            world
+                .get::<travel::DormantMotion>(ship)
+                .unwrap()
+                .has_physical_body()
+        );
+
+        travel::set_dormant(world, ship, Presence::SlipTransit(Id::new()));
+        travel::set_dormant(world, ship, Presence::Destroyed);
+        let bytes = capture(world).unwrap();
+        restore(world, &bytes).unwrap();
+        let ship = identity::lookup(world, ship_id).unwrap();
+        assert!(
+            !world
+                .get::<travel::DormantMotion>(ship)
+                .unwrap()
+                .has_physical_body()
+        );
+    }
 
     #[test]
     fn launched_missiles_restore_retained_computer_and_reject_broken_relations() {
@@ -1567,7 +1563,7 @@ mod tests {
                 .get::<crate::sim::sensors::SensorContacts>(parent)
                 .is_none()
         );
-        assert!(world.get::<identity::BeaconEmitter>(parent).is_none());
+        assert!(world.get::<identity::DirectoryEmitter>(parent).is_none());
         assert!(world.resource::<missiles::Callbacks>().0.is_empty());
         let restored_controller = &world
             .get::<vessel::ShipSoftware>(parent)
@@ -1819,17 +1815,11 @@ mod tests {
             host: Id::new(),
             bay: 0,
         };
-        let mut broken_pair: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        broken_pair.gates[0].gate.paired = Id::new();
         let mut corrupt_program: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         corrupt_program.programs.values_mut().next().unwrap()[0] ^= 1;
 
-        let mut broken_orbit: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        broken_orbit.gates[0].orbit.as_mut().unwrap().system = usize::MAX;
         let mut different_definitions: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         different_definitions.definitions[0] ^= 1;
-        let mut corrupt_navigation: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        corrupt_navigation.navigation.truncate(12);
         let mut unsettled_gas: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         unsettled_gas
             .gas
@@ -1866,11 +1856,8 @@ mod tests {
 
         for invalid in [
             missing_host,
-            broken_pair,
             corrupt_program,
-            broken_orbit,
             different_definitions,
-            corrupt_navigation,
             unsettled_gas,
             missing_payer,
             unknown_gas_owner,
@@ -1897,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_slip_arrives_and_resumes_the_saved_order_queue() {
+    fn restored_slip_preserves_trajectory_errors_fuel_and_order_queue() {
         let account = Id::new();
         let mut app = crate::scenario(&[account], Some(account), None).unwrap();
         for _ in 0..3 {
@@ -1918,6 +1905,8 @@ mod tests {
         let orders = vec![
             QueuedOrder::from(Order::Slip {
                 destination: osg_model::travel::Destination::Galactic(destination),
+                speed_ly_s: 0.001,
+                navigation_beacon: None,
             }),
             QueuedOrder::from(Order::WaitUntil(tick + 1000)),
         ];
@@ -1929,12 +1918,9 @@ mod tests {
             ..Default::default()
         }));
         travel::set_dormant(world, ship, Presence::SlipTransit(Id::new()));
-        world.entity_mut(ship).insert(travel::Transit {
-            origin: departure,
-            destination,
-            departed: tick,
-            next_attempt: tick,
-        });
+        let transit = saved_transit(departure, tick);
+        let expected_transit = postcard::to_stdvec(&transit).unwrap();
+        world.entity_mut(ship).insert(transit);
         let saved_travel = world.get::<travel::Travel>(ship).unwrap().0.clone();
         let bytes = capture(world).unwrap();
         restore(world, &bytes).unwrap();
@@ -1948,39 +1934,9 @@ mod tests {
             Presence::SlipTransit(_)
         ));
         assert_eq!(
-            world
-                .get::<travel::Transit>(restored_ship)
-                .unwrap()
-                .destination,
-            destination
+            postcard::to_stdvec(world.get::<travel::Transit>(restored_ship).unwrap()).unwrap(),
+            expected_transit
         );
-
-        for _ in 0..3 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let ship = identity::lookup(world, ship_id).unwrap();
-        assert_eq!(
-            world.get::<travel::PresenceState>(ship).unwrap().0,
-            Presence::Space
-        );
-        assert!(world.get::<travel::Transit>(ship).is_none());
-        assert!(world.get::<physics::Velocity>(ship).unwrap().0.is_finite());
-        assert!(
-            pose(world, ship)
-                .unwrap()
-                .position
-                .relative_to(destination)
-                .length()
-                <= 1_000_000.
-        );
-        let travel = &world.get::<travel::Travel>(ship).unwrap().0;
-        assert_eq!(travel.orders, orders);
-        assert_eq!(travel.order, 1);
-        assert_eq!(travel.revision, saved_travel.revision.wrapping_add(1));
-        assert_eq!(travel.status, Status::Active);
-        assert!(travel.autopilot_enabled);
-        assert!(world.resource::<simulation::SimulationCounters>().ticks > tick);
     }
 
     #[test]
@@ -2003,7 +1959,7 @@ mod tests {
             .unwrap();
         let station_id = id(world, station).unwrap();
         let transit_ship = world
-            .query_filtered::<Entity, With<vessel::ShipSoftware>>()
+            .query_filtered::<Entity, With<vessel::ShipDesign>>()
             .iter(world)
             .find(|entity| *entity != ship && *entity != station)
             .unwrap();
@@ -2048,12 +2004,10 @@ mod tests {
             .unwrap()
             .translation_um;
         travel::set_dormant(world, transit_ship, Presence::SlipTransit(Id::new()));
-        world.entity_mut(transit_ship).insert(travel::Transit {
-            origin: departure,
-            destination: departure.offset_by(DVec3::X * 1e12),
-            departed: 1,
-            next_attempt: 100_000,
-        });
+        let tick = world.resource::<simulation::SimulationCounters>().ticks;
+        world
+            .entity_mut(transit_ship)
+            .insert(saved_transit(departure, tick));
         let expected_motion = pose(world, transit_ship).unwrap();
         let program = world
             .get::<vessel::ShipSoftware>(ship)

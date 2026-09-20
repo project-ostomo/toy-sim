@@ -6,7 +6,7 @@ I/O and immutable in-memory queries). Neither library depends on Bevy. There is
 no SQLite runtime, database, persisted tree, or connection mutex.
 
 The bundled catalogue contains 1,000,000 real Gaia DR3 sources selected for bright
-views near Earth. Its binary file is 76,000,040 bytes. Default limiting magnitude
+views near Earth. Its binary file is 84,000,040 bytes. Default limiting magnitude
 is 6; the app caps the returned brightest matches at 150,000. The crate embeds the
 binary with `include_bytes!`, so the executable needs no catalogue file at runtime.
 `StarCatalogue::embedded()` decodes those bytes and builds the in-memory index;
@@ -38,32 +38,53 @@ on background tasks without a database or mutex. The existing 0.05 magnitude
 headroom, nearest-distance movement budget and keep-old-results refresh policy
 remain. Query diagnostics report candidate stars, bucket count and resident stars.
 
-## Binary format, version 1
+## Binary format, version 2
 
 All numbers use explicit little-endian encoding, without Rust struct padding.
 The header is 40 bytes:
 
 | Offset | Encoding | Meaning |
 |---|---|---|
-| 0 | 8 bytes | `TOYSTAR\0` magic |
-| 8 | u32 | Version: 1 |
-| 12 | u32 | Record size: 76 |
+| 0 | 8 bytes | `OSGSTAR\0` magic |
+| 8 | u32 | Version: 2 |
+| 12 | u32 | Record size: 84 |
 | 16 | u64 | Record count |
 | 24 | u32 | Coordinate unit: 1 = signed integer micrometres |
 | 28 | u32 | Frame: 1 = ICRS Cartesian, fixed J2016.0 |
 | 32 | u64 | Identity namespace: 1 = Gaia DR3 |
 
-Each 76-byte record is: source ID (u64), X/Y/Z (three i128 micrometre coordinates),
-intrinsic luminosity (f64 lumens), and linear RGB multipliers (three f32 values).
+Each 84-byte record is: source ID (u64), X/Y/Z (three i128 micrometre coordinates),
+intrinsic luminosity (f64 lumens), linear RGB multipliers (three f32 values), and
+generation temperature (f64 kelvin).
 The loader rejects unknown versions, units/frames, incorrect lengths, duplicate
-identities, non-finite/nonpositive luminosities and invalid colours. Coordinates
+identities, non-finite/nonpositive luminosities or temperatures, and invalid colours. Coordinates
 are restricted to [-2^126, 2^126) micrometres to leave subtraction headroom.
 
 In memory `StarId { namespace, value }` separates persistent identity from storage
 index and display name. `StarCatalogue::from_stars` accepts records from other
 sources, including future procedural regions; mixed namespaces can coexist in an
-index. Each binary file currently stores one namespace. No procedural generation
-or region streaming is implemented yet.
+index. Each binary file stores one namespace.
+
+The importer prefers a supplied positive `teff_gspphot`, followed by a spectral
+class estimate, then a coarse BP−RP interpolation. It uses 5772 K when none is
+available. The bundled CSV supplies BP−RP and has no temperature or spectral-class
+column, so its temperatures are approximate inputs for procedural generation.
+Enriched astronomical records override those temperatures in the shared universe.
+
+`osg-universe` reconciles the catalogue with 2,990 enriched nearby primary stars,
+48 companions, and ten authored systems. Exact numeric source matches alias 1,216
+primaries and 24 companions to their Gaia DR3 observations. It adds 1,774 missing
+primaries under the EDR3 namespace and includes 24 missing companions inside their
+owning systems. Matched companions cease to be independent system roots. This
+produces 1,001,760 system roots, including the authored definitions. No proximity
+merge is performed.
+
+The shared universe indexes compact system summaries and generates planetary
+definitions on demand. Both client and server use the same definitions and stable
+system/body keys. A 128-entry definition cache limits retained idle definitions;
+active consumers can retain their own references. Stellar inputs and conservative
+generator bounds suffice to build the spatial index without generating planets.
+Runtime inhabitation is derived from actual broadcasting installations.
 
 ## Luminosity-bucket KD-trees
 

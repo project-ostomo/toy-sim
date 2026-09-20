@@ -2,6 +2,7 @@ use super::*;
 
 fn row(id: u8, x: f64) -> Row {
     Row {
+        celestial: None,
         target: SelectedTarget::Contact(ContactRef {
             group: Id([7; 16]),
             track: Id([id; 16]),
@@ -39,14 +40,14 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
         industry_ready: true,
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
-        celestial_systems: Default::default(),
         navigation: &navigation,
+        inhabited: Default::default(),
         society: &ownership::SocietySnapshot::default(),
         ships: vec![],
         rows: vec![Row {
             target: SelectedTarget::Beacon(Id([9; 16])),
-            name: "Sol gate".into(),
-            kind: "Stargate".into(),
+            name: "Sol navigation beacon".into(),
+            kind: "Navigation beacon".into(),
             ..row(2, 1000.)
         }],
         ship: None,
@@ -121,6 +122,30 @@ fn commands_use_target_identity_safe_range_and_normalized_galactic_direction() {
     );
     assert!(commands_for(Intent::Align(target), &ship, &[]).is_none());
     assert!(commands_for(Intent::Align(target), &ship, &[row(2, 0.)]).is_none());
+    let celestial = travel::CelestialRef {
+        system: Id([4; 16]),
+        body: Id([5; 16]),
+    };
+    let body = Row {
+        target: SelectedTarget::Celestial(Id([6; 16])),
+        celestial: Some(celestial),
+        ..row(2, 1000.)
+    };
+    let (commands, _) = commands_for(Intent::Align(body.target), &ship, &[body]).unwrap();
+    let ShipCommand::SetTravel { orders, .. } = &commands[0] else {
+        panic!("alignment must queue guidance");
+    };
+    let travel::Order::Guidance(guidance) = &orders[0] else {
+        panic!("alignment must preserve the celestial reference");
+    };
+    assert_eq!(
+        guidance.target,
+        travel::Target::Destination(travel::Destination::Relative {
+            reference: travel::Reference::Celestial(celestial),
+            offset: GalacticPosition::ZERO,
+            axes: travel::Axes::Galactic,
+        })
+    );
     let mut docked = ship;
     docked.presence = travel::Presence::Docked {
         host: Id([3; 16]),
@@ -173,7 +198,7 @@ fn command_feedback_waits_for_every_reply_and_retains_errors() {
 }
 
 #[test]
-fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names() {
+fn itinerary_draws_dock_transfer_and_slip_orders_with_destination_system_names() {
     let ctx = egui::Context::default();
     osg_ui::theme::install(&ctx);
     let origin = GalacticPosition::default();
@@ -202,20 +227,20 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
         beacons: vec![
             NavigationBeacon {
                 id: entry,
-                system: terminus,
-                name: "Sol gate".into(),
+                systems: vec![terminus],
+                name: "Terminus navigation beacon".into(),
                 pose: pose.clone(),
                 radius_m: 220.,
-                gate_exit: Some(exit),
+                navigation: true,
                 docking: false,
             },
             NavigationBeacon {
                 id: exit,
-                system: sol,
-                name: "Helion gate".into(),
+                systems: vec![sol],
+                name: "Sol navigation beacon".into(),
                 pose,
                 radius_m: 220.,
-                gate_exit: Some(entry),
+                navigation: true,
                 docking: false,
             },
         ],
@@ -225,9 +250,11 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
         status: travel::Status::Active,
         estimated_arrival_tick: Some(600),
         orders: vec![
-            travel::Order::Jump(entry),
+            travel::Order::Dock(exit),
             travel::Order::Sublight(travel::Destination::Galactic(origin)),
             travel::Order::Slip {
+                speed_ly_s: 0.01,
+                navigation_beacon: Some(entry),
                 destination: travel::Destination::Relative {
                     reference: travel::Reference::Beacon(entry),
                     offset: GalacticPosition::ZERO.offset_by(glam::DVec3::Y * 1e7),
@@ -265,7 +292,7 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
                 time: Some(frame as f64 / 60.),
                 ..Default::default()
             },
-            |ui| instruments::itinerary(ui, &state, &navigation, &Default::default(), 0),
+            |ui| instruments::itinerary(ui, &state, &navigation, 0),
         );
         output.textures_delta.clear();
         text.clear();
@@ -287,7 +314,7 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
         }
     }
     for expected in [
-        "1  Gate · Sol",
+        "1  Dock · Sol navigation beacon",
         "2  Transfer · Sol",
         "3  Slip · Terminus",
         "4  Transfer · Terminus",
@@ -330,9 +357,9 @@ fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
+        inhabited: Default::default(),
         society: &ownership::SocietySnapshot::default(),
         ships: vec![&ship],
-        celestial_systems: Default::default(),
         rows: vec![],
         ship: Some(&ship),
         details: None,
@@ -420,7 +447,7 @@ fn planning_progress_reports_phases_and_disappears_after_planning() {
     assert!(
         labels(&context, &travel)
             .iter()
-            .any(|label| label == "Loading gate catalogue · 5000")
+            .any(|label| label == "Loading navigation catalogue · 5000")
     );
     travel.planning = Some(travel::PlanningProgress {
         stage: travel::PlanningStage::SearchingRoutes,

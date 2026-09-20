@@ -600,9 +600,6 @@ pub fn query_work(query: &osg_model::ProgramQuery) -> u64 {
         ProgramQuery::Orrery { .. } => osg_model::local_space::QUERY_GAS,
         ProgramQuery::RouteRequest(_) => osg_model::routing::REQUEST_GAS,
         ProgramQuery::RoutePoll { .. } => osg_model::routing::POLL_GAS,
-        ProgramQuery::Navigation { limit, .. } => {
-            abi::NAVIGATION_GAS_BASE + abi::NAVIGATION_GAS_PER_GATE * u64::from((*limit).min(128))
-        }
         ProgramQuery::SlipEligibility { .. } => 131_072,
         ProgramQuery::Tracks(query) => query.work.min(1_000_000),
         ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),

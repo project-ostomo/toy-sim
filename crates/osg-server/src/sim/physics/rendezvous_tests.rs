@@ -442,8 +442,11 @@ fn pursuit_pass_with_neighbour_in_low_orbit() {
 #[test]
 fn pursuit_pass_with_nearby_ship_in_high_inclined_orbit() {
     let universe = crate::sim::orrery::Universe::init(osg_universe::example_config()).unwrap();
-    let scenario = &crate::sim::scenario::INITIAL_SCENARIO;
-    let body = universe.get_body(scenario.body).unwrap();
+    let mut scenario = crate::sim::scenario::INITIAL_SCENARIO.clone();
+    scenario.traffic_count = 1;
+    let body = universe
+        .body(universe.authored_body(scenario.body).unwrap())
+        .unwrap();
     let states = scenario.fleet_states(body.radius, body.mass).unwrap();
     let (position, velocity) = states[0];
     let &(target, target_velocity) = states[1..]
@@ -786,8 +789,11 @@ fn native_instrument_state_is_valid_during_a_transfer() {
 #[test]
 fn intercepts_tumbling_target_at_ten_percent() {
     let universe = crate::sim::orrery::Universe::init(osg_universe::example_config()).unwrap();
-    let scenario = &crate::sim::scenario::INITIAL_SCENARIO;
-    let body = universe.get_body(scenario.body).unwrap();
+    let mut scenario = crate::sim::scenario::INITIAL_SCENARIO.clone();
+    scenario.traffic_count = 1;
+    let body = universe
+        .body(universe.authored_body(scenario.body).unwrap())
+        .unwrap();
     let states = scenario.fleet_states(body.radius, body.mass).unwrap();
     let mut f = Flight::new(states[0].0, states[1].0, states[0].1, states[1].1, true);
     let mut target = fixture(&f.design, &f.cat);

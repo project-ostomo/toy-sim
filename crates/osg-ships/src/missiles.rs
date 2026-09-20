@@ -99,7 +99,7 @@ pub fn missile_defense_station() -> ShipBlueprint {
         ..Default::default()
     };
     ship.attach("station_core_32m", 0, "", "", 0);
-    let beacon = ship.attach("station_beacon_48m", 1, "aft", "fore", 0);
+    let beacon = ship.attach("directory_transmitter_48m", 1, "aft", "fore", 0);
     let reactor = ship.attach("reactor_hot_4m", 1, "left", "right", 0);
     ship.attach("radiator_32m", reactor, "left", "right", 0);
     let battery = ship.attach("battery_2m", 1, "right", "left", 0);

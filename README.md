@@ -1,12 +1,14 @@
 # OpenSpaceGame
 
-OpenSpaceGame is a prototype space-flight simulator written in Rust with Bevy. Ships and stations are assembled from parts with typed attachment nodes. The server compiles a coarse 1 m collision volume. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, docking, gates, slipdrives, a sky rendered from an embedded catalogue of one million Gaia DR3 stars, and an orbital navigation overlay.
+OpenSpaceGame is a prototype space-flight simulator written in Rust with Bevy. Ships and stations are assembled from parts with typed attachment nodes. The server compiles a coarse 1 m collision volume. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, docking, slip travel with natural capture, and an orbital navigation overlay. A shared catalogue supplies more than one million systems, with detailed celestial bodies generated when needed.
 
 The simulation runs only in an authoritative server process. Every window, including the local debug application, is a network client that connects to a server over authenticated TCP ([docs/server-client.md](docs/server-client.md)). The server checkpoints the authoritative world, ship programs, ownership and account gas to SQLite; see [persistence](docs/persistence.md).
 
 The project is in early prototyping. Interfaces change without compatibility layers (see [AGENTS.md](AGENTS.md)).
 
-The default encounter has two patrol ships 1 km apart, one hostile, near Neris Anchorage. The player starts with an expedition patrol equipped for laser combat, micropulse propulsion and slip travel. The inhabited map contains 3,000 systems across roughly 250 light-years, with procedural planets and a connected wormhole network. The client includes a gate map, navigation queue, weapon controls, industrial jobs, cargo and consumable inventory, and a docked hangar view. See [the inhabited map](docs/inhabited-map.md), [industry](docs/industry.md), and [stations and navigation](docs/stations-navigation.md).
+The default encounter has two patrol ships 1 km apart, one hostile, near Neris Anchorage. The player starts with an expedition patrol equipped for laser combat, micropulse propulsion and slip travel. The initial scenario places navigation installations in 3,000 systems across roughly 250 light-years. Public inhabitation changes as directory transmitters broadcast, go dark, move or are destroyed. The client includes a navigation map, navigation queue, weapon controls, industrial jobs, cargo and consumable inventory, and a docked hangar view. See [inhabited space](docs/inhabited-map.md), [industry](docs/industry.md), and [stations and navigation](docs/stations-navigation.md).
+
+Travel planning accepts a maximum ship-destruction risk for the whole itinerary in parts per million. The default is 100 ppm, or one chance in 10,000. The planner chooses speeds and intermediate natural captures within that budget. Navigation beacons improve precision, while a substantial dispersion floor prevents arbitrarily slow travel from eliminating risk. Ships consume electrical charge and exotic fuel, and retain their galactic velocity after capture.
 
 ## Workspace map
 
@@ -29,7 +31,7 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 | `osg-spatial` | [crates/osg-spatial](crates/osg-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
 | `osg-space` | [crates/osg-space](crates/osg-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
 | `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
-| `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` ship ABI 31: fixed C records, typed world/service imports, caller-owned output arrays and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` ship ABI 32: fixed C records, typed world/service imports, caller-owned output arrays and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
 | `osg-ships` | [crates/osg-ships](crates/osg-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `osg-ship-wasm` | [crates/osg-ship-wasm](crates/osg-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
 | `osg-ship-view` | [crates/osg-ship-view](crates/osg-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
@@ -39,7 +41,7 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 | `osg-protocol` | [crates/osg-protocol](crates/osg-protocol) | `TSF1` application message framing, sections and validation limits. |
 | `osg-net` | [crates/osg-net](crates/osg-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
 | `osg-intel` | [crates/osg-intel](crates/osg-intel) | Measurements, immutable track snapshots and metered track queries. |
-| `osg-universe` | [crates/osg-universe](crates/osg-universe) | Celestial definitions, Keplerian solver, system index, atmosphere tables and replicated system assets; independent of Bevy. |
+| `osg-universe` | [crates/osg-universe](crates/osg-universe) | Shared deterministic system catalogue, lazy celestial generation, stable identities, Keplerian solver and atmosphere tables; independent of Bevy. |
 | `osg-server` | [crates/osg-server](crates/osg-server) | The authoritative Bevy ECS simulation in private modules under `src/sim`, the 10 Hz simulation loop, TCP listener, asset streams, configuration, demo key provisioning, the server binary and the network benchmark example. |
 | `osg-client` | [crates/osg-client](crates/osg-client) | Network client library and playback buffer. With the `ui` feature it adds the Bevy/egui client UI and the `osg-client` binary. |
 
@@ -137,9 +139,9 @@ For a new world, the server builds the scenario in [bootstrap.rs](crates/osg-ser
 
 - The player starts on the day side of Helion I Neris, in a circular orbit about 40,000 km above the surface. The client initially places the camera on the illuminated side.
 - The first ship uses the configured blueprint, or `assets/ships/expedition-patrol.ship`. Additional configured accounts receive their own ships.
-- A hostile patrol starts 1 km away with the same orbital velocity. Neris Anchorage and the local gates are nearby destinations.
+- A hostile patrol starts 1 km away with the same orbital velocity. Neris Anchorage is a nearby destination; navigation installations provide references for interstellar travel.
 - Neris Anchorage provides manufacturing modules, cargo storage and starting industrial supplies. The player can manage its production remotely and dock for physical transfers.
-- Initial scenario ships use their configured loadouts. Ships manufactured later start empty and require fuel, coolant and battery charging.
+- Initial scenario ships use their configured loadouts, with starter exotic fuel sized for approximately 300 light-years of uninterrupted slip. Ships manufactured later start empty and require fuel, coolant and battery charging.
 - Flight computers boot and execute within their gas allowances. Exhausting an allowance suspends work until a later tick. Invalid accesses and other program faults still trigger a reboot.
 
 Target marking, unmarking, starting fire and stopping fire are separate controls. Navigation commands never start weapons automatically.
@@ -173,7 +175,8 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | [docs/industry.md](docs/industry.md) | Factories, material reservations, ship construction, cargo transfers and commissioning |
 | [docs/llm.md](docs/llm.md) | Asynchronous ship and NPC language-model calls, radio context and the shared dollar budget |
 | [docs/persistence.md](docs/persistence.md) | SQLite world snapshots, restoration and durable ship programs |
-| [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, procedural systems and wormhole topology |
+| [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, dynamic public inhabitation and shared universe generation |
+| [docs/stations-navigation.md](docs/stations-navigation.md) | Navigation controls, itinerary risk, natural capture, beacons, exotic fuel and docking |
 | [docs/ships.md](docs/ships.md) | Parts, the catalogue, blueprints, compiled designs, hardware simulation, avionics and the standard firmware |
 | [docs/ship-editor.md](docs/ship-editor.md) | Using the editor, its command-line modes and launching the debug client |
 | [docs/ship-abi.md](docs/ship-abi.md) | Writing flight computer firmware, including world services and the `ship_display` entry point |
@@ -195,7 +198,8 @@ Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/READ
 - **Coordinates.** Authoritative positions are `GalacticPosition` values in integer micrometres ([osg-space](crates/osg-space/src/lib.rs)). Code subtracts positions before converting to `f64`. The client renders with a floating origin.
 - **Schedule.** The server's Bevy `App` runs one fixed 10 Hz step per update ([simulation.rs](crates/osg-server/src/sim/simulation.rs)). `FixedFirst` advances travel. `FixedUpdate` activates star systems, publishes world-service indexes, runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`). `FixedPostUpdate` applies firmware world actions, integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index, runs sensor scans, and then runs intelligence: acquisition, coasting, fusion and snapshot publication.
 - **Ship hardware.** Inventory, hull, thermal state, avionics, device settings and sensor range are ECS components on the ship entity. Each installed part is its own entity with typed device components, and hardware systems step them ([hardware.rs](crates/osg-server/src/sim/hardware.rs)). `osg_ships::ShipState` builds those components when a ship spawns or resets, and snapshots them for presentation and collision damage.
-- **Orrery.** Each star system is a fixed star plus Keplerian bodies. Systems are activated when a ship's motion segment enters their gravitational influence radius ([orrery/](crates/osg-server/src/sim/orrery)). Gravity from a system applies only inside that radius.
+- **Universe.** Clients and server share a compact catalogue of 1,001,760 system roots, authored definitions, deterministic generation and stable system/body keys. Each process resolves detailed systems independently and evaluates their Keplerian motion at the shared epoch. Clients receive the public inhabited set and gameplay state; celestial definitions are generated locally ([osg-universe](crates/osg-universe)).
+- **Server activity.** Actual objects outside slip activate overlapping systems inside their gravitational influence bounds ([orrery/](crates/osg-server/src/sim/orrery)). Ships, stations, dark installations and wrecks can maintain activity. Inspection and slip intersection queries can resolve dormant definitions without activating ongoing simulation. Gravity queries use the relevant local systems.
 - **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([rotation.rs](crates/osg-server/src/sim/physics/rotation.rs)). Ships and projectiles are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
 - **Firmware.** Flight programs run in Wasmtime with a gas budget. They see their own flight state, device readings, fused contacts from their ship's information group, and world services for travel ([docs/ship-abi.md](docs/ship-abi.md)).
 - **Intelligence.** Clients receive fused tracks from information groups they have joined, exact reports shared by group members or IFF broadcasts, private telemetry and presentation for ships they control, and presentation for tracks whose identity the group already knows ([docs/server-client.md](docs/server-client.md#observations-and-intelligence)).

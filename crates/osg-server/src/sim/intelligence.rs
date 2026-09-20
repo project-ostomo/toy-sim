@@ -111,7 +111,7 @@ pub fn acquire(
         &ShipDesign,
         &SensorRange,
         &Appearance,
-        Has<BeaconEmitter>,
+        Has<DirectoryEmitter>,
         Has<super::missiles::Missile>,
     )>,
     mut groups: Query<(Entity, &Group, Option<&GroupShips>, &mut Measurements)>,
@@ -136,7 +136,7 @@ pub fn acquire(
                     missile,
                 ) in &ships
                 {
-                    if !beacon {
+                    if !beacon || !iff.0.enabled {
                         continue;
                     }
                     let mut sample = Measurement::authenticated(
@@ -507,6 +507,10 @@ mod celestial_acquisition_tests {
             Identity(Id::new()),
             PreciseTransform::default(),
             super::super::orrery::activity::CelestialState {
+                reference: osg_model::travel::CelestialRef {
+                    system: Id([1; 16]),
+                    body: Id([2; 16]),
+                },
                 body,
                 system: 0,
                 anchor: Default::default(),

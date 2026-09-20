@@ -26,7 +26,7 @@ fn refresh_rosters(
         (
             &identity::Identity,
             &ownership::AssetOwner,
-            Has<identity::BeaconEmitter>,
+            Has<identity::DirectoryEmitter>,
             Has<super::travel::DockingBays>,
         ),
         (

@@ -1,6 +1,8 @@
+key = "authored/meridian"
 name = "Meridian system"
 position_um = ["113528760000000000000000", "0", "0"]
 [[bodies]]
+key = "body/1"
 name = "Meridian"
 class = "star"
 lumens = 3.6e28

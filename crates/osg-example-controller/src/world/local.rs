@@ -18,16 +18,6 @@ pub struct Steering {
     pub detouring: bool,
 }
 
-pub fn gate_target(pose: &Pose, gate: &Pose) -> Pose {
-    let inward = gate.position.relative_to(pose.position).normalize_or_zero();
-    Pose {
-        velocity: (DVec3::from_array(gate.velocity)
-            + inward * (osg_model::travel::GATE_ENTRY_SPEED_M_S * 0.5))
-            .to_array(),
-        ..gate.clone()
-    }
-}
-
 impl Avoidance {
     pub fn reset(&mut self) {
         *self = Self::default();
@@ -199,13 +189,35 @@ pub fn outside_exclusions(
         return None;
     }
     let mut candidate = position;
-    for _ in 0..space.obstacles.len().saturating_mul(2).max(1) {
+    let destination = position.offset_by(preferred_direction);
+    for _ in 0..space.obstacles.len().saturating_mul(4).max(1) {
         let Some(obstacle) = space.obstacles.iter().find(|obstacle| {
             obstacle.slip_exclusion_m > 0.
                 && candidate.relative_to(obstacle.pose.position).length()
                     <= obstacle.slip_exclusion_m + own_radius + 10.
         }) else {
-            return Some(candidate);
+            // Clear the outgoing segment as well as the departure position. The
+            // intended target's sphere is allowed at the end of that segment.
+            let direction = destination.relative_to(candidate).try_normalize()?;
+            let blocker = space.obstacles.iter().find(|obstacle| {
+                let radius = obstacle.slip_exclusion_m + own_radius + 10.;
+                obstacle.slip_exclusion_m > 0.
+                    && destination.relative_to(obstacle.pose.position).length() > radius
+                    && intersection(candidate, destination, obstacle.pose.position, radius)
+                        .is_some()
+            });
+            let Some(blocker) = blocker else {
+                return Some(candidate);
+            };
+            let relative = candidate.relative_to(blocker.pose.position);
+            let lateral = relative - direction * relative.dot(direction);
+            let side = lateral
+                .try_normalize()
+                .unwrap_or_else(|| direction.any_orthonormal_vector());
+            let clearance =
+                blocker.slip_exclusion_m + own_radius + (blocker.slip_exclusion_m * 0.1).max(100.);
+            candidate = blocker.pose.position.offset_by(side * clearance);
+            continue;
         };
 
         let direction = candidate
@@ -348,7 +360,7 @@ mod tests {
     }
 
     #[test]
-    fn slip_arrival_projects_outside_overlapping_public_exclusions() {
+    fn departure_clears_overlapping_exclusions() {
         let mut other = station();
         other.pose.position = GalacticPosition::from_meters(DVec3::X * 5_000_000.);
         let space = LocalSpace {
@@ -365,15 +377,20 @@ mod tests {
     }
 
     #[test]
-    fn gate_target_enters_directly_from_any_direction_at_fifty_meters_per_second() {
-        let mut gate = pose(DVec3::ZERO);
-        gate.velocity = [1000., -2000., 3000.];
-        for direction in [DVec3::X, DVec3::NEG_Z, DVec3::new(1., 2., 3.).normalize()] {
-            let ship = pose(direction * 4_000_000.);
-            let target = gate_target(&ship, &gate);
-            assert_eq!(target.position, gate.position);
-            let relative = DVec3::from_array(target.velocity) - DVec3::from_array(gate.velocity);
-            assert!((relative + direction * 50.).length() < 1e-9);
-        }
+    fn departure_moves_around_exclusion_before_aiming_through_its_far_side() {
+        let obstacle = station();
+        let radius = obstacle.slip_exclusion_m;
+        let space = LocalSpace {
+            obstacles: vec![obstacle],
+            truncated: false,
+        };
+        let start = GalacticPosition::from_meters(DVec3::NEG_X * radius * 1.01);
+        let destination = GalacticPosition::from_meters(DVec3::X * radius * 100.);
+        let departure =
+            outside_exclusions(start, destination.relative_to(start), &space, 10.).unwrap();
+        assert!(departure.relative_to(start).length() > radius);
+        assert!(
+            intersection(departure, destination, GalacticPosition::ZERO, radius + 10.).is_none()
+        );
     }
 }

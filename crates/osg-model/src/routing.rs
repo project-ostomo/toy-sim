@@ -19,6 +19,9 @@ pub struct Plan {
     pub topology_revision: u64,
     pub orders: Vec<QueuedOrder>,
     pub fuel_budget: FuelBudget,
+    pub estimated_loss_ppm: f64,
+    pub beacon_assumptions: Vec<crate::EntityId>,
+    pub exotic_fuel_kg: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

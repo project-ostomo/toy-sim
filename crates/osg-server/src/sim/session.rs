@@ -242,6 +242,20 @@ impl Session {
                 let status = super::route_service::poll(world, ship, id)?;
                 return Ok(Some(Reply::Route { id, status }));
             }
+            Action::RouteCancel {
+                ship,
+                authority_revision,
+                id,
+            } => {
+                let ship = super::commands::authorize(
+                    world,
+                    self.account,
+                    ship,
+                    Some(authority_revision),
+                    ownership::Permission::Control,
+                )?;
+                super::route_service::cancel(world, ship, id)?;
+            }
             Action::ChatSubscribe(subscription) => {
                 super::chat::refresh(world);
                 self.chat
@@ -492,54 +506,6 @@ impl Session {
             }
         }
         let owner = identity::lookup(world, self.account)?;
-        let debug = world
-            .get::<Account>(owner)
-            .is_some_and(|account| account.debug);
-        if let Some(registry) = world.get_resource::<super::registry::UniverseRegistry>() {
-            let inspected = debug
-                .then(|| {
-                    world
-                        .get_resource::<super::orrery::activity::UniverseDebug>()
-                        .and_then(|debug| debug.inspect.as_deref())
-                })
-                .flatten();
-            presentation.celestial_systems = registry.system_refs(&mut views, inspected);
-
-            let active_systems = if debug {
-                world
-                    .get_resource::<super::orrery::activity::ActiveSystems>()
-                    .into_iter()
-                    .flat_map(|active| {
-                        active.entities.keys().filter_map(|index| {
-                            let system = registry.universe.systems.get(*index)?;
-                            Some(ActiveSystem {
-                                system: super::registry::system_identity(&system.solver.name),
-                                reason: if active.ship_systems.contains(index) {
-                                    "ships"
-                                } else {
-                                    "debug inspection"
-                                }
-                                .into(),
-                            })
-                        })
-                    })
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            presentation.universe = Some(UniverseStatus {
-                catalogue: registry.catalogue,
-                active_systems,
-                inspected_body: debug
-                    .then(|| {
-                        world
-                            .get_resource::<super::orrery::activity::UniverseDebug>()
-                            .and_then(|debug| debug.inspect.as_deref())
-                            .map(super::registry::identity)
-                    })
-                    .flatten(),
-            });
-        }
         if world
             .get::<Account>(owner)
             .is_some_and(|account| account.debug)
@@ -669,16 +635,7 @@ pub fn ship_pose(world: &World, entity: Entity) -> Option<Pose> {
         ));
     }
     if let Some(transit) = world.get::<super::travel::Transit>(entity) {
-        let now = world.resource::<SimulationCounters>().ticks;
-        let duration = transit.next_attempt.saturating_sub(transit.departed).max(1) as f64;
-        let progress = (now.saturating_sub(transit.departed) as f64 / duration).clamp(0., 1.);
-        let delta = transit.destination.relative_to(transit.origin);
-        return Some(Pose {
-            position: transit.origin.offset_by(delta * progress),
-            rotation: pose.rotation.to_array(),
-            velocity: (delta / (duration * 0.1)).to_array(),
-            angular_velocity: [0.; 3],
-        });
+        return Some(transit.pose(pose.rotation.to_array()));
     }
     Some(super::intelligence::pose(
         pose,

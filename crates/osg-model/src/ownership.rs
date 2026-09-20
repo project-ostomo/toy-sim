@@ -200,6 +200,7 @@ impl OwnershipDirectory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Permission {
+    Navigate,
     Dock,
     View,
     Control,

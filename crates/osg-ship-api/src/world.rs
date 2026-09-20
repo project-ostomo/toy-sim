@@ -9,7 +9,6 @@ pub const AXES_BODY_FIXED: u64 = 1;
 pub const TARGET_DIRECTION: u64 = 0;
 pub const TARGET_DESTINATION: u64 = 1;
 pub const TARGET_CONTACT: u64 = 2;
-pub const ORDER_JUMP: u64 = 0;
 pub const ORDER_GUIDANCE: u64 = 1;
 pub const ORDER_TRAVEL: u64 = 2;
 pub const ORDER_SUBLIGHT: u64 = 3;
@@ -59,6 +58,7 @@ record!(ContactRef {
 record!(Destination {
     kind: u64,
     entity: [u8; 16],
+    system: [u8; 16],
     position: Position,
     axes: u64
 });
@@ -76,6 +76,9 @@ record!(Order {
     mode: u64,
     range_m: f64,
     tick: u64,
+    speed_ly_s: f64,
+    navigation_beacon_present: u64,
+    navigation_beacon: [u8; 16],
 });
 record!(QueuedOrder {
     action: Order,
@@ -87,7 +90,7 @@ record!(QueuedOrder {
 });
 record!(Preferences {
     fuel_fraction: f64,
-    allow_wormholes: u64,
+    max_loss_ppm: f64,
     allow_slipdrive: u64
 });
 record!(OrreryQuery {
@@ -100,24 +103,6 @@ record!(LocalObstacle {
     slip_exclusion_m: f64
 });
 record!(OrreryReply { count: u64 });
-record!(NavigationQuery {
-    after_present: u64,
-    after: [u8; 16],
-    limit: u64,
-    reference: Position
-});
-record!(NavigationGate {
-    entity: [u8; 16],
-    system: [u8; 16],
-    pose: Pose,
-    exit: [u8; 16],
-    staging: Position,
-    slip_ready: u64,
-});
-record!(NavigationReply {
-    revision: u64,
-    count: u64
-});
 record!(ContactReply {
     pose: Pose,
     handle: u64,
@@ -128,6 +113,9 @@ record!(SlipEligibilityQuery {
     destination: Position,
     departure_after_seconds: f64,
     arrival_after_seconds: f64,
+    speed_ly_s: f64,
+    navigation_beacon_present: u64,
+    navigation_beacon: [u8; 16],
 });
 record!(SlipEligibilityReply {
     ready: u64,
@@ -153,6 +141,7 @@ record!(RouteReply {
     id: u64, status: u64, stage: u64, completed: u64, total_present: u64, total: u64,
     planned_tick: u64, travel_revision: u64, topology_revision: u64,
     order_count: u64, fuel_count: u64, fuel_complete: u64, reason: Text<256>,
+    estimated_loss_ppm: f64, exotic_fuel_kg: f64,
 });
 record!(UseRoute {
     id: u64,
@@ -175,7 +164,10 @@ record!(CompleteOrder {
 record!(Slip {
     revision: u64,
     order: u64,
-    destination: Position
+    destination: Position,
+    speed_ly_s: f64,
+    navigation_beacon_present: u64,
+    navigation_beacon: [u8; 16],
 });
 record!(ReserveBay {
     revision: u64,
@@ -198,19 +190,13 @@ record!(Undock {
 pub mod raw {
     use super::*;
 
-    #[link(wasm_import_module = "ship_v31")]
+    #[link(wasm_import_module = "ship_v32")]
     unsafe extern "C" {
         pub fn orrery_read(
             query: *const OrreryQuery,
             output: *mut LocalObstacle,
             capacity: u32,
             reply: *mut OrreryReply,
-        ) -> i32;
-        pub fn navigation_query(
-            query: *const NavigationQuery,
-            output: *mut NavigationGate,
-            capacity: u32,
-            reply: *mut NavigationReply,
         ) -> i32;
         pub fn contact_get(query: *const ContactRef, reply: *mut ContactReply) -> i32;
         pub fn slip_eligibility(

@@ -3,7 +3,7 @@ mod bake;
 mod geometry;
 
 use super::ViewCamera;
-use crate::state::{Celestial, CelestialSystem, DisplayPose, SystemSubscription};
+use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
 use bevy::{
     light::Skybox,
     prelude::*,
@@ -119,13 +119,7 @@ fn update(
     celestials: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     settings: Res<Settings>,
     mut skyboxes: Query<&mut Skybox>,
-    mut cameras: Query<(
-        Entity,
-        &ViewCamera,
-        &Transform,
-        &mut ViewSky,
-        &SystemSubscription,
-    )>,
+    mut cameras: Query<(Entity, &ViewCamera, &Transform, &mut ViewSky, &ViewSystems)>,
     mut skies: ResMut<Skies>,
     mut uploads: ResMut<SkyUploads>,
     mut images: ResMut<Assets<Image>>,
@@ -139,9 +133,21 @@ fn update(
     }
 
     if skies.catalogue.is_none() && skies.opening.is_none() {
-        skies.opening = Some(
-            AsyncComputeTaskPool::get().spawn(async { StarCatalogue::embedded().map(Arc::new) }),
-        );
+        skies.opening = Some(AsyncComputeTaskPool::get().spawn(async {
+            let universe = crate::universe::shared_universe()?;
+            let stars = universe
+                .systems
+                .iter()
+                .map(|system| Star {
+                    id: catalogue_star_id(osg_model::Id(system.id)),
+                    position: system.position,
+                    luminosity: system.luminosity,
+                    temperature_k: system.temperature_k,
+                    colour: system.colour,
+                })
+                .collect();
+            StarCatalogue::from_stars(stars).map(Arc::new)
+        }));
     }
 
     if let Some(task) = &mut skies.opening {
@@ -169,7 +175,7 @@ fn update(
                     && systems
                         .0
                         .iter()
-                        .any(|subscription| subscription.system == system.0)
+                        .any(|subscription| *subscription == system.0)
             })
             .map(|(Celestial(body), _, _)| body)
             .collect();
@@ -307,6 +313,15 @@ fn update(
     };
     let origin = view.origin.offset_by(transform.translation.as_dvec3());
     let revision = sky.revision;
+    let mut excluded: Vec<_> = celestials
+        .iter()
+        .filter(|(Celestial(body), _, system)| {
+            body.luminosity_lumens > 0.0 && systems.0.contains(&system.0)
+        })
+        .map(|(_, _, system)| catalogue_star_id(system.0))
+        .collect();
+    excluded.sort_unstable();
+    excluded.dedup();
     let stars: Vec<bake::Source> = celestials
         .iter()
         .filter(|(Celestial(body), _, system)| {
@@ -314,7 +329,7 @@ fn update(
                 && systems
                     .0
                     .iter()
-                    .any(|subscription| subscription.system == system.0)
+                    .any(|subscription| *subscription == system.0)
         })
         .map(|(Celestial(body), DisplayPose(pose), _)| {
             let mut identity = [0; 8];
@@ -327,6 +342,7 @@ fn update(
                     },
                     position: pose.position,
                     luminosity: body.luminosity_lumens,
+                    temperature_k: body.temperature_k,
                     colour: body.color,
                 },
                 radius_m: body.radius_m,
@@ -350,10 +366,18 @@ fn update(
                 revision,
                 magnitude,
                 stars,
+                &excluded,
                 &worker_cancelled,
             )
         }),
     });
+}
+
+fn catalogue_star_id(id: osg_model::Id) -> StarId {
+    StarId {
+        namespace: u64::from_le_bytes(id.0[..8].try_into().unwrap()),
+        value: u64::from_le_bytes(id.0[8..].try_into().unwrap()),
+    }
 }
 
 fn bake_view(
@@ -362,6 +386,7 @@ fn bake_view(
     revision: u64,
     magnitude: f64,
     mut stars: Vec<bake::Source>,
+    excluded: &[StarId],
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Option<(Arc<bake::Snapshot>, bake::Baked)>> {
     let selected = catalogue.visible(
@@ -369,7 +394,7 @@ fn bake_view(
         VisibilityQuery {
             min_brightness: osg_stars::min_brightness(magnitude + 0.05),
             max_stars: MAX_SELECTED_STARS,
-            excluded: &[],
+            excluded,
         },
     )?;
     if cancelled.load(Ordering::Relaxed) {
