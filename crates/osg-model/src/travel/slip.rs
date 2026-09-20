@@ -7,7 +7,7 @@ pub const DISPERSION_FLOOR_RAD: f64 = 1.074_392_580_830_121_9e-8;
 pub const DISPERSION_SPEED_COEFFICIENT: f64 = 0.000_095_495_498_773_401_54;
 pub const BEACON_PRECISION: f64 = 36.0;
 pub const MAX_SPEED_LY_S: f64 = 1.0;
-pub const CHARGE_J_PER_KG_LY: f64 = 500_000.0;
+pub const CHARGE_J_PER_KG_LY: f64 = 5_000.0;
 pub const MIN_CHARGE_SECONDS: f64 = 10.0;
 pub const EXOTIC_RESOURCE: &str = "exotic_fuel";
 

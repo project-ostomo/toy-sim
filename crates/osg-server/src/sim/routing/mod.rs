@@ -797,11 +797,14 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             None
         };
         let target = self.resolve(&destination, self.elapsed_s)?;
-        let remaining =
-            (osg_model::travel::slip::log_loss_from_ppm(self.request.preferences.max_loss_ppm)
-                - self.log_loss)
-                .max(0.0)
-                / self.risk_routes_remaining.max(1) as f64;
+        let remaining = osg_model::travel::RiskBudget {
+            max_log_loss: osg_model::travel::slip::log_loss_from_ppm(
+                self.request.preferences.max_loss_ppm,
+            ),
+            spent_log_loss: self.log_loss,
+        }
+        .remaining_log_loss()
+            / self.risk_routes_remaining.max(1) as f64;
         let path = graph::search(
             self.request,
             self.environment,

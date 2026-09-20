@@ -201,7 +201,14 @@ pub(super) fn search(
                             + charge_seconds(distance)
                             + flight
                             + 2.0
-                                * remaining_seconds(next.pose.position, goal, target.as_ref(), ppm);
+                                * (remaining_seconds(
+                                    next.pose.position,
+                                    goal,
+                                    target.as_ref(),
+                                    ppm,
+                                ) + charge_seconds(
+                                    goal.position.relative_to(next.pose.position).length(),
+                                ));
                         queue.push(Edge {
                             priority,
                             parent,

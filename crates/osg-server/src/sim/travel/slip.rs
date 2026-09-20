@@ -887,7 +887,7 @@ mod tests {
             .preparation
             .clone()
             .unwrap();
-        assert_eq!(initial.required_j, 500_000_000.0);
+        assert_eq!(initial.required_j, 5_000_000.0);
         world
             .get_mut::<SlipDrive>(ship)
             .unwrap()

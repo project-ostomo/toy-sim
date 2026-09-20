@@ -241,6 +241,37 @@ fn intermediate_captures_share_the_whole_risk_budget() {
 }
 
 #[test]
+fn unlimited_risk_allows_later_waypoints_after_rounded_total_loss() {
+    let mut first = target(1, 100.0);
+    first.radius_m = 1000.0;
+    first.surface_radius_m = 100.0;
+    let mut second = first.clone();
+    second.reference = target(2, 200.0).reference;
+    second.pose = target(2, 200.0).pose;
+    let mut request = request(&second);
+    request.preferences.max_loss_ppm = 1_000_000.0;
+    request.orders = vec![
+        Order::TravelToSystem(first.reference.system),
+        Order::TravelToSystem(second.reference.system),
+    ];
+    let environment = Environment {
+        targets: vec![first, second.clone()],
+        cancelled: false,
+    };
+
+    let plan = plan(&request, &environment).unwrap();
+    assert_eq!(plan.orders.len(), 2);
+    assert_eq!(plan.orders[0].estimated_loss_ppm, Some(1_000_000.0));
+    assert!(matches!(
+        &plan.orders[1].action,
+        Order::Slip {
+            destination: Destination::Relative { reference: Reference::Celestial(reference), .. },
+            ..
+        } if *reference == second.reference
+    ));
+}
+
+#[test]
 fn cancelled_search_stops_before_resolving_routes() {
     let target = target(1, 2.0);
     let request = request(&target);

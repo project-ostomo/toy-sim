@@ -754,7 +754,7 @@ Each physical celestial body contributes an exclusion radius of
 create no slip exclusions. Ordinary propulsion clears enclosing regions and
 moves around obstructions before the next slip.
 
-Charging requires 500 kJ/kg per light-year and at least ten seconds. Retargeting updates the energy requirement. The ship may coast while
+Charging requires 5 kJ/kg per light-year and at least ten seconds. Retargeting updates the energy requirement. The ship may coast while
 charging. Firmware updates its moving-target aim while preserving charge work
 and the original start time. Departure freezes speed, direction, departure mass,
 and galactic velocity. There is no additional cooldown or manual disengagement.

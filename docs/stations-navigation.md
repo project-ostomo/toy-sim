@@ -10,7 +10,7 @@ Interstellar travel uses committed slip trajectories that end at the first natur
 - Celestial selections offer **Slip to** in Selected Item and the Overview context menu. It queues a natural capture at that body and is disabled while the ship intersects a celestial exclusion sphere. Hold Shift to append it to the queue.
 - Select a public installation to approach or dock when it offers docking service. Hold Shift to append these orders.
 - Open Navigation map from the left toolbar. Search or select a system to preview a route, then use Set destination or Add waypoint. Drag empty map space to pan and scroll to zoom. Celestial positions and definitions come from the client's shared catalogue; the server supplies the current inhabited directory and gameplay infrastructure.
-- The browser, search and Fit view show inhabited systems plus active or preview route stops and the ship's current system. Uninhabited intermediate stops appear while their route is displayed. Slip legs use their planned failure probability: green through 100 ppm, yellow through 1,000 ppm, orange through 10,000 ppm, and red above that; gray means unknown. Map labels and preview rows show the numerical risk.
+- The browser, search and Fit view show inhabited systems plus active or preview route stops and the ship's current system. Uninhabited intermediate stops appear while their route is displayed. Slip legs use their planned failure probability: green through 100 ppm, yellow through 1,000 ppm, orange through 10,000 ppm, and red above that; gray means unknown. Map labels and preview rows show the numerical risk. Each map leg also shows its planned speed in multiples of light speed (`c`).
 - Set Maximum ship-destruction risk in ppm for the complete itinerary. The decimal input and logarithmic slider control the same value. Route previews show estimated loss, the selected maximum, beacon assumptions, exotic fuel and the conventional fuel budget. The default is 100 ppm. Change the preference and request a new route to apply it.
 - Fuel allowance limits estimated use of each remaining propulsion resource. Required fuel and available balances appear in the route preview and Navigation, with an exhaustion warning and estimated shortfalls. Partial estimates are labelled. Departure clearance, charging and matching destination motion contribute to travel estimates.
 - Open Navigation to inspect, remove or move pending commands earlier. Pause and resume preserve the queue. Clear queue cancels it.
@@ -27,6 +27,9 @@ The selected risk is an allowance for estimated slip loss across the complete
 itinerary. The planner composes the individual leg probabilities, chooses speeds
 and intermediate captures, and preserves the remaining allowance through automatic
 replanning. It reports the estimate separately from the requested maximum.
+The planner minimizes travel time within that allowance. A higher maximum can
+therefore produce a faster, less accurate slip; a direct hop can use the full
+allowance even when a slower version would be much safer.
 
 | Maximum risk | Equivalent chance of loss |
 | --- | --- |
@@ -108,7 +111,7 @@ state includes the sampled errors, preventing reloads from rerolling the jump.
 
 ### Charging and exotic fuel
 
-Electrical preparation costs 500 kJ per kilogram per light-year and lasts at least ten seconds.
+Electrical preparation costs 5 kJ per kilogram per light-year and lasts at least ten seconds.
 Retargeting updates the required energy while preserving charge already paid. Actual charging time also depends on supplied
 power, so a 500 MW drive does not imply that the ship can continuously supply
 500 MW. Ordinary motion continues during charging.
@@ -200,8 +203,9 @@ The standard flight computer minimizes a local time-and-propellant objective, `s
 The route search compares estimated conventional transfers with charging and
 slip transit between natural capture targets. It queries nearby candidates from
 the catalogue and resolves detailed systems as needed. A weighted A* search
-prioritizes progress toward the destination, including assisted intermediate
-systems, and evaluates expensive clearance and transit forecasts lazily. Risk
+prioritizes progress toward the destination, estimating both remaining charging
+and flight time, including assisted intermediate systems. It evaluates expensive
+clearance and transit forecasts lazily. Risk
 allocations share one search frontier, with at most 32 slip legs. Requests have
 a two-second computation budget, reserving time for exact itinerary validation;
 the search can return a feasible route without proving global optimality. The

@@ -8,6 +8,74 @@ use bevy::math::DVec3;
 use osg_model::travel::{Destination, Order, PlanningPreferences};
 
 #[test]
+#[ignore = "full seeded world route regression"]
+fn reported_seeded_routes() {
+    let account = Id::new();
+    let mut app = crate::sim::provision(&[account], Some(account), None).unwrap();
+    for _ in 0..3 {
+        app.update();
+    }
+    let ship = app
+        .world_mut()
+        .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+        .single(app.world())
+        .unwrap();
+    let universe = app
+        .world()
+        .resource::<crate::sim::orrery::Universe>()
+        .0
+        .clone();
+
+    for (name, max_loss_ppm) in [
+        ("GJ 326 B", 1_000_000.0),
+        ("Gaia EDR3 2744730087807505280", 10_000.0),
+    ] {
+        let target = universe
+            .systems
+            .iter()
+            .find(|system| system.name == name)
+            .unwrap();
+        let request = Request {
+            id: 1,
+            orders: vec![Order::TravelToSystem(Id(target.id))],
+            preferences: PlanningPreferences {
+                max_loss_ppm,
+                ..Default::default()
+            },
+        };
+        let admitted = caller(app.world(), ship).unwrap();
+        let (input, mut environment) = prepare(
+            app.world_mut(),
+            admitted,
+            &request,
+            Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap();
+        environment.prepare().unwrap();
+        let started = std::time::Instant::now();
+        let plan = routing::plan(&input, &environment).unwrap();
+        eprintln!("{name}: {:?}, orders: {:?}", started.elapsed(), plan.orders);
+        assert!(plan.estimated_loss_ppm <= max_loss_ppm + 1e-6);
+        assert_eq!(
+            plan.orders
+                .iter()
+                .filter(|order| matches!(order.action, Order::Slip { .. }))
+                .count(),
+            1
+        );
+        if max_loss_ppm == 10_000.0 {
+            assert!(plan.orders.iter().any(|order| matches!(
+                order.action,
+                Order::Slip {
+                    navigation_beacon: Some(_),
+                    ..
+                }
+            )));
+        }
+    }
+}
+
+#[test]
 #[ignore = "full seeded world route performance measurement"]
 fn seeded_routes_performance() {
     let account = Id::new();

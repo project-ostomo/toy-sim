@@ -92,12 +92,13 @@ pub(super) fn draw(
             )
         })
         .collect();
-    for &(a, b, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
+    for &(a, b, speed_ly_s, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
         let (a, b) = (positions[&a], positions[&b]);
         if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
             continue;
         }
         let color = crate::ui::travel_risk::color(loss);
+        let speed_c = speed_ly_s * travel::slip::LY_M / 299_792_458.0;
         let (a, b) = clip_segment(rect, a, b);
         painter.add(egui::Shape::dashed_line(
             &[a, b],
@@ -109,8 +110,8 @@ pub(super) fn draw(
             a.lerp(b, 0.5),
             egui::Align2::CENTER_BOTTOM,
             loss.map_or_else(
-                || "SLIP · risk unknown".into(),
-                |loss| format!("SLIP · {loss:.2} ppm"),
+                || format!("SLIP · {speed_c:.1} c · risk unknown"),
+                |loss| format!("SLIP · {speed_c:.1} c · {loss:.2} ppm"),
             ),
             egui::FontId::monospace(10.),
             color,

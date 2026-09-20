@@ -212,7 +212,7 @@ pub(super) struct ActiveRoute {
     origin: Option<Id>,
     orders: Vec<travel::QueuedOrder>,
     pub systems: BTreeSet<usize>,
-    pub slips: Vec<(usize, usize, Option<f64>)>,
+    pub slips: Vec<(usize, usize, f64, Option<f64>)>,
     pub stops: Vec<(usize, usize)>,
 }
 
@@ -250,8 +250,11 @@ impl ActiveRoute {
                 .and_then(|(a, b)| cache.systems.get(&a).zip(cache.systems.get(&b)))
             {
                 self.systems.extend([a, b]);
-                if matches!(action, travel::Order::Slip { .. }) && a != b {
-                    self.slips.push((a, b, stage.estimated_loss_ppm));
+                if let travel::Order::Slip { speed_ly_s, .. } = action
+                    && a != b
+                {
+                    self.slips
+                        .push((a, b, *speed_ly_s, stage.estimated_loss_ppm));
                 }
             }
             cursor = next.or(cursor);
