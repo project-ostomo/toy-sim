@@ -12,7 +12,6 @@ fn catalogue(name: &str) -> ([u8; 32], Vec<u8>) {
             name: name.into(),
             position: GalacticPosition::ZERO,
             sovereignty: None,
-            population: 1000,
         }],
         beacons: Vec::new(),
     };

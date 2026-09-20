@@ -842,3 +842,86 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
     }
     panic!("standard firmware did not start the micropulse engine within ten seconds");
 }
+
+#[test]
+fn common_sky_boots_standard_computer_and_flies_with_supported_passengers() {
+    use toy_sim_ships::{Catalogue, Firmware, ShipBlueprint};
+
+    let catalogue = Catalogue::builtin();
+    let blueprint =
+        ShipBlueprint::from_bytes(include_bytes!("../../../../assets/ships/common-sky.ship"))
+            .unwrap();
+    assert_eq!(blueprint.firmware, Firmware::Standard);
+    let design = blueprint.compile(&catalogue).unwrap();
+    let engines: Vec<_> = design
+        .device_catalogue
+        .iter()
+        .filter(|device| matches!(device.kind, DeviceKind::Engine { .. }))
+        .collect();
+    assert_eq!(engines.len(), 3);
+    assert!(engines.iter().all(|device| device.control_enabled));
+
+    let mut fixture = HardwareFixture::new(&design, &catalogue);
+    fixture.app.add_systems(FixedUpdate, vessel::run);
+    fixture
+        .app
+        .world_mut()
+        .get_mut::<vessel::ShipSoftware>(fixture.ship)
+        .unwrap()
+        .command(Command::Manual {
+            throttle: 0.5,
+            steering: [0.2, 0.1, 0.1],
+        });
+
+    for _ in 0..100 {
+        fixture.advance();
+        let software = fixture
+            .app
+            .world()
+            .get::<vessel::ShipSoftware>(fixture.ship)
+            .unwrap();
+        assert!(
+            software.controller.fault.is_none(),
+            "{:?}",
+            software.controller.fault
+        );
+        let state = fixture.snapshot();
+        let statuses = state.snapshot(&design);
+        let thrust: f64 = engines
+            .iter()
+            .map(|engine| match statuses[engine.handle.0 as usize].reading {
+                DeviceReading::Engine { thrust_n } => thrust_n,
+                _ => 0.0,
+            })
+            .sum();
+        let torque = fixture
+            .app
+            .world()
+            .get::<super::physics::AccumulatedTorque>(fixture.ship)
+            .unwrap()
+            .0
+            .length();
+        if thrust > 100000.0 && torque > 1000.0 {
+            assert!(state.avionics.powered);
+            let crew = fixture
+                .app
+                .world()
+                .get::<hardware::utilities::Crew>(fixture.ship)
+                .unwrap();
+            assert_eq!(crew.people, 350);
+            assert!(crew.support_fraction > 0.99);
+            let console: String = software
+                .controller
+                .state
+                .serial
+                .screen
+                .cells
+                .iter()
+                .map(|cell| cell.character)
+                .collect();
+            assert!(console.contains("SHIP COMPUTER // ONLINE"), "{console}");
+            return;
+        }
+    }
+    panic!("Common Sky did not produce thrust and steering torque within ten seconds");
+}

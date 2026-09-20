@@ -277,7 +277,6 @@ fn selected_system(
             polity_color(sovereignty.map(|s| s.bloc)),
             sovereignty.map_or("Unclaimed", |s| s.name.as_str()),
         );
-        ui.weak(format!("Population {}", population(system.population)));
     });
     let destination = catalogue
         .beacons
@@ -328,16 +327,6 @@ fn selected_system(
             });
         }
     });
-}
-
-fn population(value: u64) -> String {
-    if value >= 1_000_000_000 {
-        format!("{:.1} billion", value as f64 / 1e9)
-    } else if value >= 1_000_000 {
-        format!("{:.1} million", value as f64 / 1e6)
-    } else {
-        value.to_string()
-    }
 }
 
 #[cfg(test)]

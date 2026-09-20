@@ -568,7 +568,6 @@ pub struct NavigationCatalogue {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NavigationSystem {
     pub sovereignty: Option<EntityId>,
-    pub population: u64,
     pub id: EntityId,
     pub name: String,
     pub position: GalacticPosition,

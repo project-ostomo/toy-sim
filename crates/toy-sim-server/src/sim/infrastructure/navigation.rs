@@ -275,11 +275,6 @@ fn build_catalogue(world: &mut World) -> NavigationCatalogue {
                 .get(index)
                 .filter(|settlement| settlement.name == system.solver.name)
                 .map(|settlement| crate::sim::ownership::sovereignty_id(&settlement.sovereignty)),
-            population: map
-                .systems
-                .get(index)
-                .filter(|settlement| settlement.name == system.solver.name)
-                .map_or(0, |settlement| settlement.population),
         })
         .collect();
     let mut beacons: Vec<_> = world
@@ -361,7 +356,6 @@ fn topology_revision(beacons: impl IntoIterator<Item = (Id, Id, Option<Id>, bool
             hash.update(system.catalogue_id.as_bytes());
             hash.update(system.name.as_bytes());
             hash.update(system.sovereignty.as_bytes());
-            hash.update(&system.population.to_le_bytes());
             hash.update(&system.position.x.to_le_bytes());
             hash.update(&system.position.y.to_le_bytes());
             hash.update(&system.position.z.to_le_bytes());

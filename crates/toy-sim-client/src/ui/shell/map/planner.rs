@@ -568,7 +568,6 @@ mod tests {
                 name: "Local system".into(),
                 position: GalacticPosition::ZERO,
                 sovereignty: None,
-                population: 0,
             }],
             ..Default::default()
         };

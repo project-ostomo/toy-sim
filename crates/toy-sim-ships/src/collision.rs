@@ -3,12 +3,21 @@ use glam::DVec3;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CollisionBox {
+    pub min: [f64; 3],
+    pub max: [f64; 3],
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "shape", rename_all = "snake_case")]
 pub enum CollisionVolume {
     #[default]
     Box,
     Cylinder,
+    Compound {
+        boxes: Vec<CollisionBox>,
+    },
     HubAndRings {
         hub_radius_m: f64,
         inner_radius_m: f64,
@@ -23,10 +32,18 @@ pub enum CollisionVolume {
 }
 
 impl CollisionVolume {
-    pub fn valid(self) -> bool {
+    pub fn valid(&self) -> bool {
         let positive = |n: f64| n.is_finite() && n > 0.0;
-        match self {
+        match *self {
             Self::Box | Self::Cylinder => true,
+            Self::Compound { ref boxes } => {
+                !boxes.is_empty()
+                    && boxes.len() <= 4096
+                    && boxes.iter().all(|b| {
+                        b.min.iter().chain(&b.max).all(|v| v.is_finite())
+                            && (0..3).all(|i| b.min[i] < b.max[i])
+                    })
+            }
             Self::HubAndRings {
                 hub_radius_m,
                 inner_radius_m,
@@ -53,13 +70,17 @@ impl CollisionVolume {
         }
     }
 
-    fn contains(self, point: DVec3, half: DVec3, margin: f64) -> bool {
+    fn contains(&self, point: DVec3, half: DVec3, margin: f64) -> bool {
         if (point.abs() - half).max_element() > margin {
             return false;
         }
         let radial = point.truncate().length();
-        match self {
+        match *self {
             Self::Box => true,
+            Self::Compound { ref boxes } => boxes.iter().any(|b| {
+                (DVec3::from_array(b.min) - point).max_element() <= margin
+                    && (point - DVec3::from_array(b.max)).max_element() <= margin
+            }),
             Self::Cylinder => radial <= half.x.min(half.y) + margin,
             Self::HubAndRings {
                 hub_radius_m,
@@ -174,4 +195,45 @@ pub(crate) fn parts_overlap(a: &crate::PreparedPart, b: &crate::PreparedPart) ->
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compound_volume_keeps_empty_mounting_space_and_expands_for_voxels() {
+        let volume = CollisionVolume::Compound {
+            boxes: vec![
+                CollisionBox {
+                    min: [-4.0, -2.0, -3.0],
+                    max: [-2.0, 2.0, 3.0],
+                },
+                CollisionBox {
+                    min: [2.0, -2.0, -3.0],
+                    max: [4.0, 2.0, 3.0],
+                },
+            ],
+        };
+        let half = DVec3::new(4.0, 2.0, 3.0);
+        assert!(volume.valid());
+        assert!(!volume.contains(DVec3::ZERO, half, 0.0));
+        assert!(volume.contains(DVec3::new(3.0, 0.0, 0.0), half, 0.0));
+        assert!(!volume.contains(DVec3::new(1.5, 0.0, 0.0), half, 0.0));
+        assert!(volume.contains(DVec3::new(1.5, 0.0, 0.0), half, 0.6));
+        assert!(!volume.contains(DVec3::new(5.0, 0.0, 0.0), half, 0.6));
+    }
+
+    #[test]
+    fn compound_volume_rejects_empty_inverted_and_nonfinite_boxes() {
+        assert!(!CollisionVolume::Compound { boxes: vec![] }.valid());
+        for max in [[-1.0; 3], [0.0; 3], [f64::NAN; 3], [f64::INFINITY; 3]] {
+            assert!(
+                !CollisionVolume::Compound {
+                    boxes: vec![CollisionBox { min: [0.0; 3], max }],
+                }
+                .valid()
+            );
+        }
+    }
 }

@@ -1,7 +1,5 @@
 use crate::generation::{CatalogueStar, seed};
 use glam::DVec3;
-use rand::{RngExt, SeedableRng};
-use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, sync::OnceLock};
 use toy_sim_space::GalacticPosition;
@@ -25,7 +23,6 @@ pub struct SettledSystem {
     pub position: GalacticPosition,
     pub sovereignty: String,
     pub alignment: Alignment,
-    pub population: u64,
     pub catalogue_id: String,
 }
 
@@ -313,24 +310,11 @@ fn distance_from_sol(system: &SettledSystem) -> f64 {
 fn settlement(name: String, catalogue_id: String, position: GalacticPosition) -> SettledSystem {
     let location = position.relative_to(GalacticPosition::ZERO) / LIGHT_YEAR_M;
     let (sovereignty, alignment) = jurisdiction(location);
-    let mut rng = ChaCha20Rng::from_seed(seed("settlement", catalogue_id.as_bytes()));
-    let (minimum, maximum) = match alignment {
-        Alignment::Use => (7.0, 10.2),
-        Alignment::Lfs => (5.2, 9.3),
-        Alignment::Independent => (5.0, 8.9),
-    };
-    let maturity = (1.0 - location.length() / 170.0).max(0.2);
-    let population = if name == "Sol" {
-        36_000_000_000
-    } else {
-        (10f64.powf(rng.random_range(minimum..maximum)) * maturity) as u64
-    };
     SettledSystem {
         name,
         position,
         sovereignty: sovereignty.into(),
         alignment,
-        population,
         catalogue_id,
     }
 }
@@ -439,7 +423,6 @@ mod tests {
             assert!(names.insert(&system.name));
             assert!(identities.insert(&system.catalogue_id));
             assert!(distance_from_sol(system) <= 125.000_001 * LIGHT_YEAR_M);
-            assert!(system.population > 0);
             *sovereigns.entry(&system.sovereignty).or_default() += 1;
             match system.alignment {
                 Alignment::Use => {

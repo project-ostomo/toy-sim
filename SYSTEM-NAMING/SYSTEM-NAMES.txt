@@ -1,0 +1,878 @@
+2360|Proxima Centauri|2121
+1724|Barnard's Star|2143
+1518|HIP 92403|2152
+1658|HIP 80824|2158
+1535|Guniibuu|2166
+2413|Wye|2171
+2626|Gaia EDR3 6439125097427143808|2175
+2614|ε Ind|2168
+2681|Lacaille 9352|2172
+660|Meilin|2178
+2705|Fomalhaut B|2184
+2692|GJ 4248|2189
+2807|HIP 99825|2193
+2786|HD 196982A|2197
+2702|GJ 4207|2201
+2697|GJ 4198|2205
+2738|Gaia EDR3 6686474256863996672|2210
+2685|HIP 107649|2213
+2663|Gaia EDR3 6517274496976569344|2215
+2672|GJ 4350|2218
+1926|GJ 3009|2221
+1956|HD 4391D|2224
+1957|HIP 3583|2227
+1969|Amity|2230
+2670|Constancy|2235
+2679|Plenty|2238
+2690|Fortitude|2241
+715|Hearth|2244
+857|Tugongli|2247
+841|Clarity|2250
+846|Respite|2279
+847|Vigil|2284
+813|Patience|2288
+2805|Industry|2292
+810|Providence|2296
+718|Diligence|2301
+724|Solace|2305
+719|Temperance|2308
+716|Craft|2312
+706|Economy|2316
+2714|Mercy|2320
+2712|Certainty|2324
+2780|Justice|2327
+2791|Radiance|2331
+2812|Memory|2335
+2787|Bathgate|2287
+2733|Ledger Bay|2291
+1551|Flagfall|2294
+2461|Coldstore|2297
+1694|Silverfin|2300
+1730|Last Call|2303
+1733|Compline|2249
+519|San José|2252
+520|San Cristóbal|2255
+365|San Rafael|2246
+372|San Alberto|2258
+67|Census|2261
+12|Mansio|2264
+2968|Cardo|2267
+2965|Cautio|2270
+2992|Vitrum|2273
+2998|Index|2277
+27|Fodina|2280
+2971|Caupona|2283
+15|Nuntius|2286
+2920|Faber|2289
+2919|Sal|2292
+2930|Arva|2295
+38|Vinum|2298
+31|Ignis|2301
+42|Gemina|2306
+23|Rete|2309
+2926|Vectura|2312
+2883|Custos|2315
+2886|Libra|2318
+2901|Vestis|2321
+2925|Notarius|2324
+2927|Dolium|2327
+2935|Merak|2328
+36|Funis|2331
+39|Via|2334
+60|Candela|2337
+64|Panis|2340
+2203|Medicus|2343
+70|San Eloy|2344
+2282|El Faro|2345
+2130|Viña|2346
+2161|Shin-Saga|2243
+2100|Teja|2347
+1622|Buen Pastor|2348
+503|Betania|2349
+585|Semilla|2350
+623|Stella Maris|2351
+620|Pergamino|2352
+206|Cirio|2353
+203|Órgano|2354
+216|Misión|2355
+210|Santa Lucía|2356
+204|San Andrés|2357
+181|Sinodo|2358
+561|Descanso|2359
+572|Cuna|2360
+568|Jardín|2361
+592|Bosque|2362
+582|Cantera|2363
+541|Fuente|2364
+538|Colmena|2365
+521|Tránsito|2366
+513|Archivo|2367
+406|Telar|2368
+1593|Phoenicia|2369
+1603|La Trappe|2370
+2839|Astillero|2371
+1592|Jabón|2372
+1586|Coldharbor|2373
+1523|Breakwater|2375
+2767|Twin Ports|2376
+2763|Highmarket|2377
+1513|Stockyard|2378
+1497|Grapevine|2379
+1495|Relay|2380
+1490|Longshot|2381
+2417|Bunkhouse|2382
+2409|Bunkerage|2383
+2422|Turnpike|2384
+2451|Larawag|2385
+2447|Stillhouse|2386
+2445|Racecourse|2387
+2455|Coldquarry|2388
+2523|Outfitters|2389
+1656|Orehouse|2390
+1669|Homestead|2391
+1565|Towline|2392
+1560|Fingerling|2393
+1543|Paintworks|2394
+1569|Quarantine|2395
+1573|Watchworks|2396
+1623|Prizecourt|2397
+1616|Truffleport|2398
+1572|Azure Bay|2399
+1621|Waterrights|2400
+1721|Orchard|2401
+1683|Ballast|2402
+1675|Teahouse|2403
+1566|Nursery|2404
+1555|Tannery|2405
+1552|Glasshouse|2406
+2453|Anchorage|2407
+2450|Tarpit|2408
+2456|Bloomery|2409
+2441|Sugarhouse|2410
+2436|Mineral Wells|2411
+2403|Boomtown|2412
+2412|Creamery|2413
+2414|Skihaven|2414
+2751|Secondhand|2415
+2746|Joinery|2416
+2716|Henrietta|2251
+2330|Jocelyn|2256
+2316|Vera|2261
+2595|Grace|2266
+2596|Ada|2271
+1828|Emmy|2276
+1810|Lise|2281
+2048|Katherine|2286
+2082|Annie|2291
+2085|Sophie|2296
+2174|Marie|2301
+2177|Ignaz|2306
+1854|Rachel|2311
+2210|Rosalind|2316
+2204|Chandra|2321
+2268|Tureis|2312
+2234|Tinctor|2316
+2227|171 Pup|2318
+2270|Fairweather|2236
+2286|HIP 40693|2239
+1030|Lamplight|2244
+997|HL 4|2247
+1145|GJ 3379|2250
+1057|Luyten's Star|2253
+2851|Kettle|2256
+2885|HIP 54035|2259
+1412|Shoalwater|2262
+1377|Fourcross|2265
+2133|Coldspring|2268
+2073|Warmspring|2271
+2492|Southgate|2274
+1246|HIP 60559|2277
+1232|Sunhill|2280
+1259|GJ 3668|2283
+1366|GJ 1140|2286
+1276|HIP 56157|2289
+1409|GJ 398|2292
+1402|Portorium|2320
+1029|Puteus|2323
+1056|Fistula|2326
+1050|Ephemeris|2329
+1148|Urushi|2328
+1184|Washi|2330
+1193|Soba|2332
+1077|Ama|2334
+796|Sakura|2336
+855|Taiko|2338
+1845|Hoshimi|2340
+1804|Tsunagu|2342
+1705|Tanada|2344
+738|Manyo|2346
+712|Hashi|2348
+714|Kampo|2350
+628|Shio|2352
+303|Ai|2354
+1197|Kagami|2356
+1188|Bunraku|2358
+1165|Tetsu|2360
+1178|Nawa|2362
+1179|Chochin|2364
+1171|Rota|2368
+2948|Tector|2372
+2950|Sera|2376
+1206|Cuprum|2379
+2941|Wasat|2382
+2942|Obstetrix|2385
+2951|Corbis|2388
+2956|Carbo|2391
+2953|Pecten|2394
+2959|Atramentum|2397
+2964|Moneta|2400
+2962|Ancora|2404
+2857|Praeco|2407
+2858|Dolabra|2410
+2859|Ripa|2413
+2917|Caelator|2416
+20|Lucerna|2419
+22|Molitor|2422
+24|Mergus|2425
+32|Explorator|2426
+33|Venator|2426
+41|Magister|2426
+28|Herbarius|2426
+49|Limes|2426
+57|Campana|2426
+54|Gubernator|2426
+51|Figulus|2426
+14|Calx|2426
+923|Mamori|2426
+1867|Ringo|2426
+1822|Yadoya|2426
+835|Sumiyaki|2426
+2988|Bokujo|2426
+2989|Stannum|2426
+2986|Argentarius|2426
+2983|Navis|2426
+2982|Taru|2426
+1209|Koyomi|2426
+418|Hama|2426
+467|Kaya|2426
+509|Sato|2426
+375|Kuri|2426
+404|Ishiku|2426
+527|Akagane|2426
+388|Fune|2426
+589|Waraji|2426
+615|Mame|2426
+113|Kinoko|2426
+73|Sumi|2426
+71|Ocha|2426
+1129|Kaki|2426
+1201|Tatami|2426
+1045|Resolve|2426
+889|Fidelity|2402
+894|Threefields|2403
+915|GJ 3028|2406
+1444|Northfield|2409
+1540|Hitching Post|2412
+1681|ι Per|2415
+1130|GJ 3147|2418
+1612|Achird (gaia-edr3-425040000962559616)|2421
+1611|Achird B|2424
+1404|Two Coals|2426
+473|Slowlight|2418
+446|61 Cyg A|2420
+514|Gaia EDR3 2019802555283940608|2422
+408|GJ 1256|2423
+378|Kindling|2424
+1633|Waterside|2425
+1647|HIP 92871|2425
+1737|Stillwater|2426
+528|Shallow Bay|2426
+1634|Alshain|2422
+1652|31 Aql|2423
+454|Jiu|2424
+430|HIP 103441|2424
+907|Helvetios|2425
+575|HIP 91768|2416
+574|HIP 91772|2416
+324|HIP 86162|2417
+631|Alsafi|2417
+578|Saltcellar|2418
+577|GJ 1227|2419
+173|HIP 83945|2419
+1784|Two Harbors|2420
+1775|HIP 83043|2420
+169|Lantern Bay|2421
+1752|GJ 1215|2421
+1759|GJ 3997 A|2421
+1770|Fathom|2422
+162|72 Her|2422
+1118|Deltoton|2417
+1225|Titawin|2418
+1356|Wintershade|2423
+1228|HIP 7918|2418
+104|Firefly|2418
+363|Windrow|2419
+1181|GJ 3181|2419
+2171|Lastlight|2420
+648|Errai|2420
+1530|HIP 7635|2420
+2067|Glasswater|2421
+471|Gaia EDR3 1925025168366253952|2420
+505|GJ 1268|2420
+494|San Gabriel|2381
+490|San Tomás|2383
+465|Belén|2385
+453|Verity|2389
+921|Reflection|2392
+920|Confluence|2395
+918|Continuance|2397
+452|Communion|2399
+466|Penumbra|2401
+903|Kindred|2404
+863|Boniface|2407
+448|Halcyon|2410
+386|Whetstone|2412
+395|Luminaria|2387
+403|Fragua|2389
+399|Fuensanta|2391
+458|Pastora|2393
+437|Pomar|2395
+432|San Pedro|2397
+455|El Retablo|2398
+451|San Buenaventura|2400
+450|Wayfare|2403
+902|Candor|2405
+861|Steadfast|2407
+862|Surety|2410
+853|Reprieve|2412
+833|Quietude|2414
+826|Ebla|2416
+836|Concordance|2417
+831|Milieu|2418
+736|Alacrity|2419
+733|Acuity|2420
+725|Tranquility|2421
+721|Behalf|2422
+754|Reverence|2423
+772|Threshold|2424
+745|Ledger's Rest|2425
+2021|Lampblack|2425
+2014|Grayfall|2426
+2013|Understory|2426
+1992|Mullein|2426
+1996|Payne|2328
+1897|Bartók|2333
+1863|Maury|2338
+1862|Janaki|2343
+1812|Hypatia|2348
+1805|Al-Kashi|2353
+1801|Inge|2358
+2077|Chandra's Rest|2363
+2083|Sofia|2368
+2084|Arnaldo|2373
+2078|Srinivasa|2378
+2051|Zhang Heng|2383
+2052|Wang Zhenyi|2388
+2054|Saha|2393
+2068|Al-Jazari|2398
+2093|b02 Car|2401
+2099|Bharati|2403
+2185|Takamine|2408
+2214|Somerville|2413
+2207|Ibn Sina|2418
+1877|Moseley|2423
+2217|Burbidge|2426
+929|Wazn|2426
+1885|Banneker|2426
+1909|Al-Battani|2426
+1910|Caroline|2426
+1908|Wu|2426
+1904|Aziz Sancar|2426
+1884|Tsiolkovsky|2426
+1879|Agnesi|2426
+1878|Miriam|2426
+1872|Escosura|2426
+1871|Bruno|2426
+2187|Flossie|2426
+1853|Apgar|2426
+1849|Fizeau|2426
+1859|Struve|2426
+1817|Ørsted|2426
+1839|Cavendish|2426
+1840|Nightingale|2426
+1815|Blackwell|2426
+1813|Gaia EDR3 4677731349742482176|2426
+1808|Dubner|2426
+1807|Bardeen|2426
+1832|Hopper's Wing|2426
+1831|Earle|2426
+1940|Tombaugh|2426
+1945|Quisquis|2426
+1952|Lorenz|2426
+1972|Lenten|2426
+1954|Sunwise|2426
+1973|Cresset|2426
+1981|Pellucid|2426
+2016|Fiducia|2426
+687|Solder|2426
+690|Coda|2426
+699|Evensong|2426
+779|Harborage|2426
+782|Keepsake|2426
+788|Convocation|2426
+793|Waywiser|2426
+784|Testimony|2426
+760|Windfall|2426
+751|Mainstay|2426
+743|Afterglow|2426
+748|Limns|2426
+2015|Quietest|2426
+1990|Skyline|2426
+1987|Boole|2426
+1991|Schwabe|2426
+1984|Cannon's Margin|2426
+1995|High Summer|2426
+1998|Yakimono|2426
+2033|Origami|2426
+1120|Tsukimi|2426
+2044|Kindly|2426
+765|Wellspring|2426
+746|Behest|2426
+2040|Visor|2426
+2041|Refrain|2426
+2045|Kaizen|2426
+1121|Kodawari|2426
+1119|Momiji|2426
+1124|Shirakaba|2426
+1128|Yukkurikan|2426
+327|Nukumori|2426
+2236|Omajiri|2426
+1361|Shioya|2426
+1312|Ukai|2426
+2651|Kotobuki|2426
+2710|Byobu|2426
+1484|Ensenada|2426
+2556|Shirogane|2426
+2929|Aogiri|2426
+2945|Hinoki|2426
+16|Taketori|2426
+1012|Kiriya|2426
+1152|Suzuri|2426
+1472|Kagerou|2426
+1351|Snowmelt|2426
+1368|Rivulet|2426
+1415|Staunch|2426
+1424|Freshet|2426
+481|Udkadua|2426
+483|Estrella Fija|2426
+478|Naranjo|2426
+482|Zapatero|2426
+475|Los Robles|2426
+476|Farol|2426
+491|Corazón|2426
+485|Mar adentro|2426
+486|Mojonería|2426
+436|Vereda|2426
+392|Albergue|2426
+409|Puente|2426
+411|Clavero|2426
+417|Ancón|2426
+405|Sillar|2426
+420|Merced|2426
+515|Delfín|2426
+525|Rosario|2426
+535|Almadía|2426
+549|Vela|2426
+1788|Boya|2426
+167|Cenador|2426
+172|Tejedora|2426
+153|Pabilo|2426
+1769|Farolito|2426
+1767|Triplehaven|2426
+1717|Twinsun|2426
+99|Mirkwell|2426
+90|Warmwave|2426
+93|Kettleblack|2426
+1704|Unukalhai|2426
+1698|Shellbank|2426
+1690|Double Entry|2426
+2566|Sixways|2426
+1304|Tollgate|2426
+1302|Gateward|2426
+1318|GJ 3809 A|2426
+1350|Milestone|2426
+121|Tepiamenit|2426
+1362|GJ 1171|2426
+221|GJ 3779|2426
+236|HIP 65012|2426
+273|Gaia EDR3 1554433777791815808|2426
+249|GJ 537 A|2426
+343|Warden|2426
+266|Chara|2426
+1353|Gar|2426
+1429|Stillsea|2426
+1328|Hedgerow|2426
+1378|Zavijava|2426
+1325|Porrima|2426
+235|Quietfield|2426
+87|Mufflestone|2426
+92|Muning|2426
+101|GJ 585|2426
+81|Gaia EDR3 1172618435080418176|2426
+115|Gaia EDR3 1227705135863076864|2426
+2546|Emberfall|2426
+2572|Slackwater|2426
+1667|18 Sco|2426
+2528|Sharjah|2426
+2537|Seaword|2426
+2489|HIP 69285|2426
+230|Broadreach|2426
+1455|HIP 64797|2426
+1355|Farsound|2426
+1452|Witsend|2426
+1486|Noquisi|2426
+2908|11 LMi|2426
+2918|Thinwater|2426
+2934|36 UMa B|2426
+2932|Gaia EDR3 851053031037729408|2426
+19|Longlight|2426
+18|Talitha|2426
+29|Lastland|2426
+2853|Copernicus|2426
+2880|Rillwater|2426
+2895|GJ 400 A|2426
+2899|Chalawan|2426
+349|Heavyhouse|2426
+364|HIP 76832|2426
+576|Twindusk|2426
+217|26 Dra|2426
+330|Deepglass|2426
+43|One Each|2426
+65|Gaia EDR3 1138963758544545280|2426
+63|HIP 47981|2426
+307|Thawline|2426
+306|Longdeep|2426
+188|χ Her|2426
+311|Middleground|2405
+298|Waystation|2407
+226|Commons|2409
+119|Crosscurrent|2411
+133|Wide Berth|2413
+88|Lowwater|2414
+131|Lantern|2416
+1321|Evenhanded|2417
+128|Deepfreeze|2419
+228|Holding|2421
+240|Lighthouse|2423
+242|Fairhaven|2425
+297|Freefall|2426
+304|Watchover|2426
+328|Halfway House|2426
+359|Stooddown|2426
+61|Shippen|2426
+62|Bothbarrels|2426
+37|Lastlamp|2426
+351|Taiyi|2426
+342|Ashore|2426
+341|Frozenlight|2426
+340|Ledgerfree|2426
+344|Faircopy|2426
+345|Even Keel|2426
+271|Mixup|2426
+274|Quiet Keel|2426
+285|Five Rivers|2426
+2904|Undertow|2426
+2893|Backstop|2426
+1489|Warmer|2426
+2890|Hotcinder|2426
+2894|Sable|2426
+2903|Half Note|2426
+269|Wharfline|2426
+2891|Almostwarm|2426
+2892|Fairtrade|2426
+2888|Turnabout|2426
+2881|Nearmark|2426
+1488|Evening Watch|2426
+1485|Quarterdeck|2426
+255|Cor Caroli|2426
+260|Deadfall|2426
+237|Keelhaul|2426
+265|Wayfarer|2426
+262|Allnight|2426
+254|α CVn B|2426
+261|Deepfield|2426
+233|Windward|2426
+231|Frostbite|2426
+1464|Snowdrift|2426
+1459|Longwatch|2426
+1453|Warm Rest|2426
+1454|Halfway Warm|2426
+1450|Firstlight House|2426
+1456|Hollow|2426
+1466|Gaia EDR3 3956837478702863744|2426
+1461|HIP 61099|2426
+1451|Gaia EDR3 3933889601583713920|2426
+1431|Gaia EDR3 3903379292080122368|2426
+1352|Stillharbor|2426
+1427|Gaia EDR3 3901165013100805248|2426
+1332|Farhaven|2426
+1458|HIP 60074|2426
+1435|Gaia EDR3 3907641136588506624|2426
+1426|Breadth|2426
+1447|Gaia EDR3 3928803883564551040|2426
+1460|Gaia EDR3 3948760569364949632|2426
+1483|Greyling|2426
+1487|Fewdrops|2426
+234|Gaia EDR3 1464853782336698240|2426
+252|HIP 62406|2426
+225|Whitelight|2426
+229|Greyharbor|2426
+227|Crossway|2426
+126|Longnight|2426
+125|Ladder|2426
+123|Pallbear|2426
+127|Overwinter|2426
+120|Emberhold|2426
+134|Greyreach|2426
+130|Watchcoat|2426
+136|Wayworn|2426
+139|Coldroom|2426
+142|Pinlight|2426
+146|Bothseas|2426
+145|Lamplighter|2426
+192|Redshift|2426
+187|Meetingmark|2426
+184|Farcrown|2426
+185|Fairhaven's Rest|2426
+182|Halfway Hearth|2426
+159|Crownright|2426
+110|Alphecca|2426
+108|Queenswater|2426
+107|Washdeck|2426
+106|Lastwash|2426
+105|Heldmark|2426
+132|Duskhold|2426
+138|Nusakan|2426
+137|Sidedoor|2426
+140|Hearthkeep|2426
+190|Heavyweather|2426
+191|Alkalurops|2426
+141|Qigong|2426
+144|Farwall|2426
+100|Gridpoint|2426
+1702|Backlight|2426
+1700|Halfamoon|2426
+1701|Warmwash|2426
+78|Twin Sun|2426
+89|Drydocks|2426
+1716|Shade|2426
+1768|Baste|2426
+1766|Oddrock|2426
+98|Tidewrack|2426
+1762|Smallhours|2426
+1765|Baño|2426
+1764|Camino|2426
+1772|Buen Camino|2426
+1782|Farolito's Rest|2426
+154|Hermite|2426
+171|Antesala|2426
+176|Alcoba|2426
+178|Refectorio|2426
+197|Compline's Rest|2426
+199|Fuente Serena|2426
+205|Serenata|2426
+215|Nocturno|2426
+317|Desposorio|2426
+316|Quinientos|2426
+318|Quietcorner|2426
+320|Fourcorners|2426
+302|Steadrock|2426
+314|Halfway There|2426
+326|Slacktide|2426
+313|Cold Beacon|2426
+347|Farewindow|2426
+357|Nine Lanterns|2426
+358|Northerly|2426
+360|Kilnworks|2426
+368|Farstill|2426
+366|Stillpoint|2426
+45|Emberfall's End|2426
+44|Deepfield Two|2426
+46|Waymarker|2426
+367|Endmark|2426
+350|Dimchain|2426
+348|Farshore|2426
+312|Lastlight's Rest|2426
+308|Ninth Watch|2426
+300|Stillpoint Two|2426
+299|Loudwater|2426
+295|Stormsong|2426
+294|Duskwell|2426
+329|Bellweather|2426
+309|Edasich|2426
+321|Middlemark|2426
+325|Twinwalls|2426
+310|Lastchain|2426
+301|Chainend|2426
+207|Grumium|2426
+570|Fuente Fría|2426
+567|κ Cyg|2426
+618|Cellar|2426
+616|Grajedo|2426
+564|Hotwell|2426
+563|Lastdoor|2426
+545|Steamsong|2426
+594|Brightroad|2426
+593|Sauna|2426
+587|Fuente Mayor|2426
+506|Puente Alto|2426
+596|ε Cep|2426
+605|Fuente del Norte|2426
+613|Six Bells|2426
+639|Estanque|2426
+638|Baños|2426
+627|Altais|2426
+335|Mirador|2426
+338|Puente Norte|2426
+370|Cuarto|2426
+362|Fuente Lejana|2426
+655|Farol Grande|2426
+657|Establo|2426
+651|Fuente de la Paz|2426
+2258|Puente Viejo|2426
+2226|Agua Serena|2426
+2050|Suiminkan|2426
+2154|Umebayashi|2426
+2037|Sekitei|2426
+2038|Sekitei Nishi|2426
+2006|Ruchbah|2426
+1607|Akashio|2426
+1598|Capilla del Norte|2426
+1638|Estanquilla|2426
+1584|Bodega|2426
+504|Aguadero|2426
+502|Posada Grande|2426
+472|Fourwaters|2426
+1394|Sundown|2426
+1365|Sixcorners|2426
+1103|Goodrest|2426
+1289|Farwater|2426
+913|Emberkeep|2426
+912|Hearthstead|2426
+892|Waygate|2426
+888|Bright Crossing|2426
+804|Stillwatering|2426
+887|Waystone|2426
+890|Warmwell|2426
+2898|Secondstone|2426
+2911|Thirdstone|2426
+2868|Fourthstone|2426
+798|Fifthstone|2426
+803|Fifthstone Far|2426
+801|Kettlebright|2426
+875|Lamphold|2426
+874|Gatewatch|2426
+865|Gatewatch Far|2426
+872|Gatehold|2426
+864|Gatekeep|2426
+870|Lightfall|2426
+876|Lastlamp South|2426
+881|Emberhold South|2426
+898|Fivegates|2426
+884|Watershed Five|2426
+882|Hotgates|2426
+899|Duskstone|2426
+900|Duskwater|2426
+909|Fourthgate|2426
+916|Fifthgate|2426
+919|Sixthgate|2426
+468|Sevengates|2426
+917|Eightgates|2426
+901|Ninthgate|2426
+856|Tenthgate|2426
+834|Eleventhgate|2426
+839|Twelfthgate|2426
+840|Thirteenthgate|2426
+860|Fourteenthgate|2426
+851|Fifteenthgate|2426
+374|Capilla del Far|2426
+387|Refugio del Far|2426
+394|Posada del Far|2426
+389|Sixteenthgate|2426
+457|Capilla del Puerto|2426
+464|Buenaventura del Norte|2426
+461|Capilla Serena|2426
+393|Estancia del Far|2426
+390|Estancia del Puerto|2426
+391|Buena Vista|2426
+385|Dhanishta|2426
+381|Altar de la Carretera|2426
+379|Grada del Far|2426
+1639|Faro Alto|2426
+1630|Lumbre|2426
+1608|Hornacina|2426
+1631|Farol de la Costa|2426
+1620|Farol del Puerto|2426
+1619|Lamppost|2426
+1588|Bluespot|2426
+1590|Lamphouse|2426
+1582|Brightwater|2426
+1578|Sunsweep|2426
+2822|Emberglen|2426
+2820|Clearline|2426
+2823|Hotdock|2426
+2829|Algedi|2426
+2837|Celda|2426
+2832|Alcoba del Sur|2426
+2843|Cuarto del Sur|2426
+1599|Antesala del Sur|2426
+1602|Celda del Sur|2426
+1606|Refectorio del Sur|2426
+1605|Grada del Puerto|2426
+1609|Hornacina del Sur|2426
+1642|Estrella Fiel|2426
+1643|Capilla Serena del Sur|2426
+1651|Estancia Serena|2426
+1653|Luz Permanente|2426
+1739|Vigilia del Sur|2426
+1749|Maitines|2426
+1736|Laudes|2426
+1649|Okab|2426
+1744|Tercia|2426
+1745|Sexta|2426
+1763|Nona|2426
+1781|Vísperas del Sur|2426
+1783|Completas|2426
+550|Salve|2426
+552|Rosario del Sur|2426
+554|Estación Misionera|2426
+553|Estrella Guía|2426
+534|Pesebre|2426
+531|Descanso del Sur|2426
+533|Betania del Sur|2426
+543|Belén del Sur|2426
+530|Semilla del Sur|2426
+557|Granero|2426
+558|Horno|2426
+559|Granero Chico|2426
+556|Horno Chico|2426
+555|Cilla|2426
+1741|Diezmo|2426
+1731|Lagar|2426
+1748|Tusizuo|2426
+1746|Lienzo|2426
+1761|Canvasport|2426
+1760|Bluelight Bay|2426
+1727|Sundown Bay|2426
+1719|Halfmoon Bay|2426
+1720|Warmworks|2426
+1718|Azure Gate|2426
+1722|Bake-eo|2426
+1677|Sailcache|2426
+1676|Kingfisher|2426
+1567|Greywater|2426
+1546|ξ Ser|2426
+1544|Frostcourt|2426
+1510|Hotplate|2426
+1511|Clearpoint|2426
+1503|Waystone South|2426

@@ -1,0 +1,1907 @@
+{
+  "format_version": 1,
+  "units": "metres",
+  "axes": {
+    "up": "+Y",
+    "forward": "-Z",
+    "exhaust": "+Z"
+  },
+  "livery": "blue-upper-fine-gold-white-belly",
+  "runtime_catalogue_registered": true,
+  "parts": [
+    {
+      "id": "flight-deck",
+      "title": "01 Flight deck and nose",
+      "category": "Command",
+      "model": "models/common-sky/flight-deck.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        163,
+        84,
+        141
+      ],
+      "bounds_m": [
+        [
+          -8.100000381469727,
+          -4.199999809265137,
+          -7.000980377197266
+        ],
+        [
+          8.100000381469727,
+          4.199999809265137,
+          7.000980377197266
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        0.0,
+        -30.999019622802734
+      ],
+      "nodes": [
+        {
+          "name": "aft",
+          "connector": "cs_passenger_forward",
+          "position_m": [
+            0.0,
+            0.0,
+            6.99902
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "gear",
+          "connector": "cs_nose_gear",
+          "position_m": [
+            0.0,
+            -4.0,
+            1.99902
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "name": "rcs_0",
+          "connector": "cs_rcs",
+          "position_m": [
+            -8.735001,
+            0.0,
+            6.19902
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "rcs_1",
+          "connector": "cs_rcs",
+          "position_m": [
+            8.734999,
+            0.0,
+            6.19902
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "triangles": 7734,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Glass",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_flight_deck"
+    },
+    {
+      "id": "passenger-forward",
+      "title": "02 Forward passenger deck",
+      "category": "Accommodation",
+      "model": "models/common-sky/passenger-forward.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        240,
+        62,
+        201
+      ],
+      "bounds_m": [
+        [
+          -12.0,
+          -3.09708833694458,
+          -10.001152992248535
+        ],
+        [
+          12.0,
+          3.09708833694458,
+          10.001152992248535
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        1.931911826133728,
+        -14.000792503356934
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_passenger_forward",
+          "position_m": [
+            0.0,
+            -1.931912,
+            -9.999207
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "aft",
+          "connector": "cs_passenger_aft",
+          "position_m": [
+            0.0,
+            0.068088,
+            10.000793
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "keel",
+          "connector": "cs_cargo_keel",
+          "position_m": [
+            0.0,
+            -1.931912,
+            0.000793
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 11890,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Glass",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 175,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_passenger_forward"
+    },
+    {
+      "id": "passenger-aft",
+      "title": "03 Aft passenger deck",
+      "category": "Accommodation",
+      "model": "models/common-sky/passenger-aft.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        242,
+        62,
+        181
+      ],
+      "bounds_m": [
+        [
+          -12.08645248413086,
+          -3.079716444015503,
+          -9.000284194946289
+        ],
+        [
+          12.08645248413086,
+          3.079716444015503,
+          9.000284194946289
+        ]
+      ],
+      "assembly_position_m": [
+        -0.005803585052490234,
+        1.920283555984497,
+        5.000169277191162
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_passenger_aft",
+          "position_m": [
+            0.005804,
+            0.079716,
+            -9.000169
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "service",
+          "connector": "cs_service_keel",
+          "position_m": [
+            0.005804,
+            -1.920284,
+            4.999831
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "name": "aft",
+          "connector": "cs_propulsion_frame",
+          "position_m": [
+            0.005804,
+            -1.920284,
+            8.999831
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "dock",
+          "connector": "cs_docking_collar",
+          "position_m": [
+            0.005804,
+            3.079716,
+            -6.000169
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 10134,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Glass",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 175,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_passenger_aft"
+    },
+    {
+      "id": "cargo-keel",
+      "title": "04 Cargo keel",
+      "category": "Storage",
+      "model": "models/common-sky/cargo-keel.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        242,
+        51,
+        300
+      ],
+      "bounds_m": [
+        [
+          -12.072916030883789,
+          -2.5146121978759766,
+          -15.0
+        ],
+        [
+          12.072916030883789,
+          2.5146121978759766,
+          15.0
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        -2.514388084411621,
+        -9.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_cargo_keel",
+          "position_m": [
+            0.0,
+            2.514388,
+            -5.0
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "gear_port",
+          "connector": "cs_main_gear",
+          "position_m": [
+            -7.0,
+            -2.585612,
+            13.0
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        },
+        {
+          "name": "gear_starboard",
+          "connector": "cs_main_gear",
+          "position_m": [
+            7.0,
+            -2.585612,
+            13.0
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 8366,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 400.0,
+      "runtime_prototype": "cs_cargo_keel"
+    },
+    {
+      "id": "service-keel",
+      "title": "05 Service keel",
+      "category": "Utilities",
+      "model": "models/common-sky/service-keel.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        241,
+        49,
+        80
+      ],
+      "bounds_m": [
+        [
+          -12.028997421264648,
+          -2.4001171588897705,
+          -4.0
+        ],
+        [
+          12.028997421264648,
+          2.4001171588897705,
+          4.0
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        -2.3998830318450928,
+        10.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_service_keel",
+          "position_m": [
+            0.0,
+            2.399883,
+            0.0
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 1790,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_service_keel"
+    },
+    {
+      "id": "propulsion-frame",
+      "title": "06 Propulsion frame",
+      "category": "Structure",
+      "model": "models/common-sky/propulsion-frame.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        241,
+        93,
+        152
+      ],
+      "bounds_m": [
+        [
+          -12.02899169921875,
+          -4.610000133514404,
+          -7.550268173217773
+        ],
+        [
+          12.02899169921875,
+          4.610000133514404,
+          7.550268173217773
+        ]
+      ],
+      "assembly_position_m": [
+        -7.152557373046875e-06,
+        0.21000003814697266,
+        20.450267791748047
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_propulsion_frame",
+          "position_m": [
+            7e-06,
+            -0.21,
+            -6.450268
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        },
+        {
+          "name": "wing_port",
+          "connector": "cs_wing_port",
+          "position_m": [
+            -11.999993,
+            -0.21,
+            -6.450268
+          ],
+          "normal": [
+            -1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "jet_port",
+          "connector": "cs_jet",
+          "position_m": [
+            -8.299993,
+            -0.21,
+            7.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "rocket_port",
+          "connector": "cs_chemical_rocket",
+          "position_m": [
+            -4.299993,
+            -0.21,
+            7.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "radiator_port",
+          "connector": "cs_radiator",
+          "position_m": [
+            -4.399993,
+            3.89,
+            -0.450268
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "wing_starboard",
+          "connector": "cs_wing_starboard",
+          "position_m": [
+            12.000007,
+            -0.21,
+            -6.450268
+          ],
+          "normal": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "jet_starboard",
+          "connector": "cs_jet",
+          "position_m": [
+            8.300007,
+            -0.21,
+            7.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "rocket_starboard",
+          "connector": "cs_chemical_rocket",
+          "position_m": [
+            4.300007,
+            -0.21,
+            7.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "radiator_starboard",
+          "connector": "cs_radiator",
+          "position_m": [
+            4.400007,
+            3.89,
+            -0.450268
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        },
+        {
+          "name": "nuclear",
+          "connector": "cs_micropulse_drive",
+          "position_m": [
+            7e-06,
+            -0.21,
+            7.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "rcs_2",
+          "connector": "cs_rcs",
+          "position_m": [
+            -11.834993,
+            1.79,
+            3.749732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "rcs_3",
+          "connector": "cs_rcs",
+          "position_m": [
+            11.835007,
+            1.79,
+            3.749732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "generator",
+          "connector": "cs_auxiliary_generator",
+          "position_m": [
+            -2.999993,
+            -0.21,
+            -2.450268
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "torquer",
+          "connector": "cs_attitude_actuator",
+          "position_m": [
+            3.000007,
+            -0.21,
+            -2.450268
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        },
+        {
+          "name": "thermal_shield",
+          "connector": "cs_thermal_shield",
+          "position_m": [
+            7e-06,
+            -0.21,
+            1.549732
+          ],
+          "normal": [
+            0,
+            0,
+            1
+          ]
+        }
+      ],
+      "triangles": 10030,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_propulsion_frame"
+    },
+    {
+      "id": "wing-port",
+      "title": "Port lifting wing",
+      "category": "Structure",
+      "model": "models/common-sky/wing-port.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        182,
+        29,
+        330
+      ],
+      "bounds_m": [
+        [
+          -9.100000381469727,
+          -1.4136654138565063,
+          -16.5
+        ],
+        [
+          9.09999942779541,
+          1.4136654138565063,
+          16.5
+        ]
+      ],
+      "assembly_position_m": [
+        -20.899999618530273,
+        0.0,
+        12.5
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_wing_port",
+          "position_m": [
+            8.9,
+            0.0,
+            1.5
+          ],
+          "normal": [
+            1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "fin",
+          "connector": "cs_fin_port",
+          "position_m": [
+            -1.6,
+            0.4,
+            10.5
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 1356,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_wing_port"
+    },
+    {
+      "id": "wing-starboard",
+      "title": "Starboard lifting wing",
+      "category": "Structure",
+      "model": "models/common-sky/wing-starboard.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        182,
+        29,
+        330
+      ],
+      "bounds_m": [
+        [
+          -9.09999942779541,
+          -1.4136654138565063,
+          -16.5
+        ],
+        [
+          9.100000381469727,
+          1.4136654138565063,
+          16.5
+        ]
+      ],
+      "assembly_position_m": [
+        20.899999618530273,
+        0.0,
+        12.5
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_wing_starboard",
+          "position_m": [
+            -8.9,
+            0.0,
+            1.5
+          ],
+          "normal": [
+            -1,
+            0,
+            0
+          ]
+        },
+        {
+          "name": "fin",
+          "connector": "cs_fin_starboard",
+          "position_m": [
+            1.6,
+            0.4,
+            10.5
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 1356,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_wing_starboard"
+    },
+    {
+      "id": "jet",
+      "title": "09 Atmospheric jet",
+      "category": "Propulsion",
+      "model": "models/common-sky/jet.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        40,
+        40,
+        101
+      ],
+      "bounds_m": [
+        [
+          -1.9875001907348633,
+          -1.9874999523162842,
+          -5.040000915527344
+        ],
+        [
+          1.9875001907348633,
+          1.9874999523162842,
+          5.040000915527344
+        ]
+      ],
+      "assembly_position_m": [
+        -8.300000190734863,
+        0.0,
+        33.040000915527344
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_jet",
+          "position_m": [
+            0.0,
+            0.0,
+            -5.040001
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "triangles": 3496,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_jet"
+    },
+    {
+      "id": "chemical-rocket",
+      "title": "10 Chemical rocket",
+      "category": "Propulsion",
+      "model": "models/common-sky/chemical-rocket.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        30,
+        30,
+        81
+      ],
+      "bounds_m": [
+        [
+          -1.4875001907348633,
+          -1.4874999523162842,
+          -4.040000915527344
+        ],
+        [
+          1.4874999523162842,
+          1.4874999523162842,
+          4.040000915527344
+        ]
+      ],
+      "assembly_position_m": [
+        -4.299999713897705,
+        0.0,
+        33.040000915527344
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_chemical_rocket",
+          "position_m": [
+            -0.0,
+            0.0,
+            -5.040001
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "triangles": 4272,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Copper",
+        "CS / Refractory",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_chemical_rocket"
+    },
+    {
+      "id": "micropulse-drive",
+      "title": "11 Nuclear micropulse drive",
+      "category": "Propulsion",
+      "model": "models/common-sky/micropulse-drive.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        55,
+        55,
+        101
+      ],
+      "bounds_m": [
+        [
+          -2.736999988555908,
+          -2.736999988555908,
+          -5.040000915527344
+        ],
+        [
+          2.736999988555908,
+          2.736999988555908,
+          5.040000915527344
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        0.0,
+        33.040000915527344
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_micropulse_drive",
+          "position_m": [
+            0.0,
+            0.0,
+            -5.040001
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "triangles": 4992,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_micropulse_drive"
+    },
+    {
+      "id": "fin-port",
+      "title": "Port stabilizer",
+      "category": "Structure",
+      "model": "models/common-sky/fin-port.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        31,
+        69,
+        113
+      ],
+      "bounds_m": [
+        [
+          -1.5004806518554688,
+          -3.450000047683716,
+          -5.600000381469727
+        ],
+        [
+          1.5004806518554688,
+          3.450000047683716,
+          5.600000381469727
+        ]
+      ],
+      "assembly_position_m": [
+        -23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_fin_port",
+          "position_m": [
+            1.32048,
+            -3.45,
+            0.4
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 28,
+      "materials": [
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_fin_port"
+    },
+    {
+      "id": "fin-starboard",
+      "title": "Starboard stabilizer",
+      "category": "Structure",
+      "model": "models/common-sky/fin-starboard.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        31,
+        69,
+        113
+      ],
+      "bounds_m": [
+        [
+          -1.5004806518554688,
+          -3.450000047683716,
+          -5.600000381469727
+        ],
+        [
+          1.5004806518554688,
+          3.450000047683716,
+          5.600000381469727
+        ]
+      ],
+      "assembly_position_m": [
+        23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_fin_starboard",
+          "position_m": [
+            -1.32048,
+            -3.45,
+            0.4
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 28,
+      "materials": [
+        "CS / Seal",
+        "CS / Sky blue",
+        "CS / Solar gold"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_fin_starboard"
+    },
+    {
+      "id": "docking-collar",
+      "title": "12 Dorsal docking collar",
+      "category": "Docking",
+      "model": "models/common-sky/docking-collar.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        38,
+        6,
+        39
+      ],
+      "bounds_m": [
+        [
+          -1.899999976158142,
+          -0.26999998092651367,
+          -1.9000000953674316
+        ],
+        [
+          1.899999976158142,
+          0.26999998092651367,
+          1.9000000953674316
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        5.170000076293945,
+        -1.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_docking_collar",
+          "position_m": [
+            0.0,
+            -0.17,
+            0.0
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 2912,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Solar gold",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_docking_collar"
+    },
+    {
+      "id": "radiator",
+      "title": "13 Flush radiator cassette",
+      "category": "Thermal",
+      "model": "models/common-sky/radiator.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        24,
+        3,
+        53
+      ],
+      "bounds_m": [
+        [
+          -1.1500000953674316,
+          -0.14874982833862305,
+          -2.6000003814697266
+        ],
+        [
+          1.1500000953674316,
+          0.14875030517578125,
+          2.6000003814697266
+        ]
+      ],
+      "assembly_position_m": [
+        -4.400000095367432,
+        4.2387495040893555,
+        20.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_radiator",
+          "position_m": [
+            0.0,
+            -0.13875,
+            0.0
+          ],
+          "normal": [
+            0,
+            -1,
+            0
+          ]
+        }
+      ],
+      "triangles": 416,
+      "materials": [
+        "CS / Refractory",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_radiator"
+    },
+    {
+      "id": "rcs",
+      "title": "14 Manoeuvring thruster block",
+      "category": "Propulsion",
+      "model": "models/common-sky/rcs.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        7,
+        10,
+        16
+      ],
+      "bounds_m": [
+        [
+          -0.33500099182128906,
+          -0.5,
+          -0.7999992370605469
+        ],
+        [
+          0.33500003814697266,
+          0.5,
+          0.7999992370605469
+        ]
+      ],
+      "assembly_position_m": [
+        -8.735000610351562,
+        0.0,
+        -24.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_rcs",
+          "position_m": [
+            0.0,
+            0.0,
+            -0.8
+          ],
+          "normal": [
+            0,
+            0,
+            -1
+          ]
+        }
+      ],
+      "triangles": 700,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_rcs"
+    },
+    {
+      "id": "nose-gear",
+      "title": "15 Nose landing gear",
+      "category": "Structure",
+      "model": "models/common-sky/nose-gear.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        17,
+        53,
+        33
+      ],
+      "bounds_m": [
+        [
+          -0.8450008630752563,
+          -2.625,
+          -1.6499996185302734
+        ],
+        [
+          0.8450008630752563,
+          2.624999761581421,
+          1.6499996185302734
+        ]
+      ],
+      "assembly_position_m": [
+        0.0,
+        -5.774999618530273,
+        -29.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_nose_gear",
+          "position_m": [
+            0.0,
+            1.775,
+            0.0
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 2280,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_nose_gear"
+    },
+    {
+      "id": "main-gear",
+      "title": "16 Main landing gear",
+      "category": "Structure",
+      "model": "models/common-sky/main-gear.glb",
+      "model_scale": 1.0,
+      "dimensions_dm": [
+        17,
+        39,
+        37
+      ],
+      "bounds_m": [
+        [
+          -0.8449997901916504,
+          -1.9250001907348633,
+          -1.8499999046325684
+        ],
+        [
+          0.8449997901916504,
+          1.924999713897705,
+          1.8499999046325684
+        ]
+      ],
+      "assembly_position_m": [
+        -7.0,
+        -6.47499942779541,
+        4.0
+      ],
+      "nodes": [
+        {
+          "name": "mount",
+          "connector": "cs_main_gear",
+          "position_m": [
+            0.0,
+            1.374999,
+            0.0
+          ],
+          "normal": [
+            0,
+            1,
+            0
+          ]
+        }
+      ],
+      "triangles": 4328,
+      "materials": [
+        "CS / Ceramic white",
+        "CS / Refractory",
+        "CS / Titanium"
+      ],
+      "passenger_seats": 0,
+      "cargo_volume_m3": 0,
+      "runtime_prototype": "cs_main_gear"
+    }
+  ],
+  "instances": [
+    {
+      "part": "flight-deck",
+      "position_m": [
+        0.0,
+        0.0,
+        -30.999019622802734
+      ]
+    },
+    {
+      "part": "passenger-forward",
+      "position_m": [
+        0.0,
+        1.931911826133728,
+        -14.000792503356934
+      ]
+    },
+    {
+      "part": "passenger-aft",
+      "position_m": [
+        -0.005803585052490234,
+        1.920283555984497,
+        5.000169277191162
+      ]
+    },
+    {
+      "part": "cargo-keel",
+      "position_m": [
+        0.0,
+        -2.514388084411621,
+        -9.0
+      ]
+    },
+    {
+      "part": "service-keel",
+      "position_m": [
+        0.0,
+        -2.3998830318450928,
+        10.0
+      ]
+    },
+    {
+      "part": "propulsion-frame",
+      "position_m": [
+        -7.152557373046875e-06,
+        0.21000003814697266,
+        20.450267791748047
+      ]
+    },
+    {
+      "part": "wing-port",
+      "position_m": [
+        -20.899999618530273,
+        0.0,
+        12.5
+      ]
+    },
+    {
+      "part": "fin-port",
+      "position_m": [
+        -23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ]
+    },
+    {
+      "part": "jet",
+      "position_m": [
+        -8.300000190734863,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "part": "chemical-rocket",
+      "position_m": [
+        -4.299999713897705,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "part": "radiator",
+      "position_m": [
+        -4.400000095367432,
+        4.2387495040893555,
+        20.0
+      ]
+    },
+    {
+      "part": "main-gear",
+      "position_m": [
+        -7.0,
+        -6.47499942779541,
+        4.0
+      ]
+    },
+    {
+      "part": "wing-starboard",
+      "position_m": [
+        20.899999618530273,
+        0.0,
+        12.5
+      ]
+    },
+    {
+      "part": "fin-starboard",
+      "position_m": [
+        23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ]
+    },
+    {
+      "part": "jet",
+      "position_m": [
+        8.299999809265138,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "part": "chemical-rocket",
+      "position_m": [
+        4.300000286102295,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "part": "radiator",
+      "position_m": [
+        4.399999904632569,
+        4.2387495040893555,
+        20.0
+      ]
+    },
+    {
+      "part": "main-gear",
+      "position_m": [
+        7.0,
+        -6.47499942779541,
+        4.0
+      ]
+    },
+    {
+      "part": "micropulse-drive",
+      "position_m": [
+        0.0,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "part": "docking-collar",
+      "position_m": [
+        0.0,
+        5.170000076293945,
+        -1.0
+      ]
+    },
+    {
+      "part": "nose-gear",
+      "position_m": [
+        0.0,
+        -5.774999618530273,
+        -29.0
+      ]
+    },
+    {
+      "part": "rcs",
+      "position_m": [
+        -8.735000610351562,
+        0.0,
+        -24.0
+      ]
+    },
+    {
+      "part": "rcs",
+      "position_m": [
+        8.734999389648436,
+        0.0,
+        -24.0
+      ]
+    },
+    {
+      "part": "rcs",
+      "position_m": [
+        -11.835000610351562,
+        2.0,
+        25.0
+      ]
+    },
+    {
+      "part": "rcs",
+      "position_m": [
+        11.834999389648438,
+        2.0,
+        25.0
+      ]
+    }
+  ],
+  "runtime_blueprint": "ships/common-sky.ship",
+  "runtime_instances": [
+    {
+      "prototype": "cs_flight_deck",
+      "parent": 0,
+      "socket": "",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        0.0,
+        -30.999019622802734
+      ]
+    },
+    {
+      "prototype": "cs_passenger_forward",
+      "parent": 1,
+      "socket": "aft",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        1.931911826133728,
+        -14.000792503356934
+      ]
+    },
+    {
+      "prototype": "cs_passenger_aft",
+      "parent": 2,
+      "socket": "aft",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -0.005803585052490234,
+        1.920283555984497,
+        5.000169277191162
+      ]
+    },
+    {
+      "prototype": "cs_cargo_keel",
+      "parent": 2,
+      "socket": "keel",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        -2.514388084411621,
+        -9.0
+      ]
+    },
+    {
+      "prototype": "cs_service_keel",
+      "parent": 3,
+      "socket": "service",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        -2.3998830318450928,
+        10.0
+      ]
+    },
+    {
+      "prototype": "cs_propulsion_frame",
+      "parent": 3,
+      "socket": "aft",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -7.152557373046875e-06,
+        0.21000003814697266,
+        20.450267791748047
+      ]
+    },
+    {
+      "prototype": "cs_wing_port",
+      "parent": 6,
+      "socket": "wing_port",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -20.899999618530273,
+        0.0,
+        12.5
+      ]
+    },
+    {
+      "prototype": "cs_fin_port",
+      "parent": 7,
+      "socket": "fin",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ]
+    },
+    {
+      "prototype": "cs_jet",
+      "parent": 6,
+      "socket": "jet_port",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -8.300000190734863,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "prototype": "cs_chemical_rocket",
+      "parent": 6,
+      "socket": "rocket_port",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -4.299999713897705,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "prototype": "cs_radiator",
+      "parent": 6,
+      "socket": "radiator_port",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -4.400000095367432,
+        4.2387495040893555,
+        20.0
+      ]
+    },
+    {
+      "prototype": "cs_main_gear",
+      "parent": 4,
+      "socket": "gear_port",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -7.0,
+        -6.47499942779541,
+        4.0
+      ]
+    },
+    {
+      "prototype": "cs_wing_starboard",
+      "parent": 6,
+      "socket": "wing_starboard",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        20.899999618530273,
+        0.0,
+        12.5
+      ]
+    },
+    {
+      "prototype": "cs_fin_starboard",
+      "parent": 13,
+      "socket": "fin",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        23.820480346679688,
+        3.8500001430511475,
+        22.600000381469727
+      ]
+    },
+    {
+      "prototype": "cs_jet",
+      "parent": 6,
+      "socket": "jet_starboard",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        8.299999809265138,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "prototype": "cs_chemical_rocket",
+      "parent": 6,
+      "socket": "rocket_starboard",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        4.300000286102295,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "prototype": "cs_radiator",
+      "parent": 6,
+      "socket": "radiator_starboard",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        4.399999904632569,
+        4.2387495040893555,
+        20.0
+      ]
+    },
+    {
+      "prototype": "cs_main_gear",
+      "parent": 4,
+      "socket": "gear_starboard",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        7.0,
+        -6.47499942779541,
+        4.0
+      ]
+    },
+    {
+      "prototype": "cs_micropulse_drive",
+      "parent": 6,
+      "socket": "nuclear",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        0.0,
+        33.040000915527344
+      ]
+    },
+    {
+      "prototype": "cs_docking_collar",
+      "parent": 3,
+      "socket": "dock",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        5.170000076293945,
+        -1.0
+      ]
+    },
+    {
+      "prototype": "cs_nose_gear",
+      "parent": 1,
+      "socket": "gear",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0.0,
+        -5.774999618530273,
+        -29.0
+      ]
+    },
+    {
+      "prototype": "cs_rcs",
+      "parent": 1,
+      "socket": "rcs_0",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -8.735000610351562,
+        0.0,
+        -24.0
+      ]
+    },
+    {
+      "prototype": "cs_rcs",
+      "parent": 1,
+      "socket": "rcs_1",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        8.734999389648436,
+        0.0,
+        -24.0
+      ]
+    },
+    {
+      "prototype": "cs_rcs",
+      "parent": 6,
+      "socket": "rcs_2",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -11.835000610351562,
+        2.0,
+        25.0
+      ]
+    },
+    {
+      "prototype": "cs_rcs",
+      "parent": 6,
+      "socket": "rcs_3",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        11.834999389648438,
+        2.0,
+        25.0
+      ]
+    },
+    {
+      "prototype": "cs_auxiliary_generator",
+      "parent": 6,
+      "socket": "generator",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        -3,
+        0,
+        19
+      ]
+    },
+    {
+      "prototype": "cs_attitude_actuator",
+      "parent": 6,
+      "socket": "torquer",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        3,
+        0,
+        19
+      ]
+    },
+    {
+      "prototype": "cs_thermal_shield",
+      "parent": 6,
+      "socket": "thermal_shield",
+      "plug": "mount",
+      "roll": 0,
+      "position_m": [
+        0,
+        0,
+        23
+      ]
+    }
+  ]
+}

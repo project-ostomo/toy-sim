@@ -191,14 +191,12 @@ fn itinerary_draws_gate_transfer_and_slip_orders_with_destination_system_names()
                 name: "Sol".into(),
                 position: origin,
                 sovereignty: None,
-                population: 0,
             },
             NavigationSystem {
                 id: terminus,
                 name: "Terminus".into(),
                 position: destination,
                 sovereignty: None,
-                population: 0,
             },
         ],
         beacons: vec![

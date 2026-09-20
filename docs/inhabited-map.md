@@ -55,12 +55,6 @@ that wants to stop a ship must physically guard or disable its infrastructure.
 Ordinary gate geometry, speed, and exclusion rules apply independently of the
 political map.
 
-Settlement populations use independent BLAKE3-derived ChaCha20 streams. The USE's
-older industrial core has substantially larger populations than most outer
-settlements. The values are simulation parameters, not measurements from the star
-survey. Sol begins with 36 billion inhabitants across its planetary and orbital
-settlements.
-
 ## Organizations and physical populations
 
 The starting world includes 108 organizations with authored histories, cultures,

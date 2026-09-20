@@ -7,6 +7,13 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
     let player = Id::new();
     let mut app = crate::sim::provision(&[player], None, None).unwrap();
     let world = app.world_mut();
+    let sol = registry::system_identity("Sol");
+    assert!(
+        world
+            .query_filtered::<&infrastructure::Landmark, With<travel::Gate>>()
+            .iter(world)
+            .all(|landmark| landmark.system != sol)
+    );
     let neris = find_neris(world).unwrap();
     let neris_id = world.get::<identity::Identity>(neris).unwrap().0;
     let neris_access = world
@@ -30,6 +37,7 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
         .collect::<Vec<_>>();
     assert_eq!(records.len(), organizations::catalogue().len());
     assert_eq!(records.len(), 108);
+    assert!(records.iter().any(|record| record.home_system == sol));
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let mut groups = BTreeSet::new();
     let mut assets = BTreeSet::new();

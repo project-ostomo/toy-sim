@@ -2,7 +2,7 @@ use anyhow::{Result, ensure};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::{NavigationBeacon, NavigationCatalogue, NavigationSnapshot};
 
-const ASSET_VERSION: u16 = 1;
+const ASSET_VERSION: u16 = 2;
 pub const MAX_CATALOGUE_BYTES: usize = 32 * 1024 * 1024;
 
 fn valid_beacon(beacon: &NavigationBeacon) -> bool {
@@ -122,7 +122,6 @@ mod tests {
                 name: "Home system".into(),
                 position: GalacticPosition::ZERO,
                 sovereignty: Some(Id([2; 16])),
-                population: 15_000_000_000,
             }],
             beacons: [3, 4]
                 .into_iter()
@@ -148,7 +147,7 @@ mod tests {
         trailing.push(0);
         assert!(decode_catalogue(&trailing).is_err());
         let mut future = bytes;
-        future[0] = 2;
+        future[0] = u16::MAX as u8;
         assert!(decode_catalogue(&future).is_err());
 
         catalogue.beacons[1].gate_exit = None;

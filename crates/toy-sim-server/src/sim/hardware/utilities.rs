@@ -170,8 +170,18 @@ pub fn run(
                         .max(0.)
                         .min(capacity as f64);
                     let wanted = people * supplies_kg_per_person_s * dt * fraction;
-                    let supplied =
-                        consume(&mut h.inventory.0, &cat.0, "life_support_supplies", wanted);
+                    let supplied = cat
+                        .0
+                        .resources
+                        .iter()
+                        .enumerate()
+                        .find(|(_, resource)| resource.id == "life_support_supplies")
+                        .map_or(0.0, |(index, resource)| {
+                            let available = h.inventory.0.available(index) * resource.mass_kg;
+                            let supplied = wanted.min(available);
+                            h.inventory.0.consume(index, supplied / resource.mass_kg);
+                            supplied
+                        });
                     supported += if wanted > 0. {
                         people * fraction * supplied / wanted
                     } else {
@@ -485,6 +495,62 @@ mod tests {
         assert_eq!(
             fixture.app.world().get::<Hull>(fixture.ship).unwrap().0,
             hull + 0.5
+        );
+    }
+
+    #[test]
+    fn life_support_remains_continuous_between_discrete_supply_withdrawals() {
+        let mut fixture = HardwareFixture::standard();
+        add(
+            &mut fixture,
+            UtilityDef::LifeSupport {
+                capacity: 350,
+                power_w: 100.0,
+                supplies_kg_per_person_s: 0.00003,
+            },
+        );
+        let supplies = fixture
+            .app
+            .world()
+            .resource::<ShipCatalogue>()
+            .0
+            .resources
+            .iter()
+            .position(|resource| resource.id == "life_support_supplies")
+            .unwrap();
+        fixture
+            .app
+            .world_mut()
+            .get_mut::<Crew>(fixture.ship)
+            .unwrap()
+            .people = 350;
+        fixture.set_inventory(|inventory| {
+            inventory.energy_j = 100000000;
+            inventory.quantities[supplies] = 100;
+        });
+
+        for _ in 0..20 {
+            step(&mut fixture);
+            assert_eq!(
+                fixture
+                    .app
+                    .world()
+                    .get::<Crew>(fixture.ship)
+                    .unwrap()
+                    .support_fraction,
+                1.0
+            );
+        }
+        fixture.set_inventory(|inventory| inventory.quantities[supplies] = 0);
+        step(&mut fixture);
+        assert_eq!(
+            fixture
+                .app
+                .world()
+                .get::<Crew>(fixture.ship)
+                .unwrap()
+                .support_fraction,
+            0.0
         );
     }
     #[test]

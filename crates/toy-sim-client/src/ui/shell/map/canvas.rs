@@ -160,10 +160,7 @@ pub(super) fn draw(
             {
                 ui.label(&sovereignty.name);
             }
-            ui.weak(format!(
-                "Population {} · Click to select · Double-click to focus",
-                population(system.population)
-            ));
+            ui.weak("Click to select · Double-click to focus");
         });
     }
     let radius = (2.0 + state.camera.scale.sqrt() as f32 * 0.25).clamp(2., 5.);

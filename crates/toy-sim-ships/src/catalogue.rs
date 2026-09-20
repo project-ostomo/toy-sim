@@ -433,8 +433,12 @@ pub struct Catalogue {
 }
 impl Catalogue {
     pub fn builtin() -> Self {
-        let c: Self =
+        let mut c: Self =
             toml::from_str(include_str!("../data/catalogue.toml")).expect("bundled part catalogue");
+        let common_sky: Self = toml::from_str(include_str!("../data/common-sky.toml"))
+            .expect("Common Sky part catalogue");
+        c.resources.extend(common_sky.resources);
+        c.parts.extend(common_sky.parts);
         c.validate().expect("invalid bundled catalogue");
         c
     }

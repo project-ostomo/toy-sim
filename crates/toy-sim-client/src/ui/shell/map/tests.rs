@@ -21,7 +21,6 @@ fn catalogue() -> NavigationCatalogue {
             name: format!("System {index}"),
             position,
             sovereignty: Some(id(5000 + index % 3)),
-            population: 1_000_000,
         });
         for next in [
             index.checked_sub(1),
@@ -166,7 +165,6 @@ fn empty_and_single_system_maps_have_finite_bounds() {
         name: "Isolated".into(),
         position: GalacticPosition::from_meters(glam::DVec3::splat(1e20)),
         sovereignty: None,
-        population: 0,
     });
     catalogue.topology_revision += 1;
     cache.update(&catalogue);

@@ -48,7 +48,7 @@ pub fn populate(world: &mut World) -> Result<()> {
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let designs = designs::Designs::new(&catalogue)?;
     let tick = world.resource::<SimulationCounters>().ticks;
-    let anchors = anchors(world);
+    let anchors = anchors(world)?;
     let neris = find_neris(world);
     let neris_frame = neris.map(|entity| frame(world, entity)).transpose()?;
     let mut home_counts = BTreeMap::<Id, usize>::new();
@@ -78,7 +78,7 @@ pub fn populate(world: &mut World) -> Result<()> {
         let account_entity = register_officer(world, officer, organization, profile);
         let origin = anchors
             .get(&home)
-            .context("NPC home system has no physical gate")?;
+            .context("NPC home system has no spawn anchor")?;
         let offset = DVec3::new(
             40_000.0 + (local_slot % 6) as f64 * 30_000.0,
             40_000.0 + (local_slot / 6) as f64 * 30_000.0,
@@ -496,7 +496,7 @@ fn stock_facility(
     Ok(())
 }
 
-fn anchors(world: &mut World) -> BTreeMap<Id, (PreciseTransform, DVec3)> {
+fn anchors(world: &mut World) -> Result<BTreeMap<Id, (PreciseTransform, DVec3)>> {
     let mut gates = world
         .query_filtered::<(
             &identity::Identity,
@@ -513,7 +513,41 @@ fn anchors(world: &mut World) -> BTreeMap<Id, (PreciseTransform, DVec3)> {
     for (_, system, pose, velocity) in gates {
         result.entry(system).or_insert((pose, velocity));
     }
-    result
+    let universe = world.resource::<crate::sim::orrery::Universe>();
+    let epoch = crate::sim::physics::sim_time(world.resource::<Time<Fixed>>());
+    for profile in organizations::catalogue() {
+        let home = registry::system_identity(&profile.home_system);
+        if result.contains_key(&home) {
+            continue;
+        }
+        let system = universe
+            .systems
+            .iter()
+            .find(|system| system.solver.name.as_str() == profile.home_system)
+            .with_context(|| format!("unknown NPC home system: {}", profile.home_system))?;
+        let (reference, radius) = infrastructure::gate_reference(system);
+        let body = universe
+            .get_body(reference)
+            .context("NPC orbital reference missing")?;
+        let centre = universe
+            .solve_position(reference, epoch)
+            .context("NPC orbital reference position unavailable")?;
+        let velocity = universe
+            .solve_velocity(reference, epoch)
+            .context("NPC orbital reference velocity unavailable")?;
+        let speed = (crate::sim::physics::GRAVITATIONAL_CONSTANT * body.mass / radius).sqrt();
+        result.insert(
+            home,
+            (
+                PreciseTransform {
+                    translation_um: centre.offset_by(DVec3::X * radius),
+                    ..Default::default()
+                },
+                velocity + DVec3::Y * speed,
+            ),
+        );
+    }
+    Ok(result)
 }
 
 fn find_neris(world: &mut World) -> Option<Entity> {

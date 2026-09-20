@@ -814,20 +814,19 @@ mod tests {
                 pending.extend(neighbors[&system].iter().map(|gate| gate.destination));
             }
         }
-        assert!(!reachable.contains(&registry::system_identity("Sol system")));
+        assert!(!reachable.contains(&registry::system_identity("Sol")));
         for system in &catalogue.systems {
             let mouths: Vec<_> = catalogue
                 .beacons
                 .iter()
                 .filter(|b| b.system == system.id && b.gate_exit.is_some())
                 .collect();
-            if system.id == registry::system_identity("Sol system") {
+            if system.id == registry::system_identity("Sol") {
                 assert!(mouths.is_empty());
             } else {
                 assert!(mouths.len() <= 6);
             }
             assert!(system.sovereignty.is_some());
-            assert!(system.population > 0);
             for pair in mouths.windows(2) {
                 assert!(
                     pair[0]
