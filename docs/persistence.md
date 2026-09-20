@@ -160,7 +160,7 @@ grant access to its assets.
 
 ## Universe definition changes
 
-The current named `world` section has version 10. SQLite’s table schema and the
+The current named `world` section has version 11. SQLite’s table schema and the
 outer checkpoint container retain their existing format. Earlier world sections
 are rejected before ECS state is replaced; there is no automatic migration or
 creation of a replacement database.

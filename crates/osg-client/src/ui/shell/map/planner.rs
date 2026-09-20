@@ -280,6 +280,15 @@ pub(super) fn draw(
 
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{}  {}", index + 1, &stage.label));
+                    if matches!(stage.action, travel::Order::Slip { .. }) {
+                        ui.colored_label(
+                            crate::ui::travel_risk::color(stage.estimated_loss_ppm),
+                            stage.estimated_loss_ppm.map_or_else(
+                                || "risk unknown".into(),
+                                |loss| format!("{loss:.2} ppm"),
+                            ),
+                        );
+                    }
                     ui.monospace(instruments::eta_label(stage, arrival, plan.planned_tick));
                 });
             }

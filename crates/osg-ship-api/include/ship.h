@@ -16,7 +16,7 @@ extern "C" {
 #else
 #define SHIP_IMPORT(name)
 #endif
-#define SHIP_API_VERSION (33)
+#define SHIP_API_VERSION (34)
 #define SHIP_ERR_BUFFER (-2)
 #define SHIP_ERR_ARGUMENT (-3)
 #define SHIP_ERR_UNAVAILABLE (-4)
@@ -1074,6 +1074,8 @@ typedef struct {
     uint64_t duration_ticks;
     uint64_t propellant_present;
     double propellant_kg;
+    uint64_t loss_present;
+    double loss_ppm;
 } ship_queued_order_record;
 SHIP_ASSERT(offsetof(ship_queued_order_record, label) == 0, "QueuedOrder.label");
 SHIP_ASSERT(offsetof(ship_queued_order_record, action) == 264, "QueuedOrder.action");
@@ -1082,7 +1084,9 @@ SHIP_ASSERT(offsetof(ship_queued_order_record, duration_present) == 608, "Queued
 SHIP_ASSERT(offsetof(ship_queued_order_record, duration_ticks) == 616, "QueuedOrder.duration_ticks");
 SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_present) == 624, "QueuedOrder.propellant_present");
 SHIP_ASSERT(offsetof(ship_queued_order_record, propellant_kg) == 632, "QueuedOrder.propellant_kg");
-SHIP_ASSERT(sizeof(ship_queued_order_record) == 640, "QueuedOrder size");
+SHIP_ASSERT(offsetof(ship_queued_order_record, loss_present) == 640, "QueuedOrder.loss_present");
+SHIP_ASSERT(offsetof(ship_queued_order_record, loss_ppm) == 648, "QueuedOrder.loss_ppm");
+SHIP_ASSERT(sizeof(ship_queued_order_record) == 656, "QueuedOrder size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_queued_order_record) == 8, "QueuedOrder alignment");
 typedef struct {
     double fuel_fraction;
@@ -1184,13 +1188,13 @@ SHIP_ASSERT(offsetof(ship_travel_reply_record, revision) == 32, "TravelReply.rev
 SHIP_ASSERT(offsetof(ship_travel_reply_record, index) == 40, "TravelReply.index");
 SHIP_ASSERT(offsetof(ship_travel_reply_record, order_present) == 48, "TravelReply.order_present");
 SHIP_ASSERT(offsetof(ship_travel_reply_record, order) == 56, "TravelReply.order");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, status) == 696, "TravelReply.status");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, reason) == 704, "TravelReply.reason");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_present) == 968, "TravelReply.arrival_present");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_tick) == 976, "TravelReply.arrival_tick");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, pose) == 984, "TravelReply.pose");
-SHIP_ASSERT(offsetof(ship_travel_reply_record, slip_ready) == 1112, "TravelReply.slip_ready");
-SHIP_ASSERT(sizeof(ship_travel_reply_record) == 1120, "TravelReply size");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, status) == 712, "TravelReply.status");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, reason) == 720, "TravelReply.reason");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_present) == 984, "TravelReply.arrival_present");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, arrival_tick) == 992, "TravelReply.arrival_tick");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, pose) == 1000, "TravelReply.pose");
+SHIP_ASSERT(offsetof(ship_travel_reply_record, slip_ready) == 1128, "TravelReply.slip_ready");
+SHIP_ASSERT(sizeof(ship_travel_reply_record) == 1136, "TravelReply size");
 SHIP_ASSERT(SHIP_ALIGNOF(ship_travel_reply_record) == 8, "TravelReply alignment");
 typedef struct {
     uint64_t id;

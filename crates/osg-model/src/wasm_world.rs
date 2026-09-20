@@ -276,6 +276,8 @@ impl From<&travel::QueuedOrder> for abi::QueuedOrder {
             duration_ticks: value.estimated_duration_ticks.unwrap_or_default(),
             propellant_present: value.estimated_propellant_kg.is_some() as u64,
             propellant_kg: value.estimated_propellant_kg.unwrap_or_default(),
+            loss_present: value.estimated_loss_ppm.is_some() as u64,
+            loss_ppm: value.estimated_loss_ppm.unwrap_or_default(),
         }
     }
 }
@@ -292,6 +294,7 @@ impl TryFrom<&abi::QueuedOrder> for travel::QueuedOrder {
             },
             estimated_duration_ticks: optional(value.duration_present, value.duration_ticks)?,
             estimated_propellant_kg: optional(value.propellant_present, value.propellant_kg)?,
+            estimated_loss_ppm: optional(value.loss_present, value.loss_ppm)?,
         })
     }
 }
@@ -1037,6 +1040,7 @@ mod tests {
                     action,
                     estimated_duration_ticks: Some(0),
                     estimated_propellant_kg: None,
+                    estimated_loss_ppm: Some(12.5),
                 },
                 travel::Order::Slip {
                     destination: travel::Destination::Galactic(position),

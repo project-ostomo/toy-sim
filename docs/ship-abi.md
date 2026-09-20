@@ -1,4 +1,4 @@
-# Ship controller ABI (version 33)
+# Ship controller ABI (version 34)
 
 A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v32`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
 
@@ -60,7 +60,7 @@ Programs must use the persistent store for state that must survive a restart.
 
 Travel preferences and propulsion fuel estimates are shared model values.
 `QueuedOrder` contains a producer-supplied `label` (at most 256 UTF-8 bytes), an `action`, optional `estimated_duration_ticks` and
-optional `estimated_propellant_kg`. The server computes the full `FuelBudget`;
+optional `estimated_propellant_kg`, plus an optional `estimated_loss_ppm` for each slip leg. The server computes the full `FuelBudget`;
 the flight program reports only the active command's remaining time and
 propellant. `CompleteOrder` advances the server's cursor.
 
@@ -98,7 +98,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 - Every import comes from module `ship_v32` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 33; end`, allowing the host to verify the ABI without running guest code.
+- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 34; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 

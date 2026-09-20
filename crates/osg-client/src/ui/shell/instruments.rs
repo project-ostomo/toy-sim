@@ -101,7 +101,9 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{}  {}", index + 1, order.label)).color(
-                            if index == ship.travel.order {
+                            if matches!(order.action, travel::Order::Slip { .. }) {
+                                crate::ui::travel_risk::color(order.estimated_loss_ppm)
+                            } else if index == ship.travel.order {
                                 ACCENT
                             } else {
                                 MUTED
@@ -205,7 +207,7 @@ pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::TravelState, now: u64
     for (index, order) in remaining.iter().enumerate() {
         let current = index == 0;
         let color = match &order.action {
-            travel::Order::Slip { .. } => ACCENT,
+            travel::Order::Slip { .. } => crate::ui::travel_risk::color(order.estimated_loss_ppm),
             _ if current => TEXT,
             _ => MUTED,
         };
@@ -225,7 +227,13 @@ pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::TravelState, now: u64
             ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
 
             let name = format!("{}  {}", state.order + index + 1, order.label);
-            ui.label(egui::RichText::new(name).size(12.).color(color));
+            let response = ui.label(egui::RichText::new(name).size(12.).color(color));
+            if matches!(order.action, travel::Order::Slip { .. }) {
+                response.on_hover_text(order.estimated_loss_ppm.map_or_else(
+                    || "Failure probability unknown".into(),
+                    |loss| format!("Estimated failure probability: {loss:.2} ppm"),
+                ));
+            }
             ui.label(
                 egui::RichText::new(eta_label(order, arrivals[index], now))
                     .monospace()

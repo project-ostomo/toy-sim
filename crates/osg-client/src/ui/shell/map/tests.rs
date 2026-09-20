@@ -57,7 +57,16 @@ pub(super) fn model<'a>(
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: catalogue,
-        inhabited: Default::default(),
+        inhabited: std::sync::Arc::new(osg_model::InhabitedDirectory {
+            systems: catalogue
+                .systems
+                .iter()
+                .map(|system| system.id)
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        }),
         society,
         ships: ship.into_iter().collect(),
         rows: Vec::new(),
@@ -134,14 +143,75 @@ fn empty_and_single_system_maps_have_finite_bounds() {
 }
 
 #[test]
+fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared() {
+    let catalogue = catalogue();
+    let society = ownership::SocietySnapshot::default();
+    let mut ship = crate::ui::tests::ship(id(9000)).0;
+    let mut leg: travel::QueuedOrder = travel::Order::Slip {
+        destination: travel::Destination::Galactic(catalogue.systems[2].position),
+        speed_ly_s: 0.01,
+        navigation_beacon: None,
+    }
+    .into();
+    leg.estimated_loss_ppm = Some(1_234.0);
+    ship.travel.orders.push(leg);
+    let inhabited = std::sync::Arc::new(osg_model::InhabitedDirectory {
+        systems: vec![id(1)],
+        ..Default::default()
+    });
+    let context = egui::Context::default();
+    let mut state = State {
+        search: "System".into(),
+        ..Default::default()
+    };
+    for cleared in [false, true] {
+        if cleared {
+            ship.travel.orders.clear();
+        }
+        let mut model = model(&catalogue, &society, Some(&ship));
+        model.inhabited = inhabited.clone();
+        let mut output = context.run_ui(egui::RawInput::default(), |ui| {
+            draw(ui, &mut state, &model, &mut Vec::new());
+        });
+        output.textures_delta.clear();
+        let expected: BTreeSet<_> = if cleared {
+            [0, 1].into()
+        } else {
+            [0, 1, 2].into()
+        };
+        assert_eq!(state.browser_systems, expected);
+        assert_eq!(
+            state
+                .search_results
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        if !cleared {
+            assert_eq!(state.active.slips, [(0, 2, Some(1_234.0))]);
+        }
+    }
+}
+
+#[test]
 fn search_and_active_slip_route_keep_all_systems_accessible() {
     let catalogue = catalogue();
     let mut cache = Cache::default();
     cache.update(&catalogue);
-    assert_eq!(cache.search(&catalogue, " SYSTEM 2999 ", None), [2999]);
-    assert_eq!(cache.search(&catalogue, "System", None).len(), 3000);
+    let visible = (0..catalogue.systems.len()).collect();
     assert_eq!(
-        cache.search(&catalogue, "System", Some(id(5000))).len(),
+        cache.search(&catalogue, " SYSTEM 2999 ", None, &visible),
+        [2999]
+    );
+    assert_eq!(
+        cache.search(&catalogue, "System", None, &visible).len(),
+        3000
+    );
+    assert_eq!(
+        cache
+            .search(&catalogue, "System", Some(id(5000)), &visible)
+            .len(),
         1000
     );
     let orders: Vec<travel::QueuedOrder> = vec![
@@ -155,11 +225,11 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
     ];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(1, 2999)]);
+    assert_eq!(active.slips, [(1, 2999, None)]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
-    assert_eq!(active.slips, [(1, 2999)]);
+    assert_eq!(active.slips, [(1, 2999, None)]);
 }
 
 #[test]
@@ -195,7 +265,7 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
             }
             .into()],
         );
-        assert_eq!(active.slips, [(0, 2999)]);
+        assert_eq!(active.slips, [(0, 2999, None)]);
         assert_eq!(active.systems, BTreeSet::from([0, 2999]));
     }
 }
@@ -221,7 +291,7 @@ fn celestial_slip_route_resolves_without_ephemeris_download() {
     .into()];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 2999)]);
+    assert_eq!(active.slips, [(0, 2999, None)]);
 }
 
 #[test]

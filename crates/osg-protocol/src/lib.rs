@@ -10,7 +10,7 @@ use osg_model::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u16 = 37;
+pub const VERSION: u16 = 38;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -253,6 +253,12 @@ pub fn validate_order(order: &travel::Order) -> Result<()> {
 }
 
 pub fn validate_queued_order(order: &travel::QueuedOrder) -> Result<()> {
+    ensure!(
+        order
+            .estimated_loss_ppm
+            .is_none_or(|loss| loss.is_finite() && (0.0..=1_000_000.0).contains(&loss)),
+        "invalid waypoint failure probability"
+    );
     ensure!(
         !order.label.trim().is_empty() && order.label.len() <= 256,
         "invalid waypoint label"

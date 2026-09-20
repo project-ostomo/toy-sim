@@ -6,6 +6,7 @@ mod scene;
 mod selection;
 mod shell;
 mod standing;
+mod travel_risk;
 
 use crate::{Endpoint, state};
 use bevy::prelude::*;

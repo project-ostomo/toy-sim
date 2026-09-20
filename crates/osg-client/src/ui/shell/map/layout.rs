@@ -87,13 +87,16 @@ impl Cache {
     }
 }
 impl Cache {
-    pub fn update_inhabited(&mut self, directory: &std::sync::Arc<osg_model::InhabitedDirectory>) {
+    pub fn update_inhabited(
+        &mut self,
+        directory: &std::sync::Arc<osg_model::InhabitedDirectory>,
+    ) -> bool {
         if self
             .inhabited
             .as_ref()
             .is_some_and(|previous| std::sync::Arc::ptr_eq(previous, directory))
         {
-            return;
+            return false;
         }
         let indices = directory
             .systems
@@ -102,6 +105,7 @@ impl Cache {
             .collect();
         self.inhabited_tree = spatial::Tree::from_indices(&self.positions, indices);
         self.inhabited = Some(directory.clone());
+        true
     }
 
     pub fn nearest(
@@ -122,17 +126,17 @@ impl Cache {
         catalogue: &NavigationCatalogue,
         text: &str,
         sovereignty: Option<Id>,
+        visible: &BTreeSet<usize>,
     ) -> Vec<usize> {
         let text = text.trim().to_lowercase();
-        let mut matches: Vec<_> = catalogue
-            .systems
+        let mut matches: Vec<_> = visible
             .iter()
-            .enumerate()
-            .filter(|(index, system)| {
-                self.names[*index].contains(&text)
+            .copied()
+            .filter(|&index| {
+                let system = &catalogue.systems[index];
+                self.names[index].contains(&text)
                     && sovereignty.is_none_or(|id| system.sovereignty == Some(id))
             })
-            .map(|(index, _)| index)
             .collect();
         matches.sort_unstable_by(|&a, &b| {
             self.names[a]
@@ -206,9 +210,9 @@ impl Cache {
 #[derive(Default)]
 pub(super) struct ActiveRoute {
     origin: Option<Id>,
-    actions: Vec<travel::Order>,
+    orders: Vec<travel::QueuedOrder>,
     pub systems: BTreeSet<usize>,
-    pub slips: Vec<(usize, usize)>,
+    pub slips: Vec<(usize, usize, Option<f64>)>,
     pub stops: Vec<(usize, usize)>,
 }
 
@@ -219,22 +223,18 @@ impl ActiveRoute {
         catalogue: &NavigationCatalogue,
         origin: Option<Id>,
         orders: &[travel::QueuedOrder],
-    ) {
-        if self.origin == origin
-            && self
-                .actions
-                .iter()
-                .eq(orders.iter().map(|stage| &stage.action))
-        {
-            return;
+    ) -> bool {
+        if self.origin == origin && self.orders == orders {
+            return false;
         }
         self.origin = origin;
-        self.actions = orders.iter().map(|stage| stage.action.clone()).collect();
+        self.orders = orders.to_vec();
         self.systems.clear();
         self.slips.clear();
         self.stops.clear();
         let mut cursor = origin;
-        for (order_index, action) in self.actions.iter().enumerate() {
+        for (order_index, stage) in self.orders.iter().enumerate() {
+            let action = &stage.action;
             let next = cache.order_system(catalogue, action);
             if let Some(&system_index) = next.and_then(|id| cache.systems.get(&id)) {
                 if self
@@ -251,10 +251,11 @@ impl ActiveRoute {
             {
                 self.systems.extend([a, b]);
                 if matches!(action, travel::Order::Slip { .. }) && a != b {
-                    self.slips.push((a, b));
+                    self.slips.push((a, b, stage.estimated_loss_ppm));
                 }
             }
             cursor = next.or(cursor);
         }
+        true
     }
 }

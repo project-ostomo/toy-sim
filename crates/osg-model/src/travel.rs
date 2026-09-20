@@ -125,6 +125,7 @@ pub struct QueuedOrder {
     pub action: Order,
     pub estimated_duration_ticks: Option<u64>,
     pub estimated_propellant_kg: Option<f64>,
+    pub estimated_loss_ppm: Option<f64>,
 }
 
 impl From<Order> for QueuedOrder {
@@ -140,6 +141,7 @@ impl From<Order> for QueuedOrder {
             action,
             estimated_duration_ticks: None,
             estimated_propellant_kg,
+            estimated_loss_ppm: None,
         }
     }
 }
@@ -161,6 +163,7 @@ impl QueuedOrder {
             transfer_cost: Default::default(),
             action,
             estimated_propellant_kg: None,
+            estimated_loss_ppm: None,
             estimated_duration_ticks: (seconds.is_finite() && seconds >= 0.)
                 .then(|| (seconds * 10.).ceil() as u64),
         }

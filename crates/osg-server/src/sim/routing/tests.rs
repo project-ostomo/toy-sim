@@ -230,6 +230,14 @@ fn intermediate_captures_share_the_whole_risk_budget() {
             >= 2
     );
     assert!(plan.estimated_loss_ppm <= request.preferences.max_loss_ppm + 1e-6);
+    let combined = slip::ppm_from_log_loss(
+        plan.orders
+            .iter()
+            .filter(|order| matches!(order.action, Order::Slip { .. }))
+            .map(|order| slip::log_loss_from_ppm(order.estimated_loss_ppm.unwrap()))
+            .sum(),
+    );
+    assert!((combined - plan.estimated_loss_ppm).abs() < 1e-6);
 }
 
 #[test]

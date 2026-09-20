@@ -148,6 +148,11 @@ fn draw(
                                 .map(|(c, p)| (c.0.entity, p.0.clone()))
                         },
                     ),
+                    if matches!(order.action, travel::Order::Slip { .. }) {
+                        crate::ui::travel_risk::color(order.estimated_loss_ppm)
+                    } else {
+                        ROUTE_COLOR
+                    },
                 )
             })
             .collect();
@@ -157,7 +162,7 @@ fn draw(
         let label_bounds = rect.intersect(osg_ui::desktop::workspace_in(ctx));
 
         let mut previous = Some(origin);
-        for (_, waypoint) in &queue {
+        for (_, waypoint, color) in &queue {
             if let Some(waypoint) = waypoint {
                 if let Some(line) = previous.and_then(|previous| {
                     projection.segment(
@@ -167,7 +172,7 @@ fn draw(
                 }) {
                     painter.extend(egui::Shape::dotted_line(
                         &line,
-                        ROUTE_COLOR.gamma_multiply(0.65),
+                        color.gamma_multiply(0.65),
                         8.,
                         1.2,
                     ));
@@ -177,9 +182,12 @@ fn draw(
         }
 
         let mut labels: Vec<egui::Pos2> = Vec::new();
-        for (index, waypoint) in queue.into_iter().filter_map(|(i, w)| w.map(|w| (i, w))) {
+        for (index, waypoint, color) in queue
+            .into_iter()
+            .filter_map(|(i, w, color)| w.map(|w| (i, w, color)))
+        {
             let (point, offscreen) = projection.marker(waypoint.position.relative_to(view.origin));
-            marker(&painter, point, ROUTE_COLOR);
+            marker(&painter, point, color);
             let mut text_point = point;
             while labels
                 .iter()
@@ -191,7 +199,7 @@ fn draw(
             if text_point != point {
                 painter.line_segment(
                     [point, text_point],
-                    egui::Stroke::new(0.5, ROUTE_COLOR.gamma_multiply(0.5)),
+                    egui::Stroke::new(0.5, color.gamma_multiply(0.5)),
                 );
             }
             label(
@@ -205,7 +213,7 @@ fn draw(
                     waypoint.name,
                     distance(waypoint.position.relative_to(origin).length())
                 ),
-                ROUTE_COLOR,
+                color,
             );
             select(ctx, &mut selected, point, waypoint.target, view.view);
         }

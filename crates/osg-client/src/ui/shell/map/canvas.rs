@@ -14,9 +14,13 @@ pub(super) fn draw(
         egui::Sense::click_and_drag(),
     );
     if state.camera.scale == 0. || fit {
-        state
-            .camera
-            .fit(state.cache.positions.iter().copied(), rect);
+        state.camera.fit(
+            state
+                .browser_systems
+                .iter()
+                .map(|&index| state.cache.positions[index]),
+            rect,
+        );
     }
     if fit_route {
         let route = if state.route.plan().is_some() {
@@ -42,11 +46,7 @@ pub(super) fn draw(
     let selected = state.selected.or(origin);
     let mut highlighted = state.active.systems.clone();
     highlighted.extend(state.suggested.systems.iter().copied());
-    let tree = if state.inhabited_only {
-        &state.cache.inhabited_tree
-    } else {
-        &state.cache.tree
-    };
+    let tree = &state.cache.inhabited_tree;
     let mut samples = tree.visible(&state.cache.positions, &state.camera, rect);
     samples.extend(highlighted.iter().copied());
     samples.extend(
@@ -88,17 +88,16 @@ pub(super) fn draw(
                     .sovereignty
                     .is_none_or(|id| system.sovereignty == Some(id))
                     && (search.is_empty() || state.cache.names[index].contains(&search))
-                    && (!state.inhabited_only
-                        || model.inhabited.systems.binary_search(&system.id).is_ok()),
+                    && state.browser_systems.contains(&index),
             )
         })
         .collect();
-    for &(a, b) in state.active.slips.iter().chain(&state.suggested.slips) {
+    for &(a, b, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
         let (a, b) = (positions[&a], positions[&b]);
         if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
             continue;
         }
-        let color = egui::Color32::from_rgb(221, 135, 240);
+        let color = crate::ui::travel_risk::color(loss);
         let (a, b) = clip_segment(rect, a, b);
         painter.add(egui::Shape::dashed_line(
             &[a, b],
@@ -109,7 +108,10 @@ pub(super) fn draw(
         painter.text(
             a.lerp(b, 0.5),
             egui::Align2::CENTER_BOTTOM,
-            "SLIP",
+            loss.map_or_else(
+                || "SLIP · risk unknown".into(),
+                |loss| format!("SLIP · {loss:.2} ppm"),
+            ),
             egui::FontId::monospace(10.),
             color,
         );
@@ -304,10 +306,20 @@ pub(super) fn legend(ui: &mut egui::Ui) {
         ] {
             ui.colored_label(polity_color(Some(bloc)), format!("● {label}"));
         }
-        ui.colored_label(egui::Color32::from_rgb(255, 199, 98), "Queued route");
-        ui.colored_label(egui::Color32::from_rgb(221, 135, 240), "Slip");
         ui.weak("◎ Inhabited");
         ui.weak("Right-drag rotate · Middle-drag / Shift+right-drag pan · Scroll zoom · Double-click focus");
+    });
+    ui.horizontal_wrapped(|ui| {
+        ui.weak("Leg failure risk:");
+        for (loss, label) in [
+            (100.0, "≤100 ppm"),
+            (1_000.0, "≤1,000 ppm"),
+            (10_000.0, "≤10,000 ppm"),
+            (1_000_000.0, ">10,000 ppm"),
+        ] {
+            ui.colored_label(crate::ui::travel_risk::color(Some(loss)), label);
+        }
+        ui.colored_label(crate::ui::travel_risk::color(None), "Unknown");
     });
 }
 

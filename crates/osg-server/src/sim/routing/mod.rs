@@ -656,6 +656,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                     preparation_s + duration_s,
                     0.0,
                 )?;
+                self.orders.last_mut().unwrap().estimated_loss_ppm = Some(loss_ppm);
                 let outward = origin.relative_to(target.position).normalize_or_zero();
                 self.pose.position = target.position.offset_by(outward * capture.radius_m);
                 self.docked_at = None;

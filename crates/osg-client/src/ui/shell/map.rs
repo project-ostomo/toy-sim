@@ -15,10 +15,10 @@ pub(super) struct State {
     camera: camera::Camera,
     preference: Option<travel::PlanningPreferences>,
     search: String,
-    search_key: Option<(String, Option<Id>, bool, Option<[u8; 32]>)>,
+    search_key: Option<(String, Option<Id>, Option<[u8; 32]>)>,
     search_results: Vec<usize>,
     sovereignty: Option<Id>,
-    inhabited_only: bool,
+    browser_systems: BTreeSet<usize>,
     cache: Cache,
     catalogue_hash: Option<[u8; 32]>,
     active: ActiveRoute,
@@ -79,7 +79,7 @@ pub(super) fn draw(
             .selected
             .filter(|id| state.cache.systems.contains_key(id));
     }
-    state.cache.update_inhabited(&model.inhabited);
+    let inhabited_changed = state.cache.update_inhabited(&model.inhabited);
     let preference = preferences(ui, state, model, intents);
     ui.separator();
 
@@ -100,15 +100,54 @@ pub(super) fn draw(
     let orders = model.ship.map_or(&[][..], |ship| {
         &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
     });
-    state.active.update(&state.cache, catalogue, origin, orders);
+    let active_changed = state.active.update(&state.cache, catalogue, origin, orders);
+    let suggested_changed = state.suggested.update(
+        &state.cache,
+        catalogue,
+        origin,
+        state
+            .route
+            .plan()
+            .map_or(&[], |plan| plan.orders.as_slice()),
+    );
+    if inhabited_changed || active_changed || suggested_changed {
+        state.browser_systems = model
+            .inhabited
+            .systems
+            .iter()
+            .filter_map(|id| state.cache.systems.get(id).copied())
+            .chain(state.active.systems.iter().copied())
+            .chain(state.suggested.systems.iter().copied())
+            .chain(
+                state
+                    .active
+                    .stops
+                    .iter()
+                    .chain(&state.suggested.stops)
+                    .map(|&(_, index)| index),
+            )
+            .chain(origin.and_then(|id| state.cache.systems.get(&id).copied()))
+            .collect();
+        state.selected = state.selected.filter(|id| {
+            state
+                .cache
+                .systems
+                .get(id)
+                .is_some_and(|index| state.browser_systems.contains(index))
+        });
+        state.search_key = None;
+    }
 
     let mut focus = None;
     let mut fit = false;
     let mut fit_route = false;
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("GALACTIC MAP").strong().color(ACCENT));
-        ui.weak(format!("{} systems", catalogue.systems.len()));
-        ui.checkbox(&mut state.inhabited_only, "Inhabited only");
+        ui.weak(format!(
+            "{} inhabited · {} shown",
+            model.inhabited.systems.len(),
+            state.browser_systems.len()
+        ));
         if ui.small_button("Fit").clicked() {
             fit = true;
         }
@@ -129,15 +168,6 @@ pub(super) fn draw(
         }
     });
     search(ui, state, model, &mut focus);
-    state.suggested.update(
-        &state.cache,
-        catalogue,
-        origin,
-        state
-            .route
-            .plan()
-            .map_or(&[], |plan| plan.orders.as_slice()),
-    );
     egui::Panel::bottom(ui.id().with("map_footer"))
         .exact_size(200.)
         .resizable(false)
@@ -246,22 +276,15 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut 
     let key = (
         state.search.trim().to_lowercase(),
         state.sovereignty,
-        state.inhabited_only,
         model.navigation_hash,
     );
     if state.search_key.as_ref() != Some(&key) {
-        state.search_results = state
-            .cache
-            .search(model.navigation, &key.0, state.sovereignty);
-        if state.inhabited_only {
-            state.search_results.retain(|&index| {
-                model
-                    .inhabited
-                    .systems
-                    .binary_search(&model.navigation.systems[index].id)
-                    .is_ok()
-            });
-        }
+        state.search_results = state.cache.search(
+            model.navigation,
+            &key.0,
+            state.sovereignty,
+            &state.browser_systems,
+        );
         state.search_key = Some(key);
     }
     ui.weak(format!("{} matches", state.search_results.len()));

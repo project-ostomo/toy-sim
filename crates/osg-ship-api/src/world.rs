@@ -89,6 +89,8 @@ record!(QueuedOrder {
     duration_ticks: u64,
     propellant_present: u64,
     propellant_kg: f64,
+    loss_present: u64,
+    loss_ppm: f64,
 });
 record!(Preferences {
     fuel_fraction: f64,

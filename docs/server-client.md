@@ -239,7 +239,7 @@ Messages are defined in [osg-protocol](../crates/osg-protocol/src/lib.rs). The `
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 37 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 38 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`, 3 `Session`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input`, 1 KiB for `Session` |
 
