@@ -15,6 +15,69 @@ fn random_entry(rng: &mut ChaCha20Rng, origin: GalacticPosition) -> Entry {
 }
 
 #[test]
+fn parallel_updates_match_rebuilt_indexes_after_motion_and_removals() {
+    let origin = GalacticPosition::new(1 << 100, -(1 << 100), 0);
+    let mut index = SpatialHash::default();
+    let mut expected = AHashMap::default();
+    for id in 0..256 {
+        let entry = Entry {
+            position: origin.offset_by(DVec3::new(
+                (id % 16) as f64 * 200_000.0 - 1_500_000.0,
+                (id / 16) as f64 * 200_000.0 - 1_500_000.0,
+                100.0,
+            )),
+            radius_m: 10.0,
+            luminosity: 1e12,
+        };
+        index.insert(id, entry);
+        expected.insert(id, entry);
+    }
+
+    for step in 0..8 {
+        let mut cursor = index.range_cursor(origin, 1e7, true);
+        expected.retain(|&id, entry| {
+            if id % 31 == step {
+                return false;
+            }
+            let displacement = if id % 3 == 0 { 800_000.0 } else { 1.0 };
+            entry.position = entry.position.offset_by(DVec3::X * displacement);
+            if id % 5 == 0 {
+                entry.radius_m = if step % 2 == 0 { 1e6 } else { 1.0 };
+                entry.luminosity = if step % 2 == 0 { 0.0 } else { 1e18 };
+            }
+            true
+        });
+        let removed = index.update_entries(|id, _| expected.get(&id).copied());
+        assert!(removed.iter().all(|id| !expected.contains_key(id)));
+        assert_eq!(index.len(), expected.len());
+        assert!(index.advance_range(&mut cursor, 1, 1).invalidated);
+
+        let mut rebuilt = SpatialHash::default();
+        for (&id, &entry) in &expected {
+            rebuilt.insert(id, entry);
+            // Exact positions must advance even when tree membership is retained.
+            assert_eq!(index.within_radius(entry.position, 0.0).ids, vec![id]);
+        }
+        for radius in [1.0, 300_000.0, 2e6, 1e7] {
+            assert_eq!(
+                index.intersecting_sphere(origin, radius).ids,
+                rebuilt.intersecting_sphere(origin, radius).ids
+            );
+            assert_eq!(
+                index.nearest(origin, radius, 20),
+                rebuilt.nearest(origin, radius, 20)
+            );
+        }
+        for threshold in [1e-8, 1.0, 1e6] {
+            assert_eq!(
+                index.visible(origin, threshold).ids,
+                rebuilt.visible(origin, threshold).ids
+            );
+        }
+    }
+}
+
+#[test]
 fn extended_light_sources_include_off_centre_companions() {
     let observer = GalacticPosition::new(1_i128 << 100, -(1_i128 << 100), -1);
     let mut index = SpatialHash::default();

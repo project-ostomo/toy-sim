@@ -5,7 +5,7 @@ use crate::sim::{
 };
 use bevy::prelude::*;
 use osg_spatial::{Entry, SpatialHash};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Resource, Default)]
 pub struct TravelGeometry {
@@ -16,27 +16,31 @@ pub struct TravelGeometry {
 }
 
 pub fn refresh(world: &mut World) {
-    let mut query =
+    let mut query_state =
         world.query_filtered::<(Entity, &PreciseTransform, &SpatialBody), Without<Dormant>>();
-    let entries: Vec<_> = query
-        .iter(world)
-        .map(|(entity, transform, body)| (entity, transform.translation_um, body.radius_m))
-        .collect();
     let mut geometry = world
         .remove_resource::<TravelGeometry>()
         .unwrap_or_default();
-    let live: HashSet<_> = entries.iter().map(|(entity, _, _)| *entity).collect();
-    let removed: Vec<_> = geometry
-        .slots
-        .keys()
-        .filter(|entity| !live.contains(entity))
-        .copied()
-        .collect();
-    for entity in removed {
-        geometry.remove(entity);
+    let query = query_state.query(world);
+    let entities = &geometry.entities;
+    let removed = geometry.index.update_entries(|slot, _| {
+        let (_, transform, body) = query.get(entities[slot as usize]).ok()?;
+        Some(Entry {
+            position: transform.translation_um,
+            radius_m: body.radius_m,
+            luminosity: 0.0,
+        })
+    });
+    for slot in removed {
+        let entity = std::mem::replace(&mut geometry.entities[slot as usize], Entity::PLACEHOLDER);
+        geometry.slots.remove(&entity);
+        geometry.free.push(slot);
     }
-    for (entity, position, radius) in entries {
-        geometry.put(entity, position, radius);
+
+    for (entity, transform, body) in query.iter() {
+        if !geometry.slots.contains_key(&entity) {
+            geometry.put(entity, transform.translation_um, body.radius_m);
+        }
     }
     world.insert_resource(geometry);
 }
@@ -166,6 +170,42 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(candidates(&mut world, far, 1.).unwrap(), vec![obstacle]);
+
+        // The parallel refresh must remove dormant/despawned objects, discover
+        // new ones, and keep exact positions current within a retained cell.
+        world.entity_mut(star).remove::<Dormant>();
+        world.despawn(obstacle);
+        refresh(&mut world);
+        assert_eq!(world.resource::<TravelGeometry>().index.len(), 1);
+        assert_eq!(
+            candidates(&mut world, GalacticPosition::ZERO, 1.).unwrap(),
+            vec![star]
+        );
+        world.entity_mut(star).insert(Dormant);
+        let nearby = GalacticPosition::ZERO.offset_by(DVec3::splat(100.0));
+        let new = world
+            .spawn((
+                PreciseTransform {
+                    translation_um: nearby,
+                    ..Default::default()
+                },
+                SpatialBody {
+                    radius_m: 1.0,
+                    occludes: true,
+                },
+            ))
+            .id();
+        refresh(&mut world);
+        world
+            .get_mut::<PreciseTransform>(new)
+            .unwrap()
+            .translation_um = nearby.offset_by(DVec3::X * 10.0);
+        refresh(&mut world);
+        assert!(candidates(&mut world, nearby, 1.0).unwrap().is_empty());
+        assert_eq!(
+            candidates(&mut world, nearby.offset_by(DVec3::X * 10.0), 1.0).unwrap(),
+            vec![new]
+        );
     }
 
     #[test]

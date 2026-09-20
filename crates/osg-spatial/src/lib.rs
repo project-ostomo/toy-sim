@@ -1,6 +1,7 @@
 use ahash::AHashMap;
 use glam::DVec3;
 use osg_space::GalacticPosition;
+use rayon::prelude::*;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::ops::ControlFlow;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -9,7 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // occupied cells skip empty scales, so a local metre query does not enumerate
 // every possible cell between ships and stars.
 const ROOT_LEVEL: u8 = 126;
-const MIN_LEVEL: u8 = 20;
+// Coordinates are micrometres: 2^39 µm is about 550 km.
+const MIN_LEVEL: u8 = 39;
 const LEAF_CAPACITY: usize = 16;
 
 /// A source's instantaneous optical luminosity coefficient and physical extent.
@@ -225,6 +227,14 @@ impl Cells {
         next: Entry,
         entries: &AHashMap<u32, Entry>,
     ) -> bool {
+        // No leaf can subdivide a minimum-size cell. Movement within one keeps
+        // membership in both the position tree and any luminosity tree valid.
+        if old.radius_m == next.radius_m
+            && CellKey::at(old.position, MIN_LEVEL) == CellKey::at(next.position, MIN_LEVEL)
+        {
+            return true;
+        }
+
         self.update_cell(
             CellKey::at(old.position, ROOT_LEVEL),
             id,
@@ -464,6 +474,49 @@ impl SpatialHash {
         self.positions.nodes.clear();
         self.positions.roots.clear();
         self.luminous.clear();
+    }
+
+    /// Refresh existing entries in parallel, then apply tree changes serially.
+    /// Returning `None` removes an entry; the returned IDs identify removals.
+    /// New entries can be added with `insert` after this pass.
+    pub fn update_entries(
+        &mut self,
+        update: impl Fn(u32, &Entry) -> Option<Entry> + Sync + Send,
+    ) -> Vec<u32> {
+        let changes: Vec<_> = self
+            .entries
+            .par_iter_mut()
+            .filter_map(|(&id, old)| {
+                let Some(next) = update(id, old) else {
+                    return Some((id, None));
+                };
+                assert!(next.radius_m.is_finite() && next.radius_m >= 0.0);
+                assert!(next.luminosity.is_finite() && next.luminosity >= 0.0);
+
+                if old.radius_m == next.radius_m
+                    && old.luminosity == next.luminosity
+                    && CellKey::at(old.position, MIN_LEVEL) == CellKey::at(next.position, MIN_LEVEL)
+                {
+                    *old = next;
+                    None
+                } else {
+                    Some((id, Some(next)))
+                }
+            })
+            .collect();
+
+        // Exact positions can change even when no tree nodes change.
+        self.generation = self.generation.wrapping_add(1);
+        let mut removed = Vec::new();
+        for (id, next) in changes {
+            if let Some(next) = next {
+                self.insert(id, next);
+            } else {
+                self.remove(id);
+                removed.push(id);
+            }
+        }
+        removed
     }
 
     pub fn insert(&mut self, id: u32, entry: Entry) {
