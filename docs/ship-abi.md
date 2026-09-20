@@ -66,15 +66,15 @@ ABI 17 stores `ShipResources.energy_j`, `WeaponReading.battery_energy_j`, and `B
 
 ABI 16 removed the explicit `ProgramAction::Gate` action: aperture crossings now belong to the physics solver. This changes the Postcard world-action enum discriminants; rebuild firmware.
 
-ABI 15 introduced resource quantities as `u64` and appended `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `toy-sim-model`.
+ABI 15 introduced resource quantities as `u64` and appended `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `osg-model`.
 
 ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
 
-- Record definitions and constants: [crates/toy-sim-ship-api/src/abi.rs](../crates/toy-sim-ship-api/src/abi.rs)
-- Rust helpers: [crates/toy-sim-ship-api/src/sdk.rs](../crates/toy-sim-ship-api/src/sdk.rs)
-- Generated C header: [crates/toy-sim-ship-api/include/ship.h](../crates/toy-sim-ship-api/include/ship.h)
-- Generated AssemblyScript bindings: [crates/toy-sim-ship-api/bindings/ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts)
-- Host implementation: [crates/toy-sim-ship-wasm](../crates/toy-sim-ship-wasm)
+- Record definitions and constants: [crates/osg-ship-api/src/abi.rs](../crates/osg-ship-api/src/abi.rs)
+- Rust helpers: [crates/osg-ship-api/src/sdk.rs](../crates/osg-ship-api/src/sdk.rs)
+- Generated C header: [crates/osg-ship-api/include/ship.h](../crates/osg-ship-api/include/ship.h)
+- Generated AssemblyScript bindings: [crates/osg-ship-api/bindings/ship.ts](../crates/osg-ship-api/bindings/ship.ts)
+- Host implementation: [crates/osg-ship-wasm](../crates/osg-ship-wasm)
 
 For the hardware that devices represent, see [ships.md](ships.md). Screen drawing is covered in [mfds.md](mfds.md), and weapons in [weapons.md](weapons.md).
 
@@ -388,7 +388,7 @@ Candidate changes and cancellation do not refund energy already spent.
 
 ### Availability
 
-Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `toy-sim-debug`. Travel action imports stage validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
+Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `osg-debug`. Travel action imports stage validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
 
 ### Chat and LLM services
 
@@ -526,34 +526,34 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 ### Rust
 
-Depend on `toy-sim-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
+Depend on `osg-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/toy-sim-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
+The minimal `no_std` example is [examples/embedded.rs](../crates/osg-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [osg-example-controller](../crates/osg-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/osg-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/osg-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
 
-[examples/custom_screen.rs](../crates/toy-sim-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
+[examples/custom_screen.rs](../crates/osg-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 
 The repository has no build script for firmware. These commands follow from the manifests and the comment in `custom_screen.rs`:
 
 ```sh
 rustup target add wasm32-unknown-unknown
 
-# Standard firmware (cdylib): target/wasm32-unknown-unknown/release/toy_sim_example_controller.wasm
-cargo build -p toy-sim-example-controller --release --target wasm32-unknown-unknown
+# Standard firmware (cdylib): target/wasm32-unknown-unknown/release/osg_example_controller.wasm
+cargo build -p osg-example-controller --release --target wasm32-unknown-unknown
 
 # Custom screen example: target/wasm32-unknown-unknown/release/examples/custom_screen.wasm
-cargo build -p toy-sim-example-controller --release --target wasm32-unknown-unknown \
+cargo build -p osg-example-controller --release --target wasm32-unknown-unknown \
     --example custom_screen --no-default-features
 ```
 
-The simulator embeds the standard firmware from `crates/toy-sim-ships/data/example-controller.wasm`. After changing the firmware source, copy the new build over that file and rebuild. The test fixtures in `crates/toy-sim-ship-wasm/tests/fixtures/` are also prebuilt binaries.
+The simulator embeds the standard firmware from `crates/osg-ships/data/example-controller.wasm`. After changing the firmware source, copy the new build over that file and rebuild. The test fixtures in `crates/osg-ship-wasm/tests/fixtures/` are also prebuilt binaries.
 
 ### C
 
-Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<name>` imports with the correct import module and names, `ship_*_record` structs with layout assertions, and `SHIP_*` constants. [tests/fixtures/controller.c](../crates/toy-sim-ship-wasm/tests/fixtures/controller.c) is a freestanding example with no libc: it provides its own `memset`, exports `ship_api_version` and `ship_tick`, writes a throttle, and publishes an attitude record and a timed path. Run `tools/build_ship_firmware.sh` to rebuild the standard controller and all C/Rust firmware fixtures with the current ABI.
+Include [ship.h](../crates/osg-ship-api/include/ship.h). It declares `ship_<name>` imports with the correct import module and names, `ship_*_record` structs with layout assertions, and `SHIP_*` constants. [tests/fixtures/controller.c](../crates/osg-ship-wasm/tests/fixtures/controller.c) is a freestanding example with no libc: it provides its own `memset`, exports `ship_api_version` and `ship_tick`, writes a throttle, and publishes an attitude record and a timed path. Run `tools/build_ship_firmware.sh` to rebuild the standard controller and all C/Rust firmware fixtures with the current ABI.
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v31", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/osg-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v31", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
@@ -579,15 +579,15 @@ For isolated ABI tests or tools that embed the runtime:
 - State fields: `state` (the committed `Session`), `fault`, `contacts`, `scan_time`, `telemetry`, `screens`, `trajectory_revision`, `instrument_interest`, `observer_origin`
 - `CallbackSchedule` implements the interval logic. Call `advance(dt)` once per tick, check `ready(has_input)`, and call `completed(output.tick_interval_seconds)` after a successful callback.
 - `Input` carries tick, dt, physics dt, `Observation` (time, flight state, resources, inventory), device statuses, requests, screen events and requested screens. `Output` carries staged world actions, device commands, replies, screen frames, cleared screens and the interval.
-- `screens` re-exports `toy_sim_model::drawing`, where the validated screen frame types now live.
+- `screens` re-exports `osg_model::drawing`, where the validated screen frame types now live.
 
 ## Tests
 
 ```sh
-cargo test -p toy-sim-ship-wasm
+cargo test -p osg-ship-wasm
 ```
 
-[tests/sandbox.rs](../crates/toy-sim-ship-wasm/tests/sandbox.rs) covers:
+[tests/sandbox.rs](../crates/osg-ship-wasm/tests/sandbox.rs) covers:
 
 - rejection of old versions and foreign imports
 - C and Rust programs sharing the ABI with isolated memory

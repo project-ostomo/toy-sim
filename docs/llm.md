@@ -55,8 +55,8 @@ other world state.
 ## Durable dollar budget
 
 The entire installation shares a $100 cap stored separately from world saves:
-`$XDG_DATA_HOME/toy-sim/llm-spend.sqlite`, or
-`~/.local/share/toy-sim/llm-spend.sqlite` when `XDG_DATA_HOME` is unset. Starting
+`$XDG_DATA_HOME/openspacegame/llm-spend.sqlite`, or
+`~/.local/share/openspacegame/llm-spend.sqlite` when `XDG_DATA_HOME` is unset. Starting
 another world or restoring an older world checkpoint does not reset this ledger.
 SQLite uses WAL mode, full synchronization and immediate transactions to reserve
 money atomically across processes. The ledger counts settled charges plus every

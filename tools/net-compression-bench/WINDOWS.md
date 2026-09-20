@@ -145,7 +145,7 @@ taskset -c 2 tools/net-compression-bench/target/release/windows memory 8192 \
   > tools/net-compression-bench/results/windows-memory-large.csv
 tools/net-compression-bench/target/release/windows parallel \
   > tools/net-compression-bench/results/windows-parallel.csv
-MPLCONFIGDIR=/tmp/toy-sim-matplotlib python3 tools/net-compression-bench/analyze_windows.py
+MPLCONFIGDIR=/tmp/osg-matplotlib python3 tools/net-compression-bench/analyze_windows.py
 ```
 
 Pass a scenario name, such as `battle8192`, to run one workload. `WINDOW_REPEATS`

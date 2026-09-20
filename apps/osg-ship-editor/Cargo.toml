@@ -1,0 +1,12 @@
+[package]
+name = "osg-ship-editor"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+bevy.workspace = true
+osg-ui = { path = "../../crates/osg-ui" }
+osg-ships = { path = "../../crates/osg-ships" }
+osg-ship-api = { path = "../../crates/osg-ship-api" }
+osg-ship-wasm = { path = "../../crates/osg-ship-wasm" }
+osg-ship-view = { path = "../../crates/osg-ship-view" }

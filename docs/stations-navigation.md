@@ -1,6 +1,6 @@
 # Stations, navigation and inventory
 
-Build both the server and debug launcher with `cargo build -p toy-sim-server -p toy-sim-debug`, then run `cargo run`. The default Peregrine expedition patrol has a 4 m micropulse drive, two lasers, a 250 MW thermal fission reactor, batteries and a fitted 100 MW slipdrive. The smaller water-NTR patrol remains available as `assets/ships/ntr-patrol.ship`. A hostile patrol starts 1 km away, with Neris Anchorage nearby.
+Build both the server and debug launcher with `cargo build -p osg-server -p osg-debug`, then run `cargo run`. The default Peregrine expedition patrol has a 4 m micropulse drive, two lasers, a 250 MW thermal fission reactor, batteries and a fitted 100 MW slipdrive. The smaller water-NTR patrol remains available as `assets/ships/ntr-patrol.ship`. A hostile patrol starts 1 km away, with Neris Anchorage nearby.
 
 The ten-system chain is Helion → Sol → Vesper → Aurora → Lyra → Cinder → Meridian → Havoc → Elysium → Terminus. Its nine connections have eighteen mouths. Intermediate systems place their mouths 60 Mm apart, each with a 10 Mm exclusion radius, so each gate hop requires a substantial transfer. If two enabled macromouth exclusion volumes overlap, both mouths lose stability and become disabled. Slip apertures must also stay outside enabled mouth exclusions; ordinary sublight traffic can enter them.
 
@@ -54,12 +54,12 @@ Consumable counts are `u64`. A fractional request uses stochastic rounding with 
 ## Verification
 
 ```sh
-cargo test -p toy-sim-server --lib infrastructure::tests
-cargo test -p toy-sim-server --lib default_patrol_encounter
-cargo test -p toy-sim-server --lib default_ntr_patrol_reverses_heading
-cargo test -p toy-sim-ships --test attachments
-cargo test -p toy-sim-ships --test ships
-cargo test -p toy-sim-server --test network
+cargo test -p osg-server --lib infrastructure::tests
+cargo test -p osg-server --lib default_patrol_encounter
+cargo test -p osg-server --lib default_ntr_patrol_reverses_heading
+cargo test -p osg-ships --test attachments
+cargo test -p osg-ships --test ships
+cargo test -p osg-server --test network
 ```
 
 The docking tests run the stock WASM flight computer from the default spawn through approach and capture, checking that it stays outside the station’s collision envelope. They also check range and speed boundaries, arbitrary arrival attitude, bay access and compatibility. Other tests cover storage, cargo isolation, gate access, coarse hull clearance, conventional firing, integer consumption, and attachment graph validity. Client presentation should also be inspected with screenshots of the map, both inventory tabs, gates, habitat rotation, slip transit and the hangar.

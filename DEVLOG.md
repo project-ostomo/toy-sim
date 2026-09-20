@@ -1,4 +1,4 @@
-# Toy Sim MVP development log
+# OpenSpaceGame MVP development log
 
 This is the running record of the autonomous MVP sprint. Entries distinguish
 implementation, verification, and remaining work. A feature is complete only
@@ -65,13 +65,13 @@ sequentially. Its unverified scaffolding was preserved in Git stash commit
 `3df0e421275d1ec71105425161a5c333944a2c4f`. Some earlier workers remained active
 but were no longer reachable from the current agent control tree. To keep their
 unfinished edits out of the sequential build, created branch `mvp-sequential`
-in `/tmp/toy-sim-mvp-sequential` from the baseline. The original checkout and
+in `/tmp/osg-mvp-sequential` from the baseline. The original checkout and
 stash have been preserved. Later features can recover individual useful changes
 after review; the entire scaffold is not being treated as a delivered feature.
 
 The repository documentation policy normally delegates English prose to Claude
 Code. Claude reported its monthly spending limit in
-`/tmp/toy-sim-docs-result.log`, enabling the policy's explicit Codex fallback.
+`/tmp/osg-docs-result.log`, enabling the policy's explicit Codex fallback.
 
 ## 2026-09-19 01:29 UTC — Piece 1: ownership and standings
 
@@ -210,7 +210,7 @@ and the calendar before any later feature integration.
   programs receive a bounded explicit persistent-data API. Native VM execution
   stacks restart after loading a world.
 - Debug launches will retain their account and world by default under
-  `$XDG_STATE_HOME/toy-sim/debug` or `~/.local/state/toy-sim/debug`. Use
+  `$XDG_STATE_HOME/openspacegame/debug` or `~/.local/state/openspacegame/debug`. Use
   `--state-dir PATH` for a separate world, or `--ephemeral` for a disposable run.
 - The calendar is real UTC plus exactly 146097 days (400 Gregorian years). It
   advances while simulation time is paused or accelerated. The client uses the
@@ -294,7 +294,7 @@ glints, then verify that piece before expanding the inhabited map.
 Persistence and calendar work was committed as `49e7749`. The spatial piece is
 being integrated and verified before map expansion begins.
 
-The common `toy-sim-spatial` crate now serves stellar visibility, sensor and
+The common `osg-spatial` crate now serves stellar visibility, sensor and
 optical queries, intelligence query cursors, travel exclusion geometry, and
 collision broad phase. It uses integer galactic coordinates, compressed occupied
 cells and luminosity buckets. Parry still handles detailed shape collision and
@@ -1087,7 +1087,7 @@ freeze fixes. The next piece is industry and physical cargo logistics.
 Missiles were committed as `f6972a5`. The main checkout has now been fast-forwarded
 to that verified commit. The interrupted early parallel drafts were preserved
 both in Git stash `6921c85daee9121856d45c821fa4ff5716331060` and a byte-verified
-copy at `/tmp/toy-sim-mvp-interrupted-drafts-20260919` (143 paths, about 3.7 MB).
+copy at `/tmp/osg-mvp-interrupted-drafts-20260919` (143 paths, about 3.7 MB).
 The earlier stash remains available as well. Active development continues in
 the sequential worktree, keeping the main checkout at completed milestones.
 
@@ -1692,7 +1692,7 @@ At the user's request, development now takes place directly in
 DEVLOG and chatter test changes were copied and verified byte for byte before
 agents resumed. The temporary checkout is no longer used for development.
 Existing test worlds, screenshots, logs and the native input harness were copied
-to `~/.local/state/toy-sim-mvp-sprint`. Earlier evidence paths under
+to `~/.local/state/osg-mvp-sprint`. Earlier evidence paths under
 `/tmp/toy-sequential-playtests` now have matching files in that directory's
 `playtests` subdirectory. New verification artifacts will use persistent storage.
 
@@ -1711,7 +1711,7 @@ broadcasts and accepted a player radio message through keyboard input. The
 session exited normally and saved. No computer faults or rendering errors were
 reported. This brief native pass verifies the interface and service path; the
 deterministic WASM tests cover backlog draining and response timing. Evidence:
-`~/.local/state/toy-sim-mvp-sprint/playtests/chatter-player-message.png` and
+`~/.local/state/osg-mvp-sprint/playtests/chatter-player-message.png` and
 `chatter-native-session.log`; build and test logs are in the parent directory.
 
 The next piece is a shared authorized-inventory directory pager, so opening
@@ -1720,7 +1720,7 @@ Inventory alone can reach endpoints beyond the first page.
 ### Course correction: cargo belongs to places — 2026-09-19
 
 The user rejected the shared Inventory/Industry directory picker. Its pending
-changes were archived under `~/.local/state/toy-sim-mvp-sprint` and removed before
+changes were archived under `~/.local/state/osg-mvp-sprint` and removed before
 the replacement was implemented. Inventory now follows the focused ship. A
 separate Hangar window shows the current station's accessible storage and docked
 ships; Industry retains remote facility selection and gains a Storage tab.
@@ -1748,7 +1748,7 @@ completed docking and displayed the station's storage beside ship Inventory.
 At the user's request, live keyboard/mouse verification stopped; automated tests
 cover the transfer cases. The session exited normally and saved. Subsequent MVP
 verification will use automated checks, leaving interactive playtesting to the
-user. Evidence remains under `~/.local/state/toy-sim-mvp-sprint`.
+user. Evidence remains under `~/.local/state/osg-mvp-sprint`.
 
 ### Completing construction uploads and spatial queries — 2026-09-19
 

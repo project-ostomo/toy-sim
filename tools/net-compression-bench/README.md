@@ -9,9 +9,9 @@ Run from the repository root:
 ```sh
 cargo test --manifest-path tools/net-compression-bench/Cargo.toml --offline
 cargo build --manifest-path tools/net-compression-bench/Cargo.toml --release --offline
-taskset -c 2 tools/net-compression-bench/target/release/net-compression-bench \
+taskset -c 2 tools/net-compression-bench/target/release/osg-net-compression-bench \
   > tools/net-compression-bench/results/measurements.csv
-MPLCONFIGDIR=/tmp/toy-sim-matplotlib python3 tools/net-compression-bench/analyze.py
+MPLCONFIGDIR=/tmp/osg-matplotlib python3 tools/net-compression-bench/analyze.py
 ```
 
 Omit `--offline` when the dependencies are not cached. `taskset` is optional on

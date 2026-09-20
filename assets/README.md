@@ -11,7 +11,7 @@ For step-by-step editing instructions, see [docs/asset-workflow.md](../docs/asse
 
 | Path | Loaded by | Purpose |
 | --- | --- | --- |
-| [universe.toml](universe.toml) | `toy-sim-universe` | Lists the ten authored system definitions used alongside the inhabited catalogue. |
+| [universe.toml](universe.toml) | `osg-universe` | Lists the ten authored system definitions used alongside the inhabited catalogue. |
 | [stars/helion.star.toml](stars/helion.star.toml) | Server and streamed client orrery | Helion, ocean world Neris, and five airless moons. |
 | [stars/sol.star.toml](stars/sol.star.toml) | Server and streamed client orrery | The Sun and eight planets, with physical appearance metadata. |
 | [ships/starter.ship](ships/starter.ship) | The editor's Open button and design tools | A starter blueprint in the binary `.ship` format. |
@@ -27,12 +27,12 @@ systems = ["stars/helion.star.toml"]
 `systems` must be a non-empty list of non-empty paths relative to this directory.
 Unknown keys are rejected. The bundled manifest contains ten entries; the
 inhabited map adds catalogue systems. See the
-[generation guide](../crates/toy-sim-universe/GENERATION.md).
+[generation guide](../crates/osg-universe/GENERATION.md).
 
 ## Star system files (`*.star.toml`)
 
 Star system files deserialize as `OrreryCfg`
-([orrery_cfg.rs](../crates/toy-sim-universe/src/orrery_cfg.rs)). Unknown top-level
+([orrery_cfg.rs](../crates/osg-universe/src/orrery_cfg.rs)). Unknown top-level
 keys are rejected.
 
 Top level:
@@ -78,15 +78,15 @@ baked deterministically on the client; they do not require stored texture files.
 `.ship` files are CBOR-encoded blueprints. They are documented in [docs/ships.md](../docs/ships.md#blueprint-files-ship). To regenerate `ships/starter.ship` from code:
 
 ```sh
-cargo run -p toy-sim-ships --example write_starter -- assets/ships/starter.ship
+cargo run -p osg-ships --example write_starter -- assets/ships/starter.ship
 ```
 
 ## Assets compiled into binaries
 
 Some data is embedded at build time and is not part of this directory. Editing it requires a rebuild:
 
-- the part and resource catalogue: [crates/toy-sim-ships/data/catalogue.toml](../crates/toy-sim-ships/data/catalogue.toml)
-- the standard firmware: [crates/toy-sim-ships/data/example-controller.wasm](../crates/toy-sim-ships/data/example-controller.wasm)
-- the star catalogue: [crates/toy-sim-stars/data/](../crates/toy-sim-stars/data/README.md)
-- the MFD font: [crates/toy-sim-ui/data/fonts/](../crates/toy-sim-ui/data/fonts/README.md)
-- the WGSL shaders in [crates/toy-sim-ship-view/src](../crates/toy-sim-ship-view/src)
+- the part and resource catalogue: [crates/osg-ships/data/catalogue.toml](../crates/osg-ships/data/catalogue.toml)
+- the standard firmware: [crates/osg-ships/data/example-controller.wasm](../crates/osg-ships/data/example-controller.wasm)
+- the star catalogue: [crates/osg-stars/data/](../crates/osg-stars/data/README.md)
+- the MFD font: [crates/osg-ui/data/fonts/](../crates/osg-ui/data/fonts/README.md)
+- the WGSL shaders in [crates/osg-ship-view/src](../crates/osg-ship-view/src)

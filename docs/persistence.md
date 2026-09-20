@@ -188,8 +188,8 @@ immutable global definitions remain available even when their systems are inacti
 
 ## Local debug worlds
 
-`toy-sim-debug` retains its world and credentials under
-`$XDG_STATE_HOME/toy-sim/debug`, or `~/.local/state/toy-sim/debug` when that variable
+`osg-debug` retains its world and credentials under
+`$XDG_STATE_HOME/openspacegame/debug`, or `~/.local/state/openspacegame/debug` when that variable
 is unset. `--state-dir PATH` selects another saved world. `--ephemeral` creates a
 disposable world and removes it when the launcher exits normally. These options
 cannot be combined.

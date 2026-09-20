@@ -1,0 +1,42 @@
+[package]
+name = "osg-client"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+profile = ["ui", "bevy/trace_chrome"]
+ui = ["dep:bevy", "dep:osg-ui", "dep:osg-ship-view", "dep:osg-stars", "dep:osg-space", "dep:osg-universe", "dep:hifitime"]
+
+[dependencies]
+bevy = { workspace = true, optional = true }
+osg-ui = { path = "../osg-ui", optional = true }
+osg-ship-view = { path = "../osg-ship-view", optional = true }
+osg-net = { path = "../osg-net" }
+tokio = { version = "1.53", features = ["rt-multi-thread", "sync", "time"] }
+ed25519-dalek = "2.2"
+
+tracing = "0.1"
+anyhow.workspace = true
+blake3 = "1.8"
+osg-ships = { path = "../osg-ships" }
+toml.workspace = true
+serde.workspace = true
+osg-model = { path = "../osg-model" }
+osg-protocol = { path = "../osg-protocol" }
+glam.workspace = true
+
+osg-stars = { path = "../osg-stars", optional = true }
+
+osg-space = { path = "../osg-space", optional = true }
+
+osg-universe = { path = "../osg-universe", optional = true }
+hifitime = { version = "4.3.1", optional = true }
+
+[[bin]]
+name = "osg-client"
+path = "src/main.rs"
+required-features = ["ui"]
+
+[dev-dependencies]
+serde_json = "1"

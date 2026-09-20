@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent          # .../SYSTEM-NAMING
-REPO = ROOT.parent                              # toy-sim repository root
+REPO = ROOT.parent                              # OpenSpaceGame repository root
 DUMP = Path("/tmp/opencode/inhabited-map-dump.json")
 QUEUE = ROOT / "queue.txt"
 NAMES = ROOT / "SYSTEM-NAMES.txt"
@@ -27,7 +27,7 @@ LORE = ROOT / "SYSTEMS-LORE.md"
 def load():
     if not DUMP.exists():
         subprocess.run(
-            ["cargo", "run", "--release", "-p", "toy-sim-universe", "--example", "map_dump"],
+            ["cargo", "run", "--release", "-p", "osg-universe", "--example", "map_dump"],
             cwd=REPO,
             check=True,
             capture_output=True,

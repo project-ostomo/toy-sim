@@ -4,10 +4,10 @@ The catalogue includes projectile guns, lasers, and launchers for guided kinetic
 
 Source:
 
-- Definitions, specs and servo mechanics: [crates/toy-sim-ships/src/weapons.rs](../crates/toy-sim-ships/src/weapons.rs)
-- Hardware commands and readings: [server hardware systems](../crates/toy-sim-server/src/sim/hardware.rs)
-- Launch events inside the collision timeline: [crates/toy-sim-server/src/sim/physics/collision/weapons.rs](../crates/toy-sim-server/src/sim/physics/collision/weapons.rs)
-- Standard firmware engagement policy: [crates/toy-sim-example-controller/src/weapons.rs](../crates/toy-sim-example-controller/src/weapons.rs)
+- Definitions, specs and servo mechanics: [crates/osg-ships/src/weapons.rs](../crates/osg-ships/src/weapons.rs)
+- Hardware commands and readings: [server hardware systems](../crates/osg-server/src/sim/hardware.rs)
+- Launch events inside the collision timeline: [crates/osg-server/src/sim/physics/collision/weapons.rs](../crates/osg-server/src/sim/physics/collision/weapons.rs)
+- Standard firmware engagement policy: [crates/osg-example-controller/src/weapons.rs](../crates/osg-example-controller/src/weapons.rs)
 
 ## Defining a weapon part
 
@@ -80,7 +80,7 @@ Each launch creates a physical spherical projectile with a 2 s lifetime and hit 
 
 ## Interlocks and readings
 
-`device_read` returns `WeaponReading`: status, inhibit flags, ammunition units, shots fired, available battery energy, energy per shot, yaw, pitch and next firing time. Exact layouts are generated from [abi.rs](../crates/toy-sim-ship-api/src/abi.rs).
+`device_read` returns `WeaponReading`: status, inhibit flags, ammunition units, shots fired, available battery energy, energy per shot, yaw, pitch and next firing time. Exact layouts are generated from [abi.rs](../crates/osg-ship-api/src/abi.rs).
 
 | Flag | Value | Set when |
 | --- | --- | --- |
@@ -129,11 +129,11 @@ Presentation: barrel meshes interpolate yaw and pitch between ticks. Slugs draw 
 ## Tests
 
 ```sh
-cargo test -p toy-sim-ships weapons
-cargo test -p toy-sim-server collision::weapons
-cargo test -p toy-sim-server collision::ecs
-cargo test -p toy-sim-ship-wasm weapon
-cargo test -p toy-sim-example-controller intercept
+cargo test -p osg-ships weapons
+cargo test -p osg-server collision::weapons
+cargo test -p osg-server collision::ecs
+cargo test -p osg-ship-wasm weapon
+cargo test -p osg-example-controller intercept
 ```
 
 These cover:

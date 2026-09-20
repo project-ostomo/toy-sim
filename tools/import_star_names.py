@@ -7,7 +7,7 @@ import subprocess
 import urllib.parse
 from pathlib import Path
 
-DATA = Path(__file__).resolve().parents[1] / "crates/toy-sim-universe/data"
+DATA = Path(__file__).resolve().parents[1] / "crates/osg-universe/data"
 ENDPOINT = "https://simbad.cds.unistra.fr/simbad/sim-tap/sync"
 GREEK = dict(zip(
     "alf bet gam del eps zet eta tet iot kap lam mu nu ksi omi pi rho sig tau ups phi chi psi ome".split(),

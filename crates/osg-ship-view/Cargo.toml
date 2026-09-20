@@ -1,0 +1,9 @@
+[package]
+name = "osg-ship-view"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+osg-ships = { path = "../osg-ships" }
+serde_json = "1"

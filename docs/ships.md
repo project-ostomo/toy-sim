@@ -1,12 +1,12 @@
 # Ships
 
-A ship is an attachment tree of catalogue parts, plus integrated standard avionics and a flight computer program. Stations use the same design format. This guide covers the data model and the native hardware simulation in [toy-sim-ships](../crates/toy-sim-ships). It also describes how the simulator runs ships and what the standard firmware does.
+A ship is an attachment tree of catalogue parts, plus integrated standard avionics and a flight computer program. Stations use the same design format. This guide covers the data model and the native hardware simulation in [osg-ships](../crates/osg-ships). It also describes how the simulator runs ships and what the standard firmware does.
 
 Related guides: [ship-editor.md](ship-editor.md) for building designs, [ship-abi.md](ship-abi.md) for firmware, [weapons.md](weapons.md), [collisions.md](collisions.md), and the [server architecture](server-client.md).
 
 ## The catalogue
 
-The catalogue is [crates/toy-sim-ships/data/catalogue.toml](../crates/toy-sim-ships/data/catalogue.toml). `Catalogue::builtin()` parses and validates it at startup, and the binaries embed it at compile time. It has three top-level keys:
+The catalogue is [crates/osg-ships/data/catalogue.toml](../crates/osg-ships/data/catalogue.toml). `Catalogue::builtin()` parses and validates it at startup, and the binaries embed it at compile time. It has three top-level keys:
 
 - `revision` (currently `3`): blueprints must name the same revision.
 - `resources`: slot 0 must be `propellant` and slot 1 must be `fuel`. Resource IDs must be unique and non-empty. `mass_kg` and `volume_m3` must be positive.
@@ -77,7 +77,7 @@ RCS blocks get fixed built-in plume visuals on their six faces, each driven by t
 
 ## Blueprints
 
-A `ShipBlueprint` ([design.rs](../crates/toy-sim-ships/src/design.rs)) contains:
+A `ShipBlueprint` ([design.rs](../crates/osg-ships/src/design.rs)) contains:
 
 | Field | Type | Default |
 | --- | --- | --- |
@@ -140,7 +140,7 @@ The compiled design holds:
 
 ## Hardware simulation
 
-`ShipState` ([runtime.rs](../crates/toy-sim-ships/src/runtime.rs)) is the mutable hardware state. Consumable and cargo quantities are separate `u64` arrays. Energy remains continuous in joules. A fractional consumable demand uses `rand::rng()` to debit the floor or ceiling with the corresponding probabilities: 2.4 units becomes 2 with probability 0.6 or 3 with probability 0.4. Consumers receive the available continuous supply fraction for smooth thrust and power. Actual removed integers determine inventory mass.
+`ShipState` ([runtime.rs](../crates/osg-ships/src/runtime.rs)) is the mutable hardware state. Consumable and cargo quantities are separate `u64` arrays. Energy remains continuous in joules. A fractional consumable demand uses `rand::rng()` to debit the floor or ceiling with the corresponding probabilities: 2.4 units becomes 2 with probability 0.6 or 3 with probability 0.4. Consumers receive the available continuous supply fraction for smooth thrust and power. Actual removed integers determine inventory mass.
 
 ### Settings
 
@@ -194,7 +194,7 @@ The computer is running when the hull is above zero and avionics are operational
 
 ## Heat, hull and shields
 
-[thermal.rs](../crates/toy-sim-ships/src/thermal.rs) stores internal heat in joules and tracks a separate hot coolant screen. The internal quantity represents a cooling circuit and heat storage budget; it does not assign a temperature to the whole hull.
+[thermal.rs](../crates/osg-ships/src/thermal.rs) stores internal heat in joules and tracks a separate hot coolant screen. The internal quantity represents a cooling circuit and heat storage budget; it does not assign a temperature to the whole hull.
 
 The internal budget is `dry_mass · 250,000 J/kg` plus the capacities of installed `heat_sink` parts. Stored heat may exceed that budget. Damage then grows as:
 
@@ -208,7 +208,7 @@ Hull impacts also cause immediate structural damage at 1 HP per 100 kJ and add t
 
 The shared renderer draws shields with an analytic spherical shell shader. The edge is antialiased and independent of mesh tessellation. Shell path length determines visible transmission and temperature-dependent emission, giving a brighter rim and a clearer center. Opaque scene depth clips the shell behind the hull. The default shell thickness is 2% of radius, with a visible optical depth of 0.000005 through both central walls at full strength. These visual parameters are independent of the simulation's effective radiator emissivity.
 
-The `thermal_shield` example in `toy-sim-ship-view` provides a standalone visual check. `THERMAL_TEMPERATURE_K`, `THERMAL_RADIUS`, `THERMAL_CAMERA_DISTANCE`, and `THERMAL_STRENGTH` control the scene. It defaults to 3500 K and an exterior camera; a camera distance below the radius tests an interior view.
+The `thermal_shield` example in `osg-ship-view` provides a standalone visual check. `THERMAL_TEMPERATURE_K`, `THERMAL_RADIUS`, `THERMAL_CAMERA_DISTANCE`, and `THERMAL_STRENGTH` control the scene. It defaults to 3500 K and an exterior camera; a camera distance below the radius tests an interior view.
 
 ### Shield coolant
 
@@ -245,7 +245,7 @@ The six states are absent, off, active, depleted, unpowered and blocked. Activat
 
 ## Starter designs
 
-- `starter(controller)`: seven main parts stacked along +Z at 1 m spacing, plus a coolant tank and command module ahead of the hull block. In order: structure, storage (`storage`), battery (`battery`), generator (`generator`), torquer (`attitude_control`), shield (`shield`), engine (`main_engine`). The unarmed starter used by `toy-ship-editor --example` and the editor's Starter button.
+- `starter(controller)`: seven main parts stacked along +Z at 1 m spacing, plus a coolant tank and command module ahead of the hull block. In order: structure, storage (`storage`), battery (`battery`), generator (`generator`), torquer (`attitude_control`), shield (`shield`), engine (`main_engine`). The unarmed starter used by `osg-ship-editor --example` and the editor's Starter button.
 - `armed_starter()`: the starter named "Armed explorer" with the standard firmware, plus `railgun_turret_8`, `coilgun_turret_9` (group `weapons`) and four RCS blocks `rcs_10` to `rcs_13` (group `rcs`). It remains an editor example; the default scenario uses the expedition patrol. [assets/ships/starter.ship](../assets/ships/starter.ship) contains this design.
 
 ## Ships in the simulator
@@ -256,7 +256,7 @@ The bottom HUD shows thrust, energy, thermal and computer readings. Navigation s
 
 ## The standard firmware
 
-`Firmware::Standard` runs [data/example-controller.wasm](../crates/toy-sim-ships/data/example-controller.wasm), built from [toy-sim-example-controller](../crates/toy-sim-example-controller). Each callback, the firmware ([firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs)):
+`Firmware::Standard` runs [data/example-controller.wasm](../crates/osg-ships/data/example-controller.wasm), built from [osg-example-controller](../crates/osg-example-controller). Each callback, the firmware ([firmware.rs](../crates/osg-example-controller/src/firmware.rs)):
 
 1. Reads the tick context. It then discovers resources and devices, up to 16 records per callback, until discovery completes. Requests wait in the host until then.
 2. Reads every device, the flight state and propellant mass.
@@ -290,16 +290,16 @@ Requests and their effect:
 
 Discovery binds the first control-enabled sensor, accelerometer and computer. Thrust authority, torque authority and propellant flow are computed from control-enabled engines, RCS blocks and torquers along the computer's forward axis (−Z rotated by the control orientation).
 
-Manual steering commands torque equal to `steering × per-axis torque capacity` in control axes. With a hold or aim reference, a rate-limited attitude controller is used instead (maximum 0.5 rad/s, gyroscopic compensation). The allocator ([allocation.rs](../crates/toy-sim-example-controller/src/allocation.rs)) solves a box-constrained least-squares problem over all control-enabled engines (throttle 0 to limit), RCS axes (−1 to 1) and torquer axes (−1 to 1) for the requested force and torque. Torque error is weighted eight times more heavily, and torque actuators are solved first. It runs up to 24 warm-started coordinate-descent sweeps, stopping early when instruction budget runs low. Its residual is published as the attitude instrument's `control_error`. The Flight computer window warns when that value exceeds 0.05.
+Manual steering commands torque equal to `steering × per-axis torque capacity` in control axes. With a hold or aim reference, a rate-limited attitude controller is used instead (maximum 0.5 rad/s, gyroscopic compensation). The allocator ([allocation.rs](../crates/osg-example-controller/src/allocation.rs)) solves a box-constrained least-squares problem over all control-enabled engines (throttle 0 to limit), RCS axes (−1 to 1) and torquer axes (−1 to 1) for the requested force and torque. Torque error is weighted eight times more heavily, and torque actuators are solved first. It runs up to 24 warm-started coordinate-descent sweeps, stopping early when instruction budget runs low. Its residual is published as the attitude instrument's `control_error`. The Flight computer window warns when that value exceeds 0.05.
 
 ## Tests
 
 ```sh
-cargo test -p toy-sim-ships
-cargo test -p toy-sim-example-controller
+cargo test -p osg-ships
+cargo test -p osg-example-controller
 ```
 
-[tests/ships.rs](../crates/toy-sim-ships/tests/ships.rs) covers avionics mass and power, format version rejection, the 24 rotations, CBOR round trips, overlap and connectivity checks, inventory capacity, fractional propellant, lever-arm torque, power loss, the stable tick plan, device metadata, atomic commands, alias uniqueness, sensor power and RCS behaviour.
+[tests/ships.rs](../crates/osg-ships/tests/ships.rs) covers avionics mass and power, format version rejection, the 24 rotations, CBOR round trips, overlap and connectivity checks, inventory capacity, fractional propellant, lever-arm torque, power loss, the stable tick plan, device metadata, atomic commands, alias uniqueness, sensor power and RCS behaviour.
 
 ## Configurable resource tanks
 

@@ -1,6 +1,6 @@
 # Equipment catalogue
 
-The catalogue is authored in `crates/toy-sim-ships/data/catalogue.toml`. Equipment types define behaviour; individual part records supply performance parameters, dimensions, mass, material capacity, and model references. Visual scaling does not implicitly change simulation parameters.
+The catalogue is authored in `crates/osg-ships/data/catalogue.toml`. Equipment types define behaviour; individual part records supply performance parameters, dimensions, mass, material capacity, and model references. Visual scaling does not implicitly change simulation parameters.
 
 ## Models
 
@@ -59,7 +59,7 @@ Railguns use the existing projectile simulation. Lasers consume electricity and 
 Generate the examples with:
 
 ```sh
-cargo run -p toy-sim-ships --example write_catalogue_examples --offline
+cargo run -p osg-ships --example write_catalogue_examples --offline
 ```
 
 Open any of these in the ship editor and select **Launch sim**:

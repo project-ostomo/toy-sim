@@ -3,8 +3,8 @@
 *.blend[0-9]*
 
 # Downloaded source data; retain the compact runtime catalogue instead.
-/crates/toy-sim-stars/data/*.csv
-/crates/toy-sim-stars/data/*.csv.gz
+/crates/osg-stars/data/*.csv
+/crates/osg-stars/data/*.csv.gz
 
 __pycache__/
 *.pyc

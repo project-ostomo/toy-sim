@@ -14,23 +14,6 @@ Write readable code with normal spacing, blank lines between logical steps, and
 multi-line functions where appropriate. Do not write compressed code and rely on
 rustfmt to make it readable; rustfmt does not supply logical separation.
 
-# English documentation
-
-Codex must delegate writing or rewriting English documentation to Claude Code
-through the `claude` CLI, except for the credit-limit fallback below. This includes
-README files, guides, architecture notes, and English documentation added during
-code changes. Codex must not draft
-or rewrite that prose itself. Codex may inspect implementation details, give
-Claude Code requirements and factual corrections, and verify its output. Any
-prose corrections must also be delegated to Claude Code.
-
-If Claude Code reports that it is out of credits or has reached a spending limit,
-Codex must continue writing, rewriting, and correcting the documentation directly.
-No additional user approval is needed for this fallback. For other failures or
-unavailability, report the blocker instead of writing the documentation directly.
-This rule applies to repository documentation; ordinary conversation with the
-user is exempt.
-
 # Testing and verification
 
 Do not write tests for reversible, low-impact changes that mirror the implementation. If you do choose to verify your work with tests, make sure that the tests are meaningful and necessary to verify implementation.
@@ -54,6 +37,8 @@ For manual source-code edits, MUST use Codex's native `apply_patch` tool.
 Do not modify files by writing Python, Perl, Ruby, sed, awk, cat,
 heredocs, or other shell scripts when `apply_patch` can reasonably
 perform the edit.
+
+You *should* use bash tools for things like moving files and deleting files, rather than applying huge patches.
 
 Python/scripts are allowed only for:
 - genuinely generated output,

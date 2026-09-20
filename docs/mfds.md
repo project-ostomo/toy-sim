@@ -6,19 +6,19 @@ Programmable screens are separate from the fixed instruments (attitude, navigati
 
 Screens are drawn by one of two entry points, depending on the host:
 
-- **Local simulator (`apps/toy-sim`).** Screens come from the flight computer's `ship_tick` callback, as described in [In the simulator](#in-the-simulator).
+- **Local simulator (`crates/osg-server`).** Screens come from the flight computer's `ship_tick` callback, as described in [In the simulator](#in-the-simulator).
 - **Authoritative server.** Screens come from `ship_display`, run in a separate display instance only while a network client subscribes. The frames are sent to that client in state frames ([Over the network](#over-the-network)).
 
 The drawing imports and limits are the same for both.
 
 Source:
 
-- Syscalls: [imports/drawing.rs](../crates/toy-sim-ship-wasm/src/imports/drawing.rs), with event handling in [imports.rs](../crates/toy-sim-ship-wasm/src/imports.rs) and [computer.rs](../crates/toy-sim-ship-wasm/src/computer.rs)
-- Frame model and limits: [drawing.rs](../crates/toy-sim-model/src/drawing.rs) in `toy-sim-model`, re-exported as `toy_sim_ship_wasm::screens`. The types are serde-serializable so frames can be sent over the network.
-- Server display instances and screen input: [session.rs](../crates/toy-sim-server/src/sim/displays.rs)
-- Painter and bezel widget: [mfd.rs](../crates/toy-sim-ui/src/mfd.rs)
-- Custom screen widget and input mapping: [screens.rs](../crates/toy-sim-ui/src/screens.rs)
-- Font: [crates/toy-sim-ui/data/fonts/README.md](../crates/toy-sim-ui/data/fonts/README.md)
+- Syscalls: [imports/drawing.rs](../crates/osg-ship-wasm/src/imports/drawing.rs), with event handling in [imports.rs](../crates/osg-ship-wasm/src/imports.rs) and [computer.rs](../crates/osg-ship-wasm/src/computer.rs)
+- Frame model and limits: [drawing.rs](../crates/osg-model/src/drawing.rs) in `osg-model`, re-exported as `osg_ship_wasm::screens`. The types are serde-serializable so frames can be sent over the network.
+- Server display instances and screen input: [session.rs](../crates/osg-server/src/sim/displays.rs)
+- Painter and bezel widget: [mfd.rs](../crates/osg-ui/src/mfd.rs)
+- Custom screen widget and input mapping: [screens.rs](../crates/osg-ui/src/screens.rs)
+- Font: [crates/osg-ui/data/fonts/README.md](../crates/osg-ui/data/fonts/README.md)
 
 ## Defining screens
 
@@ -43,7 +43,7 @@ A frame is built between `screen_begin` and `screen_end` in a single callback:
 3. `screen_button(screen, key, label, bytes)` assigns or clears a bezel key label.
 4. `screen_end(screen)` validates the frame and stages it for commit.
 
-A frame that is begun but not ended is discarded. A committed frame stays on display until the firmware replaces it, redefines the screen with a new size, or removes it. Firmware can therefore redraw only when content changes; the [custom screen example](../crates/toy-sim-example-controller/examples/custom_screen.rs) redraws at most every 10 ticks unless its state changes.
+A frame that is begun but not ended is discarded. A committed frame stays on display until the firmware replaces it, redefines the screen with a new size, or removes it. Firmware can therefore redraw only when content changes; the [custom screen example](../crates/osg-example-controller/examples/custom_screen.rs) redraws at most every 10 ticks unless its state changes.
 
 Colours are `0xRRGGBB` values up to `0xFFFFFF`. Coordinates are signed 16-bit pixel positions measured from the top-left corner, and may fall outside the surface.
 
@@ -123,16 +123,16 @@ The server path is described in full in [server-client.md](server-client.md#disp
 
 The display instance cannot write devices or issue world commands. It does not share memory with the flight instance. Firmware without a `ship_display` export gets no display instance; each subscribed slot is reported with no frame and the error "Display unavailable". The standard firmware exports a drawing-only `ship_display`: each requested slot becomes a 512 × 256 "Ship status" screen with simulation time, speed, mass and battery energy as text. It does not read screen events, so clicks on it do nothing.
 
-The shared UI supports every defined slot and complete input forwarding. [Display tests](../crates/toy-sim-server/src/sim/displays.rs) cover shared viewers, expiry, ownership and power revocation, input forwarding and stale instance revisions.
+The shared UI supports every defined slot and complete input forwarding. [Display tests](../crates/osg-server/src/sim/displays.rs) cover shared viewers, expiry, ownership and power revocation, input forwarding and stale instance revisions.
 
 
 ## The bezel MFD widget
 
-`toy_sim_ui::MfdRenderer::show(ui, id, frame)` draws a square screen with six bezel buttons on each side. Buttons show their labels in the MFD font, show "—" when unassigned, and are clickable only when labelled. Each button's tooltip names the key and an F-key hint (`F1`–`F6` for the left column, `Shift+F1`–`F6` for the right). The widget returns a `MfdResponse` with the clicked `BezelKey` values and whether the screen was clicked. It does not bind F-keys itself. The simulator does not use this widget at present. Its behaviour is covered by the tests in [mfd/tests.rs](../crates/toy-sim-ui/src/mfd/tests.rs).
+`osg_ui::MfdRenderer::show(ui, id, frame)` draws a square screen with six bezel buttons on each side. Buttons show their labels in the MFD font, show "—" when unassigned, and are clickable only when labelled. Each button's tooltip names the key and an F-key hint (`F1`–`F6` for the left column, `Shift+F1`–`F6` for the right). The widget returns a `MfdResponse` with the clicked `BezelKey` values and whether the screen was clicked. It does not bind F-keys itself. The simulator does not use this widget at present. Its behaviour is covered by the tests in [mfd/tests.rs](../crates/osg-ui/src/mfd/tests.rs).
 
 ## Painting
 
-`toy_sim_ui::mfd::paint(painter, rect, frame)` draws a complete frame:
+`osg_ui::mfd::paint(painter, rect, frame)` draws a complete frame:
 
 - It returns false and draws nothing for an invalid frame or an empty destination.
 - The frame is scaled uniformly to fit the destination and centred. Drawing is clipped to the scaled surface.
@@ -144,8 +144,8 @@ Install the font first, either with `MfdFontPlugin` in Bevy or `mfd::install_fon
 ## Tests
 
 ```sh
-cargo test -p toy-sim-ship-view
-cargo test -p toy-sim-ship-wasm
+cargo test -p osg-ship-view
+cargo test -p osg-ship-wasm
 ```
 
 The view tests check:
@@ -161,5 +161,5 @@ The view tests check:
 The WASM tests cover unfinished frames and the custom screen firmware responding to a click. The firmware runs through `instantiate_display` in that test.
 
 ```sh
-cargo test -p toy-sim-server --lib sim::displays::tests
+cargo test -p osg-server --lib sim::displays::tests
 ```

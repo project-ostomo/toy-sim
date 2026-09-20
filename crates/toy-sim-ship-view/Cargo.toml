@@ -1,9 +1,0 @@
-[package]
-name = "toy-sim-ship-view"
-version.workspace = true
-edition.workspace = true
-
-[dependencies]
-bevy.workspace = true
-toy-sim-ships = { path = "../toy-sim-ships" }
-serde_json = "1"

@@ -108,9 +108,9 @@ Run current validation and benchmarks with:
 
 ```sh
 cargo test --workspace --offline
-cargo test -p toy-sim --offline profile_orbit_overlay -- --ignored --nocapture
-SHIP_PROFILE_MODE=idle SHIP_PROFILE_THREADS=16 cargo test -p toy-sim --offline profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=no_instruments SHIP_PROFILE_THREADS=16 cargo test -p toy-sim --offline profile_default_fleet -- --ignored --nocapture
+cargo test -p osg-server --offline profile_orbit_overlay -- --ignored --nocapture
+SHIP_PROFILE_MODE=idle SHIP_PROFILE_THREADS=16 cargo test -p osg-server --offline profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_MODE=no_instruments SHIP_PROFILE_THREADS=16 cargo test -p osg-server --offline profile_default_fleet -- --ignored --nocapture
 ```
 
 Regression coverage includes conic energy/momentum and reversibility, energetic

@@ -1,6 +1,6 @@
 [workspace]
 members = ["apps/*", "crates/*"]
-default-members = ["apps/toy-sim-debug"]
+default-members = ["apps/osg-debug"]
 resolver = "3"
 
 [workspace.package]
@@ -38,6 +38,3 @@ opt-level = 3
 
 [profile.release]
 panic = "abort"
-
-[patch.crates-io]
-picomux = { path = "vendor/picomux" }

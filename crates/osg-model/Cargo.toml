@@ -1,0 +1,14 @@
+[package]
+name = "osg-model"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["rc"] }
+uuid = "1.26"
+osg-space = { path = "../osg-space" }
+osg-ship-api = { path = "../osg-ship-api" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+uuid = { version = "1.26", features = ["v4"] }
+rand = "0.10.2"

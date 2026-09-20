@@ -1,5 +1,5 @@
 [package]
-name = "net-compression-bench"
+name = "osg-net-compression-bench"
 version = "0.1.0"
 edition = "2024"
 

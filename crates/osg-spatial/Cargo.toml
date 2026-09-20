@@ -1,0 +1,13 @@
+[package]
+name = "osg-spatial"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+osg-space = { path = "../osg-space" }
+glam.workspace = true
+ahash = "0.8"
+
+[dev-dependencies]
+rand = "0.10"
+rand_chacha = "0.10"

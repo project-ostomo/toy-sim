@@ -1,0 +1,15 @@
+[package]
+name = "osg-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+bevy.workspace = true
+bevy_egui.workspace = true
+osg-model = { path = "../osg-model" }
+osg-ship-api = { path = "../osg-ship-api" }
+osg-ships = { path = "../osg-ships" }
+skrifa = { version = "0.44.0", default-features = false, features = ["std"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+bevy_dylib.workspace = true

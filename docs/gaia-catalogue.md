@@ -1,7 +1,7 @@
 # In-memory star catalogue
 
-The Cargo workspace contains the Bevy app at its root, `crates/toy-sim-space`
-(shared i128 micrometre coordinates), and `crates/toy-sim-stars` (portable binary
+The Cargo workspace contains the Bevy app at its root, `crates/osg-space`
+(shared i128 micrometre coordinates), and `crates/osg-stars` (portable binary
 I/O and immutable in-memory queries). Neither library depends on Bevy. There is
 no SQLite runtime, database, persisted tree, or connection mutex.
 
@@ -15,8 +15,8 @@ binary with `include_bytes!`, so the executable needs no catalogue file at runti
 ## Conversion and configuration
 
 ```sh
-python3 tools/import_gaia.py crates/toy-sim-stars/data/gaia-dr3-earth-million.stars crates/toy-sim-stars/data/gaia-dr3-earth-million.csv
-cargo run -p toy-star-query --release
+python3 tools/import_gaia.py crates/osg-stars/data/gaia-dr3-earth-million.stars crates/osg-stars/data/gaia-dr3-earth-million.csv
+cargo run -p osg-star-query --release
 cargo test --workspace
 ```
 
@@ -26,11 +26,11 @@ file before replacing the output. Re-running regenerates the same binary; no
 resumability bookkeeping is needed. A companion `.stars.json` records provenance,
 calibration, origin and conversion counts. The raw CSV is ignored by Git and can
 be downloaded again with `tools/download_gaia_earth.py`; the ADQL and
-[source notes](../crates/toy-sim-stars/data/README.md) live alongside the embedded catalogue. `--limit` limits input rows; `--origin-um X Y Z` supplies an integer
+[source notes](../crates/osg-stars/data/README.md) live alongside the embedded catalogue. `--limit` limits input rows; `--origin-um X Y Z` supplies an integer
 micrometre offset; `--min-parallax-snr` defaults to 10.
 
 The universe manifest contains only authored system paths. Rendering defaults live
-in `crates/toy-sim-client/src/ui/scene/sky.rs` (magnitude 6, brightness 1) and `crates/toy-sim-client/src/ui/scene/sky.rs` (150,000-star cap).
+in `crates/osg-client/src/ui/scene/sky.rs` (magnitude 6, brightness 1) and `crates/osg-client/src/ui/scene/sky.rs` (150,000-star cap).
 The Universe GUI still adjusts magnitude and brightness live. Replacing the bundled
 catalogue requires rebuilding the executable. The app decodes and indexes it on
 one background task, then shares an immutable `Arc<StarCatalogue>`. Queries run
@@ -100,7 +100,7 @@ standalone loader/query process peaked at approximately 214 MiB resident memory.
 ## Sky rendering
 
 The renderer uses Bevy's built-in skybox with CPU-baked RGBA32F cubemaps, always
-2048 pixels per face (`RESOLUTION` in `crates/toy-sim-client/src/ui/scene/sky/bake.rs`). Radiance is stored
+2048 pixels per face (`RESOLUTION` in `crates/osg-client/src/ui/scene/sky/bake.rs`). Radiance is stored
 without the former half-float brightness clamp; the renderer requires the GPU's
 `FLOAT32_FILTERABLE` feature for linear cubemap filtering. There are no coarse
 passes or progressive refinements. A snapshot of the selected stars and camera
@@ -121,7 +121,7 @@ The cubemap contains point sources only. Stars whose angular radius reaches
 `HANDOVER` — half a texel at the finest mip level, `1 / RESOLUTION` radians, in
 `bake.rs` — are diverted out of the bake entirely and drawn as emissive sphere
 meshes at their galactic coordinates
-(`crates/toy-sim-client/src/ui/scene/sky/geometry.rs`). Disk rasterization is
+(`crates/osg-client/src/ui/scene/sky/geometry.rs`). Disk rasterization is
 gone: every baked star is below half a texel at the finest mip and therefore
 below half a texel at every coarser one, so only bilinear point footprints are
 splatted, normalized by solid angle, with edge-crossing taps reprojected onto

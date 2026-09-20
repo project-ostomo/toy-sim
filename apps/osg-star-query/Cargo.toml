@@ -1,0 +1,8 @@
+[package]
+name = "osg-star-query"
+version.workspace = true
+edition.workspace = true
+[dependencies]
+anyhow.workspace = true
+osg-stars = { path = "../../crates/osg-stars" }
+osg-space = { path = "../../crates/osg-space" }

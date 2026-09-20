@@ -8,12 +8,12 @@ The same guidance flies sublight legs of travel orders in the authoritative worl
 
 Source:
 
-- Requests and validation: `Pilot::request` in [lib.rs](../crates/toy-sim-example-controller/src/lib.rs)
-- Guidance state machine and control law: [navigation.rs](../crates/toy-sim-example-controller/src/navigation.rs)
-- Forecast: [prediction.rs](../crates/toy-sim-example-controller/src/prediction.rs)
-- Current-command executor: [world.rs](../crates/toy-sim-example-controller/src/world.rs)
-- Instrument publication: [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs)
-- Closed-loop tests: [physics/rendezvous_tests.rs](../crates/toy-sim-server/src/sim/physics/rendezvous_tests.rs)
+- Requests and validation: `Pilot::request` in [lib.rs](../crates/osg-example-controller/src/lib.rs)
+- Guidance state machine and control law: [navigation.rs](../crates/osg-example-controller/src/navigation.rs)
+- Forecast: [prediction.rs](../crates/osg-example-controller/src/prediction.rs)
+- Current-command executor: [world.rs](../crates/osg-example-controller/src/world.rs)
+- Instrument publication: [firmware.rs](../crates/osg-example-controller/src/firmware.rs)
+- Closed-loop tests: [physics/rendezvous_tests.rs](../crates/osg-server/src/sim/physics/rendezvous_tests.rs)
 
 ## Request sequence
 
@@ -154,12 +154,12 @@ The editor's Systems mode warns about missing forward thrust along the control o
 
 Tests written for the braking law:
 
-- `rendezvous_brakes_and_matches_terminal_velocity` in [navigation.rs](../crates/toy-sim-example-controller/src/navigation.rs). It checks that the command brakes when closing fast, and that an ideal double integrator driven by the law arrives within 2 m and 0.5 m/s.
-- `travel_order_runs_in_stock_wasm_and_brakes_at_destination` in [toy-sim-server/src/sim/travel/router_tests.rs](../crates/toy-sim-server/src/sim/travel/router_tests.rs). It runs the bundled firmware in the headless world and requires a galactic travel order 100 m away to complete within 2 m and 0.5 m/s.
+- `rendezvous_brakes_and_matches_terminal_velocity` in [navigation.rs](../crates/osg-example-controller/src/navigation.rs). It checks that the command brakes when closing fast, and that an ideal double integrator driven by the law arrives within 2 m and 0.5 m/s.
+- `travel_order_runs_in_stock_wasm_and_brakes_at_destination` in [osg-server/src/sim/travel/router_tests.rs](../crates/osg-server/src/sim/travel/router_tests.rs). It runs the bundled firmware in the headless world and requires a galactic travel order 100 m away to complete within 2 m and 0.5 m/s.
 
-The closed-loop tests in `apps/toy-sim` were first written for the previous pursuit-pass law and now check braked arrival through the shared finish condition below. Some test names (`pursuit_pass_…`, `missed_pass_turns_back_…`, `forecast_reaches_first_pass_…`) and setup checks such as "first pass must miss" keep the old wording; they describe the initial geometry, not the terminal behaviour.
+The closed-loop tests in `crates/osg-server` were first written for the previous pursuit-pass law and now check braked arrival through the shared finish condition below. Some test names (`pursuit_pass_…`, `missed_pass_turns_back_…`, `forecast_reaches_first_pass_…`) and setup checks such as "first pass must miss" keep the old wording; they describe the initial geometry, not the terminal behaviour.
 
-The closed-loop tests in [rendezvous_tests.rs](../crates/toy-sim-server/src/sim/physics/rendezvous_tests.rs) run the real `Pilot` against the server hardware ECS systems at 10 Hz. They use the starter design, an exact rotational integrator, an ideal accelerometer, and optional point-mass gravity (μ = 3.986004418e14). A flight finishes when the distance to the aim point is at most 2 m and the relative speed is at most 0.5 m/s. Guidance must stay active until then, and the flight fails if that does not happen within 100,000 ticks.
+The closed-loop tests in [rendezvous_tests.rs](../crates/osg-server/src/sim/physics/rendezvous_tests.rs) run the real `Pilot` against the server hardware ECS systems at 10 Hz. They use the starter design, an exact rotational integrator, an ideal accelerometer, and optional point-mass gravity (μ = 3.986004418e14). A flight finishes when the distance to the aim point is at most 2 m and the relative speed is at most 0.5 m/s. Guidance must stay active until then, and the flight fails if that does not happen within 100,000 ticks.
 
 Scenarios:
 
@@ -181,10 +181,10 @@ Scenarios:
 The accelerometer model is also checked: no signal in free fall, mount rotation handled, gravity subtracted while other forces are kept.
 
 ```sh
-cargo test -p toy-sim rendezvous_tests
-cargo test -p toy-sim-example-controller navigation
-cargo test -p toy-sim-server --lib sim::travel::router_tests
-cargo test -p toy-sim-ship-wasm armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot
+cargo test -p osg-server rendezvous_tests
+cargo test -p osg-example-controller navigation
+cargo test -p osg-server --lib sim::travel::router_tests
+cargo test -p osg-ship-wasm armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot
 ```
 
 ## Limitations

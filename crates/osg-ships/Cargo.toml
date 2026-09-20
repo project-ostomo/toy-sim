@@ -1,0 +1,15 @@
+[package]
+name = "osg-ships"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+ciborium = "0.2.2"
+serde_bytes = "0.11.19"
+toml.workspace = true
+glam.workspace = true
+osg-ship-api = { path = "../osg-ship-api" }
+osg-model = { path = "../osg-model" }
+rand = "0.10"

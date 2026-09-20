@@ -17,7 +17,7 @@ ICRS_TO_GALACTIC = (
     (0.4941094279, -0.4448296300, 0.7469822445),
     (-0.8676661490, -0.1980763734, 0.4559837762),
 )
-OUTPUT = Path(__file__).resolve().parents[1] / "crates/toy-sim-universe/data/inhabited-stars.json"
+OUTPUT = Path(__file__).resolve().parents[1] / "crates/osg-universe/data/inhabited-stars.json"
 
 
 def group_components(rows):
@@ -45,7 +45,7 @@ def group_components(rows):
 
 def settlement_priority(group):
     star = group[0]
-    digest = hashlib.sha256(("toy-sim settlement v1:" + star["id"]).encode()).digest()
+    digest = hashlib.sha256(("OpenSpaceGame settlement v1:" + star["id"]).encode()).digest()
     uniform = int.from_bytes(digest[:8], "little") / 2 ** 64
     weight = 1 + 3 * min(star["luminosity"], 1) + 2 * bool(star.get("name"))
     return -math.log(max(uniform, 1e-18)) / weight

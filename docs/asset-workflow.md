@@ -17,7 +17,7 @@ the generation script.
 ## What already fits this repository
 
 - There are nine predefined part types in
-  `crates/toy-sim-ships/data/catalogue.toml`.
+  `crates/osg-ships/data/catalogue.toml`.
 - A part can already set `model = "models/parts/engine.glb"`.
   Both desktop applications load GLB scene 0.
 - Exported assets use metres, are centred on their part origin, and fit the
@@ -27,7 +27,7 @@ the generation script.
 - Model geometry does not change the authoritative box occupancy, mass, inertia
   or capabilities. A visually hollow truss still occupies its whole defined box.
 - Most catalogue parts use 1 × 1 × 1 m boxes; the engine is 1 × 1 × 2 m. Coolant tanks and heat sinks each occupy a 1 m cube.
-- Presentation lives in `crates/toy-sim-ship-view`. Effects belong there, not in
+- Presentation lives in `crates/osg-ship-view`. Effects belong there, not in
   the authoritative ship library or player WASM.
 - Blender was not found on this environment's PATH during the investigation.
   No installations or paid generation jobs were run.
@@ -98,7 +98,7 @@ tools/art/                 # Blender generators, export and validation scripts
 assets/models/parts/       # Runtime GLBs
 assets/textures/parts/     # Shared textures, if not embedded
 assets/textures/fx/        # Particle masks / flipbook images when needed
-apps/toy-asset-preview/    # Optional Bevy helper for repeatable model/FX review
+apps/osg-asset-preview/    # Optional Bevy helper for repeatable model/FX review
 ```
 
 Keep source scripts, accepted references and generated runtime assets together in

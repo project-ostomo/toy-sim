@@ -1,8 +1,0 @@
-[package]
-name = "toy-star-query"
-version.workspace = true
-edition.workspace = true
-[dependencies]
-anyhow.workspace = true
-toy-sim-stars = { path = "../../crates/toy-sim-stars" }
-toy-sim-space = { path = "../../crates/toy-sim-space" }

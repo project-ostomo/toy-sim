@@ -2809,20 +2809,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
-]
-
-[[package]]
 name = "dasp_sample"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3505,9 +3491,9 @@ dependencies = [
 
 [[package]]
 name = "geph5-rt"
-version = "0.3.6"
+version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db14c0bac9c452c4b51a99bfc1462a3b33eec4df32c35ff065737b85f8be4ba1"
+checksum = "f48532a2b76573f7682cef0329eb57de592bbf542de3f12ad06ba96ee142ef49"
 dependencies = [
  "async-channel",
  "bytes",
@@ -3847,12 +3833,6 @@ checksum = "47d60b12902ba28e2730cd37e95b8c9223af2808df9e902d4df49588d1470606"
 dependencies = [
  "byteorder",
 ]
-
-[[package]]
-name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -5455,6 +5435,278 @@ dependencies = [
 ]
 
 [[package]]
+name = "osg-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "blake3",
+ "ed25519-dalek",
+ "glam 0.32.1",
+ "hifitime",
+ "osg-model",
+ "osg-net",
+ "osg-protocol",
+ "osg-ship-view",
+ "osg-ships",
+ "osg-space",
+ "osg-stars",
+ "osg-ui",
+ "osg-universe",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "osg-debug"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ed25519-dalek",
+ "osg-client",
+ "osg-model",
+ "rand 0.10.2",
+ "serde",
+ "tokio",
+ "toml",
+]
+
+[[package]]
+name = "osg-example-controller"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "osg-model",
+ "osg-ship-api",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "osg-intel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "glam 0.32.1",
+ "osg-model",
+ "osg-spatial",
+ "serde",
+]
+
+[[package]]
+name = "osg-model"
+version = "0.1.0"
+dependencies = [
+ "osg-ship-api",
+ "osg-space",
+ "rand 0.10.2",
+ "serde",
+ "uuid",
+]
+
+[[package]]
+name = "osg-net"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "chacha20poly1305",
+ "ed25519-dalek",
+ "osg-model",
+ "osg-protocol",
+ "picomux",
+ "rand 0.8.8",
+ "serde",
+ "tokio",
+ "x25519-dalek",
+ "zstd",
+]
+
+[[package]]
+name = "osg-protocol"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "osg-model",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "osg-server"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "bevy",
+ "bevy_dylib",
+ "blake3",
+ "ed25519-dalek",
+ "hifitime",
+ "ordered-float",
+ "osg-client",
+ "osg-example-controller",
+ "osg-intel",
+ "osg-model",
+ "osg-net",
+ "osg-protocol",
+ "osg-ship-api",
+ "osg-ship-wasm",
+ "osg-ships",
+ "osg-space",
+ "osg-spatial",
+ "osg-universe",
+ "parry3d-f64",
+ "postcard",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
+ "rayon",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "smol_str 0.3.6",
+ "tokio",
+ "toml",
+ "wat",
+ "zstd",
+]
+
+[[package]]
+name = "osg-ship-api"
+version = "0.1.0"
+
+[[package]]
+name = "osg-ship-editor"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bevy",
+ "osg-ship-api",
+ "osg-ship-view",
+ "osg-ship-wasm",
+ "osg-ships",
+ "osg-ui",
+]
+
+[[package]]
+name = "osg-ship-view"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "osg-ships",
+ "serde_json",
+]
+
+[[package]]
+name = "osg-ship-wasm"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "glam 0.32.1",
+ "osg-model",
+ "osg-ship-api",
+ "osg-ships",
+ "osg-universe",
+ "postcard",
+ "wasm-encoder 0.254.0",
+ "wasmparser 0.254.0",
+ "wasmtime",
+ "wat",
+]
+
+[[package]]
+name = "osg-ships"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ciborium",
+ "glam 0.32.1",
+ "osg-model",
+ "osg-ship-api",
+ "rand 0.10.2",
+ "serde",
+ "serde_bytes",
+ "toml",
+]
+
+[[package]]
+name = "osg-space"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "serde",
+ "serde_yml",
+ "toml",
+]
+
+[[package]]
+name = "osg-spatial"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "glam 0.32.1",
+ "osg-space",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
+]
+
+[[package]]
+name = "osg-star-query"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "osg-space",
+ "osg-stars",
+]
+
+[[package]]
+name = "osg-stars"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "osg-space",
+ "osg-spatial",
+]
+
+[[package]]
+name = "osg-ui"
+version = "0.1.0"
+dependencies = [
+ "bevy",
+ "bevy_dylib",
+ "bevy_egui",
+ "osg-model",
+ "osg-ship-api",
+ "osg-ships",
+ "skrifa 0.44.0",
+]
+
+[[package]]
+name = "osg-universe"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "glam 0.32.1",
+ "hifitime",
+ "osg-space",
+ "osg-spatial",
+ "osg-stars",
+ "rand 0.10.2",
+ "rand_chacha 0.10.0",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "smol_str 0.3.6",
+ "toml",
+]
+
+[[package]]
 name = "owned_ttf_parser"
 version = "0.25.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5587,7 +5839,9 @@ dependencies = [
 
 [[package]]
 name = "picomux"
-version = "0.2.1"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7561779aaa8c53c8149c22a93f08bfcb12e7cf4edd72477d2379532c80ee2dab"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5596,7 +5850,6 @@ dependencies = [
  "bytemuck",
  "bytes",
  "crossbeam-queue",
- "dashmap",
  "futures-concurrency",
  "futures-intrusive",
  "futures-util",
@@ -6684,9 +6937,9 @@ dependencies = [
 
 [[package]]
 name = "sillad"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcb910308d460424cb32c03d61b3d6349d0231e026290a015d60fd241786d16c"
+checksum = "ed69b64f8a6e5b21ab8fb132365395c5a1ecf07e26fc79fd492605c8088a8a7e"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7371,278 +7624,6 @@ name = "tower-service"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8df9b6e13f2d32c91b9bd719c00d1958837bc7dec474d94952798cc8e69eeec3"
-
-[[package]]
-name = "toy-ship-editor"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bevy",
- "toy-sim-ship-api",
- "toy-sim-ship-view",
- "toy-sim-ship-wasm",
- "toy-sim-ships",
- "toy-sim-ui",
-]
-
-[[package]]
-name = "toy-sim-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "bevy",
- "blake3",
- "ed25519-dalek",
- "glam 0.32.1",
- "hifitime",
- "serde",
- "serde_json",
- "tokio",
- "toml",
- "toy-sim-model",
- "toy-sim-net",
- "toy-sim-protocol",
- "toy-sim-ship-view",
- "toy-sim-ships",
- "toy-sim-space",
- "toy-sim-stars",
- "toy-sim-ui",
- "toy-sim-universe",
- "tracing",
-]
-
-[[package]]
-name = "toy-sim-debug"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ed25519-dalek",
- "rand 0.10.2",
- "serde",
- "tokio",
- "toml",
- "toy-sim-client",
- "toy-sim-model",
-]
-
-[[package]]
-name = "toy-sim-example-controller"
-version = "0.1.0"
-dependencies = [
- "glam 0.32.1",
- "postcard",
- "serde",
- "toy-sim-model",
- "toy-sim-ship-api",
-]
-
-[[package]]
-name = "toy-sim-intel"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "glam 0.32.1",
- "serde",
- "toy-sim-model",
- "toy-sim-spatial",
-]
-
-[[package]]
-name = "toy-sim-model"
-version = "0.1.0"
-dependencies = [
- "rand 0.10.2",
- "serde",
- "toy-sim-ship-api",
- "toy-sim-space",
- "uuid",
-]
-
-[[package]]
-name = "toy-sim-net"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "chacha20poly1305",
- "ed25519-dalek",
- "picomux",
- "rand 0.8.8",
- "serde",
- "tokio",
- "toy-sim-model",
- "toy-sim-protocol",
- "x25519-dalek",
- "zstd",
-]
-
-[[package]]
-name = "toy-sim-protocol"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "postcard",
- "serde",
- "toy-sim-model",
-]
-
-[[package]]
-name = "toy-sim-server"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "anyhow",
- "bevy",
- "bevy_dylib",
- "blake3",
- "ed25519-dalek",
- "hifitime",
- "ordered-float",
- "parry3d-f64",
- "postcard",
- "rand 0.10.2",
- "rand_chacha 0.10.0",
- "rayon",
- "reqwest",
- "rusqlite",
- "serde",
- "serde_json",
- "smol_str 0.3.6",
- "tokio",
- "toml",
- "toy-sim-client",
- "toy-sim-example-controller",
- "toy-sim-intel",
- "toy-sim-model",
- "toy-sim-net",
- "toy-sim-protocol",
- "toy-sim-ship-api",
- "toy-sim-ship-wasm",
- "toy-sim-ships",
- "toy-sim-space",
- "toy-sim-spatial",
- "toy-sim-universe",
- "wat",
- "zstd",
-]
-
-[[package]]
-name = "toy-sim-ship-api"
-version = "0.1.0"
-
-[[package]]
-name = "toy-sim-ship-view"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "serde_json",
- "toy-sim-ships",
-]
-
-[[package]]
-name = "toy-sim-ship-wasm"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "glam 0.32.1",
- "postcard",
- "toy-sim-model",
- "toy-sim-ship-api",
- "toy-sim-ships",
- "toy-sim-universe",
- "wasm-encoder 0.254.0",
- "wasmparser 0.254.0",
- "wasmtime",
- "wat",
-]
-
-[[package]]
-name = "toy-sim-ships"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ciborium",
- "glam 0.32.1",
- "rand 0.10.2",
- "serde",
- "serde_bytes",
- "toml",
- "toy-sim-model",
- "toy-sim-ship-api",
-]
-
-[[package]]
-name = "toy-sim-space"
-version = "0.1.0"
-dependencies = [
- "glam 0.32.1",
- "serde",
- "serde_yml",
- "toml",
-]
-
-[[package]]
-name = "toy-sim-spatial"
-version = "0.1.0"
-dependencies = [
- "ahash",
- "glam 0.32.1",
- "rand 0.10.2",
- "rand_chacha 0.10.0",
- "toy-sim-space",
-]
-
-[[package]]
-name = "toy-sim-stars"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "toy-sim-space",
- "toy-sim-spatial",
-]
-
-[[package]]
-name = "toy-sim-ui"
-version = "0.1.0"
-dependencies = [
- "bevy",
- "bevy_dylib",
- "bevy_egui",
- "skrifa 0.44.0",
- "toy-sim-model",
- "toy-sim-ship-api",
- "toy-sim-ships",
-]
-
-[[package]]
-name = "toy-sim-universe"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "glam 0.32.1",
- "hifitime",
- "rand 0.10.2",
- "rand_chacha 0.10.0",
- "serde",
- "serde_json",
- "serde_yml",
- "smol_str 0.3.6",
- "toml",
- "toy-sim-space",
- "toy-sim-spatial",
- "toy-sim-stars",
-]
-
-[[package]]
-name = "toy-star-query"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "toy-sim-space",
- "toy-sim-stars",
-]
 
 [[package]]
 name = "tracing"

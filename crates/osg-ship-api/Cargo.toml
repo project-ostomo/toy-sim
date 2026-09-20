@@ -1,0 +1,6 @@
+[package]
+name = "osg-ship-api"
+version.workspace = true
+edition.workspace = true
+[features]
+default = []

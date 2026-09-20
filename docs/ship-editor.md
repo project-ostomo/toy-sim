@@ -1,27 +1,27 @@
 # Ship editor
 
-The editor uses the shared [toy-sim-ui](../crates/toy-sim-ui/README.md) theme: roomier controls, dark blue-gray surfaces and embedded Iosevka Aile and Iosevka fonts.
+The editor uses the shared [osg-ui](../crates/osg-ui/README.md) theme: roomier controls, dark blue-gray surfaces and embedded Iosevka Aile and Iosevka fonts.
 
-`toy-ship-editor` ([apps/toy-ship-editor](../apps/toy-ship-editor)) builds and edits `.ship` blueprints, installs custom firmware, configures avionics, and launches the simulator with the current design. The data model it edits is described in [ships.md](ships.md).
+`osg-ship-editor` ([apps/osg-ship-editor](../apps/osg-ship-editor)) builds and edits `.ship` blueprints, installs custom firmware, configures avionics, and launches the simulator with the current design. The data model it edits is described in [ships.md](ships.md).
 
 ## Running
 
 ```sh
-cargo run -p toy-ship-editor                       # empty design, file field set to ship.ship
-cargo run -p toy-ship-editor -- path/to/design.ship  # open a design
+cargo run -p osg-ship-editor                       # empty design, file field set to ship.ship
+cargo run -p osg-ship-editor -- path/to/design.ship  # open a design
 ```
 
 The editor also provides non-interactive blueprint generation and validation:
 
 ```sh
 # Write the unarmed starter design (default path: starter.ship in the working directory)
-cargo run -p toy-ship-editor -- --example my-starter.ship
+cargo run -p osg-ship-editor -- --example my-starter.ship
 
 # Write a micropulse demonstrator with preloaded charges and supporting hardware
-cargo run -p toy-ship-editor -- --micropulse-example my-micropulse.ship
+cargo run -p osg-ship-editor -- --micropulse-example my-micropulse.ship
 
 # Load, compile against the built-in catalogue, validate the controller, and print a summary
-cargo run -p toy-ship-editor -- --validate assets/ships/starter.ship
+cargo run -p osg-ship-editor -- --validate assets/ships/starter.ship
 ```
 
 `--validate` prints `<name>: <n> parts, <mass> kg dry` and exits with an error if the design or program is invalid. Any other argument that starts with `--` is rejected.
@@ -80,7 +80,7 @@ Thumbnails share one offscreen atlas, with a 256 × 256 pixel cell per prototype
 
 ## Systems mode
 
-The systems panel ([devices.rs](../apps/toy-ship-editor/src/devices.rs)) edits `avionics` and device metadata:
+The systems panel ([devices.rs](../apps/osg-ship-editor/src/devices.rs)) edits `avionics` and device metadata:
 
 - The standard avionics summary: 71 kg distributed mass, 101 W base power, 1000 W sensor power, 100,000 km sensor range.
 - "Enable contact sensor by default" (`sensor_enabled`).
@@ -105,14 +105,14 @@ After every change, the editor compiles the blueprint and validates its controll
 "Launch sim" is enabled when validation passes and no launched simulator is still running. It:
 
 1. Compiles and validates again.
-2. Saves a snapshot to `<temp>/toy-ship-editor/launch-<pid>-<revision>.ship`.
-3. Starts `toy-sim-debug --ship <snapshot>`.
+2. Saves a snapshot to `<temp>/osg-ship-editor/launch-<pid>-<revision>.ship`.
+3. Starts `osg-debug --ship <snapshot>`.
 
-By default it looks for `toy-sim-debug` (or `toy-sim-debug.exe`) next to the editor's own executable. Build the editor, debug launcher and server in the same profile first:
+By default it looks for `osg-debug` (or `osg-debug.exe`) next to the editor's own executable. Build the editor, debug launcher and server in the same profile first:
 
 ```sh
-cargo build -p toy-sim-debug -p toy-sim-server -p toy-ship-editor
-cargo run -p toy-ship-editor
+cargo build -p osg-debug -p osg-server -p osg-ship-editor
+cargo run -p osg-ship-editor
 ```
 
 To use a different binary, set its path under "Launch settings" in the inspector. When the child process exits, the status bar reports its exit status.
@@ -120,14 +120,14 @@ To use a different binary, set its path under "Launch settings" in the inspector
 ## Tests
 
 ```sh
-cargo test -p toy-ship-editor
+cargo test -p osg-ship-editor
 ```
 
 The tests check that `assets/ships/starter.ship` compiles with two weapons and a valid program, that deleting and undoing restores identical bytes that survive a save and reload, that viewport picking returns the nearest face, that browsing preserves the blueprint and selection, and that preview bounds and render layers handle model children arriving later.
 
 ## Trying micropulse propulsion
 
-Open `assets/ships/micropulse-demo.ship` in the editor and choose **Launch sim**, or run `cargo run -p toy-sim-debug -- --ship assets/ships/micropulse-demo.ship`. Build the server, debug launcher, and editor together first using the command above.
+Open `assets/ships/micropulse-demo.ship` in the editor and choose **Launch sim**, or run `cargo run -p osg-debug -- --ship assets/ships/micropulse-demo.ship`. Build the server, debug launcher, and editor together first using the command above.
 
 The demonstrator has an 8m engine, a fuselage tank allocated to micropulse charges at 20% starting fill, a forward cap, battery, command module, shield, coolant reserve, and torquer. All four micropulse engine sizes are also available under Propulsion in the catalogue. For a custom ship, configure a fuselage tank for **Micropulse charges (kg)** and include a battery to start the avionics. Micropulse thrust needs no separate bulk propellant or electrical input. Electricity is recovered while firing; there is no idle generation in this version.
 

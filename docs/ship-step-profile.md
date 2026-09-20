@@ -142,13 +142,13 @@ Run the current coasting fleet with the commands below. The historical automatic
 pursuit workload is no longer part of this fixture.
 
 ```sh
-cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=idle cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=no_instruments cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=custom_screen cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=empty_scan cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_THREADS=1 SHIP_PROFILE_MODE=idle cargo test -p toy-sim profile_default_fleet -- --ignored --nocapture
-cargo test -p toy-sim-ship-wasm profile_syscall_overhead -- --ignored --nocapture
+cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_MODE=idle cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_MODE=no_instruments cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_MODE=custom_screen cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_MODE=empty_scan cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+SHIP_PROFILE_THREADS=1 SHIP_PROFILE_MODE=idle cargo test -p osg-server profile_default_fleet -- --ignored --nocapture
+cargo test -p osg-ship-wasm profile_syscall_overhead -- --ignored --nocapture
 ```
 
 Run each measurement separately, without concurrent builds or benchmarks.

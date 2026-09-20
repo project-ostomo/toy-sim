@@ -59,9 +59,9 @@ political map.
 
 The starting world includes 108 organizations with authored histories, cultures,
 doctrines, goals and relationships. Their profiles live in the
-[USE](../crates/toy-sim-universe/data/organizations-union.json),
-[LFS](../crates/toy-sim-universe/data/organizations-league.json) and
-[independent](../crates/toy-sim-universe/data/organizations-independent.json)
+[USE](../crates/osg-universe/data/organizations-union.json),
+[LFS](../crates/osg-universe/data/organizations-league.json) and
+[independent](../crates/osg-universe/data/organizations-independent.json)
 rosters. Organization membership sits below sovereignty and above individual
 accounts. Friendly, neutral and hostile standings affect client identification
 and NPC decisions.
@@ -80,7 +80,7 @@ same metered LLM service available to other ship programs. See
 
 ## Data and verification
 
-The [stellar anchor provenance](../crates/toy-sim-universe/data/README.md) describes
+The [stellar anchor provenance](../crates/osg-universe/data/README.md) describes
 the measured catalogue selection and its coordinate conversion. Named fictional
 anchors are separate from catalogue observations. Generated map identities and
 random streams depend on stable system names or catalogue identifiers, and the

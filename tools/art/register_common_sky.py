@@ -5,7 +5,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / 'assets/models/common-sky/catalogue.json'
-OUTPUT = ROOT / 'crates/toy-sim-ships/data/common-sky.toml'
+OUTPUT = ROOT / 'crates/osg-ships/data/common-sky.toml'
 PROFILE = [(-38, .15, .15), (-36, 2.4, 1.7), (-32, 4.9, 3),
            (-28, 6.8, 3.7), (-24, 8.1, 4.2), (-16, 10.1, 4.7),
            (-8, 11.5, 5), (-4, 12, 5), (6, 12, 4.8),

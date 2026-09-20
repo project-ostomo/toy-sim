@@ -33,7 +33,7 @@ The script preserves the section geometry, applies modifiers to temporary export
 
 ## How a part selects a model
 
-A part definition in [crates/toy-sim-ships/data/catalogue.toml](../../../crates/toy-sim-ships/data/catalogue.toml) may set an optional `model` string:
+A part definition in [crates/osg-ships/data/catalogue.toml](../../../crates/osg-ships/data/catalogue.toml) may set an optional `model` string:
 
 ```toml
 [[parts]]
@@ -44,19 +44,19 @@ model = "models/parts/engine.glb"
 # ...
 ```
 
-When `model` is set, the simulator ([toy-sim-ship-view/src/lib.rs](../../../crates/toy-sim-ship-view/src/lib.rs)) and the editor viewport ([viewport.rs](../../../apps/toy-ship-editor/src/viewport.rs)) load `<model>#Scene0` through Bevy's `AssetServer`. The path is relative to the `assets/` directory. When `model` is absent, they use a cuboid mesh sized to `dimensions × 0.1 m` and a material coloured by `color`.
+When `model` is set, the simulator ([osg-ship-view/src/lib.rs](../../../crates/osg-ship-view/src/lib.rs)) and the editor viewport ([viewport.rs](../../../apps/osg-ship-editor/src/viewport.rs)) load `<model>#Scene0` through Bevy's `AssetServer`. The path is relative to the `assets/` directory. When `model` is absent, they use a cuboid mesh sized to `dimensions × 0.1 m` and a material coloured by `color`.
 
 ## Conventions the code expects
 
 - **Origin and axes.** The scene is spawned at the part's centre, with the part's placement rotation applied. Author the model centred on its origin in part-local axes.
 - **Size.** One model unit is one metre before applying the optional positive, finite `model_scale` (default 1.0). Scaling is uniform. For example, `model = "models/parts/micropulse-engine-8m.glb"` with `model_scale = 0.5` produces a 4 × 4 × 6 m visual; author `dimensions = [40, 40, 60]` for its matching part box. Dimensions, mass, performance, plume origins and plume sizes remain explicit catalogue values. The scale applies only to the imported model child in the shared renderer, including editor previews and client views.
 - **Engine direction.** Engines push along part-local −Z, and the exhaust plume points along +Z from `plume.origin_m`.
-- **Weapons.** Assembly views, catalogue thumbnails and placement previews all add barrel visuals separately from the weapon definition ([weapon.rs](../../../crates/toy-sim-ship-view/src/weapon.rs)). Muzzles fire along the barrel's −Z after yaw and pitch.
+- **Weapons.** Assembly views, catalogue thumbnails and placement previews all add barrel visuals separately from the weapon definition ([weapon.rs](../../../crates/osg-ship-view/src/weapon.rs)). Muzzles fire along the barrel's −Z after yaw and pitch.
 - **Scene.** Only the first scene, `Scene0`, is used.
 
 ## What a model does not change
 
-Models are visual only. Mass, inertia, collision geometry, exposed area, connectivity and overlap checks all use the box given by `dimensions` ([design.rs](../../../crates/toy-sim-ships/src/design.rs), [collision/mod.rs](../../../crates/toy-sim-server/src/sim/physics/collision/mod.rs)). Explosion fragments are also boxes coloured with `color`.
+Models are visual only. Mass, inertia, collision geometry, exposed area, connectivity and overlap checks all use the box given by `dimensions` ([design.rs](../../../crates/osg-ships/src/design.rs), [collision/mod.rs](../../../crates/osg-server/src/sim/physics/collision/mod.rs)). Explosion fragments are also boxes coloured with `color`.
 
 The catalogue is compiled into the binaries with `include_str!`. After editing it, rebuild both applications. See [docs/asset-workflow.md](../../../docs/asset-workflow.md) for the full editing workflow.
 

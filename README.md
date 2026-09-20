@@ -1,6 +1,6 @@
-# toy-sim
+# OpenSpaceGame
 
-toy-sim is a prototype space-flight simulator written in Rust with Bevy. Ships and stations are assembled from parts with typed attachment nodes. The server compiles a coarse 1 m collision volume. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, docking, gates, slipdrives, a sky rendered from an embedded catalogue of one million Gaia DR3 stars, and an orbital navigation overlay.
+OpenSpaceGame is a prototype space-flight simulator written in Rust with Bevy. Ships and stations are assembled from parts with typed attachment nodes. The server compiles a coarse 1 m collision volume. A flight computer runs each ship. It is a sandboxed WebAssembly program that reads sensors and commands hardware through a fixed, allocation-free syscall interface. The simulation runs at a fixed 10 Hz. It covers Keplerian star systems, per-ship gravity, continuous collision detection, shields that radiate waste heat and consume coolant reserves, hull damage from heat, projectile weapons, docking, gates, slipdrives, a sky rendered from an embedded catalogue of one million Gaia DR3 stars, and an orbital navigation overlay.
 
 The simulation runs only in an authoritative server process. Every window, including the local debug application, is a network client that connects to a server over authenticated TCP ([docs/server-client.md](docs/server-client.md)). The server checkpoints the authoritative world, ship programs, ownership and account gas to SQLite; see [persistence](docs/persistence.md).
 
@@ -10,45 +10,44 @@ The default encounter has two patrol ships 1 km apart, one hostile, near Neris A
 
 ## Workspace map
 
-The Cargo workspace ([Cargo.toml](Cargo.toml)) includes every package under `apps/` and `crates/`. `cargo run` with no package flag runs `apps/toy-sim-debug`.
+The Cargo workspace ([Cargo.toml](Cargo.toml)) includes every package under `apps/` and `crates/`. `cargo run` with no package flag runs `apps/osg-debug`.
 
 ### Applications
 
 | Package | Path | Purpose |
 | --- | --- | --- |
-| `toy-sim-debug` | [apps/toy-sim-debug](apps/toy-sim-debug) | Local debug launcher. It starts `toy-sim-server` as a child process, retains its state directory by default, connects over loopback TCP with a debug account, and opens the client UI. |
-| `toy-ship-editor` | [apps/toy-ship-editor](apps/toy-ship-editor) | Interactive ship editor that saves `.ship` files and can launch `toy-sim-debug` with the current design. |
-| `toy-star-query` | [apps/toy-star-query](apps/toy-star-query) | Headless loader and query benchmark for the star catalogue. |
+| `osg-debug` | [apps/osg-debug](apps/osg-debug) | Local debug launcher. It starts `osg-server` as a child process, retains its state directory by default, connects over loopback TCP with a debug account, and opens the client UI. |
+| `osg-ship-editor` | [apps/osg-ship-editor](apps/osg-ship-editor) | Interactive ship editor that saves `.ship` files and can launch `osg-debug` with the current design. |
+| `osg-star-query` | [apps/osg-star-query](apps/osg-star-query) | Headless loader and query benchmark for the star catalogue. |
 
-The server binary `toy-sim-server` and the remote client binary `toy-sim-client` live in their library crates below.
+The server binary `osg-server` and the remote client binary `osg-client` live in their library crates below.
 
 ### Libraries
 
 | Package | Path | Purpose |
 | --- | --- | --- |
-| `toy-sim-spatial` | [crates/toy-sim-spatial](crates/toy-sim-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
-| `toy-sim-space` | [crates/toy-sim-space](crates/toy-sim-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
-| `toy-sim-stars` | [crates/toy-sim-stars](crates/toy-sim-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
-| `toy-sim-ship-api` | [crates/toy-sim-ship-api](crates/toy-sim-ship-api) | `no_std` ship ABI 31: fixed C records, typed world/service imports, caller-owned output arrays and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
-| `toy-sim-ships` | [crates/toy-sim-ships](crates/toy-sim-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
-| `toy-sim-ship-wasm` | [crates/toy-sim-ship-wasm](crates/toy-sim-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
-| `toy-sim-ship-view` | [crates/toy-sim-ship-view](crates/toy-sim-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
-| `toy-sim-ui` | [crates/toy-sim-ui](crates/toy-sim-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
-| `toy-sim-example-controller` | [crates/toy-sim-example-controller](crates/toy-sim-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and execution of the current host-owned navigation command. Strategic route search runs on the server. |
-| `toy-sim-model` | [crates/toy-sim-model](crates/toy-sim-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
-| `toy-sim-protocol` | [crates/toy-sim-protocol](crates/toy-sim-protocol) | `TSF1` application message framing, sections and validation limits. |
-| `toy-sim-net` | [crates/toy-sim-net](crates/toy-sim-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
-| `toy-sim-intel` | [crates/toy-sim-intel](crates/toy-sim-intel) | Measurements, immutable track snapshots and metered track queries. |
-| `toy-sim-universe` | [crates/toy-sim-universe](crates/toy-sim-universe) | Celestial definitions, Keplerian solver, system index, atmosphere tables and replicated system assets; independent of Bevy. |
-| `toy-sim-server` | [crates/toy-sim-server](crates/toy-sim-server) | The authoritative Bevy ECS simulation in private modules under `src/sim`, the 10 Hz simulation loop, TCP listener, asset streams, configuration, demo key provisioning, the server binary and the network benchmark example. |
-| `toy-sim-client` | [crates/toy-sim-client](crates/toy-sim-client) | Network client library and playback buffer. With the `ui` feature it adds the Bevy/egui client UI and the `toy-sim-client` binary. |
+| `osg-spatial` | [crates/osg-spatial](crates/osg-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
+| `osg-space` | [crates/osg-space](crates/osg-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
+| `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
+| `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` ship ABI 31: fixed C records, typed world/service imports, caller-owned output arrays and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `osg-ships` | [crates/osg-ships](crates/osg-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
+| `osg-ship-wasm` | [crates/osg-ship-wasm](crates/osg-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
+| `osg-ship-view` | [crates/osg-ship-view](crates/osg-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
+| `osg-ui` | [crates/osg-ui](crates/osg-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
+| `osg-example-controller` | [crates/osg-example-controller](crates/osg-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and execution of the current host-owned navigation command. Strategic route search runs on the server. |
+| `osg-model` | [crates/osg-model](crates/osg-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
+| `osg-protocol` | [crates/osg-protocol](crates/osg-protocol) | `TSF1` application message framing, sections and validation limits. |
+| `osg-net` | [crates/osg-net](crates/osg-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
+| `osg-intel` | [crates/osg-intel](crates/osg-intel) | Measurements, immutable track snapshots and metered track queries. |
+| `osg-universe` | [crates/osg-universe](crates/osg-universe) | Celestial definitions, Keplerian solver, system index, atmosphere tables and replicated system assets; independent of Bevy. |
+| `osg-server` | [crates/osg-server](crates/osg-server) | The authoritative Bevy ECS simulation in private modules under `src/sim`, the 10 Hz simulation loop, TCP listener, asset streams, configuration, demo key provisioning, the server binary and the network benchmark example. |
+| `osg-client` | [crates/osg-client](crates/osg-client) | Network client library and playback buffer. With the `ui` feature it adds the Bevy/egui client UI and the `osg-client` binary. |
 
 ### Other directories
 
 - [assets/](assets/README.md): runtime assets (universe and star system TOML files, the bundled starter ship, models).
 - [docs/](docs): topic guides, listed below.
 - [tools/](tools): Python scripts for Gaia downloads, Gaia conversion and ABI binding generation, and a standalone compression experiment.
-- [vendor/picomux](vendor/picomux): picomux 0.2.1 with project-local stream, frame and queue bounds, patched in through `[patch.crates-io]` ([docs/server-client.md](docs/server-client.md#multiplexing-vendored-picomux)).
 - [tests/fixtures/](tests/fixtures): a remote star system used by tests and a synthetic Gaia-shaped CSV.
 - [.cargo/config.toml](.cargo/config.toml): linker arguments for `wasm32-unknown-unknown` builds (64 KiB guest stack, 8 MiB maximum memory).
 
@@ -60,17 +59,17 @@ The dev profile compiles workspace code at `opt-level = 1` and dependencies at `
 
 Optional tools:
 
-- `python3` for the scripts in `tools/`. The `toy-sim-stars` integration test `python_converter_fixture_matches_portable_loader` runs `tools/import_gaia.py`.
+- `python3` for the scripts in `tools/`. The `osg-stars` integration test `python_converter_fixture_matches_portable_loader` runs `tools/import_gaia.py`.
 - The `wasm32-unknown-unknown` Rust target if you build controller firmware in Rust.
-- A C compiler that targets `wasm32` if you build C controllers against [ship.h](crates/toy-sim-ship-api/include/ship.h).
+- A C compiler that targets `wasm32` if you build C controllers against [ship.h](crates/osg-ship-api/include/ship.h).
 
 ## Build and run
 
-`toy-sim-debug` starts the server executable that sits next to its own executable, so build both packages in the same profile first.
+`osg-debug` starts the server executable that sits next to its own executable, so build both packages in the same profile first.
 
 ```sh
 # Build the server and the debug launcher
-cargo build -p toy-sim-server -p toy-sim-debug
+cargo build -p osg-server -p osg-debug
 
 # Start a local server and open the client UI with debug access
 cargo run
@@ -79,40 +78,40 @@ cargo run
 cargo run -- --ship assets/ships/starter.ship
 
 # Use a specific server executable
-cargo run -- --server target/debug/toy-sim-server
+cargo run -- --server target/debug/osg-server
 
 # Connect, wait for the first state frame and exit without opening a window
 cargo run -- --check
 
 # Ship editor, optionally opening a file
-cargo run -p toy-ship-editor
-cargo run -p toy-ship-editor -- path/to/design.ship
+cargo run -p osg-ship-editor
+cargo run -p osg-ship-editor -- path/to/design.ship
 
 # Editor command-line utilities
-cargo run -p toy-ship-editor -- --example starter.ship   # write the unarmed starter design
-cargo run -p toy-ship-editor -- --validate assets/ships/starter.ship
+cargo run -p osg-ship-editor -- --example starter.ship   # write the unarmed starter design
+cargo run -p osg-ship-editor -- --validate assets/ships/starter.ship
 
 # Dedicated server and remote clients (see docs/server-client.md)
-cargo run -p toy-sim-server -- --init demo          # writes demo/*.toml containing private keys
-cargo run -p toy-sim-server -- demo/server.toml
-cargo run -p toy-sim-client --features ui -- demo/client-a.toml
+cargo run -p osg-server -- --init demo          # writes demo/*.toml containing private keys
+cargo run -p osg-server -- demo/server.toml
+cargo run -p osg-client --features ui -- demo/client-a.toml
 
 # Network benchmark (see docs/server-client.md#benchmark)
-cargo build -p toy-sim-server
-cargo run -p toy-sim-server --example benchmark -- --ships 16 --sessions 4
+cargo build -p osg-server
+cargo run -p osg-server --example benchmark -- --ships 16 --sessions 4
 
 # Star catalogue benchmark
-cargo run -p toy-star-query --release
+cargo run -p osg-star-query --release
 
 # Tests
 cargo test --workspace
 ```
 
-`toy-sim-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral`, `--enable-llm` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
+`osg-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral`, `--enable-llm` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
 
 1. Opens its state directory, creating the local server configuration and account keys when necessary. The server listens on loopback with an automatically allocated port.
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 60 s for the file to contain the listening address.
-3. Connects with `toy_sim_client::connect`, the same TCP path a remote client uses.
+3. Connects with `osg_client::connect`, the same TCP path a remote client uses.
 4. With `--check`, waits up to 10 s for the first state frame, fails if it contains no controlled ship, and prints the tick and ship count. Otherwise it opens the client UI.
 
 When the launcher exits, it closes the server's standard input and allows up to 120 seconds for the final snapshot and shutdown. Persistent state directories are retained.
@@ -123,7 +122,7 @@ To try the current starting scenario independently of an older save, use a new
 state directory:
 
 ```sh
-cargo run -- --state-dir "$HOME/.local/state/toy-sim/mvp-world"
+cargo run -- --state-dir "$HOME/.local/state/openspacegame/mvp-world"
 ```
 
 Subsequent launches with the same directory restore that world, including its
@@ -134,7 +133,7 @@ recovery. Ordinary launches leave paid calls disabled.
 
 ## What happens at startup
 
-For a new world, the server builds the scenario in [bootstrap.rs](crates/toy-sim-server/src/sim/bootstrap.rs). A saved world restores its authoritative data before accepting clients.
+For a new world, the server builds the scenario in [bootstrap.rs](crates/osg-server/src/sim/bootstrap.rs). A saved world restores its authoritative data before accepting clients.
 
 - The player starts on the day side of Helion I Neris, in a circular orbit about 40,000 km above the surface. The client initially places the camera on the illuminated side.
 - The first ship uses the configured blueprint, or `assets/ships/expedition-patrol.ship`. Additional configured accounts receive their own ships.
@@ -188,16 +187,16 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | [docs/asset-workflow.md](docs/asset-workflow.md) | Editing universe, star system, catalogue, model and generated assets |
 | [docs/ship-step-profile.md](docs/ship-step-profile.md) | Historical ship-step measurements and the current fleet profiling test |
 
-Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [crates/toy-sim-stars/data/README.md](crates/toy-sim-stars/data/README.md), [crates/toy-sim-ui/data/fonts/README.md](crates/toy-sim-ui/data/fonts/README.md).
+Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [crates/osg-stars/data/README.md](crates/osg-stars/data/README.md), [crates/osg-ui/data/fonts/README.md](crates/osg-ui/data/fonts/README.md).
 
 ## Architecture overview
 
-- **Processes.** `toy-sim-server` owns the only simulation. Clients connect over TCP, authenticate with an account key, pin the server's public key, and exchange input and state frames ([docs/server-client.md](docs/server-client.md)). `toy-sim-debug` is a client that starts its own server process. A debug account is an ordinary account with extra protocol capabilities; its commands use the same session and transport paths as any other command.
-- **Coordinates.** Authoritative positions are `GalacticPosition` values in integer micrometres ([toy-sim-space](crates/toy-sim-space/src/lib.rs)). Code subtracts positions before converting to `f64`. The client renders with a floating origin.
-- **Schedule.** The server's Bevy `App` runs one fixed 10 Hz step per update ([simulation.rs](crates/toy-sim-server/src/sim/simulation.rs)). `FixedFirst` advances travel. `FixedUpdate` activates star systems, publishes world-service indexes, runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`). `FixedPostUpdate` applies firmware world actions, integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index, runs sensor scans, and then runs intelligence: acquisition, coasting, fusion and snapshot publication.
-- **Ship hardware.** Inventory, hull, thermal state, avionics, device settings and sensor range are ECS components on the ship entity. Each installed part is its own entity with typed device components, and hardware systems step them ([hardware.rs](crates/toy-sim-server/src/sim/hardware.rs)). `toy_sim_ships::ShipState` builds those components when a ship spawns or resets, and snapshots them for presentation and collision damage.
-- **Orrery.** Each star system is a fixed star plus Keplerian bodies. Systems are activated when a ship's motion segment enters their gravitational influence radius ([orrery/](crates/toy-sim-server/src/sim/orrery)). Gravity from a system applies only inside that radius.
-- **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([rotation.rs](crates/toy-sim-server/src/sim/physics/rotation.rs)). Ships and projectiles are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
+- **Processes.** `osg-server` owns the only simulation. Clients connect over TCP, authenticate with an account key, pin the server's public key, and exchange input and state frames ([docs/server-client.md](docs/server-client.md)). `osg-debug` is a client that starts its own server process. A debug account is an ordinary account with extra protocol capabilities; its commands use the same session and transport paths as any other command.
+- **Coordinates.** Authoritative positions are `GalacticPosition` values in integer micrometres ([osg-space](crates/osg-space/src/lib.rs)). Code subtracts positions before converting to `f64`. The client renders with a floating origin.
+- **Schedule.** The server's Bevy `App` runs one fixed 10 Hz step per update ([simulation.rs](crates/osg-server/src/sim/simulation.rs)). `FixedFirst` advances travel. `FixedUpdate` activates star systems, publishes world-service indexes, runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`). `FixedPostUpdate` applies firmware world actions, integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index, runs sensor scans, and then runs intelligence: acquisition, coasting, fusion and snapshot publication.
+- **Ship hardware.** Inventory, hull, thermal state, avionics, device settings and sensor range are ECS components on the ship entity. Each installed part is its own entity with typed device components, and hardware systems step them ([hardware.rs](crates/osg-server/src/sim/hardware.rs)). `osg_ships::ShipState` builds those components when a ship spawns or resets, and snapshots them for presentation and collision damage.
+- **Orrery.** Each star system is a fixed star plus Keplerian bodies. Systems are activated when a ship's motion segment enters their gravitational influence radius ([orrery/](crates/osg-server/src/sim/orrery)). Gravity from a system applies only inside that radius.
+- **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([rotation.rs](crates/osg-server/src/sim/physics/rotation.rs)). Ships and projectiles are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
 - **Firmware.** Flight programs run in Wasmtime with a gas budget. They see their own flight state, device readings, fused contacts from their ship's information group, and world services for travel ([docs/ship-abi.md](docs/ship-abi.md)).
 - **Intelligence.** Clients receive fused tracks from information groups they have joined, exact reports shared by group members or IFF broadcasts, private telemetry and presentation for ships they control, and presentation for tracks whose identity the group already knows ([docs/server-client.md](docs/server-client.md#observations-and-intelligence)).
 - **Presentation.** The client buffers state frames, consumes them in a 10 Hz client FixedUpdate, and interpolates hulls, the camera, effects and instruments between frames. Instruments come from records the firmware publishes. Screens come from a separate `ship_display` instance that runs only while a client subscribes ([docs/mfds.md](docs/mfds.md)).
