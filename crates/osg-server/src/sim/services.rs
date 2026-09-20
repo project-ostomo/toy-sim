@@ -316,11 +316,19 @@ impl osg_ship_wasm::ScanSource for FusedScan {
                 );
                 let preparation_s = self.slip_preparation.as_ref().map_or_else(
                     || {
-                        (slip::CHARGE_J_PER_KG * self.mass / self.slip_power_w)
+                        (slip::charging_energy_j(
+                            self.mass,
+                            destination.relative_to(origin).length() / slip::LY_M,
+                        ) / self.slip_power_w)
                             .max(slip::MIN_CHARGE_SECONDS)
                     },
                     |preparation| {
-                        ((preparation.required_j - preparation.work_j).max(0.0) / self.slip_power_w)
+                        ((slip::charging_energy_j(
+                            preparation.mass,
+                            destination.relative_to(origin).length() / slip::LY_M,
+                        ) - preparation.work_j)
+                            .max(0.0)
+                            / self.slip_power_w)
                             .max((preparation.started + 100).saturating_sub(self.tick) as f64 * 0.1)
                     },
                 );

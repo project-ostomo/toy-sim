@@ -123,8 +123,11 @@ pub(super) fn search(
     let remaining_log_loss = remaining_log_loss.min(1e100);
     let target = environment.capture_target(destination, start_s)?;
     let goal_reference = target.as_ref().map(|target| target.reference);
-    let charge = (slip::CHARGE_J_PER_KG * performance.mass_kg / performance.slip_power_w)
-        .max(slip::MIN_CHARGE_SECONDS);
+    let charge_seconds = |distance_m: f64| {
+        (slip::charging_energy_j(performance.mass_kg, distance_m / slip::LY_M)
+            / performance.slip_power_w)
+            .max(slip::MIN_CHARGE_SECONDS)
+    };
     let deadline = work.deadline - std::time::Duration::from_millis(500);
     let mut queue = BinaryHeap::new();
     let mut states = vec![State {
@@ -195,7 +198,7 @@ pub(super) fn search(
                         let flight = distance / slip::LY_M / speed;
                         let priority = state.seconds
                             + weights.seconds_per_kg * state.fuel
-                            + charge
+                            + charge_seconds(distance)
                             + flight
                             + 2.0
                                 * remaining_seconds(next.pose.position, goal, target.as_ref(), ppm);
@@ -264,6 +267,13 @@ pub(super) fn search(
             continue;
         }
         let (departure, burn) = edge.departure.take().unwrap();
+        let charge = charge_seconds(
+            edge.target
+                .pose
+                .position
+                .relative_to(departure.position)
+                .length(),
+        );
         let departure_after = start_s + state.seconds + burn.0 + charge;
         let destination = Destination::Relative {
             reference: Reference::Celestial(edge.target.reference),

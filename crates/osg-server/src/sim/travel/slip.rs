@@ -91,10 +91,6 @@ fn slip_flight_seconds(
     origin.relative_to(destination).length() / (speed_ly_s * math::LY_M)
 }
 
-fn slip_energy_j(mass: f64) -> f64 {
-    (math::CHARGE_J_PER_KG * mass).ceil()
-}
-
 fn fuel_index(world: &World) -> Option<usize> {
     world
         .get_resource::<ShipCatalogue>()?
@@ -187,6 +183,11 @@ pub fn prepare_slip(
         preparation.destination = destination;
         preparation.speed_ly_s = speed_ly_s;
         preparation.navigation_beacon = navigation_beacon;
+        preparation.required_j = math::charging_energy_j(
+            preparation.mass,
+            destination.relative_to(pose.position).length() / math::LY_M,
+        )
+        .ceil();
     } else {
         drive.preparation = Some(Preparation {
             destination,
@@ -195,7 +196,11 @@ pub fn prepare_slip(
             started: now,
             mass,
             work_j: 0.0,
-            required_j: slip_energy_j(mass),
+            required_j: math::charging_energy_j(
+                mass,
+                destination.relative_to(pose.position).length() / math::LY_M,
+            )
+            .ceil(),
         });
     }
     Ok(())
@@ -690,7 +695,7 @@ pub(super) fn advance(world: &mut World) {
                 .map(|preparation| (ship, drive.power_w, preparation))
         })
         .collect();
-    for (ship, power, preparation) in preparing {
+    for (ship, power, mut preparation) in preparing {
         let Ok(pose) = ship_pose(world, ship) else {
             continue;
         };
@@ -706,6 +711,11 @@ pub(super) fn advance(world: &mut World) {
             blocked(world, ship, "Slip preparation invalidated".into());
             continue;
         }
+        preparation.required_j = math::charging_energy_j(
+            preparation.mass,
+            preparation.destination.relative_to(pose.position).length() / math::LY_M,
+        )
+        .ceil();
         let requested = (power * 0.1)
             .min(preparation.required_j - preparation.work_j)
             .max(0.0)
@@ -721,13 +731,10 @@ pub(super) fn advance(world: &mut World) {
             .entity_mut(ship)
             .insert(SlipChargingPower(paid as f64 * 10.0));
         crate::sim::hardware::add_travel_heat(world, ship, paid as f64 * 0.2, 0.1);
-        world
-            .get_mut::<SlipDrive>(ship)
-            .unwrap()
-            .preparation
-            .as_mut()
-            .unwrap()
-            .work_j += paid as f64;
+        let mut drive = world.get_mut::<SlipDrive>(ship).unwrap();
+        let stored = drive.preparation.as_mut().unwrap();
+        stored.required_j = preparation.required_j;
+        stored.work_j += paid as f64;
         let work = preparation.work_j + paid as f64;
         if work >= preparation.required_j && now >= preparation.started + 100 {
             if let Err(error) = depart(world, ship, &preparation) {
@@ -860,6 +867,51 @@ mod tests {
             capture_radius_m: 100.0,
             planned_log_loss: 0.0,
         }
+    }
+
+    #[test]
+    fn retargeting_charge_scales_energy_with_distance_without_resetting_paid_work() {
+        let (mut world, ship) = fixture(1000);
+        let origin = ship_pose(&world, ship).unwrap().position;
+        prepare_slip(
+            &mut world,
+            ship,
+            origin.offset_by(DVec3::X * math::LY_M),
+            0.01,
+            None,
+        )
+        .unwrap();
+        let initial = world
+            .get::<SlipDrive>(ship)
+            .unwrap()
+            .preparation
+            .clone()
+            .unwrap();
+        assert_eq!(initial.required_j, 500_000_000.0);
+        world
+            .get_mut::<SlipDrive>(ship)
+            .unwrap()
+            .preparation
+            .as_mut()
+            .unwrap()
+            .work_j = 123.0;
+        prepare_slip(
+            &mut world,
+            ship,
+            origin.offset_by(DVec3::X * 10.0 * math::LY_M),
+            0.01,
+            None,
+        )
+        .unwrap();
+        let changed = world
+            .get::<SlipDrive>(ship)
+            .unwrap()
+            .preparation
+            .as_ref()
+            .unwrap();
+        assert_eq!(changed.required_j, initial.required_j * 10.0);
+        assert_eq!(changed.work_j, 123.0);
+        assert_eq!(changed.started, initial.started);
     }
 
     #[test]

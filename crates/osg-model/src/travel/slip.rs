@@ -7,9 +7,13 @@ pub const DISPERSION_FLOOR_RAD: f64 = 1.074_392_580_830_121_9e-8;
 pub const DISPERSION_SPEED_COEFFICIENT: f64 = 0.000_095_495_498_773_401_54;
 pub const BEACON_PRECISION: f64 = 36.0;
 pub const MAX_SPEED_LY_S: f64 = 1.0;
-pub const CHARGE_J_PER_KG: f64 = 500_000.0;
+pub const CHARGE_J_PER_KG_LY: f64 = 500_000.0;
 pub const MIN_CHARGE_SECONDS: f64 = 10.0;
 pub const EXOTIC_RESOURCE: &str = "exotic_fuel";
+
+pub fn charging_energy_j(mass_kg: f64, distance_ly: f64) -> f64 {
+    CHARGE_J_PER_KG_LY * mass_kg * distance_ly.max(0.0)
+}
 
 pub fn exclusion_radius_m(mass_kg: f64) -> f64 {
     0.008 * AU_M * (mass_kg.max(0.0) / SOLAR_MASS_KG).cbrt()

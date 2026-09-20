@@ -437,7 +437,8 @@ impl RouteEnvironment for Environment {
         }
         Ok(SlipEstimate {
             ready: self.source.slip_power_w > 0.0 && self.source.admissible_at(origin, departure),
-            preparation_s: (slip::CHARGE_J_PER_KG * self.source.mass / self.source.slip_power_w)
+            preparation_s: (slip::charging_energy_j(self.source.mass, distance / slip::LY_M)
+                / self.source.slip_power_w)
                 .max(slip::MIN_CHARGE_SECONDS),
             duration_s: destination.relative_to(origin).length() / slip::LY_M / speed_ly_s,
         })

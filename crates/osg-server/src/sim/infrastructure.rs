@@ -324,8 +324,19 @@ fn spawn_navigation_installations(world: &mut World) -> Result<()> {
         world.entity_mut(entity).insert((
             ownership::AssetOwner(Principal::Organization(organization)),
             ownership::AssetAccess(AccessPolicy {
-                public: [Permission::Navigate].into(),
-                grants: Vec::new(),
+                public: if settlement.sovereignty == "USE" {
+                    Default::default()
+                } else {
+                    [Permission::Navigate].into()
+                },
+                grants: if settlement.sovereignty == "USE" {
+                    vec![osg_model::ownership::AccessGrant {
+                        principal: Principal::Sovereignty(ownership::sovereignty_id("USE")),
+                        permissions: [Permission::Navigate].into(),
+                    }]
+                } else {
+                    Vec::new()
+                },
             }),
         ));
     }

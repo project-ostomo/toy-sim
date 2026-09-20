@@ -107,8 +107,8 @@ state includes the sampled errors, preventing reloads from rerolling the jump.
 
 ### Charging and exotic fuel
 
-Electrical preparation costs 500 kJ per kilogram and lasts at least ten seconds.
-It has no distance surcharge. Actual charging time also depends on supplied
+Electrical preparation costs 500 kJ per kilogram per light-year and lasts at least ten seconds.
+Retargeting updates the required energy while preserving charge already paid. Actual charging time also depends on supplied
 power, so a 500 MW drive does not imply that the ship can continuously supply
 500 MW. Ordinary motion continues during charging.
 
@@ -163,6 +163,8 @@ The host owns `TravelState`, strategic route planning, the remaining risk allowa
 Directory and navigation capabilities come from installed, functioning equipment. Any host with an operational directory transmitter and a lit transponder publicly inhabits every system whose gravitational influence contains it. A conventional ship transponder alone does not advertise a system. The same hardware rules apply when a player builds or moves an installation; no separate station category determines membership. The last qualifying broadcaster going dark, leaving or being destroyed removes public membership.
 
 Navigation guidance additionally requires a functioning navigation beacon and `Navigate` access. Public directory membership does not itself grant guidance access. An authorized ship can use a known private beacon without making its system public. Beacons are reference devices: celestial bodies supply the physical capture regions.
+
+USE navigation installations start with no public access grant and grant `Navigate` to the USE sovereignty through the ordinary access policy.
 
 Docking is available from any direction within 100 m surface clearance of the station (centre distance minus both bounding radii), at no more than 10 m/s relative speed. The autopilot approaches from the ship's current side and brakes before requesting capture. It does not fly into a hangar or match its orientation. A docking bay determines access and the size and mass of ships that can dock. After docking, ships enter the host's ECS storage relationship and release its reservation, so the same bay can serve multiple stored ships. Hull, cargo, tanks, hardware and ownership remain on the stored entities. Host mass includes them. Destruction preserves them as wreck inventory. Checkpoints restore stored ships and their host relationships.
 
