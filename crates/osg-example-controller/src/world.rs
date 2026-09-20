@@ -148,7 +148,7 @@ impl Executor {
             })
         };
         match order {
-            Order::TravelTo(_) => Err(abi::ERR_ARGUMENT),
+            Order::TravelTo(_) | Order::TravelToSystem(_) => Err(abi::ERR_ARGUMENT),
             Order::Guidance(guidance) => {
                 if let Target::Direction(direction) = guidance.target {
                     if guidance.mode != GuidanceMode::Align {

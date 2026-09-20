@@ -325,9 +325,7 @@ fn selected_system(
             sovereignty.map_or("Unclaimed", |s| s.name.as_str()),
         );
     });
-    let destination = Some(travel::Order::TravelTo(travel::Destination::Galactic(
-        system.position,
-    )));
+    let destination = Some(travel::Order::TravelToSystem(system.id));
     ui.horizontal(|ui| {
         let available = model.connected && model.ship.is_some() && destination.is_some();
         if ui

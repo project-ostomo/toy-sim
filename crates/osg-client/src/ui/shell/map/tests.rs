@@ -145,8 +145,7 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
         1000
     );
     let orders: Vec<travel::QueuedOrder> = vec![
-        travel::Order::TravelTo(travel::Destination::Galactic(catalogue.systems[1].position))
-            .into(),
+        travel::Order::TravelToSystem(catalogue.systems[1].id).into(),
         travel::Order::Slip {
             destination: travel::Destination::Galactic(catalogue.systems[2999].position),
             speed_ly_s: 0.01,
@@ -223,11 +222,6 @@ fn celestial_slip_route_resolves_without_ephemeris_download() {
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
     assert_eq!(active.slips, [(0, 2999)]);
-
-    assert_eq!(
-        instruments::order_label(&orders[0].action, &catalogue),
-        "Slip · System 2999"
-    );
 }
 
 #[test]
@@ -441,6 +435,6 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
     assert!(intents.iter().any(|intent| matches!(intent,
         Intent::PlanRoute(orders, false, preference)
             if preference.fuel_fraction == 0.42 && matches!(&orders[..],
-                [travel::Order::TravelTo(travel::Destination::Galactic(destination))]
-                    if *destination == catalogue.systems[2999].position))));
+                [travel::Order::TravelToSystem(destination)]
+                    if *destination == catalogue.systems[2999].id))));
 }

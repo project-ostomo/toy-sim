@@ -7,6 +7,7 @@ Interstellar travel uses committed slip trajectories that end at the first natur
 ## Client controls
 
 - Select a ship in Overview to align, approach or keep range. These actions replace the navigation queue. Keep range continues until interrupted; approach and align finish when their conditions are met. Mark target and Start firing are separate weapons actions. Stop firing retains the mark; Unmark target clears it and stops firing. Navigation never enables firing.
+- Celestial selections offer **Slip to** in Selected Item and the Overview context menu. It queues a natural capture at that body and is disabled while the ship intersects a celestial exclusion sphere. Hold Shift to append it to the queue.
 - Select a public installation to approach or dock when it offers docking service. Hold Shift to append these orders.
 - Open Navigation map from the left toolbar. Search or select a system to preview a route, then use Set destination or Add waypoint. Drag empty map space to pan and scroll to zoom. Celestial positions and definitions come from the client's shared catalogue; the server supplies the current inhabited directory and gameplay infrastructure.
 - Set Maximum ship-destruction risk in ppm for the complete itinerary. The decimal input and logarithmic slider control the same value. Route previews show estimated loss, the selected maximum, beacon assumptions, exotic fuel and the conventional fuel budget. The default is 100 ppm. Change the preference and request a new route to apply it.
@@ -44,7 +45,7 @@ though a subsequent unplanned natural capture could rescue the ship.
 Every physical celestial body contributes an exclusion sphere:
 
 ```text
-R = 0.08 AU × (body mass / solar mass)^(1/3)
+R = 0.008 AU × (body mass / solar mass)^(1/3)
 ```
 
 The exclusion regions are the union of those spheres. Barycentres contribute no
@@ -68,7 +69,7 @@ Angular error has two independent Gaussian components. With speed `v` in
 light-years per second, each component's standard deviation is:
 
 ```text
-sigma(v, B) = max(1.0743925808301219e-7, 0.0009549549877340154 × v²) / B
+sigma(v, B) = max(1.0743925808301219e-8, 0.00009549549877340154 × v²) / B
 B = 1 for blind travel; 36 with authenticated navigation guidance
 ```
 

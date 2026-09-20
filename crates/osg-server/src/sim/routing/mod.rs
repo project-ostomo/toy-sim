@@ -62,6 +62,10 @@ pub struct SlipEstimate {
 }
 
 pub trait RouteEnvironment: Send + Sync {
+    fn system(&self, id: Id) -> Result<(Pose, f64)>;
+    fn label(&self, order: &Order) -> String {
+        order.label()
+    }
     fn candidates(
         &self,
         origin: GalacticPosition,
@@ -73,7 +77,12 @@ pub trait RouteEnvironment: Send + Sync {
         destination: &osg_model::travel::Destination,
         after_s: f64,
     ) -> Result<Option<CaptureTarget>>;
-    fn departure(&self, origin: &Pose, toward: GalacticPosition, after_s: f64) -> Result<Pose>;
+    fn departure(
+        &self,
+        origin: &Pose,
+        toward: GalacticPosition,
+        after_s: f64,
+    ) -> Result<Option<osg_model::travel::Destination>>;
     fn resolve(&self, destination: &osg_model::travel::Destination, after_s: f64) -> Result<Pose>;
     fn beacon(&self, id: Id) -> Result<Beacon>;
     fn contact(&self, reference: osg_model::ContactRef) -> Result<(Pose, f64)>;
@@ -120,6 +129,32 @@ impl Work {
         );
         Ok(())
     }
+}
+
+fn intercept_transfer(
+    performance: &ShipPerformance,
+    weights: TransferCost,
+    origin: &Pose,
+    mut resolve: impl FnMut(f64) -> Result<Pose>,
+) -> Result<(Pose, (f64, f64))> {
+    let initial_target = resolve(0.0)?;
+    let mut target = initial_target.clone();
+    let mut estimate = transfer(performance, weights, origin, &target);
+    for _ in 0..4 {
+        let next = resolve(estimate.0)?;
+        let mut inertial_target = next.clone();
+        inertial_target.position = next
+            .position
+            .offset_by(-DVec3::from_array(initial_target.velocity) * estimate.0);
+        let next_estimate = transfer(performance, weights, origin, &inertial_target);
+        target = next;
+        let converged = (next_estimate.0 - estimate.0).abs() < 0.01;
+        estimate = next_estimate;
+        if converged {
+            break;
+        }
+    }
+    Ok((target, estimate))
 }
 
 fn transfer(
@@ -171,11 +206,12 @@ fn transfer(
 }
 
 pub fn work_limit(request: &RouteRequest, candidate_count: usize) -> u64 {
-    if request
-        .orders
-        .iter()
-        .any(|order| matches!(order, Order::TravelTo(_) | Order::Dock(_)))
-    {
+    if request.orders.iter().any(|order| {
+        matches!(
+            order,
+            Order::TravelTo(_) | Order::TravelToSystem(_) | Order::Dock(_)
+        )
+    }) {
         MAX_WORK
     } else {
         (1_000 + candidate_count as u64 * 2 + request.orders.len() as u64 * 100 * ENVIRONMENT_WORK)
@@ -312,7 +348,10 @@ fn plan_inner(
             .filter(|order| {
                 matches!(
                     order,
-                    Order::TravelTo(_) | Order::Dock(_) | Order::Slip { .. }
+                    Order::TravelTo(_)
+                        | Order::TravelToSystem(_)
+                        | Order::Dock(_)
+                        | Order::Slip { .. }
                 )
             })
             .count(),
@@ -323,8 +362,14 @@ fn plan_inner(
             builder.undock()?;
         }
         match order {
-            Order::TravelTo(destination) => builder.route(destination.clone(), false)?,
-            Order::Dock(station) => builder.route(Destination::Beacon(*station), true)?,
+            Order::TravelTo(destination) => builder.route(destination.clone(), false, None)?,
+            Order::TravelToSystem(id) => {
+                let (centre, influence) = environment.system(*id)?;
+                if builder.pose.position.relative_to(centre.position).length() > influence {
+                    builder.route(Destination::Galactic(centre.position), false, Some(*id))?;
+                }
+            }
+            Order::Dock(station) => builder.route(Destination::Beacon(*station), true, None)?,
             Order::Sublight(destination) => builder.sublight(destination.clone())?,
             Order::Slip {
                 destination,
@@ -370,7 +415,7 @@ fn plan_inner(
         }
         if matches!(
             order,
-            Order::TravelTo(_) | Order::Dock(_) | Order::Slip { .. }
+            Order::TravelTo(_) | Order::TravelToSystem(_) | Order::Dock(_) | Order::Slip { .. }
         ) {
             builder.risk_routes_remaining = builder.risk_routes_remaining.saturating_sub(1);
         }
@@ -459,6 +504,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             "expanded route exceeds 256 orders"
         );
         let mut order = QueuedOrder::estimated(action, seconds).with_propellant(fuel);
+        order.label = self.environment.label(&order.action);
         order.transfer_cost = self.cost;
         self.orders.push(order);
         self.elapsed_s += seconds;
@@ -476,29 +522,24 @@ impl<E: RouteEnvironment> Builder<'_, E> {
         &mut self,
         destination: &osg_model::travel::Destination,
     ) -> Result<(Pose, (f64, f64))> {
-        let initial_target = self.resolve(&destination, self.elapsed_s)?;
-        let mut target = initial_target.clone();
-        let mut estimate = transfer(&self.request.performance, self.cost, &self.pose, &target);
-        for _ in 0..4 {
-            let next = self.resolve(&destination, self.elapsed_s + estimate.0)?;
-            let mut inertial_target = next.clone();
-            inertial_target.position = next
-                .position
-                .offset_by(-DVec3::from_array(initial_target.velocity) * estimate.0);
-            let next_estimate = transfer(
-                &self.request.performance,
-                self.cost,
-                &self.pose,
-                &inertial_target,
-            );
-            target = next;
-            let converged = (next_estimate.0 - estimate.0).abs() < 0.01;
-            estimate = next_estimate;
-            if converged {
-                break;
-            }
-        }
-        Ok((target, estimate))
+        let environment = self.environment;
+        let work = &mut *self.work;
+        let start = self.elapsed_s;
+        intercept_transfer(
+            &self.request.performance,
+            self.cost,
+            &self.pose,
+            |seconds| {
+                let after = start + seconds;
+                ensure!(
+                    after.is_finite()
+                        && (0.0..=osg_model::travel::MAX_PREDICTION_SECONDS).contains(&after),
+                    "route exceeds prediction horizon"
+                );
+                work.charge(ENVIRONMENT_WORK, environment)?;
+                environment.resolve(destination, after)
+            },
+        )
     }
 
     fn sublight(&mut self, destination: osg_model::travel::Destination) -> Result<()> {
@@ -722,7 +763,12 @@ impl<E: RouteEnvironment> Builder<'_, E> {
         Ok(())
     }
 
-    fn route(&mut self, mut destination: osg_model::travel::Destination, dock: bool) -> Result<()> {
+    fn route(
+        &mut self,
+        mut destination: osg_model::travel::Destination,
+        dock: bool,
+        arrival_system: Option<Id>,
+    ) -> Result<()> {
         use osg_model::travel::{Axes, Destination, Reference};
 
         let station = if let Destination::Beacon(id) = destination {
@@ -763,21 +809,22 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             &self.pose,
             &target,
             &destination,
+            arrival_system,
             self.elapsed_s,
             remaining,
         )?;
         for leg in path {
             for attempt in 0..16 {
-                let departure = self.environment.departure(
+                let Some(departure) = self.environment.departure(
                     &self.pose,
                     leg.target.pose.position,
                     self.elapsed_s,
-                )?;
-                if departure.position == self.pose.position {
+                )?
+                else {
                     break;
-                }
+                };
                 ensure!(attempt < 15, "departure clearance did not converge");
-                self.sublight(Destination::Galactic(departure.position))?;
+                self.sublight(departure)?;
             }
             self.slip(
                 leg.destination(),
@@ -788,7 +835,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
         }
         if let Some(station) = &station {
             self.arrive_at_beacon(station, dock)?;
-        } else {
+        } else if arrival_system.is_none() {
             self.sublight(destination)?;
         }
         if dock {

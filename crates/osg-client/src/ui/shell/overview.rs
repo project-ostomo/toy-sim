@@ -1,5 +1,33 @@
 use super::*;
 
+pub(super) fn slip_to(
+    ui: &mut egui::Ui,
+    row: &Row,
+    can_control: bool,
+    intents: &mut Vec<Intent>,
+) -> bool {
+    if row.celestial.is_none() {
+        return false;
+    }
+    if ui
+        .add_enabled(
+            can_control && row.slip_order.is_some(),
+            egui::Button::new("Slip to"),
+        )
+        .on_disabled_hover_text(
+            "Requires a clear departure outside celestial exclusion zones and a reachable capture.",
+        )
+        .clicked()
+    {
+        intents.push(Intent::Queue(
+            vec![row.slip_order.clone().unwrap()],
+            ui.input(|input| input.modifiers.shift),
+        ));
+        return true;
+    }
+    false
+}
+
 pub(super) fn selected_item(
     ui: &mut egui::Ui,
     row: Option<&Row>,
@@ -50,6 +78,9 @@ pub(super) fn selected_item(
     let contact = row.and_then(|row| row.contact);
     let marked = weapons.and_then(|weapons| weapons.target);
     let firing = weapons.is_some_and(|weapons| weapons.firing);
+    if let Some(row) = row {
+        slip_to(ui, row, can_control, intents);
+    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.;
         if action_button(

@@ -3,7 +3,7 @@ use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
 pub const IMPORT_MODULE: &str = "ship_v32";
-pub const VERSION: u32 = 32;
+pub const VERSION: u32 = 33;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;

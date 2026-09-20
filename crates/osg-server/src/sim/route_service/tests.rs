@@ -43,18 +43,41 @@ fn seeded_routes_performance() {
             let system = &universe.systems[universe.system_index(id.0)?];
             let distance =
                 system.position.relative_to(origin).length() / osg_model::travel::slip::LY_M;
-            (distance > 0.1).then_some((distance, system.position))
+            (distance > 0.1).then_some((distance, *id))
         })
         .collect();
     destinations.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut selected = Vec::new();
     for distance in [1., 10., 100.] {
-        let (actual, position) = destinations
-            .iter()
-            .min_by(|a, b| (a.0 - distance).abs().total_cmp(&(b.0 - distance).abs()))
-            .unwrap();
+        selected.push(
+            *destinations
+                .iter()
+                .min_by(|a, b| (a.0 - distance).abs().total_cmp(&(b.0 - distance).abs()))
+                .unwrap(),
+        );
+    }
+    let fomalhaut = universe
+        .systems
+        .iter()
+        .find(|system| system.name == "Fomalhaut B")
+        .unwrap();
+    selected.push((
+        fomalhaut.position.relative_to(origin).length() / osg_model::travel::slip::LY_M,
+        Id(fomalhaut.id),
+    ));
+    let hip = universe
+        .systems
+        .iter()
+        .find(|system| system.name == "HIP 69485")
+        .unwrap();
+    selected.push((
+        hip.position.relative_to(origin).length() / osg_model::travel::slip::LY_M,
+        Id(hip.id),
+    ));
+    for (actual, system) in selected {
         let request = Request {
             id: 1,
-            orders: vec![Order::TravelTo(Destination::Galactic(*position))],
+            orders: vec![Order::TravelToSystem(system)],
             preferences: PlanningPreferences::default(),
         };
         let admitted = caller(app.world(), ship).unwrap();
@@ -76,7 +99,73 @@ fn seeded_routes_performance() {
                 .map(|plan| (plan.orders.len(), plan.estimated_loss_ppm))
         );
         assert!(result.is_ok(), "{result:?}");
+        let plan = result.unwrap();
+        assert!(matches!(
+            plan.orders.last().unwrap().action,
+            Order::Slip { .. }
+        ));
+        for stage in &plan.orders {
+            eprintln!(
+                "stage label={} duration_s={:.1} fuel_kg={:.1}",
+                stage.label,
+                stage.estimated_duration_ticks.unwrap_or_default() as f64 / 10.,
+                stage.estimated_propellant_kg.unwrap_or_default()
+            );
+        }
+        if system == Id(fomalhaut.id) {
+            let seconds: u64 = plan
+                .orders
+                .iter()
+                .map(|order| order.estimated_duration_ticks.unwrap())
+                .sum::<u64>()
+                / 10;
+            assert!(
+                seconds < 5 * 3600,
+                "Fomalhaut system arrival took {seconds} seconds"
+            );
+        }
     }
+}
+
+#[test]
+fn starting_orbit_can_depart_without_an_unnecessary_sublight_transfer() {
+    let account = Id::new();
+    let mut app = crate::sim::provision(&[account], Some(account), None).unwrap();
+    for _ in 0..3 {
+        app.update();
+    }
+    let ship = app
+        .world_mut()
+        .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+        .single(app.world())
+        .unwrap();
+    let universe = app
+        .world()
+        .resource::<crate::sim::orrery::Universe>()
+        .0
+        .clone();
+    let system = universe
+        .systems
+        .iter()
+        .find(|system| system.name == "Fomalhaut B")
+        .unwrap();
+    let request = Request {
+        id: 1,
+        orders: vec![Order::TravelToSystem(Id(system.id))],
+        preferences: PlanningPreferences::default(),
+    };
+    let admitted = caller(app.world(), ship).unwrap();
+    let (input, mut environment) = prepare(
+        app.world_mut(),
+        admitted,
+        &request,
+        Arc::new(AtomicBool::new(false)),
+    )
+    .unwrap();
+    environment.prepare().unwrap();
+    let plan = routing::plan(&input, &environment).unwrap();
+    assert_eq!(plan.orders.len(), 1);
+    assert!(matches!(plan.orders[0].action, Order::Slip { .. }));
 }
 
 fn identity() -> Caller {

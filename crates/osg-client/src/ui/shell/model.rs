@@ -8,6 +8,7 @@ pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
 }
 
 pub(super) struct Row {
+    pub slip_order: Option<travel::Order>,
     pub celestial: Option<travel::CelestialRef>,
     pub target: SelectedTarget,
     pub contact: Option<ContactRef>,

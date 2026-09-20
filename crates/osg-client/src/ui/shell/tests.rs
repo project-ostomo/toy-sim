@@ -2,6 +2,7 @@ use super::*;
 
 fn row(id: u8, x: f64) -> Row {
     Row {
+        slip_order: None,
         celestial: None,
         target: SelectedTarget::Contact(ContactRef {
             group: Id([7; 16]),
@@ -198,53 +199,13 @@ fn command_feedback_waits_for_every_reply_and_retains_errors() {
 }
 
 #[test]
-fn itinerary_draws_dock_transfer_and_slip_orders_with_destination_system_names() {
+fn itinerary_draws_producer_labels_without_a_navigation_catalogue() {
     let ctx = egui::Context::default();
     osg_ui::theme::install(&ctx);
     let origin = GalacticPosition::default();
     let destination = origin.offset_by(glam::DVec3::X * 1e16);
-    let sol = Id([1; 16]);
-    let terminus = Id([2; 16]);
     let entry = Id([3; 16]);
     let exit = Id([4; 16]);
-    let pose = super::super::tests::ship(Id([9; 16])).0.pose.unwrap();
-    let navigation = NavigationCatalogue {
-        topology_revision: 1,
-        systems: vec![
-            NavigationSystem {
-                id: sol,
-                name: "Sol".into(),
-                position: origin,
-                sovereignty: None,
-            },
-            NavigationSystem {
-                id: terminus,
-                name: "Terminus".into(),
-                position: destination,
-                sovereignty: None,
-            },
-        ],
-        beacons: vec![
-            NavigationBeacon {
-                id: entry,
-                systems: vec![terminus],
-                name: "Terminus navigation beacon".into(),
-                pose: pose.clone(),
-                radius_m: 220.,
-                navigation: true,
-                docking: false,
-            },
-            NavigationBeacon {
-                id: exit,
-                systems: vec![sol],
-                name: "Sol navigation beacon".into(),
-                pose,
-                radius_m: 220.,
-                navigation: true,
-                docking: false,
-            },
-        ],
-    };
     let mut state = travel::TravelState {
         autopilot_enabled: true,
         status: travel::Status::Active,
@@ -274,6 +235,15 @@ fn itinerary_draws_dock_transfer_and_slip_orders_with_destination_system_names()
             60.,
         )
     }));
+    for (index, order) in state.orders.iter_mut().enumerate() {
+        order.label = match index {
+            0 => "Dock · Sol navigation beacon",
+            1 => "Transfer · Sol",
+            2 => "Slip · Terminus",
+            _ => "Transfer · Terminus",
+        }
+        .into();
+    }
     let mut text = Vec::new();
     fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
         match shape {
@@ -292,7 +262,7 @@ fn itinerary_draws_dock_transfer_and_slip_orders_with_destination_system_names()
                 time: Some(frame as f64 / 60.),
                 ..Default::default()
             },
-            |ui| instruments::itinerary(ui, &state, &navigation, 0),
+            |ui| instruments::itinerary(ui, &state, 0),
         );
         output.textures_delta.clear();
         text.clear();

@@ -48,6 +48,7 @@ pub enum Destination {
 pub enum Order {
     Guidance(Guidance),
     TravelTo(Destination),
+    TravelToSystem(Id),
     Sublight(Destination),
     Slip {
         destination: Destination,
@@ -119,6 +120,7 @@ impl FuelBudget {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QueuedOrder {
+    pub label: String,
     pub transfer_cost: crate::transfer::TransferCost,
     pub action: Order,
     pub estimated_duration_ticks: Option<u64>,
@@ -133,6 +135,7 @@ impl From<Order> for QueuedOrder {
         )
         .then_some(0.);
         Self {
+            label: action.label(),
             transfer_cost: Default::default(),
             action,
             estimated_duration_ticks: None,
@@ -142,6 +145,11 @@ impl From<Order> for QueuedOrder {
 }
 
 impl QueuedOrder {
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = label.into();
+        self
+    }
+
     pub fn with_propellant(mut self, kg: f64) -> Self {
         self.estimated_propellant_kg = (kg.is_finite() && kg >= 0.).then_some(kg);
         self
@@ -149,11 +157,28 @@ impl QueuedOrder {
 
     pub fn estimated(action: Order, seconds: f64) -> Self {
         Self {
+            label: action.label(),
             transfer_cost: Default::default(),
             action,
             estimated_propellant_kg: None,
             estimated_duration_ticks: (seconds.is_finite() && seconds >= 0.)
                 .then(|| (seconds * 10.).ceil() as u64),
+        }
+    }
+}
+
+impl Order {
+    /// Default queue label for producers without catalogue names.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Guidance(guidance) => format!("{:?}", guidance.mode),
+            Self::TravelTo(_) => "Travel to destination".into(),
+            Self::TravelToSystem(_) => "Travel to system".into(),
+            Self::Sublight(_) => "Sublight transfer".into(),
+            Self::Slip { .. } => "Slip arrival".into(),
+            Self::Dock(_) => "Dock".into(),
+            Self::Undock => "Undock".into(),
+            Self::WaitUntil(tick) => format!("Wait until tick {tick}"),
         }
     }
 }

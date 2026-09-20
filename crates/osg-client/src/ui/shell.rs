@@ -309,6 +309,14 @@ fn draw(
     let mut primary_luminosity = 0.;
     let mut system_name = "Deep space".to_string();
     let mut rows = Vec::new();
+    let slip_clear = displayed_ship.is_some()
+        && bodies.iter().all(|(body, pose, _)| {
+            let radius =
+                travel::slip::exclusion_radius_m(body.0.gravitational_parameter / 6.67430e-11);
+            radius <= 0.0
+                || pose.0.position.relative_to(origin).length()
+                    > radius + telemetry.map_or(0.0, |ship| ship.radius_m)
+        });
     if let Some((view, systems, _, _)) = view {
         for (contact, pose) in &contacts {
             let track = &contact.0;
@@ -333,6 +341,7 @@ fn draw(
                 .unwrap_or_else(|| format!("Contact {}", short_id(track.id)));
             let kind = super::contacts::kind(&track.tags).to_owned();
             rows.push(Row {
+                slip_order: None,
                 celestial: None,
                 target: SelectedTarget::Contact(contact.1),
                 contact: Some(contact.1),
@@ -380,6 +389,29 @@ fn draw(
             }
 
             rows.push(Row {
+                slip_order: telemetry.filter(|_| slip_clear).and_then(|ship| {
+                    let radius = travel::slip::exclusion_radius_m(
+                        body.0.gravitational_parameter / 6.67430e-11,
+                    );
+                    if radius <= body.0.radius_m + ship.radius_m {
+                        return None;
+                    }
+                    let speed_ly_s = travel::slip::fastest_speed_ly_s(
+                        radius,
+                        range,
+                        ship.travel.preferences.max_loss_ppm,
+                        false,
+                    )?;
+                    Some(travel::Order::Slip {
+                        destination: travel::Destination::Relative {
+                            reference: travel::Reference::Celestial(body.0.reference),
+                            offset: GalacticPosition::ZERO,
+                            axes: travel::Axes::Galactic,
+                        },
+                        speed_ly_s,
+                        navigation_beacon: None,
+                    })
+                }),
                 celestial: Some(body.0.reference),
                 target: SelectedTarget::Celestial(body.0.entity),
                 contact: None,
@@ -409,6 +441,7 @@ fn draw(
             continue;
         }
         rows.push(Row {
+            slip_order: None,
             celestial: None,
             target: SelectedTarget::Beacon(beacon.id),
             contact: view.and_then(|(view, ..)| {

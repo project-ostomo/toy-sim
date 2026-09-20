@@ -36,6 +36,7 @@ struct Edge {
     parent: usize,
     target: CaptureTarget,
     loss: f64,
+    departure: Option<(Pose, (f64, f64))>,
 }
 
 impl PartialEq for Edge {
@@ -97,13 +98,14 @@ pub(super) fn search(
     origin: &Pose,
     goal: &Pose,
     destination: &Destination,
+    arrival_system: Option<Id>,
     start_s: f64,
     remaining_log_loss: f64,
 ) -> Result<Vec<Leg>> {
     let performance = &request.performance;
     let local = transfer(performance, weights, origin, goal);
     let mut best_cost = local.0 + weights.seconds_per_kg * local.1;
-    if start_s + local.0 > osg_model::travel::MAX_PREDICTION_SECONDS {
+    if arrival_system.is_some() || start_s + local.0 > osg_model::travel::MAX_PREDICTION_SECONDS {
         best_cost = f64::INFINITY;
     }
     let mut best = Vec::new();
@@ -202,6 +204,7 @@ pub(super) fn search(
                             parent,
                             target: next.clone(),
                             loss,
+                            departure: None,
                         });
                     }
                 }
@@ -215,31 +218,52 @@ pub(super) fn search(
                 .take(4096)
                 .collect();
         }
-        let Some(edge) = queue.pop() else { break };
+        let Some(mut edge) = queue.pop() else { break };
         work.charge(ENVIRONMENT_WORK, environment)?;
         let state = &states[edge.parent];
-        let mut departure = state.pose.clone();
-        let mut burn = (0.0, 0.0);
-        let mut cleared = false;
-        for _ in 0..16 {
-            work.charge(ENVIRONMENT_WORK, environment)?;
-            let next = environment.departure(
-                &departure,
-                edge.target.pose.position,
-                start_s + state.seconds + burn.0,
-            )?;
-            if next.position == departure.position {
-                cleared = true;
-                break;
+        if edge.departure.is_none() {
+            let mut departure = state.pose.clone();
+            let mut burn = (0.0, 0.0);
+            let mut cleared = false;
+            for _ in 0..16 {
+                work.charge(ENVIRONMENT_WORK, environment)?;
+                let Some(destination) = environment.departure(
+                    &departure,
+                    edge.target.pose.position,
+                    start_s + state.seconds + burn.0,
+                )?
+                else {
+                    cleared = true;
+                    break;
+                };
+                let start = start_s + state.seconds + burn.0;
+                let (next, step) =
+                    intercept_transfer(performance, weights, &departure, |seconds| {
+                        let after = start + seconds;
+                        ensure!(
+                            after.is_finite()
+                                && (0.0..=osg_model::travel::MAX_PREDICTION_SECONDS)
+                                    .contains(&after),
+                            "route exceeds prediction horizon"
+                        );
+                        work.charge(ENVIRONMENT_WORK, environment)?;
+                        environment.resolve(&destination, after)
+                    })?;
+                burn.0 += step.0;
+                burn.1 += step.1;
+                departure = next;
             }
-            let step = transfer(performance, weights, &departure, &next);
-            burn.0 += step.0;
-            burn.1 += step.1;
-            departure = next;
-        }
-        if !cleared {
+            if !cleared {
+                continue;
+            }
+            // Clearance can dominate the entire journey. Put its cost back into
+            // the frontier before expanding this arrival or accepting a solution.
+            edge.priority += burn.0 + weights.seconds_per_kg * burn.1;
+            edge.departure = Some((departure, burn));
+            queue.push(edge);
             continue;
         }
+        let (departure, burn) = edge.departure.take().unwrap();
         let departure_after = start_s + state.seconds + burn.0 + charge;
         let destination = Destination::Relative {
             reference: Reference::Celestial(edge.target.reference),
@@ -295,9 +319,16 @@ pub(super) fn search(
             velocity: departure.velocity,
             ..target.pose.clone()
         };
-        let finish = transfer(performance, weights, &pose, goal);
+        let finish = match arrival_system {
+            Some(system) if target.reference.system == system => (0.0, 0.0),
+            Some(_) => (f64::INFINITY, 0.0),
+            None => transfer(performance, weights, &pose, goal),
+        };
         let total = cost + finish.0 + weights.seconds_per_kg * finish.1;
-        let reaches_goal = Some(target.reference) == goal_reference;
+        let reaches_goal = arrival_system
+            .map_or(Some(target.reference) == goal_reference, |system| {
+                target.reference.system == system
+            });
         let next = State {
             pose,
             parent: Some((

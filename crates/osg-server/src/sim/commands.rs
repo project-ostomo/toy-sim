@@ -275,12 +275,12 @@ pub fn execute(
             let needs_planning = matches!(
                 state.0.status,
                 travel::Status::Planning | travel::Status::Blocked(_)
-            ) || state
-                .0
-                .orders
-                .iter()
-                .skip(state.0.order)
-                .any(|stage| matches!(stage.action, travel::Order::TravelTo(_)));
+            ) || state.0.orders.iter().skip(state.0.order).any(|stage| {
+                matches!(
+                    stage.action,
+                    travel::Order::TravelTo(_) | travel::Order::TravelToSystem(_)
+                )
+            });
             state.0.status = if state.0.order >= state.0.orders.len() {
                 travel::Status::Completed
             } else if needs_planning {

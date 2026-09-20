@@ -239,7 +239,7 @@ Messages are defined in [osg-protocol](../crates/osg-protocol/src/lib.rs). The `
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 36 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 37 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`, 3 `Session`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input`, 1 KiB for `Session` |
 
@@ -750,7 +750,7 @@ up to 500 MW. Preparation requires space presence, working equipment, available
 exotic fuel, and clearance from all natural exclusion spheres.
 
 Each physical celestial body contributes an exclusion radius of
-`0.08 AU × cbrt(mass / solar_mass)`. Barycentres add no sphere. Artificial objects
+`0.008 AU × cbrt(mass / solar_mass)`. Barycentres add no sphere. Artificial objects
 create no slip exclusions. Ordinary propulsion clears enclosing regions and
 moves around obstructions before the next slip.
 
@@ -765,7 +765,7 @@ reject it for exceeding the itinerary's planning risk allowance. A faulty
 controller can commit to a trajectory that ends in fuel exhaustion.
 
 Angular dispersion is Gaussian on two perpendicular axes, with per-axis
-deviation `max(1.0743925808301219e-7, 0.0009549549877340154 × speed_ly_s²) / B`
+deviation `max(1.0743925808301219e-8, 0.00009549549877340154 × speed_ly_s²) / B`
 radians. `B` is 36 with authenticated navigation guidance and 1 blind. The floor
 gives a best blind solar capture probability of 50% at 10 ly; slowing further
 cannot improve it. Guided travel at 100 ppm over 10 ly takes approximately five

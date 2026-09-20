@@ -279,11 +279,7 @@ pub(super) fn draw(
                 };
 
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(format!(
-                        "{}  {}",
-                        index + 1,
-                        instruments::order_label(&stage.action, model.navigation,)
-                    ));
+                    ui.label(format!("{}  {}", index + 1, &stage.label));
                     ui.monospace(instruments::eta_label(stage, arrival, plan.planned_tick));
                 });
             }

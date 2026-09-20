@@ -143,6 +143,9 @@ impl Cache {
     }
 
     fn order_system(&self, catalogue: &NavigationCatalogue, order: &travel::Order) -> Option<Id> {
+        if let travel::Order::TravelToSystem(id) = order {
+            return Some(*id);
+        }
         use travel::{Destination, Order, Reference};
         match order {
             Order::Dock(id)

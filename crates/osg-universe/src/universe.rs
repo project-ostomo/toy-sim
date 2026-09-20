@@ -544,7 +544,7 @@ fn catalogue_summary(id: SystemId, star: &Star, cutoff: f64) -> SystemSummary {
         name: format!("Gaia DR3 {}", star.id.value).into(),
         position: star.position,
         influence_bound: extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt(),
-        capture_bound: extent + 0.08 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
+        capture_bound: extent + 0.008 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
         star_radius: properties.radius,
         stellar_mass: properties.mass,
         luminosity: star.luminosity,
@@ -579,7 +579,7 @@ fn procedural_summary(
             DVec3::from_array(star.position_ly) * crate::civilization::LIGHT_YEAR_M,
         ),
         influence_bound: extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt(),
-        capture_bound: extent + 0.08 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
+        capture_bound: extent + 0.008 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
         star_radius: properties.radius,
         stellar_mass: properties.mass,
         luminosity,
@@ -737,7 +737,7 @@ mod tests {
                         .solver
                         .solve_position(&body.name, Epoch::from_mjd_utc(days))
                         .unwrap();
-                    let exclusion = 0.08 * 149_597_870_700.0 * (body.mass / 1.98847e30).cbrt();
+                    let exclusion = 0.008 * 149_597_870_700.0 * (body.mass / 1.98847e30).cbrt();
                     assert!(
                         position.relative_to(summary.position).length()
                             + body.radius.max(exclusion)

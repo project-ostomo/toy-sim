@@ -601,14 +601,22 @@ fn arrive(world: &mut World, ship: Entity, transit: &Transit, capture: Capture) 
         .insert(ArrivalOffset(capture.seconds));
     let now = tick(world);
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        let intended = capture.body == transit.intended_capture;
+        let arrived_system = capture.body.is_some_and(|body| {
+            matches!(travel.0.goals.first(), Some(Order::TravelToSystem(system)) if *system == body.system)
+        });
+        let intended = capture.body == transit.intended_capture || arrived_system;
         if intended {
+            let remaining_goals = travel.0.goals.len();
             complete_order(&mut travel.0, now);
+            if arrived_system && travel.0.goals.len() == remaining_goals {
+                travel.0.goals.remove(0);
+            }
         } else {
             let index = travel.0.order;
             if let Some(stage) = travel.0.orders.get_mut(index) {
                 if let Order::Slip { destination, .. } = &stage.action {
                     stage.action = Order::TravelTo(destination.clone());
+                    stage.label = stage.action.label();
                 }
             }
         }
@@ -811,7 +819,8 @@ mod tests {
                 body: Body {
                     key: "capture".into(),
                     name: "Capture".into(),
-                    mass: math::SOLAR_MASS_KG * (100.0 / (0.08 * math::AU_M)).powi(3),
+                    mass: math::SOLAR_MASS_KG
+                        * (100.0 / math::exclusion_radius_m(math::SOLAR_MASS_KG)).powi(3),
                     radius: physical_radius,
                     class_params: BodyClass::Planet,
                     ..Default::default()

@@ -199,6 +199,10 @@ impl From<&travel::Order> for abi::Order {
                 output.kind = 2;
                 output.destination = destination.into();
             }
+            travel::Order::TravelToSystem(id) => {
+                output.kind = 8;
+                output.entity = id.0;
+            }
             travel::Order::Sublight(destination) => {
                 output.kind = 3;
                 output.destination = destination.into();
@@ -256,6 +260,7 @@ impl TryFrom<&abi::Order> for travel::Order {
             5 => Self::Dock(Id(value.entity)),
             6 => Self::Undock,
             7 => Self::WaitUntil(value.tick),
+            8 => Self::TravelToSystem(Id(value.entity)),
             _ => return Err(()),
         })
     }
@@ -264,6 +269,7 @@ impl TryFrom<&abi::Order> for travel::Order {
 impl From<&travel::QueuedOrder> for abi::QueuedOrder {
     fn from(value: &travel::QueuedOrder) -> Self {
         Self {
+            label: Text::new(&value.label),
             action: (&value.action).into(),
             seconds_per_kg: value.transfer_cost.seconds_per_kg,
             duration_present: value.estimated_duration_ticks.is_some() as u64,
@@ -279,6 +285,7 @@ impl TryFrom<&abi::QueuedOrder> for travel::QueuedOrder {
 
     fn try_from(value: &abi::QueuedOrder) -> Result<Self, ()> {
         Ok(Self {
+            label: text(&value.label)?,
             action: (&value.action).try_into()?,
             transfer_cost: crate::transfer::TransferCost {
                 seconds_per_kg: value.seconds_per_kg,
@@ -998,6 +1005,11 @@ mod tests {
 
     #[test]
     fn nested_route_records_preserve_optional_values_and_references() {
+        let system_order = travel::Order::TravelToSystem(Id([42; 16]));
+        assert_eq!(
+            travel::Order::try_from(&abi::Order::from(&system_order)).unwrap(),
+            system_order
+        );
         let position = GalacticPosition::new(1_i128 << 92, -127, 101);
         let action = travel::Order::Guidance(travel::Guidance {
             mode: travel::GuidanceMode::KeepRange,
@@ -1020,6 +1032,7 @@ mod tests {
             topology_revision: 8,
             orders: vec![
                 travel::QueuedOrder {
+                    label: "Authored waypoint".into(),
                     transfer_cost: crate::transfer::TransferCost { seconds_per_kg: 8. },
                     action,
                     estimated_duration_ticks: Some(0),

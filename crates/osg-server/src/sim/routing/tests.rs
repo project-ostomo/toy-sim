@@ -7,6 +7,14 @@ struct Environment {
 }
 
 impl RouteEnvironment for Environment {
+    fn system(&self, id: Id) -> Result<(Pose, f64)> {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.reference.system == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown system"))?;
+        Ok((target.pose.clone(), target.radius_m * 10.0))
+    }
     fn candidates(
         &self,
         _: GalacticPosition,
@@ -28,8 +36,8 @@ impl RouteEnvironment for Environment {
             _ => None,
         })
     }
-    fn departure(&self, origin: &Pose, _: GalacticPosition, _: f64) -> Result<Pose> {
-        Ok(origin.clone())
+    fn departure(&self, _: &Pose, _: GalacticPosition, _: f64) -> Result<Option<Destination>> {
+        Ok(None)
     }
     fn resolve(&self, destination: &Destination, _: f64) -> Result<Pose> {
         match destination {
@@ -103,6 +111,79 @@ fn request(target: &CaptureTarget) -> RouteRequest {
         })],
         docked_at: None,
     }
+}
+
+#[test]
+fn transfer_to_a_moving_waypoint_preserves_shared_orbital_velocity() {
+    let performance = request(&target(1, 2.0)).performance;
+    let weights = TransferCost::default();
+    let offset = DVec3::X * 130_000_000.0;
+    let stationary = Pose {
+        position: GalacticPosition::from_meters(offset),
+        ..Default::default()
+    };
+    let expected = transfer(&performance, weights, &Pose::default(), &stationary);
+    let velocity = DVec3::new(22_000.0, -2_000.0, 22_000.0);
+    let origin = Pose {
+        velocity: velocity.to_array(),
+        ..Default::default()
+    };
+    let (arrival, actual) = intercept_transfer(&performance, weights, &origin, |seconds| {
+        Ok(Pose {
+            position: GalacticPosition::from_meters(offset + velocity * seconds),
+            velocity: velocity.to_array(),
+            ..Default::default()
+        })
+    })
+    .unwrap();
+    assert!((actual.0 - expected.0).abs() < 0.01);
+    assert!((actual.1 - expected.1).abs() < 0.01);
+    assert!(arrival.position.relative_to(stationary.position).length() > 1_000_000.0);
+}
+
+#[test]
+fn system_arrival_stops_at_capture_without_spending_fuel_on_the_star_centre() {
+    let destination = target(1, 2.0);
+    let mut request = request(&destination);
+    request.orders = vec![Order::TravelToSystem(destination.reference.system)];
+    request.performance.propellant_kg_s = 1.0;
+    request.performance.fuels = vec![FuelRate {
+        resource: "propellant".into(),
+        kg_s: 1.0,
+        available_kg: 1.0,
+    }];
+    let environment = Environment {
+        targets: vec![destination.clone()],
+        cancelled: false,
+    };
+    let result = plan(&request, &environment).unwrap();
+    assert!(matches!(&result.orders[..], [order] if matches!(order.action, Order::Slip { .. })));
+    assert_eq!(result.fuel_budget.resources[0].required_kg, 0.0);
+
+    // Already inside the system: there is no trip to the centre to perform.
+    request.origin.position = destination
+        .pose
+        .position
+        .offset_by(DVec3::X * destination.radius_m * 2.0);
+    assert!(plan(&request, &environment).unwrap().orders.is_empty());
+
+    // A specific location still retains its final approach.
+    request.origin = Pose::default();
+    request.performance.fuels[0].available_kg = 1e9;
+    request.orders = vec![Order::TravelTo(Destination::Relative {
+        reference: Reference::Celestial(destination.reference),
+        offset: GalacticPosition::from_meters(DVec3::Y * destination.radius_m * 0.5),
+        axes: Axes::Galactic,
+    })];
+    assert!(matches!(
+        plan(&request, &environment)
+            .unwrap()
+            .orders
+            .last()
+            .unwrap()
+            .action,
+        Order::Sublight(_)
+    ));
 }
 
 #[test]

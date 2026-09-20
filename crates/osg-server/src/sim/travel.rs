@@ -523,9 +523,9 @@ pub fn apply_plan(
     ensure!(plan.orders.len() <= 256, "invalid route length");
     ensure!(plan.fuel_budget.valid(), "invalid fuel budget");
     for stage in &plan.orders {
-        osg_protocol::validate_order(&stage.action)?;
+        osg_protocol::validate_queued_order(stage)?;
         ensure!(
-            !matches!(stage.action, Order::TravelTo(_)),
+            !matches!(stage.action, Order::TravelTo(_) | Order::TravelToSystem(_)),
             "route contains an unplanned destination"
         );
         ensure!(
@@ -832,6 +832,17 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
 fn complete_order(travel: &mut TravelState, now: u64) {
     if let (Some(goal), Some(stage)) = (travel.goals.first(), travel.orders.get(travel.order)) {
         let completed = match (goal, &stage.action) {
+            (
+                Order::TravelToSystem(system),
+                Order::Slip {
+                    destination:
+                        Destination::Relative {
+                            reference: Reference::Celestial(reference),
+                            ..
+                        },
+                    ..
+                },
+            ) => *system == reference.system,
             (Order::TravelTo(goal), Order::Sublight(destination)) => goal == destination,
             (goal, actual) => goal == actual,
         };

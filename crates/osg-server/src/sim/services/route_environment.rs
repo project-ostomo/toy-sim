@@ -127,6 +127,82 @@ impl Environment {
 }
 
 impl RouteEnvironment for Environment {
+    fn system(&self, id: Id) -> Result<(Pose, f64)> {
+        let universe = &self
+            .source
+            .universe
+            .as_ref()
+            .context("universe unavailable")?
+            .registry
+            .universe;
+        let index = universe.system_index(id.0).context("unknown system")?;
+        let definition = universe.resolve_index(index)?;
+        Ok((
+            Pose {
+                position: universe.systems[index].position,
+                ..Default::default()
+            },
+            definition.influence,
+        ))
+    }
+
+    fn label(&self, order: &osg_model::travel::Order) -> String {
+        use osg_model::travel::{Order, Reference};
+        let (action, destination) = match order {
+            Order::TravelTo(destination) => ("Travel", destination),
+            Order::Sublight(destination) => ("Transfer", destination),
+            Order::Slip { destination, .. } => ("Slip", destination),
+            Order::Dock(id) => {
+                return self
+                    .source
+                    .beacons
+                    .get(id)
+                    .and_then(|beacon| beacon.beacon.iff.labels.iter().next())
+                    .map_or_else(|| order.label(), |name| format!("Dock · {name}"));
+            }
+            _ => return order.label(),
+        };
+        let Some(universe) = self
+            .source
+            .universe
+            .as_ref()
+            .map(|source| &source.registry.universe)
+        else {
+            return order.label();
+        };
+        let name = match destination {
+            Destination::Galactic(position) => universe
+                .index
+                .nearest(*position)
+                .map(|index| universe.systems[index].name.to_string()),
+            Destination::Relative {
+                reference: Reference::Celestial(reference),
+                ..
+            } => {
+                if matches!(order, Order::Sublight(_)) {
+                    universe
+                        .body(crate::sim::registry::universe_reference(*reference))
+                        .map(|body| body.name.to_string())
+                } else {
+                    universe
+                        .system_index(reference.system.0)
+                        .map(|index| universe.systems[index].name.to_string())
+                }
+            }
+            Destination::Beacon(id)
+            | Destination::Relative {
+                reference: Reference::Beacon(id),
+                ..
+            } => self
+                .source
+                .beacons
+                .get(id)
+                .and_then(|beacon| beacon.beacon.iff.labels.iter().next())
+                .cloned(),
+        };
+        name.map_or_else(|| order.label(), |name| format!("{action} · {name}"))
+    }
+
     fn candidates(
         &self,
         origin: GalacticPosition,
@@ -224,7 +300,12 @@ impl RouteEnvironment for Environment {
             .max_by(|a, b| a.radius_m.total_cmp(&b.radius_m)))
     }
 
-    fn departure(&self, origin: &Pose, toward: GalacticPosition, after_s: f64) -> Result<Pose> {
+    fn departure(
+        &self,
+        origin: &Pose,
+        toward: GalacticPosition,
+        after_s: f64,
+    ) -> Result<Option<Destination>> {
         let universe = &self
             .source
             .universe
@@ -232,7 +313,6 @@ impl RouteEnvironment for Environment {
             .context("universe unavailable")?
             .registry
             .universe;
-        let mut departure = origin.clone();
         for index in universe
             .index
             .containing_segment(origin.position, DVec3::ZERO)
@@ -240,8 +320,8 @@ impl RouteEnvironment for Environment {
             for target in self.targets(index, after_s)? {
                 self.check_budget()?;
                 let radius = target.radius_m + self.source.radius + 1000.0;
-                let offset = departure.position.relative_to(target.pose.position);
-                let outgoing = toward.relative_to(departure.position).normalize_or_zero();
+                let offset = origin.position.relative_to(target.pose.position);
+                let outgoing = toward.relative_to(origin.position).normalize_or_zero();
                 let closest = offset + outgoing * (-offset.dot(outgoing)).max(0.0);
                 if offset.length() <= radius
                     || (offset.dot(outgoing) < 0.0 && closest.length() < radius)
@@ -251,23 +331,25 @@ impl RouteEnvironment for Environment {
                         .relative_to(target.pose.position)
                         .try_normalize()
                         .unwrap_or(DVec3::X);
-                    let direction = if offset.length() < 2.0 * radius {
-                        radial
-                    } else if radial.dot(desired) < 0.0 {
-                        (desired - radial * desired.dot(radial))
+                    let direction = if radial.dot(desired) < 0.0 {
+                        (radial - desired * desired.dot(radial))
                             .try_normalize()
                             .unwrap_or_else(|| radial.any_orthonormal_vector())
                     } else {
-                        desired
+                        radial
                     };
-                    departure.position = target
-                        .pose
-                        .position
-                        .offset_by(direction * (2.0 * radius + 1.0));
+                    // Stay just outside the exclusion on its outgoing side.
+                    // The waypoint follows the body, preserving its orbital
+                    // velocity throughout the transfer and slip preparation.
+                    return Ok(Some(Destination::Relative {
+                        reference: Reference::Celestial(target.reference),
+                        offset: GalacticPosition::from_meters(direction * (radius * 1.001)),
+                        axes: Axes::Galactic,
+                    }));
                 }
             }
         }
-        Ok(departure)
+        Ok(None)
     }
 
     fn resolve(&self, destination: &Destination, after_s: f64) -> Result<Pose> {

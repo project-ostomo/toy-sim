@@ -28,8 +28,9 @@ struct Waypoint {
 
 fn waypoint(
     order: &travel::Order,
-    beacon: impl Fn(Id) -> Option<(String, Pose)>,
-    celestial: impl Fn(travel::CelestialRef) -> Option<(Id, String, Pose)>,
+    label: &str,
+    beacon: impl Fn(Id) -> Option<Pose>,
+    celestial: impl Fn(travel::CelestialRef) -> Option<(Id, Pose)>,
 ) -> Option<Waypoint> {
     use travel::{Axes, Destination, Order, Reference, Target};
 
@@ -44,22 +45,22 @@ fn waypoint(
         }) => destination.clone(),
         _ => return None,
     };
-    let (position, name, target) = match destination {
+    let (position, target) = match destination {
         Destination::Beacon(id) => {
-            let (name, pose) = beacon(id)?;
-            (pose.position, name, Some(SelectedTarget::Beacon(id)))
+            let pose = beacon(id)?;
+            (pose.position, Some(SelectedTarget::Beacon(id)))
         }
-        Destination::Galactic(position) => (position, "Coordinates".into(), None),
+        Destination::Galactic(position) => (position, None),
         Destination::Relative {
             reference,
             offset,
             axes,
         } => {
-            let ((name, pose), target) = match reference {
+            let (pose, target) = match reference {
                 Reference::Beacon(id) => (beacon(id)?, SelectedTarget::Beacon(id)),
                 Reference::Celestial(reference) => {
-                    let (id, name, pose) = celestial(reference)?;
-                    ((name, pose), SelectedTarget::Celestial(id))
+                    let (id, pose) = celestial(reference)?;
+                    (pose, SelectedTarget::Celestial(id))
                 }
             };
             let offset = offset.relative_to(GalacticPosition::ZERO);
@@ -67,21 +68,12 @@ fn waypoint(
                 Axes::Galactic => offset,
                 Axes::BodyFixed => DQuat::from_array(pose.rotation) * offset,
             };
-            (
-                pose.position.offset_by(offset),
-                format!("Near {name}"),
-                Some(target),
-            )
+            (pose.position.offset_by(offset), Some(target))
         }
-    };
-    let action = match order {
-        Order::Dock(_) => "Dock",
-        Order::Slip { .. } => "Slip arrival",
-        _ => "Waypoint",
     };
     Some(Waypoint {
         position,
-        name: format!("{action}: {name}"),
+        name: label.to_owned(),
         target,
     })
 }
@@ -142,17 +134,18 @@ fn draw(
                     index,
                     waypoint(
                         &order.action,
+                        &order.label,
                         |id| {
                             beacons
                                 .iter()
                                 .find(|(b, _)| b.0.id == id)
-                                .map(|(b, p)| (b.0.name.clone(), p.0.clone()))
+                                .map(|(_, p)| p.0.clone())
                         },
                         |id| {
                             celestials
                                 .iter()
                                 .find(|(c, _)| c.0.reference == id)
-                                .map(|(c, p)| (c.0.entity, c.0.name.clone(), p.0.clone()))
+                                .map(|(c, p)| (c.0.entity, p.0.clone()))
                         },
                     ),
                 )
@@ -345,8 +338,9 @@ mod tests {
             };
             let point = waypoint(
                 &action,
-                |_| Some(("Moving beacon".into(), pose.clone())),
-                |_| Some((id, "Orbiting body".into(), pose.clone())),
+                "Authored waypoint",
+                |_| Some(pose.clone()),
+                |_| Some((id, pose.clone())),
             )
             .unwrap();
             assert_eq!(point.position, initial.offset_by(DVec3::X * 1000.));
@@ -355,8 +349,9 @@ mod tests {
             pose.rotation = DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array();
             let point = waypoint(
                 &action,
-                |_| Some(("Moving beacon".into(), pose.clone())),
-                |_| Some((id, "Orbiting body".into(), pose.clone())),
+                "Authored waypoint",
+                |_| Some(pose.clone()),
+                |_| Some((id, pose.clone())),
             )
             .unwrap();
             assert!(
@@ -366,7 +361,7 @@ mod tests {
                     .distance(DVec3::Y * 1000.)
                     < 1e-5
             );
-            assert!(point.name.starts_with("Slip arrival: Near "));
+            assert_eq!(point.name, "Authored waypoint");
         }
     }
 
@@ -379,15 +374,15 @@ mod tests {
             rotation: DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array(),
             ..Default::default()
         };
-        let lookup = |key| (key == id).then(|| ("Beacon".into(), pose.clone()));
+        let lookup = |key| (key == id).then(|| pose.clone());
         let celestial = |key: travel::CelestialRef| {
-            (key.body == id && key.system == id).then(|| (id, "Body".into(), pose.clone()))
+            (key.body == id && key.system == id).then(|| (id, pose.clone()))
         };
         for action in [
             travel::Order::Dock(id),
             travel::Order::TravelTo(travel::Destination::Beacon(id)),
         ] {
-            let point = waypoint(&action, lookup, celestial).unwrap();
+            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
             assert_eq!(point.position, anchor);
             assert_eq!(point.target, Some(SelectedTarget::Beacon(id)));
         }
@@ -400,7 +395,7 @@ mod tests {
             },
             travel::Order::Sublight(travel::Destination::Galactic(far)),
         ] {
-            let point = waypoint(&action, lookup, celestial).unwrap();
+            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
             assert_eq!(point.position, far);
             assert!(point.target.is_none());
             assert_eq!(
@@ -420,11 +415,11 @@ mod tests {
                 offset: GalacticPosition::ZERO.offset_by(DVec3::X * 10.),
                 axes,
             });
-            let point = waypoint(&action, lookup, celestial).unwrap();
+            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
             assert!(point.position.relative_to(anchor).distance(expected) < 1e-5);
             assert_eq!(point.target, Some(SelectedTarget::Celestial(id)));
         }
-        assert!(waypoint(&travel::Order::WaitUntil(100), lookup, celestial).is_none());
-        assert!(waypoint(&travel::Order::Dock(Id([2; 16])), lookup, celestial).is_none());
+        assert!(waypoint(&travel::Order::WaitUntil(100), "Wait", lookup, celestial).is_none());
+        assert!(waypoint(&travel::Order::Dock(Id([2; 16])), "Dock", lookup, celestial).is_none());
     }
 }

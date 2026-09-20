@@ -100,16 +100,13 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
             {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{}  {}",
-                            index + 1,
-                            order_label(&order.action, model.navigation)
-                        ))
-                        .color(if index == ship.travel.order {
-                            ACCENT
-                        } else {
-                            MUTED
-                        }),
+                        egui::RichText::new(format!("{}  {}", index + 1, order.label)).color(
+                            if index == ship.travel.order {
+                                ACCENT
+                            } else {
+                                MUTED
+                            },
+                        ),
                     );
                     ui.monospace(eta_label(order, arrivals[index - ship.travel.order], now));
                     if ui
@@ -171,141 +168,6 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     }
 }
 
-pub(super) fn order_name(order: &travel::Order) -> String {
-    match order {
-        travel::Order::Guidance(guidance) => {
-            format!("{:?} · {}", guidance.mode, distance(guidance.range_m))
-        }
-        travel::Order::TravelTo(travel::Destination::Beacon(id)) => {
-            format!("Travel to beacon {}", short_id(*id))
-        }
-        travel::Order::TravelTo(travel::Destination::Galactic(_)) => {
-            "Travel to galactic coordinates".into()
-        }
-        travel::Order::TravelTo(travel::Destination::Relative { .. }) => {
-            "Travel to relative coordinates".into()
-        }
-        travel::Order::Sublight(_) => "Sublight transfer".into(),
-        travel::Order::Slip {
-            destination:
-                travel::Destination::Relative {
-                    reference: travel::Reference::Celestial(id),
-                    ..
-                },
-            ..
-        } => format!("Slip near celestial {}", short_id(id.body)),
-        travel::Order::Slip { .. } => "Slip transit".into(),
-        travel::Order::Dock(id) => format!("Dock at {}", short_id(*id)),
-        travel::Order::Undock => "Undock".into(),
-        travel::Order::WaitUntil(time) => format!("Wait until tick {time}"),
-    }
-}
-
-pub(super) fn order_system(order: &travel::Order, navigation: &NavigationCatalogue) -> Option<Id> {
-    use travel::{Destination, Order, Reference};
-
-    let reference = match order {
-        Order::TravelTo(Destination::Relative {
-            reference: Reference::Celestial(id),
-            ..
-        })
-        | Order::Sublight(Destination::Relative {
-            reference: Reference::Celestial(id),
-            ..
-        })
-        | Order::Slip {
-            destination:
-                Destination::Relative {
-                    reference: Reference::Celestial(id),
-                    ..
-                },
-            ..
-        } => return Some(id.system),
-        Order::Dock(id)
-        | Order::TravelTo(Destination::Beacon(id))
-        | Order::Sublight(Destination::Beacon(id))
-        | Order::Slip {
-            destination: Destination::Beacon(id),
-            ..
-        }
-        | Order::TravelTo(Destination::Relative {
-            reference: Reference::Beacon(id),
-            ..
-        })
-        | Order::Sublight(Destination::Relative {
-            reference: Reference::Beacon(id),
-            ..
-        })
-        | Order::Slip {
-            destination:
-                Destination::Relative {
-                    reference: Reference::Beacon(id),
-                    ..
-                },
-            ..
-        } => Some(*id),
-        _ => None,
-    };
-    if let Some(id) = reference {
-        return navigation
-            .beacons
-            .iter()
-            .find(|b| b.id == id)
-            .and_then(|b| b.systems.first().copied());
-    }
-    let position = match order {
-        Order::Slip {
-            destination: Destination::Galactic(destination),
-            ..
-        }
-        | Order::TravelTo(Destination::Galactic(destination))
-        | Order::Sublight(Destination::Galactic(destination)) => *destination,
-        _ => return None,
-    };
-    navigation
-        .systems
-        .iter()
-        .min_by(|a, b| {
-            a.position
-                .relative_to(position)
-                .length_squared()
-                .total_cmp(&b.position.relative_to(position).length_squared())
-        })
-        .map(|system| system.id)
-}
-
-pub(super) fn order_label(order: &travel::Order, navigation: &NavigationCatalogue) -> String {
-    use travel::{Destination, Order};
-
-    let system = order_system(order, navigation)
-        .and_then(|id| navigation.systems.iter().find(|s| s.id == id));
-    let action = match order {
-        Order::Slip { .. } => "Slip",
-        Order::Sublight(_) => "Transfer",
-        Order::TravelTo(_) => "Travel",
-        _ => "",
-    };
-    if let Some(system) = system.filter(|_| !action.is_empty()) {
-        return format!("{action} · {}", system.name);
-    }
-    let reference = match order {
-        Order::Dock(id) | Order::TravelTo(Destination::Beacon(id)) => Some(*id),
-        _ => None,
-    };
-    if let Some(beacon) = reference.and_then(|id| navigation.beacons.iter().find(|b| b.id == id)) {
-        return format!(
-            "{} · {}",
-            if matches!(order, Order::Dock(_)) {
-                "Dock"
-            } else {
-                action
-            },
-            beacon.name
-        );
-    }
-    order_name(order)
-}
-
 pub(super) fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: u64) -> String {
     let Some(arrival) = arrival else {
         return if matches!(&stage.action, travel::Order::Guidance(g) if g.mode == travel::GuidanceMode::KeepRange)
@@ -328,12 +190,7 @@ pub(super) fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: 
     }
 }
 
-pub(super) fn itinerary(
-    ui: &mut egui::Ui,
-    state: &travel::TravelState,
-    navigation: &NavigationCatalogue,
-    now: u64,
-) {
+pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::TravelState, now: u64) {
     let remaining = &state.orders[state.order.min(state.orders.len())..];
     if remaining.is_empty() {
         return;
@@ -367,7 +224,7 @@ pub(super) fn itinerary(
             let fill = if current { color } else { egui::Color32::TRANSPARENT };
             ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
 
-            let name = format!("{}  {}", state.order + index + 1, order_label(&order.action, navigation));
+            let name = format!("{}  {}", state.order + index + 1, order.label);
             ui.label(egui::RichText::new(name).size(12.).color(color));
             ui.label(
                 egui::RichText::new(eta_label(order, arrivals[index], now))

@@ -43,9 +43,12 @@ pub fn validate_status(status: &osg_model::routing::Status) -> Result<()> {
                 "invalid route risk or exotic fuel estimate"
             );
             for order in &plan.orders {
-                validate_order(&order.action)?;
+                validate_queued_order(order)?;
                 ensure!(
-                    !matches!(order.action, travel::Order::TravelTo(_)),
+                    !matches!(
+                        order.action,
+                        travel::Order::TravelTo(_) | travel::Order::TravelToSystem(_)
+                    ),
                     "planned route contains an unexpanded destination"
                 );
                 ensure!(

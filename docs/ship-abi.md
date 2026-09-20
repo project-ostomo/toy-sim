@@ -1,4 +1,4 @@
-# Ship controller ABI (version 32)
+# Ship controller ABI (version 33)
 
 A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v32`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
 
@@ -59,10 +59,16 @@ store. Native execution stacks and guest linear memory are not checkpointed.
 Programs must use the persistent store for state that must survive a restart.
 
 Travel preferences and propulsion fuel estimates are shared model values.
-`QueuedOrder` contains an `action`, optional `estimated_duration_ticks` and
+`QueuedOrder` contains a producer-supplied `label` (at most 256 UTF-8 bytes), an `action`, optional `estimated_duration_ticks` and
 optional `estimated_propellant_kg`. The server computes the full `FuelBudget`;
 the flight program reports only the active command's remaining time and
 propellant. `CompleteOrder` advances the server's cursor.
+
+`TravelToSystem(system_id)` requests arrival in a system and expands into a route
+ending at natural capture. `TravelTo(destination)` requests a particular location
+and retains its final approach. The planner assigns waypoint labels when creating
+the queue; clients display these strings without resolving destination names.
+ABI order kind 8 is `ORDER_TRAVEL_SYSTEM`, with the system ID in `entity`.
 
 ABI 19 adds request code 11, `REQUEST_THROTTLE`, with an eight-byte `ThrottleRequest { throttle: f64 }` payload. It changes manual throttle without replacing the direction target. Direction alignment preserves manual throttle.
 
@@ -92,7 +98,7 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 - Every import comes from module `ship_v32` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 31; end`, allowing the host to verify the ABI without running guest code.
+- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 33; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 

@@ -178,12 +178,7 @@ pub(super) fn draw(
                         {
                             ui.colored_label(THREAT, "FUEL EXHAUSTION RISK · replan in Navigation");
                         }
-                        instruments::itinerary(
-                            ui,
-                            &ship.travel,
-                            model.navigation,
-                            model.time_ns / 100_000_000,
-                        );
+                        instruments::itinerary(ui, &ship.travel, model.time_ns / 100_000_000);
                         if let Some(arrival) = ship
                             .travel
                             .estimated_arrival_tick
@@ -328,6 +323,9 @@ pub(super) fn draw(
                                 intents.push(Intent::KeepRange(reference, stand_off));
                                 ui.close();
                             }
+                        }
+                        if super::overview::slip_to(ui, row, can_control, intents) {
+                            ui.close();
                         }
                     });
                 }

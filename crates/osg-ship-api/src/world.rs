@@ -16,6 +16,7 @@ pub const ORDER_SLIP: u64 = 4;
 pub const ORDER_DOCK: u64 = 5;
 pub const ORDER_UNDOCK: u64 = 6;
 pub const ORDER_WAIT: u64 = 7;
+pub const ORDER_TRAVEL_SYSTEM: u64 = 8;
 pub const GUIDANCE_ALIGN: u64 = 0;
 pub const GUIDANCE_APPROACH: u64 = 1;
 pub const GUIDANCE_KEEP_RANGE: u64 = 2;
@@ -81,6 +82,7 @@ record!(Order {
     navigation_beacon: [u8; 16],
 });
 record!(QueuedOrder {
+    label: Text<256>,
     action: Order,
     seconds_per_kg: f64,
     duration_present: u64,

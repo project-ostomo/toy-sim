@@ -10,7 +10,7 @@ use osg_model::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u16 = 36;
+pub const VERSION: u16 = 37;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -252,6 +252,14 @@ pub fn validate_order(order: &travel::Order) -> Result<()> {
     Ok(())
 }
 
+pub fn validate_queued_order(order: &travel::QueuedOrder) -> Result<()> {
+    ensure!(
+        !order.label.trim().is_empty() && order.label.len() <= 256,
+        "invalid waypoint label"
+    );
+    validate_order(&order.action)
+}
+
 pub fn validate_destination(destination: &travel::Destination) -> Result<()> {
     if let travel::Destination::Galactic(position)
     | travel::Destination::Relative {
@@ -466,7 +474,7 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
                     && stage.transfer_cost.seconds_per_kg >= 0.,
                 "invalid transfer cost"
             );
-            validate_order(&stage.action)?;
+            validate_queued_order(stage)?;
         }
         if let travel::Status::Blocked(reason) = &ship.travel.status {
             ensure!(reason.len() <= 1024, "travel error exceeds limit");
