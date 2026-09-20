@@ -126,7 +126,10 @@ subdivision. Consumption follows actual distance, including flight beyond a
 missed target. Each new jump snapshots its own departure mass and begins a new
 distance total.
 
-Starter ships receive approximately 300 light-years of uninterrupted endurance.
+Starter ships receive approximately 1,000 light-years of uninterrupted endurance,
+including the reserve's own mass, in a 5 m³ exotic-fuel tank. The default 50% fuel
+allowance covers about 561 ly, over twice the distance from Helion to the furthest
+initial USE system, leaving fuel for routes through unaided intermediate captures.
 Exotic fuel is ordinary cargo supplied through existing transfer logistics;
 Neris Anchorage starts with stock. Tank propellants and coolant keep their
 existing storage rules. Loading more cargo changes the mass used for the next

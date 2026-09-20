@@ -814,9 +814,9 @@ pub fn expedition_patrol() -> ShipBlueprint {
         volume_m3: 60.,
         initial_fill: 0.5,
     });
-    ship.parts[0].tanks.push(Tank {
+    ship.parts[1].tanks.push(Tank {
         resource: "exotic_fuel".into(),
-        volume_m3: 2.5,
+        volume_m3: 5.0,
         initial_fill: 0.0,
     });
     ship

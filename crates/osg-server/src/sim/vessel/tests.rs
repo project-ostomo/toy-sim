@@ -3,12 +3,18 @@ use crate::sim::hardware::{DeviceSettings, HardwareClock, ShipInventory};
 use crate::sim::physics::{AccumulatedForce, AccumulatedTorque};
 
 #[test]
-fn starter_exotic_supply_reaches_three_hundred_light_years_with_loaded_mass() {
+fn starter_exotic_supply_covers_distant_use_systems_with_detour_and_default_allowance() {
     let catalogue = Catalogue::builtin();
     let design = expedition_patrol().compile(&catalogue).unwrap();
     let mut state = ShipState::new(&design, &catalogue);
     let initial_mass = state.mass_properties(&design, &catalogue).0;
-    seed_exotic_inventory(&mut state.inventory, initial_mass, &catalogue, 300.0).unwrap();
+    seed_exotic_inventory(
+        &mut state.inventory,
+        initial_mass,
+        &catalogue,
+        STARTING_EXOTIC_RANGE_LY,
+    )
+    .unwrap();
     let resource = catalogue
         .resources
         .iter()
@@ -18,8 +24,30 @@ fn starter_exotic_supply_reaches_three_hundred_light_years_with_loaded_mass() {
         state.inventory.quantities[resource] as f64 * catalogue.resources[resource].mass_kg;
     let loaded_mass = state.mass_properties(&design, &catalogue).0;
     let range = osg_model::travel::slip::exotic_range_ly(loaded_mass, fuel_kg);
-    assert!((300.0..300.001).contains(&range), "range: {range}");
+    assert!(
+        (STARTING_EXOTIC_RANGE_LY..STARTING_EXOTIC_RANGE_LY + 0.001).contains(&range),
+        "range: {range}"
+    );
     assert!(state.inventory.quantities[resource] > 0);
+    let map = osg_universe::civilization::map();
+    let origin = map
+        .systems
+        .iter()
+        .find(|system| system.name == "Helion system")
+        .unwrap()
+        .position;
+    let furthest = map
+        .systems
+        .iter()
+        .filter(|system| system.sovereignty == "USE")
+        .map(|system| system.position.relative_to(origin).length() / osg_model::travel::slip::LY_M)
+        .fold(0.0_f64, f64::max);
+    let allowance = osg_model::travel::PlanningPreferences::default().fuel_fraction;
+    let budgeted_range = osg_model::travel::slip::exotic_range_ly(loaded_mass, fuel_kg * allowance);
+    assert!(
+        budgeted_range > 2.0 * furthest,
+        "{budgeted_range} ly allowance cannot cover a detour to {furthest} ly"
+    );
 }
 
 fn test_controller(interval: Option<f64>) -> Vec<u8> {

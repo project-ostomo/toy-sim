@@ -81,7 +81,7 @@ fn provision_inner(
             format!("Explorer {}", index + 1),
         )?;
         identity::attach_ship(world, ship, account)?;
-        vessel::seed_exotic_fuel(world, ship, 300.0)?;
+        vessel::seed_exotic_fuel(world, ship, vessel::STARTING_EXOTIC_RANGE_LY)?;
     }
     let unowned = world
         .query_filtered::<Entity, (With<vessel::Vessel>, Without<identity::Identity>)>()

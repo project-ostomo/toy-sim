@@ -215,8 +215,13 @@ fn spawn(
         let mut state = ShipState::new(&design, &cat.0);
         state.test_loadout(&design, &cat.0);
         let loaded_mass = state.mass_properties(&design, &cat.0).0;
-        seed_exotic_inventory(&mut state.inventory, loaded_mass, &cat.0, 300.0)
-            .expect("starter exotic tank has sufficient capacity");
+        seed_exotic_inventory(
+            &mut state.inventory,
+            loaded_mass,
+            &cat.0,
+            STARTING_EXOTIC_RANGE_LY,
+        )
+        .expect("starter exotic tank has sufficient capacity");
         let (mass, inertia) = state.mass_properties(&design, &cat.0);
         let mut pose = PreciseTransform {
             translation_um: planet_position.offset_by(position),
@@ -810,6 +815,8 @@ pub fn spawn_ship(
         ))
         .id())
 }
+
+pub const STARTING_EXOTIC_RANGE_LY: f64 = 1000.0;
 
 /// Provision a newly created scenario vessel. Restored and constructed vessels
 /// retain the quantities supplied by their saved inventory or blueprint.

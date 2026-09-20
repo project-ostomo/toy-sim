@@ -778,7 +778,7 @@ correct that jump. Its sampled errors and loss state survive save/load.
 
 Exotic consumption is cumulative: `1e-5 × departure_mass_kg × distance_ly^1.2`
 kilograms. Inventory uses grams with fractional accounting across updates.
-Starter ships receive approximately 300 ly of uninterrupted endurance, including
+Starter ships receive approximately 1,000 ly of uninterrupted endurance, including
 the fuel's own mass. Refuelling uses ordinary inventory transfers.
 
 Transit sweeps through moving natural exclusions in active and dormant systems.
