@@ -2,7 +2,6 @@ use crate::travel::{FuelBudget, Order, PlanningPreferences, PlanningProgress, Qu
 use serde::{Deserialize, Serialize};
 
 pub const MAX_ORDERS: usize = 256;
-pub const MAX_PLAN_BYTES: usize = 48 * 1024;
 pub const REQUEST_GAS: u64 = 8192;
 pub const POLL_GAS: u64 = 8192;
 

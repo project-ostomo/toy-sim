@@ -3,15 +3,13 @@ use anyhow::{Result, bail, ensure};
 use std::collections::BTreeMap;
 use std::ops::Bound::{Excluded, Unbounded};
 use std::sync::Arc;
+use toy_sim_model::wasm_world::ReplyCapacity;
 use toy_sim_model::*;
 use toy_sim_spatial::RangeCursor;
 
 pub const CALL_GAS: u64 = 100;
 pub const VISIT_GAS: u64 = 8;
 pub const CANDIDATE_GAS: u64 = 1000;
-
-// Covers the enclosing reply discriminant, page fields, and maximum-length varints.
-const PAGE_ENVELOPE_BYTES: usize = 64;
 
 #[derive(Debug)]
 pub struct ReplyBufferTooSmall;
@@ -24,8 +22,8 @@ impl std::fmt::Display for ReplyBufferTooSmall {
 
 impl std::error::Error for ReplyBufferTooSmall {}
 
-fn validate_capacity(snapshot: &Snapshot, capacity: usize) -> Result<()> {
-    if capacity < PAGE_ENVELOPE_BYTES + snapshot.maximum_track_bytes() {
+fn validate_capacity(snapshot: &Snapshot, capacity: ReplyCapacity) -> Result<()> {
+    if capacity.records == 0 || capacity.bytes < snapshot.maximum_track_bytes() {
         return Err(ReplyBufferTooSmall.into());
     }
     Ok(())
@@ -83,6 +81,17 @@ pub struct Queries {
 }
 
 impl Queries {
+    pub fn output_bytes(&self, cursor: Id, capacity: ReplyCapacity) -> Result<usize> {
+        let cursor = self
+            .cursors
+            .get(&cursor)
+            .ok_or_else(|| anyhow::anyhow!("query continuation expired"))?;
+        Ok(output_bytes(
+            &cursor.snapshot,
+            cursor.query.limit as usize,
+            capacity,
+        ))
+    }
     /// Run once per tick outside script callbacks to release obsolete snapshots.
     pub fn expire(&mut self, tick: u64) {
         self.retired.clear();
@@ -107,7 +116,7 @@ impl Queries {
         snapshot: Arc<Snapshot>,
         query: TrackQuery,
         tick: u64,
-        reply_capacity: usize,
+        reply_capacity: ReplyCapacity,
     ) -> Result<QueryPage> {
         validate_capacity(&snapshot, reply_capacity)?;
         self.retire_expired(tick);
@@ -174,7 +183,7 @@ impl Queries {
         id: Id,
         work: u64,
         tick: u64,
-        reply_capacity: usize,
+        reply_capacity: ReplyCapacity,
     ) -> Result<QueryPage> {
         if let Some(cursor) = self.cursors.get(&id) {
             validate_capacity(&cursor.snapshot, reply_capacity)?;
@@ -185,10 +194,11 @@ impl Queries {
         };
         let mut budget = Budget::new(work);
         let mut tracks = Vec::new();
-        let mut remaining_bytes = reply_capacity.saturating_sub(PAGE_ENVELOPE_BYTES);
+        let mut remaining_bytes = reply_capacity.bytes;
+        let limit = usize::from(cursor.query.limit).min(reply_capacity.records);
         let mut completion = Completion::WorkLimit;
         if budget.charge(CALL_GAS) {
-            while tracks.len() < usize::from(cursor.query.limit) {
+            while tracks.len() < limit {
                 if !cursor.fill_pending(&mut budget) {
                     if cursor.complete {
                         completion = Completion::Complete;
@@ -201,12 +211,14 @@ impl Queries {
                     break;
                 }
                 if matches_query(track, &cursor.query, cursor.snapshot.tick) {
-                    let bytes = postcard::experimental::serialized_size(track.as_ref()).unwrap();
+                    let bytes = wasm_intel::track_arena_bytes(track);
                     if bytes > remaining_bytes {
                         completion = Completion::ResultLimit;
                         break;
                     }
-                    if !budget.charge((bytes as u64).div_ceil(8)) {
+                    if !budget
+                        .charge(((bytes + wasm_intel::track_record_bytes()) as u64).div_ceil(8))
+                    {
                         break;
                     }
                     remaining_bytes -= bytes;
@@ -215,7 +227,7 @@ impl Queries {
                 cursor.pending = None;
                 cursor.after = Some(id);
             }
-            if tracks.len() == usize::from(cursor.query.limit) {
+            if tracks.len() == limit {
                 completion = Completion::ResultLimit;
             }
         }
@@ -237,6 +249,15 @@ impl Queries {
             gas_used: budget.spent,
         })
     }
+}
+
+pub fn output_bytes(snapshot: &Snapshot, limit: usize, capacity: ReplyCapacity) -> usize {
+    let count = limit.min(capacity.records);
+    wasm_intel::track_page_bytes()
+        + count * wasm_intel::track_record_bytes()
+        + capacity
+            .bytes
+            .min(count.saturating_mul(snapshot.maximum_track_bytes()))
 }
 
 impl Cursor {
@@ -372,7 +393,12 @@ mod tests {
         assert!(!expected.is_empty());
         let mut queries = Queries::default();
         let mut page = queries
-            .start(snapshot.clone(), query, 1, usize::MAX)
+            .start(
+                snapshot.clone(),
+                query,
+                1,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+            )
             .unwrap();
         assert!(page.tracks.is_empty());
         assert!(page.gas_used <= CALL_GAS + VISIT_GAS);
@@ -394,7 +420,14 @@ mod tests {
                 break;
             };
             let budget = if pages % 2 == 0 { 108 } else { 1400 };
-            page = queries.next(continuation, budget, 1, usize::MAX).unwrap();
+            page = queries
+                .next(
+                    continuation,
+                    budget,
+                    1,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+                )
+                .unwrap();
             assert!(page.gas_used <= budget);
             pages += 1;
             assert!(pages < 10_000, "query continuation did not make progress");
@@ -414,7 +447,15 @@ mod tests {
             value.tags.insert(Tag::Advertised("x".repeat(64)));
             snapshot.put(value);
         }
-        let capacity = PAGE_ENVELOPE_BYTES + snapshot.maximum_track_bytes();
+        let capacity = ReplyCapacity {
+            records: 1,
+            bytes: snapshot.maximum_track_bytes(),
+            auxiliary: 0,
+        };
+        let insufficient = ReplyCapacity {
+            bytes: capacity.bytes - 1,
+            ..capacity
+        };
         let snapshot = Arc::new(snapshot);
         let query = TrackQuery {
             limit: 20,
@@ -424,7 +465,7 @@ mod tests {
         let mut queries = Queries::default();
         for _ in 0..20 {
             let error = queries
-                .start(snapshot.clone(), query.clone(), 1, capacity - 1)
+                .start(snapshot.clone(), query.clone(), 1, insufficient)
                 .unwrap_err();
             assert!(error.is::<ReplyBufferTooSmall>());
             assert!(queries.cursors.is_empty());
@@ -434,17 +475,15 @@ mod tests {
         let mut ids = BTreeSet::new();
         loop {
             assert_eq!(page.tracks.len(), 1);
-            assert!(
-                postcard::to_allocvec(&ProgramReply::Tracks(page.clone()))
-                    .unwrap()
-                    .len()
-                    <= capacity
-            );
+            assert!(wasm_intel::reply_fits(
+                &ProgramReply::Tracks(page.clone()),
+                capacity
+            ));
             assert!(ids.insert(page.tracks[0].id));
             let Some(cursor) = page.continuation else {
                 break;
             };
-            let error = queries.next(cursor, 100_000, 1, capacity - 1).unwrap_err();
+            let error = queries.next(cursor, 100_000, 1, insufficient).unwrap_err();
             assert!(error.is::<ReplyBufferTooSmall>());
             page = queries.next(cursor, 100_000, 1, capacity).unwrap();
             if page.tracks.is_empty() {
@@ -469,7 +508,7 @@ mod tests {
                     ..Default::default()
                 },
                 1,
-                usize::MAX,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
             )
             .unwrap();
         assert_eq!(result.completion, Completion::Complete);
@@ -488,12 +527,17 @@ mod tests {
                     ..Default::default()
                 },
                 2,
-                usize::MAX,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
             )
             .unwrap();
         assert!(
             queries
-                .next(result.continuation.unwrap(), 1000, 13, usize::MAX)
+                .next(
+                    result.continuation.unwrap(),
+                    1000,
+                    13,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED
+                )
                 .is_err()
         );
         assert!(weak.upgrade().is_some());
@@ -522,7 +566,7 @@ mod tests {
                     ..Default::default()
                 },
                 1,
-                usize::MAX,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
             )
             .unwrap();
         let mut pages = 0;
@@ -532,7 +576,14 @@ mod tests {
             let Some(continuation) = page.continuation else {
                 break;
             };
-            page = queries.next(continuation, budget, 1, usize::MAX).unwrap();
+            page = queries
+                .next(
+                    continuation,
+                    budget,
+                    1,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+                )
+                .unwrap();
             pages += 1;
             assert!(pages < 1000);
         }

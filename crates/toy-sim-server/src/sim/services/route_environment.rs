@@ -9,6 +9,7 @@ pub(crate) struct Environment {
     cancel: Arc<AtomicBool>,
     ready_tick: u64,
     wanted: Option<BTreeSet<Id>>,
+    eligibility: std::sync::Mutex<std::collections::HashMap<GalacticPosition, bool>>,
 }
 
 impl Environment {
@@ -63,6 +64,7 @@ impl Environment {
             cancel,
             ready_tick,
             wanted,
+            eligibility: Default::default(),
         })
     }
 
@@ -185,6 +187,18 @@ impl RouteEnvironment for Environment {
         departure_after_s: f64,
         arrival_after_s: f64,
     ) -> Result<SlipEstimate> {
+        if origin == destination && departure_after_s == 0.0 && arrival_after_s == 0.0 {
+            let mut cache = self.eligibility.lock().unwrap();
+            let ready = *cache.entry(origin).or_insert_with(|| {
+                self.source.slip_power_w > 0.0
+                    && self.source.admissible_at(origin, self.source.epoch)
+            });
+            return Ok(SlipEstimate {
+                ready,
+                preparation_s: 0.0,
+                duration_s: 0.0,
+            });
+        }
         let departure = self.source.prediction_epoch(departure_after_s)?;
         let arrival = self.source.prediction_epoch(arrival_after_s)?;
         ensure!(arrival >= departure, "arrival precedes departure");
@@ -200,9 +214,7 @@ impl RouteEnvironment for Environment {
             - departure_after_s)
             .max(0.0);
         Ok(SlipEstimate {
-            ready: self.source.slip_power_w > 0.0
-                && self.source.admissible_at(origin, departure)
-                && self.source.admissible_at(destination, arrival),
+            ready: self.source.slip_power_w > 0.0 && self.source.admissible_at(origin, departure),
             preparation_s: preparation_s.max(cooldown),
             duration_s,
         })

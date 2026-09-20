@@ -3,9 +3,6 @@ mod previews;
 mod ui;
 mod viewport;
 use bevy::prelude::*;
-#[cfg(all(debug_assertions, not(target_family = "wasm")))]
-#[allow(unused_imports)]
-use bevy_dylib;
 use std::path::PathBuf;
 use toy_sim_ship_wasm::ControllerRuntime;
 use toy_sim_ships::*;

@@ -18,51 +18,13 @@ pub struct Steering {
     pub detouring: bool,
 }
 
-#[derive(Default)]
-pub struct GateApproach {
-    side: Option<f64>,
-    crossing: bool,
-}
-
-pub struct GateTarget {
-    pub pose: Pose,
-    pub crossing: bool,
-    pub changed: bool,
-    pub speed_limit: f64,
-}
-
-impl GateApproach {
-    pub fn guide(&mut self, pose: &Pose, gate: &Pose, stand_off: f64) -> GateTarget {
-        let normal = DQuat::from_array(gate.rotation) * DVec3::Z;
-        let side = *self.side.get_or_insert_with(|| {
-            if pose.position.relative_to(gate.position).dot(normal) < 0. {
-                -1.
-            } else {
-                1.
-            }
-        });
-        let approach = offset_pose(gate, normal * side * stand_off);
-        let relative_speed =
-            (DVec3::from_array(pose.velocity) - DVec3::from_array(gate.velocity)).length();
-        let changed = !self.crossing
-            && approach.position.relative_to(pose.position).length() < 20.
-            && relative_speed < 5.;
-        self.crossing |= changed;
-
-        GateTarget {
-            pose: if self.crossing {
-                offset_pose(gate, -normal * side * stand_off)
-            } else {
-                approach
-            },
-            crossing: self.crossing,
-            changed,
-            speed_limit: if self.crossing {
-                toy_sim_model::travel::GATE_ENTRY_SPEED_M_S * 0.4
-            } else {
-                f64::INFINITY
-            },
-        }
+pub fn gate_target(pose: &Pose, gate: &Pose) -> Pose {
+    let inward = gate.position.relative_to(pose.position).normalize_or_zero();
+    Pose {
+        velocity: (DVec3::from_array(gate.velocity)
+            + inward * (toy_sim_model::travel::GATE_ENTRY_SPEED_M_S * 0.5))
+            .to_array(),
+        ..gate.clone()
     }
 }
 
@@ -403,32 +365,15 @@ mod tests {
     }
 
     #[test]
-    fn gate_maneuver_cruises_to_the_entry_side_then_caps_only_the_crossing() {
-        let gate = pose(DVec3::ZERO);
-        let mut ship = pose(DVec3::Z * 4_000_000.);
-        let mut maneuver = GateApproach::default();
-        let approach = maneuver.guide(&ship, &gate, 1100.);
-        let (_, cruise) = crate::navigation::economical_rendezvous(
-            approach.pose.position.relative_to(ship.position),
-            DVec3::ZERO,
-            DVec3::ZERO,
-            10.,
-            2.,
-            1.,
-            toy_sim_model::transfer::TransferCost::default(),
-            approach.speed_limit,
-        );
-        assert!(!approach.crossing);
-        assert!(cruise > toy_sim_model::travel::GATE_ENTRY_SPEED_M_S);
-
-        ship = approach.pose;
-        ship.velocity = [0., 0., -20.];
-        assert!(!maneuver.guide(&ship, &gate, 1100.).crossing);
-        ship.velocity = gate.velocity;
-        let crossing = maneuver.guide(&ship, &gate, 1100.);
-        assert!(crossing.crossing && crossing.changed);
-        assert!(crossing.pose.position.relative_to(gate.position).z < 0.);
-        assert_eq!(crossing.speed_limit, 40.);
-        assert!(!maneuver.guide(&ship, &gate, 1100.).changed);
+    fn gate_target_enters_directly_from_any_direction_at_fifty_meters_per_second() {
+        let mut gate = pose(DVec3::ZERO);
+        gate.velocity = [1000., -2000., 3000.];
+        for direction in [DVec3::X, DVec3::NEG_Z, DVec3::new(1., 2., 3.).normalize()] {
+            let ship = pose(direction * 4_000_000.);
+            let target = gate_target(&ship, &gate);
+            assert_eq!(target.position, gate.position);
+            let relative = DVec3::from_array(target.velocity) - DVec3::from_array(gate.velocity);
+            assert!((relative + direction * 50.).length() < 1e-9);
+        }
     }
 }

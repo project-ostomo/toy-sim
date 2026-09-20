@@ -226,6 +226,12 @@ fn snap_rect(rect: egui::Rect, bounds: egui::Rect, neighbors: &[egui::Rect]) -> 
     fit_rect(rect.translate(delta), bounds)
 }
 
+pub fn hud_painter(ctx: &egui::Context, id: egui::Id) -> egui::Painter {
+    let layer = egui::LayerId::new(egui::Order::Background, id);
+    ctx.set_sublayer(egui::LayerId::background(), layer);
+    ctx.layer_painter(layer)
+}
+
 pub fn launcher(ctx: &egui::Context, contents: impl FnOnce(&mut egui::Ui)) {
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new("desktop_launcher"))
@@ -235,10 +241,10 @@ pub fn launcher(ctx: &egui::Context, contents: impl FnOnce(&mut egui::Ui)) {
             egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(egui::Stroke::new(1., BORDER))
-                .inner_margin(7.)
+                .inner_margin(6.)
                 .show(ui, |ui| {
                     ui.set_width(RAIL_WIDTH - 14.);
-                    ui.set_height((screen.height() - STATUS_HEIGHT - 14.).max(0.));
+                    ui.set_height((screen.height() - 14.).max(0.));
                     contents(ui);
                 });
         });
@@ -247,15 +253,19 @@ pub fn launcher(ctx: &egui::Context, contents: impl FnOnce(&mut egui::Ui)) {
 pub fn status_bar(ctx: &egui::Context, contents: impl FnOnce(&mut egui::Ui)) {
     let screen = ctx.content_rect();
     egui::Area::new(egui::Id::new("desktop_status"))
-        .fixed_pos(egui::pos2(screen.left(), screen.bottom() - STATUS_HEIGHT))
+        .fixed_pos(egui::pos2(
+            screen.left() + RAIL_WIDTH,
+            screen.bottom() - STATUS_HEIGHT,
+        ))
         .movable(false)
         .show(ctx, |ui| {
             egui::Frame::new()
                 .fill(SURFACE)
                 .stroke(egui::Stroke::new(1., BORDER))
-                .inner_margin(egui::Margin::symmetric(14, 5))
+                .inner_margin(egui::Margin::symmetric(14, 0))
                 .show(ui, |ui| {
-                    ui.set_width((screen.width() - 28.).max(0.));
+                    ui.set_width((screen.width() - RAIL_WIDTH - 30.).max(0.));
+                    ui.set_height(STATUS_HEIGHT - 2.);
                     ui.horizontal(contents);
                 });
         });

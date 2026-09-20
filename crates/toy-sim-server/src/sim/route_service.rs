@@ -10,6 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use toy_sim_model::wasm_world::ReplyCapacity;
 use toy_sim_model::{
     Id, ProgramReply,
     ownership::Principal,
@@ -18,7 +19,7 @@ use toy_sim_model::{
 };
 
 use super::{
-    gas::GasLedger, identity, infrastructure::NavigationPublication, ownership, routing, services,
+    identity, infrastructure::NavigationPublication, ownership, routing, services,
     simulation::SimulationCounters, travel,
 };
 
@@ -33,8 +34,6 @@ const MAX_PER_OWNER: usize = 8;
 const MAX_PER_SHIP: usize = 4;
 const MAX_ENTRIES: usize = 256;
 const MAX_WORKERS: usize = 2;
-const PREPARE_WORK: u64 = 10_000;
-const WORK_PER_GATE: u64 = 64;
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
 pub enum Origin {
@@ -140,12 +139,14 @@ fn failed(reason: impl ToString) -> Status {
     }
 }
 
-fn fits(id: u64, status: &Status, capacity: usize) -> Result<()> {
-    if postcard::experimental::serialized_size(&ProgramReply::Route {
-        id,
-        status: status.clone(),
-    })? > capacity
-    {
+fn fits(id: u64, status: &Status, capacity: ReplyCapacity) -> Result<()> {
+    if !toy_sim_model::wasm_intel::reply_fits(
+        &ProgramReply::Route {
+            id,
+            status: status.clone(),
+        },
+        capacity,
+    ) {
         return Err(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall.into());
     }
     Ok(())
@@ -156,7 +157,7 @@ impl RouteService {
         &self,
         caller: Caller,
         request: Request,
-        reply_capacity: usize,
+        reply_capacity: ReplyCapacity,
     ) -> Result<Status> {
         ensure!(
             request.id != 0 && request.orders.len() <= dto::MAX_ORDERS,
@@ -317,7 +318,7 @@ fn submit_origin(
     world.init_resource::<RouteService>();
     world
         .resource::<RouteService>()
-        .submit(caller, request, usize::MAX)
+        .submit(caller, request, ReplyCapacity::UNLIMITED)
 }
 
 pub fn poll(world: &World, ship: Entity, id: u64) -> Result<Status> {
@@ -388,6 +389,14 @@ fn ready_origin(
         .collect::<Option<Vec<_>>>()
         .map(|values| values.into_iter().sum());
     plan.fuel_budget = fuel_budget(world, ship, total);
+    ensure!(
+        plan.fuel_budget
+            .resources
+            .iter()
+            .all(|resource| resource.required_kg
+                <= resource.available_kg * entry.request.preferences.fuel_fraction + 1e-9),
+        "Fuel allowance no longer covers this route; request a new preview"
+    );
     Ok(ReadyRoute {
         plan,
         preferences: entry.request.preferences,
@@ -484,7 +493,7 @@ pub fn advance(world: &mut World) {
         admissions += 1;
         let prepared = prepare(world, admitted, &request, cancel.clone());
         match prepared {
-            Ok((input, mut environment, payment, preparation_work)) => {
+            Ok((input, mut environment)) => {
                 {
                     let mut state = service.0.lock().unwrap();
                     let entry = state.entries.get_mut(&key).unwrap();
@@ -492,16 +501,9 @@ pub fn advance(world: &mut World) {
                 }
                 let task = AsyncComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new).spawn(
                     async move {
-                        let (result, work) = match environment.prepare() {
-                            Ok(()) => routing::plan_metered(&input, &environment),
-                            Err(error) => (Err(error), 0),
-                        };
-                        let used = (preparation_work + work)
-                            .checked_mul(routing::GAS_PER_WORK)
-                            .expect("bounded route gas");
-                        payment
-                            .settle(used)
-                            .expect("route work stayed within prepaid bound");
+                        let result = environment
+                            .prepare()
+                            .and_then(|()| routing::plan(&input, &environment));
                         match result {
                             Ok(result) => {
                                 let plan = Plan {
@@ -511,10 +513,7 @@ pub fn advance(world: &mut World) {
                                     orders: result.orders,
                                     fuel_budget: result.fuel_budget,
                                 };
-                                if postcard::experimental::serialized_size(&plan)
-                                    .expect("route serialization")
-                                    > dto::MAX_PLAN_BYTES
-                                {
+                                if plan.orders.len() > dto::MAX_ORDERS {
                                     failed("expanded route exceeds response limit")
                                 } else {
                                     Status::Ready { plan }
@@ -554,8 +553,6 @@ fn prepare(
 ) -> Result<(
     routing::RouteRequest,
     services::route_environment::Environment,
-    super::gas::PrepaidGas,
-    u64,
 )> {
     let ship = identity::lookup(world, admitted.ship)?;
     let mut current = caller(world, ship)?;
@@ -565,23 +562,8 @@ fn prepare(
         "route inputs changed before planning"
     );
 
-    drop(
-        world
-            .resource::<GasLedger>()
-            .prepay(admitted.owner, PREPARE_WORK * routing::GAS_PER_WORK)?,
-    );
-
     let input = performance::request(world, ship, request)?;
     let environment =
         services::route_environment::Environment::capture(world, ship, cancel, &input)?;
-    let preparation_work = environment.gate_count() as u64 * WORK_PER_GATE;
-    let limit = routing::work_limit(&input, environment.gate_count());
-
-    let payment = world.resource::<GasLedger>().prepay(
-        admitted.owner,
-        (limit + preparation_work)
-            .checked_mul(routing::GAS_PER_WORK)
-            .context("route gas overflow")?,
-    )?;
-    Ok((input, environment, payment, preparation_work))
+    Ok((input, environment))
 }

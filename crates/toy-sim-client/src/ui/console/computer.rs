@@ -83,12 +83,69 @@ pub(super) fn draw(ui: &mut egui::Ui, details: &ShipPresentation, display_ns: u6
     };
     gauges::gauge(ui, &label, 22., fill, None, None, false, tone).on_hover_ui(|ui| {
         ui.set_max_width(460.);
-        egui::ScrollArea::vertical()
-            .max_height(220.)
-            .show(ui, |ui| {
-                ui.label(tooltip);
-            });
+        ui.label(tooltip);
     });
+}
+
+pub(super) fn panel(ui: &mut egui::Ui, details: &ShipPresentation, display_ns: u64) {
+    ui.columns(2, |columns| {
+        draw(&mut columns[0], details, display_ns);
+        let bytes = details
+            .execution
+            .as_ref()
+            .map_or(0, |execution| execution.memory_bytes);
+        let fraction = bytes as f64 / details.memory_limit_bytes.max(1) as f64;
+        gauges::gauge(
+            &mut columns[1],
+            &format!("MEM {:.0}%", fraction * 100.),
+            22.,
+            fraction,
+            None,
+            None,
+            false,
+            gauges::Tone::Heat,
+        )
+        .on_hover_text(format!(
+            "{} / {} allocated WASM linear memory",
+            units(bytes as f64, "B"),
+            units(details.memory_limit_bytes as f64, "B")
+        ));
+    });
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 196.), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 0., egui::Color32::from_gray(5));
+    let screen = rect.shrink(6.);
+    let cell_width = screen.width() / toy_sim_model::serial::COLUMNS as f32;
+    let cell_height = screen.height() / toy_sim_model::serial::ROWS as f32;
+    for (index, cell) in details
+        .serial
+        .cells
+        .iter()
+        .enumerate()
+        .take(toy_sim_model::serial::COLUMNS * toy_sim_model::serial::ROWS)
+    {
+        let position = screen.min
+            + egui::vec2(
+                (index % toy_sim_model::serial::COLUMNS) as f32 * cell_width,
+                (index / toy_sim_model::serial::COLUMNS) as f32 * cell_height,
+            );
+        if let Some([r, g, b]) = cell.background {
+            painter.rect_filled(
+                egui::Rect::from_min_size(position, egui::vec2(cell_width, cell_height)),
+                0.,
+                egui::Color32::from_rgb(r, g, b),
+            );
+        }
+        let [r, g, b] = cell.foreground;
+        painter.text(
+            position,
+            egui::Align2::LEFT_TOP,
+            cell.character,
+            egui::FontId::monospace(11.),
+            egui::Color32::from_rgb(r, g, b),
+        );
+    }
 }
 
 #[cfg(test)]

@@ -49,7 +49,8 @@ macro_rules! metered {
 pub(crate) struct PreparedWorldQuery {
     pub query: toy_sim_model::ProgramQuery,
     pub work: u64,
-    pub capacity: usize,
+    pub capacity: toy_sim_model::wasm_world::ReplyCapacity,
+    pub output_budget: usize,
 }
 
 pub(super) struct CallPlan {
@@ -129,41 +130,6 @@ pub(super) fn persistent_read_plan(
         return Err(w::ERR_BUFFER.into());
     }
     CallPlan::bytes(caller, pointer, length as u32, 65536)
-}
-
-pub(super) fn world_query_plan(
-    caller: &Caller<'_, Host>,
-    pointer: u32,
-    length: u32,
-    output: u32,
-    capacity: u32,
-) -> CallResult<CallPlan> {
-    let mut plan = CallPlan::bytes(caller, pointer, length, 65536)?
-        .extra_bytes(caller, output, capacity, 65536)?;
-    let input_cost = w::CALL_GAS + words(length as usize);
-    let mut query: toy_sim_model::ProgramQuery =
-        postcard::from_bytes(payload(caller, pointer, length)?)
-            .map_err(|_| CallError::Status(w::ERR_ARGUMENT).priced(input_cost))?;
-    let maximum_work = caller.data().gas_per_tick.saturating_sub(plan.gas);
-    match &mut query {
-        toy_sim_model::ProgramQuery::Tracks(query) => query.work = query.work.min(maximum_work),
-        toy_sim_model::ProgramQuery::Continue { work, .. } => *work = (*work).min(maximum_work),
-        _ => {}
-    }
-    let source = caller.data().source.as_ref().ok_or(w::ERR_UNAVAILABLE)?;
-    let work = source
-        .query_work(&query)
-        .map_err(|error| world_query_error(error).priced(input_cost))?;
-    if work > maximum_work {
-        return Err(CallError::Status(w::ERR_LIMIT).priced(input_cost));
-    }
-    plan.gas += work;
-    plan.query = Some(PreparedWorldQuery {
-        query,
-        work,
-        capacity: capacity as usize,
-    });
-    Ok(plan)
 }
 
 pub(super) fn device_record_plan(

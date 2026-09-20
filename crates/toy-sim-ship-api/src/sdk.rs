@@ -8,27 +8,6 @@ pub fn check(status: i32) -> Result<(), i32> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn llm_submit(request: &[u8], reply: &mut [u8]) -> Result<usize, i32> {
-    let length = unsafe {
-        abi::raw::llm_submit(
-            request.as_ptr(),
-            request.len() as u32,
-            reply.as_mut_ptr(),
-            reply.len() as u32,
-        )
-    };
-    check(length)?;
-    Ok(length as usize)
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn llm_poll(id: u64, reply: &mut [u8]) -> Result<usize, i32> {
-    let length = unsafe { abi::raw::llm_poll(id, reply.as_mut_ptr(), reply.len() as u32) };
-    check(length)?;
-    Ok(length as usize)
-}
-
-#[cfg(target_arch = "wasm32")]
 pub fn llm_cancel(id: u64) -> Result<bool, i32> {
     let cancelled = unsafe { abi::raw::llm_cancel(id) };
     check(cancelled)?;
@@ -38,14 +17,6 @@ pub fn llm_cancel(id: u64) -> Result<bool, i32> {
 #[cfg(target_arch = "wasm32")]
 pub fn chat_send(id: u64, text: &str) -> Result<(), i32> {
     check(unsafe { abi::raw::chat_send(id, text.as_ptr(), text.len() as u32) })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn chat_read(after: u64, limit: u32, reply: &mut [u8]) -> Result<usize, i32> {
-    let length =
-        unsafe { abi::raw::chat_read(after, limit, reply.as_mut_ptr(), reply.len() as u32) };
-    check(length)?;
-    Ok(length as usize)
 }
 
 pub fn read<T: Record>(call: impl FnOnce(*mut u8, u32) -> i32) -> Result<T, i32> {
@@ -334,4 +305,9 @@ pub fn control_missile(control: &abi::MissileControl) -> Result<(), i32> {
     write(control, |pointer, bytes| unsafe {
         abi::raw::missile_control(pointer, bytes)
     })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn serial_write(text: &str) -> Result<(), i32> {
+    check(unsafe { abi::raw::serial_write(text.as_ptr(), text.len() as u32) })
 }

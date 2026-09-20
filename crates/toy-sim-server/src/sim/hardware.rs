@@ -100,6 +100,12 @@ pub struct PowerFlow {
     pub supplied_w: f64,
 }
 
+#[derive(Component, Default)]
+pub(crate) struct ElectricalTick {
+    initial_energy_j: u64,
+    requested_weapon_j: f64,
+}
+
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HardwareSystems {
     Initialize,
@@ -131,6 +137,7 @@ pub fn bundle(d: &CompiledShipDesign, state: ShipState) -> impl Bundle + use<> {
         PartDevices::default(),
         PendingHardwareReset(state),
         PowerFlow::default(),
+        ElectricalTick::default(),
         (
             propulsion::ActuatorOutput::default(),
             propulsion::InstalledRatings(propulsion::telemetry(d, None)),
@@ -155,7 +162,6 @@ pub fn install(app: &mut App) {
             generators,
             reactors::dock_heat_transfer,
             reactors::generate,
-            avionics,
             device_systems(),
             utilities::run,
             utilities::service_docked,
@@ -163,6 +169,7 @@ pub fn install(app: &mut App) {
             cooling::run,
             power_totals,
             publish_mass,
+            transit_thermal,
             dormant_thermal,
             sensor_overrides,
         )
@@ -170,6 +177,10 @@ pub fn install(app: &mut App) {
             .in_set(HardwareSystems::Run)
             .after(super::vessel::run)
             .in_set(super::simulation::SimulationSystems::PrepareBodies),
+    )
+    .add_systems(
+        FixedPostUpdate,
+        finish_electrical_tick.after(super::simulation::SimulationSystems::Integrate),
     );
 }
 
@@ -180,7 +191,7 @@ pub(crate) fn initialize(
         &ShipDesign,
         &PendingHardwareReset,
         &PartDevices,
-        Has<super::travel::Dormant>,
+        Has<super::travel::SystemsSuspended>,
         Option<&utilities::Crew>,
         Option<&super::travel::DockingBays>,
     )>,
@@ -405,13 +416,19 @@ fn advance_computer_clock(mut clocks: Query<&mut HardwareClock>) {
 
 fn begin(
     mut ships: Query<
-        (&ShipDesign, HardwareWrite, &mut DormantThermalElapsed),
-        Without<super::travel::Dormant>,
+        (
+            &ShipDesign,
+            HardwareWrite,
+            &mut DormantThermalElapsed,
+            &mut ElectricalTick,
+        ),
+        Without<super::travel::SystemsSuspended>,
     >,
 ) {
-    ships
-        .par_iter_mut()
-        .for_each(|(design, mut hardware, mut dormant_elapsed)| {
+    ships.par_iter_mut().for_each(
+        |(design, mut hardware, mut dormant_elapsed, mut electrical)| {
+            electrical.initial_energy_j = hardware.inventory.0.energy_j;
+            electrical.requested_weapon_j = 0.0;
             hardware.range.0 = 0.0;
             hardware.thermal.0.shield_powered = false;
             hardware.thermal.0.shield_enabled = false;
@@ -422,11 +439,12 @@ fn begin(
             if hardware.hull.0 <= 0.0 {
                 hardware.avionics.0.powered = false;
             }
-        });
+        },
+    );
 }
 
 fn reset_weapons(
-    ships: Query<(), Without<super::travel::Dormant>>,
+    ships: Query<(), Without<super::travel::SystemsSuspended>>,
     mut parts: Query<(&InstalledPart, &mut Weapon), With<ActiveDevice>>,
 ) {
     parts.par_iter_mut().for_each(|(installed, mut weapon)| {
@@ -443,66 +461,74 @@ fn reset_weapons(
 pub(crate) fn avionics(
     time: Res<Time<Fixed>>,
     mut ships: Query<
-        (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
-        Without<super::travel::Dormant>,
+        (
+            &ShipDesign,
+            HardwareWrite,
+            &mut DeviceOutputs,
+            Has<super::travel::Dormant>,
+        ),
+        Without<super::travel::SystemsSuspended>,
     >,
     parts: Query<&Device>,
 ) {
     let dt = time.delta_secs_f64();
-    ships.par_iter_mut().for_each(|(d, mut h, mut outputs)| {
-        h.avionics.0.powered = false;
-        if h.avionics.0.operational && h.hull.0 > 0. {
-            for (index, part) in d.0.parts.iter().enumerate() {
-                let Equipment::Utility {
-                    utility: toy_sim_ships::utilities::UtilityDef::Command { power_w },
-                } = part.definition.equipment
-                else {
-                    continue;
-                };
-                if !parts
-                    .get(h.parts.0[index])
-                    .is_ok_and(|device| device.0.operational)
-                {
-                    continue;
+    ships
+        .par_iter_mut()
+        .for_each(|(d, mut h, mut outputs, absent)| {
+            h.avionics.0.powered = false;
+            if h.avionics.0.operational && h.hull.0 > 0. {
+                for (index, part) in d.0.parts.iter().enumerate() {
+                    let Equipment::Utility {
+                        utility: toy_sim_ships::utilities::UtilityDef::Command { power_w },
+                    } = part.definition.equipment
+                    else {
+                        continue;
+                    };
+                    if !parts
+                        .get(h.parts.0[index])
+                        .is_ok_and(|device| device.0.operational)
+                    {
+                        continue;
+                    }
+                    let fraction = spend(&mut h.inventory.0, [0., 0., power_w * dt]);
+                    let output = &mut outputs.0[index];
+                    output.power.requested_w = power_w;
+                    output.power.supplied_w = power_w * fraction;
+                    output.powered = fraction >= 1. - 1e-9;
+                    h.avionics.0.powered |= output.powered;
+                    h.thermal.0.add_waste_heat(power_w * fraction * dt, dt);
                 }
-                let fraction = spend(&mut h.inventory.0, [0., 0., power_w * dt]);
-                let output = &mut outputs.0[index];
-                output.power.requested_w = power_w;
-                output.power.supplied_w = power_w * fraction;
-                output.powered = fraction >= 1. - 1e-9;
-                h.avionics.0.powered |= output.powered;
-                h.thermal.0.add_waste_heat(power_w * fraction * dt, dt);
             }
-        }
-        if !h.avionics.0.powered {
-            h.reset_commands(&d.0);
-            return;
-        }
-        let fitted_sensor = d.0.parts.iter().any(|part| {
-            matches!(
-                part.definition.equipment,
-                Equipment::Utility {
-                    utility: toy_sim_ships::utilities::UtilityDef::Sensor { .. }
-                }
-            )
+            if !h.avionics.0.powered {
+                h.reset_commands(&d.0);
+                return;
+            }
+            let fitted_sensor = d.0.parts.iter().any(|part| {
+                matches!(
+                    part.definition.equipment,
+                    Equipment::Utility {
+                        utility: toy_sim_ships::utilities::UtilityDef::Sensor { .. }
+                    }
+                )
+            });
+            if !absent
+                && !fitted_sensor
+                && matches!(
+                    h.settings.0[d.0.avionics_handles[2].0 as usize],
+                    Some(DeviceSetting::SensorEnabled(true))
+                )
+                && spend(&mut h.inventory.0, [0., 0., SENSOR_POWER_W * dt]) >= 1. - 1e-9
+            {
+                h.range.0 = SENSOR_RANGE_M;
+            }
         });
-        if !fitted_sensor
-            && matches!(
-                h.settings.0[d.0.avionics_handles[2].0 as usize],
-                Some(DeviceSetting::SensorEnabled(true))
-            )
-            && spend(&mut h.inventory.0, [0., 0., SENSOR_POWER_W * dt]) >= 1. - 1e-9
-        {
-            h.range.0 = SENSOR_RANGE_M;
-        }
-    });
 }
 
 pub(crate) fn generators(
     time: Res<Time<Fixed>>,
     mut ships: Query<
         (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
-        Without<super::travel::Dormant>,
+        Without<super::travel::SystemsSuspended>,
     >,
     parts: Query<(&Generator, &Device)>,
 ) {
@@ -560,14 +586,16 @@ pub(crate) fn generators(
 pub(crate) fn device_systems()
 -> bevy::ecs::schedule::ScheduleConfigs<bevy::ecs::system::ScheduleSystem> {
     (
+        reset_demands,
         (
             devices::prepare_engines,
-            devices::prepare_micropulse_engines,
             devices::prepare_thermal_engines,
             devices::prepare_rcs,
             devices::prepare_torquers,
             devices::prepare_shields,
         ),
+        devices::prepare_micropulse_engines,
+        avionics,
         actuate,
         devices::thermal_engine_decay,
         devices::prepare_weapons,
@@ -575,6 +603,12 @@ pub(crate) fn device_systems()
         publish_devices,
     )
         .chain()
+}
+
+fn reset_demands(mut demands: Query<&mut Demand>) {
+    for mut demand in &mut demands {
+        *demand = Demand::default();
+    }
 }
 
 pub(crate) fn actuate(
@@ -586,11 +620,11 @@ pub(crate) fn actuate(
             HardwareWrite,
             &mut DeviceOutputs,
             &PreciseTransform,
-            &mut AccumulatedForce,
-            &mut AccumulatedTorque,
+            Option<&mut AccumulatedForce>,
+            Option<&mut AccumulatedTorque>,
             &mut propulsion::ActuatorOutput,
         ),
-        Without<super::travel::Dormant>,
+        Without<super::travel::SystemsSuspended>,
     >,
     parts: Query<(&Demand, &Device, Has<Shield>)>,
 ) {
@@ -605,6 +639,7 @@ pub(crate) fn actuate(
             let mut local_torque = DVec3::ZERO;
             let mut any_shield_enabled = false;
             let mut all_shields_powered = true;
+            let computer_running = hardware.computer_running(&design.0);
 
             for &index in &design.0.active_parts {
                 let Ok((demand, device, shield)) = parts.get(hardware.parts.0[index]) else {
@@ -617,7 +652,10 @@ pub(crate) fn actuate(
                     continue;
                 }
                 let mut supplied_energy = 0;
-                let fraction = if demand.enabled {
+                let enabled = demand.enabled
+                    && (computer_running
+                        || (demand.force == DVec3::ZERO && demand.torque == DVec3::ZERO));
+                let fraction = if enabled {
                     let mut fraction = 1.0_f64;
                     for (resource, requested) in
                         [demand.resource_input, demand.secondary_resource_input]
@@ -684,16 +722,9 @@ pub(crate) fn actuate(
                 let output = &mut outputs.0[index];
                 output.power.requested_w = demand.inputs[2] / dt;
                 output.power.supplied_w = supplied_energy as f64 / dt;
-                let recovered = hardware
-                    .inventory
-                    .0
-                    .energy_j
-                    .deposit(demand.generated_energy_j * fraction, design.0.battery_j)
-                    as f64;
-                output.power.recovered_w = recovered / dt;
                 output.actual = demand.actual * fraction;
                 output.thrust_n = (demand.thrust * fraction).to_array();
-                output.powered = demand.enabled
+                output.powered = enabled
                     && if demand.requires_full_supply {
                         fraction >= 1.0 - 1e-9
                     } else {
@@ -717,14 +748,18 @@ pub(crate) fn actuate(
             hardware.thermal.0.shield_powered = any_shield_enabled && all_shields_powered;
             measured.force = local_force;
             measured.torque = local_torque;
-            force.0 += pose.rotation * local_force;
-            torque.0 += pose.rotation * local_torque;
+            if let Some(force) = force.as_mut() {
+                force.0 += pose.rotation * local_force;
+            }
+            if let Some(torque) = torque.as_mut() {
+                torque.0 += pose.rotation * local_torque;
+            }
         },
     );
 }
 
 fn publish_devices(
-    ships: Query<(&DeviceOutputs, &Hull), Without<super::travel::Dormant>>,
+    ships: Query<(&DeviceOutputs, &Hull), Without<super::travel::SystemsSuspended>>,
     mut parts: Query<(&InstalledPart, &mut Device, &mut DevicePower), With<ActiveDevice>>,
 ) {
     parts
@@ -736,11 +771,13 @@ fn publish_devices(
             let output = &outputs.0[installed.index];
             if device.0.operational && hull.0 > 0.0 {
                 device.0.actual = output.actual;
+                device.0.generated_w = output.power.recovered_w;
                 device.0.thrust_n = output.thrust_n;
                 device.0.powered = output.powered;
                 *power = output.power;
             } else {
                 device.0.actual = 0.0;
+                device.0.generated_w = 0.0;
                 device.0.thrust_n = [0.0; 3];
                 device.0.powered = false;
                 *power = DevicePower::default();
@@ -842,6 +879,7 @@ pub fn shutdown(world: &mut World, ship: Entity) {
         world.entity_mut(entity).remove::<ActiveDevice>();
         if let Some(mut device) = world.get_mut::<Device>(entity) {
             device.0.actual = 0.0;
+            device.0.generated_w = 0.0;
             device.0.thrust_n = [0.0; 3];
             device.0.powered = false;
         }
@@ -903,16 +941,17 @@ fn power_totals(
             &Avionics,
             &SensorRange,
             &mut PowerFlow,
+            &ElectricalTick,
             Option<&mut super::displays::DisplayEnvironment>,
         ),
-        Without<super::travel::Dormant>,
+        Without<super::travel::SystemsSuspended>,
     >,
     parts: Query<&DevicePower>,
 ) {
-    ships
-        .par_iter_mut()
-        .for_each(|(design, installed, avionics, sensor, mut flow, display)| {
+    ships.par_iter_mut().for_each(
+        |(design, installed, avionics, sensor, mut flow, electrical, display)| {
             *flow = PowerFlow::default();
+            flow.requested_w = electrical.requested_weapon_j * super::simulation::TICK_RATE_HZ;
             if let Some(mut display) = display {
                 display.powered = avionics.0.operational && avionics.0.powered;
             }
@@ -945,7 +984,73 @@ fn power_totals(
                 flow.requested_w += SENSOR_POWER_W;
                 flow.supplied_w += SENSOR_POWER_W;
             }
-        });
+        },
+    );
+}
+
+fn finish_electrical_tick(
+    mut ships: Query<
+        (
+            &ShipDesign,
+            &PartDevices,
+            &mut ShipInventory,
+            &mut ShipThermal,
+            &ElectricalTick,
+            &mut PowerFlow,
+        ),
+        Without<super::travel::SystemsSuspended>,
+    >,
+    mut generators: Query<(&mut DevicePower, &mut Device), With<devices::MicropulseEngine>>,
+    time: Res<Time<Fixed>>,
+) {
+    let dt = time.delta_secs_f64();
+    for (design, parts, mut inventory, mut thermal, electrical, mut flow) in &mut ships {
+        let excess = inventory.0.energy_j.saturating_sub(design.0.battery_j);
+        inventory.0.energy_j = inventory.0.energy_j.min(design.0.battery_j);
+        if excess > 0 {
+            let generated_w: f64 = parts
+                .0
+                .iter()
+                .filter_map(|part| generators.get(*part).ok())
+                .map(|(power, _)| power.recovered_w)
+                .sum();
+            let returned_j = (excess as f64).min(generated_w * dt);
+            if generated_w > 0.0 {
+                let retained = (1.0 - returned_j / (generated_w * dt)).clamp(0.0, 1.0);
+                for part in &parts.0 {
+                    if let Ok((mut power, mut device)) = generators.get_mut(*part) {
+                        power.recovered_w *= retained;
+                        device.0.generated_w = power.recovered_w;
+                    }
+                }
+                flow.generated_w = (flow.generated_w - returned_j / dt).max(0.0);
+            }
+            let dump_heat = excess as f64 - returned_j;
+            if dump_heat > 0.0 {
+                thermal.0.add_waste_heat(dump_heat, dt);
+            }
+        }
+        let consumed = electrical.initial_energy_j as f64 + flow.generated_w * dt
+            - inventory.0.energy_j as f64;
+        flow.supplied_w = consumed.max(0.0) / dt;
+    }
+}
+
+fn transit_thermal(
+    time: Res<Time<Fixed>>,
+    mut ships: Query<
+        (&ShipDesign, &mut Hull, &mut ShipThermal),
+        (
+            With<super::travel::Dormant>,
+            Without<super::travel::SystemsSuspended>,
+        ),
+    >,
+) {
+    for (design, mut hull, mut thermal) in &mut ships {
+        thermal
+            .0
+            .advance(&mut hull.0, design.0.as_ref().into(), time.delta_secs_f64());
+    }
 }
 
 fn dormant_thermal(
@@ -958,7 +1063,7 @@ fn dormant_thermal(
             &mut DormantThermalElapsed,
             Option<&super::travel::PresenceState>,
         ),
-        With<super::travel::Dormant>,
+        With<super::travel::SystemsSuspended>,
     >,
 ) {
     ships

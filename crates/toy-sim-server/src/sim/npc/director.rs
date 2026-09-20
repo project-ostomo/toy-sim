@@ -154,7 +154,7 @@ blueprints {after?:string}: paged known public unfilled ship blueprints and bill
 Each object needs a "tool" field. Paged queries accept optional limit (1–16, default 8); retry with a smaller limit if a result is too large. Pages can be incomplete; never infer absence from one page. Physical cargo units are integers; recipe inputs specify units, not kilograms. Milligram materials have one million units per kg.
 
 Action tools:
-queue {ship,authority_revision,travel_revision,fuel_priority?:number,orders:[...]}. Replaces the ship's queue and enables autopilot. Use current observed revisions. 1–32 orders: {order:"travel",beacon:UUID}, {order:"dock",beacon:UUID}, {order:"undock"}, {order:"keep_range",group:UUID,track:UUID,range_m:number}, {order:"wait",until_tick:integer}. Travel autonomously plans gate/slip legs; docking includes approach. Higher fuel_priority conserves more fuel (normal 1).
+queue {ship,authority_revision,travel_revision,fuel_fraction?:number,orders:[...]}. Replaces the ship's queue and enables autopilot. Use current observed revisions. 1–32 orders: {order:"travel",beacon:UUID}, {order:"dock",beacon:UUID}, {order:"undock"}, {order:"keep_range",group:UUID,track:UUID,range_m:number}, {order:"wait",until_tick:integer}. Travel autonomously plans gate/slip legs; docking includes approach. fuel_fraction limits estimated use of remaining propulsion fuel (0.01–1, default 0.5).
 dock_services {ship,authority_revision,cargo:boolean,power:boolean}.
 weapons {ship,authority_revision,group?:UUID,track?:UUID,fire:boolean}. Firing requires a current contact group and track. Prefer observing contacts before hostile action.
 transfer {source:UUID,target:UUID,kind:"resource"|"part",item:string,quantity:integer}.

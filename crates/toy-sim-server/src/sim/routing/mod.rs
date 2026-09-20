@@ -10,8 +10,9 @@ use toy_sim_model::{
     travel::{FuelBudget, Order, PlanningPreferences, QueuedOrder},
 };
 
-pub const MAX_WORK: u64 = 200_000_000;
-pub const GAS_PER_WORK: u64 = 100;
+use toy_sim_model::transfer::TransferCost;
+
+pub const MAX_WORK: u64 = 2_400_000_000;
 pub const ENVIRONMENT_WORK: u64 = 4096;
 pub const MAX_ORDERS: usize = 256;
 
@@ -104,7 +105,7 @@ impl Work {
 
 fn transfer(
     performance: &ShipPerformance,
-    preferences: PlanningPreferences,
+    weights: TransferCost,
     origin: &Pose,
     destination: &Pose,
 ) -> (f64, f64) {
@@ -116,7 +117,6 @@ fn transfer(
     if performance.acceleration_m_s2 <= 0.0 {
         return (f64::INFINITY, f64::INFINITY);
     }
-    let weights = preferences.cost(performance.mass_kg);
     let braking_s = velocity.length() / performance.acceleration_m_s2;
     let stopping_offset = velocity * (0.5 * braking_s);
     if velocity.length_squared() > 0.0 && stopping_offset.length() >= offset.length() {
@@ -153,13 +153,13 @@ fn transfer(
 
 fn slip_rendezvous(
     performance: &ShipPerformance,
-    preferences: PlanningPreferences,
+    weights: TransferCost,
     origin: &Pose,
     destination: &Pose,
 ) -> (f64, f64) {
     let mut arrival = destination.clone();
     arrival.velocity = origin.velocity;
-    transfer(performance, preferences, &arrival, destination)
+    transfer(performance, weights, &arrival, destination)
 }
 
 pub fn work_limit(request: &RouteRequest, gate_count: usize) -> u64 {
@@ -171,6 +171,7 @@ pub fn work_limit(request: &RouteRequest, gate_count: usize) -> u64 {
         MAX_WORK
     } else {
         (1_000 + gate_count as u64 * 2 + request.orders.len() as u64 * 100 * ENVIRONMENT_WORK)
+            .saturating_mul(24)
             .min(MAX_WORK)
     }
 }
@@ -187,14 +188,65 @@ pub fn plan_metered(
         spent: 0,
         limit: work_limit(request, environment.gates().len()),
     };
-    let result = plan_inner(request, environment, &mut work);
+    let result = plan_budgeted(request, environment, &mut work);
     (result, work.spent)
+}
+
+fn plan_budgeted(
+    request: &RouteRequest,
+    environment: &impl RouteEnvironment,
+    work: &mut Work,
+) -> Result<RoutePlan> {
+    let acceptable = |plan: &RoutePlan| {
+        plan.fuel_budget.resources.iter().all(|resource| {
+            resource.required_kg <= resource.available_kg * request.preferences.fuel_fraction + 1e-9
+        })
+    };
+    let fastest = plan_inner(
+        request,
+        environment,
+        work,
+        TransferCost { seconds_per_kg: 0. },
+    )?;
+    if acceptable(&fastest) {
+        return Ok(fastest);
+    }
+    let ratio = fastest
+        .fuel_budget
+        .resources
+        .iter()
+        .map(|resource| {
+            resource.required_kg
+                / (resource.available_kg * request.preferences.fuel_fraction).max(1e-9)
+        })
+        .fold(1_f64, f64::max);
+    let mut high = ((ratio * ratio - 1.) / (2. * request.performance.propellant_kg_s.max(1e-9)))
+        .max(3600. / request.performance.mass_kg.max(1.));
+    for _ in 0..8 {
+        let mut candidate = plan_inner(
+            request,
+            environment,
+            work,
+            TransferCost {
+                seconds_per_kg: high,
+            },
+        )?;
+        if acceptable(&candidate) {
+            candidate.work = work.spent;
+            return Ok(candidate);
+        }
+        high *= 2.;
+    }
+    anyhow::bail!(
+        "No route fits the selected fuel allowance; increase the percentage or change the travel options"
+    )
 }
 
 fn plan_inner(
     request: &RouteRequest,
     environment: &impl RouteEnvironment,
     work: &mut Work,
+    cost: TransferCost,
 ) -> Result<RoutePlan> {
     use toy_sim_model::travel::*;
 
@@ -232,6 +284,7 @@ fn plan_inner(
     );
     work.charge(1, environment)?;
     let mut builder = Builder {
+        cost,
         request,
         environment,
         work,
@@ -322,6 +375,7 @@ fn plan_inner(
 }
 
 struct Builder<'a, E> {
+    cost: TransferCost,
     request: &'a RouteRequest,
     environment: &'a E,
     work: &'a mut Work,
@@ -361,8 +415,9 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             self.orders.len() < MAX_ORDERS,
             "expanded route exceeds 256 orders"
         );
-        self.orders
-            .push(QueuedOrder::estimated(action, seconds).with_propellant(fuel));
+        let mut order = QueuedOrder::estimated(action, seconds).with_propellant(fuel);
+        order.transfer_cost = self.cost;
+        self.orders.push(order);
         self.elapsed_s += seconds;
         Ok(())
     }
@@ -380,12 +435,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
     ) -> Result<(Pose, (f64, f64))> {
         let initial_target = self.resolve(&destination, self.elapsed_s)?;
         let mut target = initial_target.clone();
-        let mut estimate = transfer(
-            &self.request.performance,
-            self.request.preferences,
-            &self.pose,
-            &target,
-        );
+        let mut estimate = transfer(&self.request.performance, self.cost, &self.pose, &target);
         for _ in 0..4 {
             let next = self.resolve(&destination, self.elapsed_s + estimate.0)?;
             let mut inertial_target = next.clone();
@@ -394,7 +444,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                 .offset_by(-DVec3::from_array(initial_target.velocity) * estimate.0);
             let next_estimate = transfer(
                 &self.request.performance,
-                self.request.preferences,
+                self.cost,
                 &self.pose,
                 &inertial_target,
             );
@@ -418,6 +468,10 @@ impl<E: RouteEnvironment> Builder<'_, E> {
     }
 
     fn jump(&mut self, entry_id: Id) -> Result<()> {
+        ensure!(
+            self.request.preferences.allow_wormholes,
+            "Wormholes disabled in route preferences"
+        );
         use toy_sim_model::travel::Destination;
 
         let entry = self.beacon(entry_id)?;
@@ -434,7 +488,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
         let destination = self.resolve(&Destination::Beacon(entry_id), self.elapsed_s)?;
         let estimate = transfer(
             &self.request.performance,
-            self.request.preferences,
+            self.cost,
             &self.pose,
             &destination,
         );
@@ -445,6 +499,10 @@ impl<E: RouteEnvironment> Builder<'_, E> {
     }
 
     fn slip(&mut self, destination: toy_sim_model::travel::Destination) -> Result<()> {
+        ensure!(
+            self.request.preferences.allow_slipdrive,
+            "Slipdrive disabled in route preferences"
+        );
         ensure!(
             self.request.performance.slip_power_w > 0.0,
             "ship has no available slipdrive"
@@ -510,12 +568,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             target
         };
         let mut target = target_at(self.elapsed_s, self.pose.position);
-        let estimate = transfer(
-            &self.request.performance,
-            self.request.preferences,
-            &self.pose,
-            &target,
-        );
+        let estimate = transfer(&self.request.performance, self.cost, &self.pose, &target);
         self.append(
             Order::Guidance(Guidance {
                 mode: GuidanceMode::Approach,
@@ -637,7 +690,11 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             self.environment.gates(),
             &self.request.performance,
         )?;
-        let path = graph.search(self.request, self.environment, self.work)?;
+        let path = if self.request.preferences.allow_wormholes {
+            graph.search(self.request, self.environment, self.work, self.cost)?
+        } else {
+            graph.direct(self.request, self.environment, self.work, self.cost)?
+        };
         let mut escape_time = 0.0;
         let mut escape_fuel = 0.0;
         for edge in path {
@@ -668,7 +725,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                     };
                     let rendezvous = slip_rendezvous(
                         &self.request.performance,
-                        self.request.preferences,
+                        self.cost,
                         &graph.nodes[edge.from].pose,
                         &graph.nodes[edge.to].pose,
                     );

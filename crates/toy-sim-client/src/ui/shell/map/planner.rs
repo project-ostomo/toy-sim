@@ -412,7 +412,10 @@ mod tests {
         ];
         ship.travel.order = 1;
         let destination = travel::Order::TravelTo(travel::Destination::Beacon(Id([4; 16])));
-        let preference = travel::PlanningPreferences { fuel_priority: 42. };
+        let preference = travel::PlanningPreferences {
+            fuel_fraction: 0.42,
+            ..Default::default()
+        };
         let mut outgoing = Outgoing::default();
         let mut preview = Preview::default();
         preview.begin(

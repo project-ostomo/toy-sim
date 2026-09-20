@@ -296,11 +296,11 @@ color = [0.36,0.40,0.44]
 model = "models/parts/micropulse-engine-8m.glb"
 model_scale = 1.0
 kind = "micropulse_engine"
-thrust_n = 10000000.0
-specific_impulse_s = 5000.0
-charge_energy_j_kg = 3000000000.0
-electric_fraction = 0.0005
-absorbed_heat_fraction = 0.001
+thrust_n = 100000000.0
+specific_impulse_s = 50000.0
+charge_energy_j_kg = 300000000000.0
+electric_efficiency = 0.99
+absorbed_heat_fraction = 0.0001
 [parts.plume]
 origin_m = [0.0, 0.0, 6.0]
 length_m = 200.0
@@ -324,11 +324,11 @@ color = [0.36,0.40,0.44]
 model = "models/parts/micropulse-engine-8m.glb"
 model_scale = 0.5
 kind = "micropulse_engine"
-thrust_n = 2500000.0
-specific_impulse_s = 4500.0
-charge_energy_j_kg = 3000000000.0
-electric_fraction = 0.0005
-absorbed_heat_fraction = 0.001
+thrust_n = 25000000.0
+specific_impulse_s = 45000.0
+charge_energy_j_kg = 300000000000.0
+electric_efficiency = 0.99
+absorbed_heat_fraction = 0.0001
 [parts.plume]
 origin_m = [0.0, 0.0, 3.0]
 length_m = 100.0
@@ -352,11 +352,11 @@ color = [0.36,0.40,0.44]
 model = "models/parts/micropulse-engine-8m.glb"
 model_scale = 0.25
 kind = "micropulse_engine"
-thrust_n = 625000.0
-specific_impulse_s = 3500.0
-charge_energy_j_kg = 3000000000.0
-electric_fraction = 0.0005
-absorbed_heat_fraction = 0.001
+thrust_n = 6250000.0
+specific_impulse_s = 35000.0
+charge_energy_j_kg = 300000000000.0
+electric_efficiency = 0.99
+absorbed_heat_fraction = 0.0001
 [parts.plume]
 origin_m = [0.0, 0.0, 1.5]
 length_m = 50.0
@@ -380,11 +380,11 @@ color = [0.36,0.40,0.44]
 model = "models/parts/micropulse-engine-8m.glb"
 model_scale = 0.125
 kind = "micropulse_engine"
-thrust_n = 156250.0
-specific_impulse_s = 2500.0
-charge_energy_j_kg = 3000000000.0
-electric_fraction = 0.0005
-absorbed_heat_fraction = 0.001
+thrust_n = 1562500.0
+specific_impulse_s = 25000.0
+charge_energy_j_kg = 300000000000.0
+electric_efficiency = 0.99
+absorbed_heat_fraction = 0.0001
 [parts.plume]
 origin_m = [0.0, 0.0, 0.75]
 length_m = 25.0
@@ -1208,6 +1208,28 @@ optical_power_w = 2000000.0
 range_m = 100000.0
 
 [[parts]]
+id = "laser_pulse_2m"
+title = "2m Micropulse-powered combat laser"
+dimensions = [20, 20, 20]
+model = "models/parts/laser-2m.glb"
+mass_kg = 1500.0
+hull = 1500.0
+color = [0.40, 0.48, 0.55]
+kind = "weapon"
+[parts.weapon]
+ammunition = ""
+projectile_radius_m = 0.001
+muzzle_speed_m_s = 299792458.0
+cycle_interval_s = 0.1
+efficiency = 0.4
+dispersion_half_angle_rad = 0.00002
+muzzle_offset_m = [0.0, 0.0, -1.1]
+slew_rate_rad_s = 3.14159
+[parts.weapon.laser]
+optical_power_w = 5000000000.0
+range_m = 100000.0
+
+[[parts]]
 id = "laser_4m"
 title = "4m Heavy laser"
 dimensions = [40, 40, 40]
@@ -1436,7 +1458,7 @@ hull = 2000.0
 color = [0.3,0.5,0.65]
 model = "models/parts/power-coupler-2m.glb"
 kind = "utility"
-utility = { type = "slip_drive", power_w = 100000000.0 }
+utility = { type = "slip_drive", power_w = 500000000.0 }
 
 [[resources]]
 id = "rocket_propellant"

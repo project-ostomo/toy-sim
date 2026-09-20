@@ -38,8 +38,7 @@ impl Snapshot {
             if *count == 0 {
                 self.speeds.remove(&speed);
             }
-            let bytes = postcard::experimental::serialized_size(track.as_ref())
-                .expect("sensor track serializes");
+            let bytes = wasm_intel::track_arena_bytes(&track);
             let count = self
                 .reply_sizes
                 .get_mut(&bytes)
@@ -122,8 +121,7 @@ impl Snapshot {
         for tag in &track.tags {
             self.tags.entry(tag.clone()).or_default().insert(track.id);
         }
-        let bytes =
-            postcard::experimental::serialized_size(&track).expect("sensor track serializes");
+        let bytes = wasm_intel::track_arena_bytes(&track);
         *self.reply_sizes.entry(bytes).or_default() += 1;
         *self
             .speeds
@@ -454,9 +452,21 @@ mod tests {
         };
         let mut queries = Queries::default();
         let a = queries
-            .start(snapshot.clone(), query.clone(), 1, usize::MAX)
+            .start(
+                snapshot.clone(),
+                query.clone(),
+                1,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+            )
             .unwrap();
-        let b = queries.start(snapshot, query, 1, usize::MAX).unwrap();
+        let b = queries
+            .start(
+                snapshot,
+                query,
+                1,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+            )
+            .unwrap();
         assert_eq!(a.tracks, b.tracks);
         assert_eq!(a.completion, Completion::Complete);
     }
@@ -485,14 +495,24 @@ mod tests {
             ..Default::default()
         };
         let result = queries
-            .start(group.snapshot(), query, 1, usize::MAX)
+            .start(
+                group.snapshot(),
+                query,
+                1,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+            )
             .unwrap();
         assert!(result.tracks.is_empty());
         assert_eq!(result.completion, Completion::WorkLimit);
         assert!(result.gas_used >= 1100 && result.gas_used <= 1200);
         assert!(
             queries
-                .next(result.continuation.unwrap(), 100_000, 12, usize::MAX)
+                .next(
+                    result.continuation.unwrap(),
+                    100_000,
+                    12,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED
+                )
                 .is_err()
         );
     }

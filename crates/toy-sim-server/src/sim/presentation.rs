@@ -192,13 +192,15 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         .collect();
     let reboot_remaining_s =
         software.controller.boot_remaining_gas() as f64 / software.last_gas_limit as f64 * 0.1;
-    let dormant = world.get::<super::travel::Dormant>(entity).is_some();
+    let suspended = world
+        .get::<super::travel::SystemsSuspended>(entity)
+        .is_some();
     let shared_computer = world
         .get_resource::<super::missiles::Callbacks>()
         .and_then(|callbacks| callbacks.0.get(&entity))
         .is_some_and(|callbacks| !callbacks.is_empty());
-    let computer_powered = (!dormant && state.computer_running(design)) || shared_computer;
-    let computer = if dormant && !shared_computer {
+    let computer_powered = (!suspended && state.computer_running(design)) || shared_computer;
+    let computer = if suspended && !shared_computer {
         ComputerStatus::Paused
     } else if let Some(fault) = &software.controller.fault {
         ComputerStatus::Fault {
@@ -241,7 +243,30 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             .collect();
     }
     let power = world.get::<hardware::PowerFlow>(entity);
+    let slip_input = world
+        .get::<super::travel::SlipChargingPower>(entity)
+        .map_or(0., |power| power.0);
+    let drive = world.get::<super::travel::SlipDrive>(entity);
+    let preparation = drive.and_then(|drive| drive.preparation.as_ref());
+    let slip_charge = preparation.map(|preparation| {
+        let remaining = (preparation.required_j - preparation.work_j).max(0.);
+        let minimum = (preparation.started + 100).saturating_sub(tick) as f64 * 0.1;
+        SlipChargeTelemetry {
+            stored_j: preparation.work_j as u64,
+            required_j: preparation.required_j.ceil() as u64,
+            input_w: slip_input,
+            remaining_s: if remaining == 0. {
+                Some(minimum)
+            } else if slip_input > 0. {
+                Some((remaining / slip_input).max(minimum))
+            } else {
+                None
+            },
+        }
+    });
     Some(ShipPresentation {
+        serial: software.controller.state.serial.screen.clone(),
+        memory_limit_bytes: toy_sim_ship_wasm::MEMORY_LIMIT as u64,
         cargo: state
             .inventory
             .cargo_stacks(catalogue)
@@ -258,6 +283,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 reading.force_n = output.force.to_array();
                 reading.torque_nm = output.torque.to_array();
             }
+            reading.drives = hardware::propulsion::reserves(design, mass.mass, &inventory);
             reading
         },
         ship: id,
@@ -304,7 +330,74 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         hull_heat_capacity_j: design.hull_heat_capacity_j,
         battery_capacity_j: design.battery_j,
         power_generated_w: power.map_or(0.0, |power| power.generated_w),
-        power_consumed_w: power.map_or(0.0, |power| power.supplied_w),
+        generation_capacity_w: design
+            .device_catalogue
+            .iter()
+            .zip(state.snapshot(design))
+            .filter_map(|(descriptor, status)| match descriptor.kind {
+                DeviceKind::Generator { power_w } if status.operational => {
+                    let reactor = design
+                        .part_for_device(descriptor.handle)
+                        .and_then(|index| world.get::<hardware::PartDevices>(entity)?.0.get(index))
+                        .and_then(|part| world.get::<hardware::reactors::Reactor>(*part));
+                    Some(reactor.map_or(power_w, |reactor| {
+                        let sink = hardware::reactors::sink_temperature(&state.thermal, design);
+                        let spec = reactor.spec;
+                        let heat = (spec.heat_transfer_w_k
+                            * (spec.hot_temperature_k - sink).max(0.))
+                        .min(spec.thermal_power_w);
+                        heat * spec.efficiency(sink)
+                    }))
+                }
+                _ => None,
+            })
+            .sum(),
+        reactors: world
+            .get::<hardware::PartDevices>(entity)
+            .into_iter()
+            .flat_map(|parts| parts.0.iter().enumerate())
+            .filter_map(|(index, part)| {
+                let reactor = world.get::<hardware::reactors::Reactor>(*part)?;
+                let device = world.get::<hardware::Device>(*part)?;
+                let setting = design.part_devices[index]
+                    .and_then(|handle| state.settings.get(handle))
+                    .cloned()
+                    .flatten();
+                let status = if !device.0.operational {
+                    ReactorStatus::Damaged
+                } else if reactor.shutdown
+                    || !matches!(setting, Some(DeviceSetting::GeneratorDemand(value)) if value > 0.)
+                    || !device.0.powered
+                {
+                    ReactorStatus::Shutdown
+                } else if device.0.actual > 1.0 {
+                    ReactorStatus::Running
+                } else {
+                    ReactorStatus::Standby
+                };
+                Some(ReactorTelemetry {
+                    name: bounded(&design.parts[index].definition.title, 128),
+                    status,
+                    temperature_k: 300.
+                        + reactor.core_energy_j / reactor.spec.core_heat_capacity_j_k,
+                    coolant_temperature_k: hardware::reactors::sink_temperature(
+                        &state.thermal,
+                        design,
+                    ),
+                    operating_temperature_k: reactor.spec.hot_temperature_k,
+                    shutdown_temperature_k: reactor.spec.shutdown_temperature_k,
+                })
+            })
+            .collect(),
+        slip_cooldown_s: drive.map(|drive| drive.ready_tick.saturating_sub(tick) as f64 * 0.1),
+        power_consumed_w: power.map_or(0.0, |power| power.supplied_w) + slip_input,
+        power_requested_w: power.map_or(0., |power| power.requested_w)
+            + if preparation.is_some() {
+                drive.map_or(0., |drive| drive.power_w)
+            } else {
+                slip_input
+            },
+        slip_charge,
         inventory,
         devices,
         computer,

@@ -1,5 +1,6 @@
 use crate::state::SessionInfo;
 mod bake;
+mod geometry;
 
 use super::ViewCamera;
 use crate::state::{Celestial, CelestialSystem, DisplayPose, SystemSubscription};
@@ -32,8 +33,8 @@ struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            magnitude: 6.,
-            brightness: 1.,
+            magnitude: 8.,
+            brightness: 10_000.,
         }
     }
 }
@@ -85,11 +86,16 @@ pub(super) fn install(app: &mut App) {
         .init_resource::<Settings>()
         .add_systems(
             toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
-            exposure_shortcuts,
+            exposure_shortcuts.in_set(crate::ui::input::GameplayInput::Keyboard),
         )
         .init_resource::<SkyUploads>()
         .add_plugins(ExtractResourcePlugin::<SkyUploads>::default())
-        .add_systems(PostUpdate, update);
+        .add_systems(
+            PostUpdate,
+            (update, geometry::sync)
+                .chain()
+                .before(bevy::transform::TransformSystems::Propagate),
+        );
 
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.add_systems(
@@ -301,7 +307,7 @@ fn update(
     };
     let origin = view.origin.offset_by(transform.translation.as_dvec3());
     let revision = sky.revision;
-    let stars: Vec<_> = celestials
+    let stars: Vec<bake::Source> = celestials
         .iter()
         .filter(|(Celestial(body), _, system)| {
             body.luminosity_lumens > 0.0
@@ -313,8 +319,8 @@ fn update(
         .map(|(Celestial(body), DisplayPose(pose), _)| {
             let mut identity = [0; 8];
             identity.copy_from_slice(&body.entity.0[..8]);
-            (
-                Star {
+            bake::Source {
+                star: Star {
                     id: StarId {
                         namespace: 2,
                         value: u64::from_le_bytes(identity),
@@ -323,8 +329,9 @@ fn update(
                     luminosity: body.luminosity_lumens,
                     colour: body.color,
                 },
-                body.radius_m,
-            )
+                radius_m: body.radius_m,
+                key: bake::GeometryKey::Celestial(body.entity),
+            }
         })
         .collect();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -354,7 +361,7 @@ fn bake_view(
     origin: GalacticPosition,
     revision: u64,
     magnitude: f64,
-    mut stars: Vec<(Star, f64)>,
+    mut stars: Vec<bake::Source>,
     cancelled: &AtomicBool,
 ) -> anyhow::Result<Option<(Arc<bake::Snapshot>, bake::Baked)>> {
     let selected = catalogue.visible(
@@ -370,7 +377,11 @@ fn bake_view(
     }
     stars.extend(selected.indices.iter().map(|&index| {
         let star = catalogue.stars()[index];
-        (star, bake::estimated_radius(star.luminosity))
+        bake::Source {
+            star,
+            radius_m: bake::estimated_radius(star.luminosity),
+            key: bake::GeometryKey::Catalogue(star.id),
+        }
     }));
     let nearest = catalogue
         .nearest(origin)?
@@ -391,9 +402,6 @@ fn exposure_shortcuts(
     )>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    if ctx.egui_wants_keyboard_input() {
-        return Ok(());
-    }
     for (view, mut adjustment, mut exposure) in &mut exposures {
         if Some(view.view) != selection.view {
             continue;

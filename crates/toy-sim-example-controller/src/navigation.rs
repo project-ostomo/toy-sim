@@ -23,7 +23,7 @@ impl Phase {
 #[derive(Clone, Debug)]
 pub struct Pursuit {
     pub target: Option<Contact>,
-    pub preferences: toy_sim_model::travel::PlanningPreferences,
+    pub preferences: toy_sim_model::transfer::TransferCost,
     pub visible: bool,
     pub phase: Phase,
     pub reason: String,
@@ -47,6 +47,7 @@ pub struct Pursuit {
     pub effectiveness: f64,
     pub acceleration: DVec3,
     pub pointing_error: f64,
+    braking: bool,
     pub direction: DVec3,
 }
 impl Default for Pursuit {
@@ -75,14 +76,16 @@ impl Default for Pursuit {
             effectiveness: 1.,
             acceleration: DVec3::ZERO,
             pointing_error: 0.,
+            braking: false,
             direction: DVec3::ZERO,
         }
     }
 }
 
-pub fn arrival_speed(distance: f64, acceleration: f64, response: f64) -> f64 {
-    let delayed = acceleration * response;
-    ((delayed * delayed + acceleration * distance).sqrt() - delayed).min(distance / (4. * response))
+pub fn arrival_speed(distance: f64, acceleration: f64, turn_time: f64) -> f64 {
+    let braking = 0.9 * acceleration.max(0.);
+    let delayed = braking * turn_time.max(0.);
+    ((delayed * delayed + 2. * braking * distance.max(0.)).sqrt() - delayed).max(0.)
 }
 
 pub fn economical_rendezvous(
@@ -90,23 +93,68 @@ pub fn economical_rendezvous(
     velocity: DVec3,
     disturbance: DVec3,
     acceleration: f64,
-    response: f64,
+    turn_time: f64,
     flow_kg_s: f64,
     cost: toy_sim_model::transfer::TransferCost,
     speed_limit: f64,
 ) -> (DVec3, f64) {
+    let mut braking = false;
+    burn_guidance(
+        error,
+        velocity,
+        disturbance,
+        acceleration,
+        turn_time,
+        flow_kg_s,
+        cost,
+        speed_limit,
+        0.1,
+        &mut braking,
+    )
+}
+
+fn burn_guidance(
+    error: DVec3,
+    velocity: DVec3,
+    disturbance: DVec3,
+    acceleration: f64,
+    turn_time: f64,
+    flow_kg_s: f64,
+    cost: toy_sim_model::transfer::TransferCost,
+    speed_limit: f64,
+    dt: f64,
+    braking: &mut bool,
+) -> (DVec3, f64) {
+    let distance = error.length();
     let direction = error.normalize_or_zero();
-    let speed = cost
-        .cruise_speed(
-            error.length(),
-            velocity.dot(direction),
-            acceleration,
-            flow_kg_s,
-        )
-        .min(arrival_speed(error.length(), acceleration, response))
+    let closing = velocity.dot(direction);
+    let lateral = velocity - direction * closing;
+    let brake_a = 0.9 * acceleration;
+    let stopping = velocity.length_squared() / (2. * brake_a) + closing.max(0.) * (turn_time + dt);
+    if closing < -0.5 || (velocity.length() < 0.5 && distance > 2.) {
+        *braking = false;
+    }
+    if closing > 0. && distance <= stopping {
+        *braking = true;
+    }
+    let cruise = cost
+        .cruise_speed(distance, closing, acceleration, flow_kg_s)
         .min(speed_limit);
-    let requested = (direction * speed - velocity) / response - disturbance;
-    (requested.clamp_length_max(acceleration), speed)
+    let response = 0.5;
+    let command = if distance <= 2. && velocity.length() <= acceleration * response {
+        (error * 0.5 - velocity) / response - disturbance
+    } else if *braking {
+        let envelope = (2. * brake_a * distance).sqrt();
+        let speed = envelope.min(cruise);
+        let feedforward = if envelope <= cruise { -brake_a } else { 0. };
+        let radial = feedforward + (speed - closing) / response;
+        direction * radial.min(0.) - lateral / response - disturbance
+    } else {
+        direction * ((cruise - closing) / response).clamp(-acceleration, acceleration)
+            - lateral / response
+            - disturbance
+    };
+    (command.clamp_length_max(acceleration), cruise)
 }
 
 impl Pursuit {
@@ -149,17 +197,20 @@ impl Pursuit {
         self.stand_off = stand_off;
         self.offset = -self.r.normalize_or_zero() * stand_off;
         self.effectiveness = 1.;
+        self.braking = false;
         self.phase = Phase::Pursuing;
         self.reason.clear();
         Ok(())
     }
     pub fn pause(&mut self, reason: &str) {
+        self.braking = false;
         self.phase = Phase::Paused;
         self.reason = reason.into();
         self.acceleration = DVec3::ZERO;
         self.throttle = 0.;
     }
     pub fn abort(&mut self) {
+        self.braking = false;
         self.phase = Phase::Ready;
         self.reason = "Aborted".into();
         self.acceleration = DVec3::ZERO;
@@ -297,19 +348,28 @@ impl Pursuit {
         }
         self.turn_allowance = attitude::turn_allowance(inertia, b);
         let error = self.error();
-        let response = (2. * self.turn_allowance + 2.).max(2.);
-        let (command, speed) = economical_rendezvous(
+        let braking_direction = -self.u.normalize_or_zero();
+        let angle = attitude::error_angle(q, b.engine_axis, braking_direction);
+        let turn_time = if self.u.length() > 0.5 {
+            self.turn_allowance * (angle / core::f64::consts::PI).sqrt()
+        } else {
+            0.
+        };
+        let (command, speed) = burn_guidance(
             error,
             self.u,
             self.disturbance,
             a,
-            response,
+            turn_time,
             b.propellant_rate * self.throttle_ceiling,
-            self.preferences.cost(obs.mass_kg),
+            self.preferences,
             self.speed_limit,
+            dt,
+            &mut self.braking,
         );
         self.allowed_speed = speed;
-        self.stopping_distance = self.u.length_squared() / (2. * a) + self.u.length() * response;
+        self.stopping_distance =
+            self.u.length_squared() / (2. * 0.9 * a) + self.u.length() * (turn_time + dt);
         self.acceleration = command;
         if error.length() <= 2. && self.u.length() <= 0.5 {
             self.phase = Phase::Ready;
@@ -323,6 +383,8 @@ impl Pursuit {
         }
         if let Some(direction) = self.acceleration.try_normalize() {
             self.direction = direction;
+        } else if self.u.length() > 0.5 {
+            self.direction = -self.u.normalize();
         } else if self.direction == DVec3::ZERO {
             self.direction = q * b.engine_axis;
         }
@@ -370,7 +432,7 @@ mod tests {
             10.,
             2.,
             1.,
-            toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+            toy_sim_model::transfer::TransferCost::default(),
             f64::INFINITY,
         )
         .0;
@@ -390,7 +452,7 @@ mod tests {
                 10.,
                 2.,
                 1.,
-                toy_sim_model::travel::PlanningPreferences::default().cost(1000.),
+                toy_sim_model::transfer::TransferCost::default(),
                 f64::INFINITY,
             )
             .0 * 0.1;
@@ -398,6 +460,47 @@ mod tests {
         }
         assert!((target - position).length() <= 2.);
         assert!(velocity.length() <= 0.5);
+    }
+
+    #[test]
+    fn fastest_transfer_burns_hard_and_brakes_with_reserve() {
+        let mut position = DVec3::ZERO;
+        let mut velocity = DVec3::ZERO;
+        let target = DVec3::X * 10_000.;
+        let mut braking = false;
+        let mut peak_speed: f64 = 0.;
+        let mut reserved_braking_ticks = 0;
+        let mut elapsed = 0.;
+        for _ in 0..900 {
+            let error = target - position;
+            if error.length() <= 2. && velocity.length() <= 0.5 {
+                break;
+            }
+            let (command, _) = burn_guidance(
+                error,
+                velocity,
+                DVec3::ZERO,
+                10.,
+                0.,
+                1.,
+                toy_sim_model::transfer::TransferCost { seconds_per_kg: 0. },
+                f64::INFINITY,
+                0.1,
+                &mut braking,
+            );
+            if command.x < -8. && command.x > -9.5 {
+                reserved_braking_ticks += 1;
+            }
+            position += velocity * 0.1 + command * 0.005;
+            velocity += command * 0.1;
+            peak_speed = peak_speed.max(velocity.length());
+            elapsed += 0.1;
+        }
+        assert!((target - position).length() <= 2.);
+        assert!(velocity.length() <= 0.5);
+        assert!(peak_speed > 280.);
+        assert!(reserved_braking_ticks > 100);
+        assert!(elapsed < 80.);
     }
 
     #[test]

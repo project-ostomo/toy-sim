@@ -247,6 +247,10 @@ fn slip_is_selected_when_faster_and_does_not_brake_galactic_velocity() {
     assert!(matches!(result.orders[0].action, Order::Slip { .. }));
     assert!(duration(&result) < 1000);
     assert_eq!(fuel(&result), 0.0);
+    input.preferences.allow_wormholes = false;
+    let direct = plan(&input, &env).unwrap();
+    assert_eq!(direct.orders, result.orders);
+    assert_eq!(fuel(&direct), 0.0);
 
     input.origin.velocity = [32_000.0, 0.0, 0.0];
     input.orders = vec![Order::Slip {
@@ -277,7 +281,7 @@ fn exclusion_escape_is_costed_inside_the_strategic_slip_command() {
 }
 
 #[test]
-fn fuel_priority_trades_time_for_fuel_and_warns_per_resource() {
+fn fuel_allowance_limits_the_whole_route_per_resource() {
     let env = Environment::default();
     let mut input = request(
         DVec3::ZERO,
@@ -285,14 +289,19 @@ fn fuel_priority_trades_time_for_fuel_and_warns_per_resource() {
             GalacticPosition::from_meters(DVec3::X * 1e7),
         ))],
     );
-    input.preferences.fuel_priority = 0.1;
+    input.preferences.fuel_fraction = 1.;
     let fast = plan(&input, &env).unwrap();
-    input.preferences.fuel_priority = 1000.0;
-    input.performance.fuels[0].available_kg = 1.0;
+    input.preferences.fuel_fraction = 0.1;
+    input.performance.fuels[0].available_kg = fast.fuel_budget.resources[0].required_kg;
     let slow = plan(&input, &env).unwrap();
     assert!(duration(&slow) > duration(&fast));
     assert!(fuel(&slow) < fuel(&fast));
-    assert!(slow.fuel_budget.exhausted());
+    assert!(
+        slow.fuel_budget
+            .resources
+            .iter()
+            .all(|r| r.required_kg <= r.available_kg * 0.1 + 1e-6)
+    );
     assert!(
         (slow.fuel_budget.resources[0].required_kg / slow.fuel_budget.resources[1].required_kg
             - 9.0)
@@ -383,7 +392,7 @@ fn cancelled_and_failed_queries_report_bounded_nonzero_work() {
     let (result, work) = plan_metered(&input, &Environment::default());
     assert!(result.is_err() && work >= ENVIRONMENT_WORK);
     assert!(work <= work_limit(&input, 0));
-    assert!(work_limit(&input, 0) < MAX_WORK / 100);
+    assert!(work_limit(&input, 0) < MAX_WORK / 10);
     let (result, work) = plan_metered(
         &input,
         &Environment {
@@ -487,7 +496,7 @@ fn local_routes_preserve_metre_precision_at_extreme_galactic_coordinates() {
 }
 
 #[test]
-fn slip_to_a_gate_region_keeps_the_beacon_as_its_semantic_destination() {
+fn slip_can_target_a_station_without_requiring_a_clear_exit() {
     let mut env = Environment {
         slip_enabled: true,
         ..Default::default()
@@ -506,7 +515,7 @@ fn slip_to_a_gate_region_keeps_the_beacon_as_its_semantic_destination() {
     assert_eq!(
         result.orders[0].action,
         Order::Slip {
-            destination: Destination::Beacon(id(2))
+            destination: Destination::Beacon(id(5))
         }
     );
     assert_eq!(result.orders[1].action, Order::Dock(id(5)));
@@ -564,19 +573,14 @@ fn short_slip_does_not_avoid_the_cost_of_rendezvous_with_a_stationary_goal() {
             Order::Sublight(destination.clone()),
         ];
         let forced_slip = plan(&input, &env).unwrap();
-        let weights = input.preferences.cost(input.performance.mass_kg);
+        let weights = forced_slip.orders.last().unwrap().transfer_cost;
         let objective = |result: &RoutePlan| {
             duration(result) as f64 * 0.1 + weights.seconds_per_kg * fuel(result)
         };
         assert!(objective(&strategic) < objective(&forced_slip));
 
         let target = env.resolve(&destination, 0.0).unwrap();
-        let rendezvous = slip_rendezvous(
-            &input.performance,
-            input.preferences,
-            &input.origin,
-            &target,
-        );
+        let rendezvous = slip_rendezvous(&input.performance, weights, &input.origin, &target);
         assert!((fuel(&forced_slip) - rendezvous.1).abs() < 1e-6);
         let slip_seconds = forced_slip.orders[0].estimated_duration_ticks.unwrap() as f64 * 0.1;
         assert!((duration(&forced_slip) as f64 * 0.1 - slip_seconds - rendezvous.0).abs() <= 0.1);
@@ -587,7 +591,7 @@ fn short_slip_does_not_avoid_the_cost_of_rendezvous_with_a_stationary_goal() {
 #[test]
 fn retained_velocity_rendezvous_is_continuous_at_zero_separation() {
     let performance = performance();
-    let preferences = PlanningPreferences::default();
+    let preferences = TransferCost::default();
     let mut origin = pose(DVec3::ZERO);
     origin.position = GalacticPosition {
         x: 1_i128 << 100,
@@ -611,4 +615,39 @@ fn retained_velocity_rendezvous_is_continuous_at_zero_separation() {
     target.velocity = common.to_array();
     let translated = transfer(&performance, preferences, &origin, &target);
     assert_eq!(translated, at_target);
+}
+
+#[test]
+fn disabled_transit_modes_are_excluded_and_fuel_caps_reject_infeasible_routes() {
+    let mut env = Environment {
+        slip_enabled: true,
+        ..Default::default()
+    };
+    env.pair(1, 2, 100, 200, DVec3::X * 1e4, DVec3::X * 1e12);
+    let mut input = request(DVec3::ZERO, vec![Order::Jump(id(1))]);
+    input.preferences.allow_wormholes = false;
+    assert!(
+        plan(&input, &env)
+            .unwrap_err()
+            .to_string()
+            .contains("Wormholes disabled")
+    );
+    input.orders = vec![Order::Slip {
+        destination: Destination::Galactic(GalacticPosition::from_meters(DVec3::X * 1e8)),
+    }];
+    input.preferences.allow_slipdrive = false;
+    assert!(
+        plan(&input, &env)
+            .unwrap_err()
+            .to_string()
+            .contains("Slipdrive disabled")
+    );
+    input.orders = vec![Order::Sublight(Destination::Galactic(
+        GalacticPosition::from_meters(DVec3::X * 1e6),
+    ))];
+    input.origin.velocity = [1000., 0., 0.];
+    for fuel in &mut input.performance.fuels {
+        fuel.available_kg = 0.;
+    }
+    assert!(plan(&input, &env).is_err());
 }

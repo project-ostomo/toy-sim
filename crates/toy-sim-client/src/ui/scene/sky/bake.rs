@@ -1,4 +1,3 @@
-mod disk;
 use bevy::{
     asset::RenderAssetUsages, image::ImageSampler, math::DVec3, prelude::*,
     render::render_resource::*,
@@ -7,16 +6,50 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Instant,
 };
+use toy_sim_model::Id;
 use toy_sim_space::GalacticPosition;
-use toy_sim_stars::{Star, min_brightness};
+use toy_sim_stars::{Star, StarId, min_brightness};
 pub const RESOLUTION: u32 = 2048;
+/// Half a texel at the finest mip level: the angular radius where disk
+/// rasterization used to begin. Stars at least this resolvable are diverted
+/// from the cubemap bake to emissive geometry.
+pub const HANDOVER: f64 = 1.0 / RESOLUTION as f64;
+/// Spheres only render inside the camera far plane; resolvable stars beyond
+/// this distance stay baked as flux-conserving point sources.
+pub const MESH_RANGE_M: f64 = 0.9e15;
 pub struct Point {
     direction: DVec3,
     flux: [f64; 3],
-    angular_radius: f64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GeometryKey {
+    Catalogue(StarId),
+    Celestial(Id),
+}
+
+/// A star handed over from the cubemap bake to an emissive sphere rendered at
+/// its galactic coordinates with true parallax.
+#[derive(Clone)]
+pub struct GeometryStar {
+    pub key: GeometryKey,
+    pub position: GalacticPosition,
+    pub radius_m: f64,
+    pub luminosity: f64,
+    pub colour: [f32; 3],
+}
+
+/// A candidate sky entry: a catalogue or celestial star together with the
+/// physical radius used to decide between baking and geometry.
+pub struct Source {
+    pub star: Star,
+    pub radius_m: f64,
+    pub key: GeometryKey,
+}
+
 pub struct Snapshot {
     pub stars: Vec<Point>,
+    pub geometry: Vec<GeometryStar>,
     origin: GalacticPosition,
     nearest: f64,
     magnitude: f64,
@@ -25,7 +58,7 @@ pub struct Snapshot {
 }
 impl Snapshot {
     pub fn new(
-        sources: Vec<(Star, f64)>,
+        sources: Vec<Source>,
         origin: GalacticPosition,
         magnitude: f64,
         revision: u64,
@@ -34,14 +67,34 @@ impl Snapshot {
     ) -> Self {
         let cutoff = min_brightness(magnitude);
         let mut stars = Vec::new();
-        for (star, radius) in sources {
+        let mut geometry = Vec::new();
+        for Source {
+            star,
+            radius_m,
+            key,
+        } in sources
+        {
             let delta = star.position.relative_to(origin);
-            let d2 = delta.length_squared();
-            if d2 <= 0.0 {
+            let distance = delta.length();
+            if distance <= 0.0 {
                 continue;
             }
-            nearest = nearest.min(d2.sqrt());
-            let brightness = star.luminosity / d2;
+            let angular_radius = (radius_m / distance).clamp(0.0, 1.0).asin();
+            // Stars resolvable at base resolution leave the bake entirely, so
+            // the nearest baked star (and with it the rebake budget) stays
+            // interstellar while flying inside a system.
+            if angular_radius >= HANDOVER && distance < MESH_RANGE_M {
+                geometry.push(GeometryStar {
+                    key,
+                    position: star.position,
+                    radius_m,
+                    luminosity: star.luminosity,
+                    colour: star.colour,
+                });
+                continue;
+            }
+            nearest = nearest.min(distance);
+            let brightness = star.luminosity / (distance * distance);
             if brightness < cutoff {
                 continue;
             }
@@ -53,11 +106,11 @@ impl Snapshot {
             stars.push(Point {
                 direction,
                 flux: star.colour.map(|c| c as f64 * flux),
-                angular_radius: (radius / d2.sqrt()).clamp(0.0, 1.0).asin(),
             });
         }
         Self {
             stars,
+            geometry,
             origin,
             nearest,
             magnitude,
@@ -82,6 +135,13 @@ impl Snapshot {
 /// this is only a rendering proxy, not an inferred physical stellar measurement.
 pub fn estimated_radius(luminosity: f64) -> f64 {
     6.96e8 * (luminosity / toy_sim_stars::SOLAR_LUMENS).sqrt()
+}
+
+/// Uniform-sphere surface radiance for `luminosity` and `radius_m`. The exact
+/// apparent irradiance `radiance * π (r/d)²` equals the baked point flux
+/// `luminosity / (4π d²)`, so mesh and cubemap hand over seamlessly.
+pub fn star_radiance(luminosity: f64, radius_m: f64) -> f64 {
+    luminosity / (4.0 * std::f64::consts::PI * std::f64::consts::PI * radius_m * radius_m)
 }
 
 pub struct Baked {
@@ -124,7 +184,7 @@ fn solid_angle(n: u32, x: usize, y: usize) -> f64 {
     let v = 2.0 * (y as f64 + 0.5) / n as f64 - 1.0;
     4.0 / ((n as f64).powi(2) * (1.0 + u * u + v * v).powf(1.5))
 }
-fn splat_point(data: &mut [u8], n: u32, point: &Point, fraction: f64) {
+fn splat_point(data: &mut [u8], n: u32, point: &Point) {
     let (face, u, v) = project(point.direction);
     let px = (u + 1.) * 0.5 * n as f64 - 0.5;
     let py = (v + 1.) * 0.5 * n as f64 - 0.5;
@@ -148,7 +208,7 @@ fn splat_point(data: &mut [u8], n: u32, point: &Point, fraction: f64) {
             for c in 0..3 {
                 let offset = offset + c * 4;
                 let old = f32::from_le_bytes(data[offset..offset + 4].try_into().unwrap()) as f64;
-                let value = (old + point.flux[c] * fraction * weight / omega) as f32;
+                let value = (old + point.flux[c] * weight / omega) as f32;
                 data[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             }
         }
@@ -182,6 +242,8 @@ fn bake_while(
         let len = n as usize * n as usize * 6 * 16;
         // Analytic, flux-conserving mip levels avoid scanning/downsampling a
         // gigabyte of black texels and preserve subpixel stars when minified.
+        // Every baked star is a sub-half-texel point at the finest mip, so it
+        // stays a point at every coarser level as well.
         if cancelled() {
             return None;
         }
@@ -190,7 +252,7 @@ fn bake_while(
                 return None;
             }
             for point in chunk {
-                disk::splat(&mut data[offset..offset + len], n, point, &mut cancelled)?;
+                splat_point(&mut data[offset..offset + len], n, point);
             }
         }
         offset += len;
@@ -227,55 +289,56 @@ fn bake_while(
 mod tests {
     use super::*;
     #[test]
-    fn solar_brightness_survives_disk_and_point_baking_in_every_mip() {
+    fn solar_brightness_survives_point_baking_in_every_mip() {
         let distance = 1.495978707e10;
-        for radius in [0.0, 6.96e8] {
-            let star = Star {
-                id: toy_sim_stars::StarId::gaia(1),
-                position: GalacticPosition::from_meters(DVec3::Z * distance),
-                luminosity: 3.6e28,
-                colour: [1.0, 0.8, 0.6],
-            };
-            let snapshot = Snapshot::new(
-                vec![(star, radius)],
-                GalacticPosition::ZERO,
-                6.0,
-                0,
-                0,
-                distance,
-            );
-            let baked = bake_while(&snapshot, 256, || false).unwrap();
-            let data = baked.image.data.unwrap();
-            let mut offset = 0;
-            for mip in 0..=8 {
-                let n = 256 >> mip;
-                let len = n as usize * n as usize * 6 * 16;
-                let mut flux = [0.0; 3];
-                let mut peak = 0.0_f32;
-                for (pixel, bytes) in data[offset..offset + len].chunks_exact(16).enumerate() {
-                    let omega =
-                        solid_angle(n, pixel % n as usize, (pixel / n as usize) % n as usize);
-                    for c in 0..3 {
-                        let value = f32::from_le_bytes(bytes[c * 4..c * 4 + 4].try_into().unwrap());
-                        assert!(value.is_finite());
-                        peak = peak.max(value);
-                        flux[c] += value as f64 * omega;
-                    }
-                }
-                if mip == 0 {
-                    assert!(peak > 1e9, "stellar radiance was clipped: {peak}");
-                }
+        let star = Star {
+            id: toy_sim_stars::StarId::gaia(1),
+            position: GalacticPosition::from_meters(DVec3::Z * distance),
+            luminosity: 3.6e28,
+            colour: [1.0, 0.8, 0.6],
+        };
+        let snapshot = Snapshot::new(
+            vec![Source {
+                star,
+                radius_m: 0.0,
+                key: GeometryKey::Catalogue(star.id),
+            }],
+            GalacticPosition::ZERO,
+            6.0,
+            0,
+            0,
+            distance,
+        );
+        let baked = bake_while(&snapshot, 256, || false).unwrap();
+        let data = baked.image.data.unwrap();
+        let mut offset = 0;
+        for mip in 0..=8 {
+            let n = 256 >> mip;
+            let len = n as usize * n as usize * 6 * 16;
+            let mut flux = [0.0; 3];
+            let mut peak = 0.0_f32;
+            for (pixel, bytes) in data[offset..offset + len].chunks_exact(16).enumerate() {
+                let omega = solid_angle(n, pixel % n as usize, (pixel / n as usize) % n as usize);
                 for c in 0..3 {
-                    assert!((flux[c] / snapshot.stars[0].flux[c] - 1.0).abs() < 1e-6);
+                    let value = f32::from_le_bytes(bytes[c * 4..c * 4 + 4].try_into().unwrap());
+                    assert!(value.is_finite());
+                    peak = peak.max(value);
+                    flux[c] += value as f64 * omega;
                 }
-                offset += len;
             }
-            assert_eq!(offset, data.len());
+            if mip == 0 {
+                assert!(peak > 1e9, "stellar radiance was clipped: {peak}");
+            }
+            for c in 0..3 {
+                assert!((flux[c] / snapshot.stars[0].flux[c] - 1.0).abs() < 1e-6);
+            }
+            offset += len;
         }
+        assert_eq!(offset, data.len());
     }
 
     #[test]
-    fn snapshot_uses_physical_radius_for_angular_size() {
+    fn resolvable_stars_divert_to_geometry_and_points_keep_the_cubemap_flip() {
         let radius = 6.96e8;
         let distance = 1.495978707e11;
         let star = Star {
@@ -285,16 +348,122 @@ mod tests {
             colour: [1.0; 3],
         };
         let snapshot = Snapshot::new(
-            vec![(star, radius)],
+            vec![Source {
+                star,
+                radius_m: radius,
+                key: GeometryKey::Catalogue(star.id),
+            }],
             GalacticPosition::ZERO,
             6.0,
             0,
             0,
             distance,
         );
-        assert!((snapshot.stars[0].angular_radius - (radius / distance).asin()).abs() < 1e-12);
-        assert!(snapshot.stars[0].direction.abs_diff_eq(DVec3::NEG_Z, 1e-12));
+        assert!(snapshot.stars.is_empty());
+        let geometry = &snapshot.geometry[0];
+        assert_eq!(geometry.key, GeometryKey::Catalogue(star.id));
+        assert_eq!(geometry.position, star.position);
+        assert_eq!(geometry.radius_m, radius);
+        assert_eq!(geometry.luminosity, toy_sim_stars::SOLAR_LUMENS);
+        assert_eq!(geometry.colour, [1.0; 3]);
         assert_eq!(estimated_radius(toy_sim_stars::SOLAR_LUMENS), radius);
+
+        let snapshot = Snapshot::new(
+            vec![Source {
+                star,
+                radius_m: 0.0,
+                key: GeometryKey::Catalogue(star.id),
+            }],
+            GalacticPosition::ZERO,
+            6.0,
+            0,
+            0,
+            distance,
+        );
+        assert!(snapshot.geometry.is_empty());
+        assert!(snapshot.stars[0].direction.abs_diff_eq(DVec3::NEG_Z, 1e-12));
+        let flux = toy_sim_stars::SOLAR_LUMENS / (4.0 * std::f64::consts::PI * distance * distance);
+        for c in 0..3 {
+            assert!((snapshot.stars[0].flux[c] - flux).abs() < flux * 1e-12);
+        }
+    }
+
+    #[test]
+    fn diverted_stars_do_not_shrink_the_parallax_budget() {
+        let origin = GalacticPosition::ZERO;
+        let near = 1.495978707e11;
+        let far = 1.0e17;
+        let sun = Star {
+            id: toy_sim_stars::StarId::gaia(1),
+            position: GalacticPosition::from_meters(DVec3::Z * near),
+            luminosity: toy_sim_stars::SOLAR_LUMENS,
+            colour: [1.0; 3],
+        };
+        let distant = Star {
+            id: toy_sim_stars::StarId::gaia(2),
+            position: GalacticPosition::from_meters(DVec3::X * far),
+            luminosity: toy_sim_stars::SOLAR_LUMENS,
+            colour: [1.0; 3],
+        };
+        let diverted = Snapshot::new(
+            vec![
+                Source {
+                    star: sun,
+                    radius_m: 6.96e8,
+                    key: GeometryKey::Celestial(Id([1; 16])),
+                },
+                Source {
+                    star: distant,
+                    radius_m: 0.0,
+                    key: GeometryKey::Catalogue(distant.id),
+                },
+            ],
+            origin,
+            6.0,
+            0,
+            0,
+            f64::INFINITY,
+        );
+        assert_eq!(diverted.geometry.len(), 1);
+        assert_eq!(diverted.stars.len(), 1);
+        // The budget follows the far baked star, not the diverted sun.
+        assert!((diverted.nearest - far).abs() < far * 1e-9);
+        assert!(diverted.valid(origin.offset_by(DVec3::X * 1.0e12), 6.0, 0, 0));
+        assert!(!diverted.valid(origin.offset_by(DVec3::X * 1.0e14), 6.0, 0, 0));
+        let baked_sun = Snapshot::new(
+            vec![
+                Source {
+                    star: sun,
+                    radius_m: 0.0,
+                    key: GeometryKey::Celestial(Id([1; 16])),
+                },
+                Source {
+                    star: distant,
+                    radius_m: 0.0,
+                    key: GeometryKey::Catalogue(distant.id),
+                },
+            ],
+            origin,
+            6.0,
+            0,
+            0,
+            f64::INFINITY,
+        );
+        assert!(baked_sun.geometry.is_empty());
+        // One astronomical unit of budget: the same move must invalidate.
+        assert!(!baked_sun.valid(origin.offset_by(DVec3::X * 1.0e12), 6.0, 0, 0));
+    }
+
+    #[test]
+    fn emissive_sphere_radiance_matches_baked_point_flux() {
+        let radius = 6.96e8;
+        let pi = std::f64::consts::PI;
+        for distance in [radius / HANDOVER, radius / HANDOVER * 100.0] {
+            let sphere = star_radiance(toy_sim_stars::SOLAR_LUMENS, radius) * pi * radius * radius
+                / (distance * distance);
+            let baked = toy_sim_stars::SOLAR_LUMENS / (4.0 * pi * distance * distance);
+            assert!((sphere - baked).abs() < baked * 1e-12);
+        }
     }
 
     #[test]
@@ -324,9 +493,8 @@ mod tests {
                 let point = Point {
                     direction: d.normalize(),
                     flux: [1e-4, 2e-4, 4e-4],
-                    angular_radius: 0.0,
                 };
-                splat_point(&mut data, n, &point, 1.0);
+                splat_point(&mut data, n, &point);
                 let mut sum = [0.; 3];
                 for (pixel, bytes) in data.chunks_exact(16).enumerate() {
                     let x = pixel % n as usize;
@@ -373,7 +541,6 @@ mod tests {
             .map(|_| Point {
                 direction: DVec3::X,
                 flux: [1e-4; 3],
-                angular_radius: 0.0,
             })
             .collect();
         let mut checks = 0;

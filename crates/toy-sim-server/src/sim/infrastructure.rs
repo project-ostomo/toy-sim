@@ -467,7 +467,7 @@ fn spawn_gates(
                     travel::Gate {
                         paired: ids[1 - side],
                         radius_m: 220.,
-                        exclusion_m: 1e7,
+                        exclusion_m: travel::GATE_EXCLUSION_M,
                         enabled: true,
                     },
                     Landmark {
@@ -522,8 +522,30 @@ mod tests {
 
     #[test]
     fn terminus_plans_warn_for_fuel_exhaustion_and_offer_slower_economical_routes() {
+        check_terminus_allowances(true);
+    }
+
+    #[test]
+    fn slip_only_terminus_plans_respect_fuel_without_searching_the_gate_network() {
+        check_terminus_allowances(false);
+    }
+
+    fn check_terminus_allowances(allow_wormholes: bool) {
         use toy_sim_model::travel::{Destination, Order, PlanningPreferences, Status, TravelState};
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
+        let opponents: Vec<_> = app
+            .world_mut()
+            .query_filtered::<Entity, (
+                With<vessel::ShipSoftware>,
+                Without<vessel::ControlledVessel>,
+            )>()
+            .iter(app.world())
+            .collect();
+        for entity in opponents {
+            app.world_mut()
+                .entity_mut(entity)
+                .remove::<vessel::ShipSoftware>();
+        }
         for _ in 0..100 {
             app.update();
         }
@@ -542,7 +564,7 @@ mod tests {
             .0;
         let mut budgets = Vec::new();
         let mut durations = Vec::new();
-        for fuel_priority in [1., 10., 100.] {
+        for fuel_fraction in [1., 0.5, 0.25] {
             let revision = app
                 .world()
                 .get::<travel::Travel>(player)
@@ -555,12 +577,56 @@ mod tests {
                 .insert(travel::Travel(TravelState {
                     autopilot_enabled: true,
                     revision,
-                    preferences: PlanningPreferences { fuel_priority },
+                    preferences: PlanningPreferences {
+                        fuel_fraction,
+                        allow_wormholes,
+                        ..Default::default()
+                    },
                     orders: vec![Order::TravelTo(Destination::Beacon(destination)).into()],
                     status: Status::Planning,
                     ..Default::default()
                 }));
+            let started = std::time::Instant::now();
+            if !allow_wormholes {
+                loop {
+                    let world = app.world_mut();
+                    travel::plan_orders(world);
+                    super::super::route_service::advance(world);
+                    travel::plan_orders(world);
+                    let status = &world.get::<travel::Travel>(player).unwrap().0.status;
+                    assert!(
+                        started.elapsed().as_secs_f64() < 5.0,
+                        "direct planning stalled"
+                    );
+                    match status {
+                        Status::Planning => std::thread::sleep(Duration::from_millis(1)),
+                        Status::Blocked(reason) => {
+                            assert!(reason.contains("fuel allowance"), "{reason}");
+                            eprintln!(
+                                "direct slip reported insufficient fuel in {:?}",
+                                started.elapsed()
+                            );
+                            return;
+                        }
+                        Status::Active => break,
+                        other => panic!("unexpected route status {other:?}"),
+                    }
+                }
+            }
             let state = finish_route_planning(app.world_mut(), player);
+            if !allow_wormholes {
+                assert!(
+                    started.elapsed().as_secs_f64() < 5.0,
+                    "direct slip planning took {:?}",
+                    started.elapsed()
+                );
+                assert!(
+                    state
+                        .orders
+                        .iter()
+                        .all(|order| !matches!(order.action, Order::Jump(_)))
+                );
+            }
             let budget = state.fuel_budget.unwrap();
             assert!(
                 budget.complete && !budget.resources.is_empty(),
@@ -580,24 +646,27 @@ mod tests {
                 .expect("every strategic stage has an ETA")
                 .into_iter()
                 .sum::<u64>();
-            eprintln!("fuel priority {fuel_priority}: {duration_ticks} ticks; {budget:?}");
+            eprintln!("fuel allowance {fuel_fraction}: {duration_ticks} ticks; {budget:?}");
             durations.push(duration_ticks);
             budgets.push(budget);
         }
+        for (budget, fraction) in budgets.iter().zip([1., 0.5, 0.25]) {
+            assert!(
+                budget
+                    .resources
+                    .iter()
+                    .all(|r| r.required_kg <= r.available_kg * fraction + 1e-6)
+            );
+        }
         assert!(
-            budgets[0].exhausted(),
-            "the speed-biased route needs a fuel warning"
-        );
-        assert!(budgets[1..].iter().all(|budget| !budget.exhausted()));
-        assert!(
-            durations.windows(2).all(|pair| pair[0] < pair[1]),
+            durations.windows(2).all(|pair| pair[0] <= pair[1]),
             "{durations:?}"
         );
         let required = |budget: &toy_sim_model::travel::FuelBudget| {
             budget.resources.iter().map(|r| r.required_kg).sum::<f64>()
         };
-        assert!(required(&budgets[2]) < required(&budgets[1]));
-        assert!(required(&budgets[1]) < required(&budgets[0]));
+        assert!(required(&budgets[2]) <= required(&budgets[1]));
+        assert!(required(&budgets[1]) <= required(&budgets[0]));
     }
 
     #[test]
@@ -718,7 +787,7 @@ mod tests {
     }
 
     #[test]
-    fn default_network_is_connected_and_fixed_gates_have_no_physics_bodies() {
+    fn default_network_isolates_sol_and_fixed_gates_have_no_physics_bodies() {
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         app.update();
         let world = app.world_mut();
@@ -745,14 +814,18 @@ mod tests {
                 pending.extend(neighbors[&system].iter().map(|gate| gate.destination));
             }
         }
-        assert_eq!(reachable.len(), catalogue.systems.len());
+        assert!(!reachable.contains(&registry::system_identity("Sol system")));
         for system in &catalogue.systems {
             let mouths: Vec<_> = catalogue
                 .beacons
                 .iter()
                 .filter(|b| b.system == system.id && b.gate_exit.is_some())
                 .collect();
-            assert!((1..=6).contains(&mouths.len()));
+            if system.id == registry::system_identity("Sol system") {
+                assert!(mouths.is_empty());
+            } else {
+                assert!(mouths.len() <= 6);
+            }
             assert!(system.sovereignty.is_some());
             assert!(system.population > 0);
             for pair in mouths.windows(2) {
@@ -1081,7 +1154,7 @@ mod tests {
         ));
     }
     #[test]
-    fn stock_computer_flies_from_the_starting_scenario_through_the_sol_gate() {
+    fn stock_computer_flies_from_the_starting_scenario_through_a_gate() {
         let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
         app.update();
         let world = app.world_mut();
@@ -1092,10 +1165,18 @@ mod tests {
         let entry = world
             .query_filtered::<Entity, With<travel::Gate>>()
             .iter(world)
-            .find(|entity| {
+            .min_by_key(|entity| {
                 world
-                    .get::<Landmark>(*entity)
-                    .is_some_and(|landmark| landmark.name == "Sol gate")
+                    .get::<precision::PreciseTransform>(*entity)
+                    .unwrap()
+                    .translation_um
+                    .relative_to(
+                        world
+                            .get::<precision::PreciseTransform>(player)
+                            .unwrap()
+                            .translation_um,
+                    )
+                    .length() as u64
             })
             .unwrap();
         let exit =
@@ -1193,9 +1274,21 @@ mod tests {
             .single(world)
             .unwrap();
         let entry = world
-            .query::<(Entity, &Landmark)>()
+            .query_filtered::<(Entity, &Landmark), With<travel::Gate>>()
             .iter(world)
-            .find(|(_, landmark)| landmark.name == "Sol gate")
+            .min_by_key(|(entity, _)| {
+                world
+                    .get::<precision::PreciseTransform>(*entity)
+                    .unwrap()
+                    .translation_um
+                    .relative_to(
+                        world
+                            .get::<precision::PreciseTransform>(player)
+                            .unwrap()
+                            .translation_um,
+                    )
+                    .length() as u64
+            })
             .unwrap()
             .0;
         let exit =

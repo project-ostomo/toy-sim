@@ -282,6 +282,7 @@ fn missile_impact_only_attributes_parent_if_its_launch_was_observed() {
                 velocity: DVec3::X * 1000.,
                 normal: DVec3::X,
                 shields: [false, true],
+                surface_positions: [GalacticPosition::ZERO; 2],
                 energy_j: 1e8,
             });
         record(&mut fixture.world, &report);

@@ -52,24 +52,24 @@ pub enum Order {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PlanningPreferences {
-    pub fuel_priority: f64,
+    pub fuel_fraction: f64,
+    pub allow_wormholes: bool,
+    pub allow_slipdrive: bool,
 }
 
 impl Default for PlanningPreferences {
     fn default() -> Self {
-        Self { fuel_priority: 1. }
+        Self {
+            fuel_fraction: 0.5,
+            allow_wormholes: true,
+            allow_slipdrive: true,
+        }
     }
 }
 
 impl PlanningPreferences {
     pub fn valid(self) -> bool {
-        self.fuel_priority.is_finite() && (0.1..=1000.).contains(&self.fuel_priority)
-    }
-
-    pub fn cost(self, mass_kg: f64) -> crate::transfer::TransferCost {
-        crate::transfer::TransferCost {
-            seconds_per_kg: 3600. * self.fuel_priority / mass_kg.max(1.),
-        }
+        self.fuel_fraction.is_finite() && (0.01..=1.).contains(&self.fuel_fraction)
     }
 }
 
@@ -107,6 +107,7 @@ impl FuelBudget {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct QueuedOrder {
+    pub transfer_cost: crate::transfer::TransferCost,
     pub action: Order,
     pub estimated_duration_ticks: Option<u64>,
     pub estimated_propellant_kg: Option<f64>,
@@ -120,6 +121,7 @@ impl From<Order> for QueuedOrder {
         )
         .then_some(0.);
         Self {
+            transfer_cost: Default::default(),
             action,
             estimated_duration_ticks: None,
             estimated_propellant_kg,
@@ -135,6 +137,7 @@ impl QueuedOrder {
 
     pub fn estimated(action: Order, seconds: f64) -> Self {
         Self {
+            transfer_cost: Default::default(),
             action,
             estimated_propellant_kg: None,
             estimated_duration_ticks: (seconds.is_finite() && seconds >= 0.)
@@ -262,16 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fuel_priority_exchanges_travel_time_for_fuel_and_checks_each_tank() {
-        let fast = PlanningPreferences { fuel_priority: 0.1 }
-            .cost(1e5)
-            .estimate(1e7, 5., 40.);
-        let economy = PlanningPreferences {
-            fuel_priority: 100.,
-        }
-        .cost(1e5)
-        .estimate(1e7, 5., 40.);
-        assert!(economy.0 > fast.0 && economy.1 < fast.1);
+    fn fuel_allowance_validates_fraction_and_checks_each_tank() {
         let budget = FuelBudget {
             resources: vec![
                 FuelRequirement {
@@ -294,7 +288,8 @@ mod tests {
         for value in [f64::NAN, f64::INFINITY, 0., -1., 1001.] {
             assert!(
                 !PlanningPreferences {
-                    fuel_priority: value
+                    fuel_fraction: value,
+                    ..Default::default()
                 }
                 .valid()
             );

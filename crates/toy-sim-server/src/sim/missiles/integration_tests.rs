@@ -43,7 +43,8 @@ impl Fixture {
         let account = Id::new();
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../assets/ships/missile-patrol.ship");
-        let mut app = crate::sim::provision(&[account], None, Some(path)).unwrap();
+        let mut app =
+            crate::sim::bootstrap::provision_combat_fixture(&[account], None, Some(path)).unwrap();
         let world = app.world_mut();
         let parent = world
             .query_filtered::<Entity, With<ControlledVessel>>()
@@ -423,7 +424,7 @@ fn ordinary_same_owner_laser_can_destroy_a_missile() {
                     .report
                     .impact_events
                     .iter()
-                    .any(|event| event.entities == [shooter, missile])
+                    .any(|event| event.entities == [missile, shooter])
             );
             assert!(!world.get::<Missile>(missile).unwrap().guidance_enabled);
             return;
@@ -592,7 +593,8 @@ fn stock_two_launcher_close_fight_completes_repeated_volleys_without_contact_sta
     let account = Id::new();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../assets/ships/missile-patrol.ship");
-    let mut app = crate::sim::provision(&[account], None, Some(path)).unwrap();
+    let mut app =
+        crate::sim::bootstrap::provision_combat_fixture(&[account], None, Some(path)).unwrap();
     let world = app.world_mut();
     let parent = world
         .query_filtered::<Entity, With<ControlledVessel>>()
@@ -709,11 +711,8 @@ fn stock_two_launcher_close_fight_completes_repeated_volleys_without_contact_sta
             let tick = world.resource::<SimulationCounters>().ticks;
             let report = &world.resource::<collision::CollisionReport>().report;
             peak_query_state = format!(
-                "tick={tick}, impacts={}, candidates={}, reviews={}, rotation_fallbacks={}",
-                report.impacts,
-                report.candidates,
-                report.reviews,
-                report.rotation_envelope_fallbacks,
+                "tick={tick}, impacts={}, candidates={}",
+                report.impacts, report.candidates,
             );
             let bodies: Vec<_> = world
                 .query::<(Entity, &AngularVelocity, &ShipDesign, Option<&Missile>)>()

@@ -826,6 +826,16 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
                     .length()
                     > 0.0
             );
+            let console: String = software
+                .controller
+                .state
+                .serial
+                .screen
+                .cells
+                .iter()
+                .map(|cell| cell.character)
+                .collect();
+            assert!(console.contains("SHIP COMPUTER // ONLINE"), "{console}");
             assert!(accepted);
             return;
         }

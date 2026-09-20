@@ -1,6 +1,5 @@
 mod chat;
 mod industry;
-pub mod local_space;
 pub mod navigation;
 mod presentation;
 pub mod routing;
@@ -12,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 use toy_sim_model::*;
 
-pub const VERSION: u16 = 27;
+pub const VERSION: u16 = 34;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -437,6 +436,11 @@ pub fn validate_frame(frame: &Frame) -> Result<()> {
             "invalid travel estimates"
         );
         for stage in &ship.travel.orders {
+            ensure!(
+                stage.transfer_cost.seconds_per_kg.is_finite()
+                    && stage.transfer_cost.seconds_per_kg >= 0.,
+                "invalid transfer cost"
+            );
             validate_order(&stage.action)?;
         }
         if let travel::Status::Blocked(reason) = &ship.travel.status {

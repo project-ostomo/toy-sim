@@ -308,6 +308,36 @@ impl crate::Controller {
             .iter()
             .enumerate()
             .map(|(index, source)| {
+                if let DeviceSource::MicropulseGenerator(part) = source {
+                    let Equipment::MicropulseEngine {
+                        thrust_n,
+                        specific_impulse_s,
+                        charge_energy_j_kg,
+                        ..
+                    } = design.parts[*part].definition.equipment
+                    else {
+                        unreachable!("micropulse generator belongs to a micropulse engine")
+                    };
+                    let resource = catalogue
+                        .resources
+                        .iter()
+                        .position(|resource| resource.id == "micropulse_charge")
+                        .unwrap();
+                    let exhaust_velocity =
+                        toy_sim_ships::STANDARD_GRAVITY_M_S2 * specific_impulse_s;
+                    let power = 0.005 * thrust_n * exhaust_velocity;
+                    return abi::GeneratorSpec {
+                        fuel_resource: resource as u64 + 1,
+                        max_power_w: power,
+                        efficiency: 0.005 * exhaust_velocity * exhaust_velocity
+                            / charge_energy_j_kg,
+                        fuel_units_s: thrust_n
+                            / exhaust_velocity
+                            / catalogue.resources[resource].mass_kg,
+                    }
+                    .bytes()
+                    .to_vec();
+                }
                 let DeviceSource::Part(part) = source else {
                     return match design.device_catalogue[index].kind {
                         DeviceKind::Sensor { range_m } => abi::SensorSpec {
@@ -568,7 +598,7 @@ pub fn query_work(query: &toy_sim_model::ProgramQuery) -> u64 {
     use toy_sim_model::ProgramQuery;
 
     match query {
-        ProgramQuery::LocalSpace { .. } => toy_sim_model::local_space::QUERY_GAS,
+        ProgramQuery::Orrery { .. } => toy_sim_model::local_space::QUERY_GAS,
         ProgramQuery::RouteRequest(_) => toy_sim_model::routing::REQUEST_GAS,
         ProgramQuery::RoutePoll { .. } => toy_sim_model::routing::POLL_GAS,
         ProgramQuery::Navigation { limit, .. } => {

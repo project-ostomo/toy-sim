@@ -5,9 +5,11 @@ use admission::*;
 
 mod drawing;
 mod instruments;
+mod intel;
 mod missiles;
 mod publications;
 mod services;
+mod world;
 
 use super::*;
 
@@ -219,60 +221,22 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
 }
 
 fn context(linker: &mut Linker<Host>) -> Result<()> {
+    world::register(linker)?;
+    intel::register(linker)?;
     metered!(
         linker,
-        "world_query",
-        |mut caller: Caller<'_, Host>, pointer: u32, length: u32, output: u32, capacity: u32| {
-            world_query_plan(&caller, pointer, length, output, capacity)
-        },
-        {
-            let result = (|| -> CallResult<usize> {
-                let PreparedWorldQuery {
-                    query,
-                    work,
-                    capacity,
-                } = caller
-                    .data_mut()
-                    .prepared_query
-                    .take()
-                    .expect("admitted world query");
-                let source = caller.data().source.clone().ok_or(w::ERR_UNAVAILABLE)?;
-                let result = source.query(query, caller.data().display_only, capacity);
-                let used = match &result {
-                    Ok(toy_sim_model::ProgramReply::Tracks(page)) => page.gas_used,
-                    _ => work,
-                };
-                assert!(used <= work, "world service exceeded admitted query work");
-                caller.data_mut().native_credit = work - used + words(capacity);
-                let reply = result.map_err(world_query_error)?;
-                let bytes = postcard::to_allocvec(&reply).map_err(|_| w::ERR_BUFFER)?;
-                if bytes.len() > capacity {
-                    return Err(w::ERR_BUFFER.into());
-                }
-                emit_bytes(&mut caller, output, bytes.len() as u32, &bytes)?;
-                caller.data_mut().native_credit -= words(bytes.len());
-                Ok(bytes.len())
-            })();
-            finish(result.map(|length| length as i32))
-        },
-    )?;
-    metered!(
-        linker,
-        "world_command",
+        "serial_write",
         |mut caller: Caller<'_, Host>, pointer: u32, length: u32| {
-            CallPlan::bytes(&caller, pointer, length, 65536).map(|plan| plan.work(1000))
+            CallPlan::bytes(&caller, pointer, length, 1024)
+                .map(|plan| plan.work(length as u64 * 256))
         },
         {
             status((|| {
-                if caller.data().display_only
-                    || length > 65536
-                    || caller.data().output.world_actions.len() >= 8
-                {
-                    return Err(w::ERR_ARGUMENT.into());
+                if caller.data().display_only {
+                    return Err(w::ERR_UNAVAILABLE.into());
                 }
-                let action = postcard::from_bytes(payload(&caller, pointer, length)?)
-                    .map_err(|_| w::ERR_ARGUMENT)?;
-                caller.data_mut().output.world_actions.push(action);
+                let bytes = payload(&caller, pointer, length)?.to_vec();
+                caller.data_mut().working.serial.write(&bytes);
                 Ok(())
             })())
         },

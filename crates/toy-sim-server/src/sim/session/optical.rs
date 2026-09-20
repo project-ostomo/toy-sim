@@ -332,7 +332,8 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let account = Id::new();
-            let mut app = crate::sim::provision(&[account], None, None).unwrap();
+            let mut app =
+                crate::sim::bootstrap::provision_combat_fixture(&[account], None, None).unwrap();
             let world = app.world_mut();
             let observer = world
                 .query_filtered::<Entity, With<crate::sim::vessel::ControlledVessel>>()

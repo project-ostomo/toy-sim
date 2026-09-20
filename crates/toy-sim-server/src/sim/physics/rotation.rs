@@ -18,8 +18,6 @@ pub struct RotationTrajectory {
     inertia_inv: DMat3,
     duration: f64,
     step: f64,
-    angular_bound: f64,
-    requires_rotational_envelope: bool,
 }
 
 impl RotationTrajectory {
@@ -38,13 +36,11 @@ impl RotationTrajectory {
         let total_rate: f64 = coefficients.iter().sum();
         assert!(total_rate.is_finite() && total_rate >= 0.0);
         let requested = (duration * total_rate / MAX_SEGMENT_ANGLE).ceil().max(1.0);
-        let requires_rotational_envelope = requested > MAX_SEGMENTS as f64;
         let segments = requested.min(MAX_SEGMENTS as f64) as usize;
         let step = duration / segments as f64;
         let mut rotations = Vec::with_capacity(segments + 1);
         rotations.push(rotation);
 
-        let mut max_step: f64 = 0.0;
         for index in 0..segments {
             let start = index as f64 * step;
             let end = if index + 1 == segments {
@@ -53,17 +49,8 @@ impl RotationTrajectory {
                 (index + 1) as f64 * step
             };
             let elapsed = end - start;
-            max_step = max_step.max(elapsed);
             rotations.push(drift(rotations[index], momentum, inertia_inv, elapsed).0);
         }
-
-        // Across a segment, the drift derivative obeys b' = (1 + a*h)*b + a.
-        // Its closed form is (product(1 + a*h) - 1) / h, bounded by
-        // expm1(sum(a)*h) / h. Short segments keep this near sum(a), even
-        // when the body completes many rotations during one physics tick.
-        let angular_bound = coefficients
-            .iter()
-            .fold(0.0, |bound, rate| (1.0 + rate * max_step) * bound + rate);
 
         Self {
             rotations,
@@ -71,8 +58,6 @@ impl RotationTrajectory {
             inertia_inv,
             duration,
             step,
-            angular_bound,
-            requires_rotational_envelope,
         }
     }
 
@@ -91,14 +76,6 @@ impl RotationTrajectory {
             self.inertia_inv,
             elapsed - index as f64 * self.step,
         )
-    }
-
-    pub fn angular_bound(&self) -> f64 {
-        self.angular_bound
-    }
-
-    pub fn requires_rotational_envelope(&self) -> bool {
-        self.requires_rotational_envelope
     }
 }
 
@@ -289,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_missile_tumble_has_a_tight_conservative_bound_across_knots() {
+    fn cached_missile_tumble_preserves_momentum_across_knots() {
         let inverse = DMat3::from_diagonal(DVec3::new(
             0.007909387700624201,
             0.00824696314249866,
@@ -304,11 +281,7 @@ mod tests {
         );
         let world_momentum = DVec3::new(374.7698, -4152.6555, -4109.7523);
         let trajectory = RotationTrajectory::new(q, world_momentum, inverse, 0.1);
-        assert!(!trajectory.requires_rotational_envelope());
 
-        let rate =
-            world_momentum.length() * (inverse.x_axis.x + inverse.y_axis.y + inverse.z_axis.z);
-        assert!(trajectory.angular_bound() < rate * 1.052);
         assert!(trajectory.sample(0.0).0.abs_diff_eq(q, 1e-14));
 
         let delta = 1e-7;
@@ -317,16 +290,12 @@ mod tests {
             for phase in [-0.5 * delta, 0.0, 0.37 * trajectory.step] {
                 let start = (knot + phase).clamp(0.0, 0.1 - delta);
                 let (before, velocity) = trajectory.sample(start);
-                let (after, _) = trajectory.sample(start + delta);
+                let (after, after_velocity) = trajectory.sample(start + delta);
                 assert!(before.is_finite() && velocity.is_finite());
                 assert!((momentum(before, velocity, inertia) - world_momentum).length() < 1e-8);
-                for point in [DVec3::X, DVec3::Y, DVec3::Z] {
-                    let displacement = (after * point - before * point).length();
-                    assert!(
-                        displacement <= trajectory.angular_bound() * delta * (1.0 + 1e-6),
-                        "point displacement {displacement} exceeds speed bound at {start}"
-                    );
-                }
+                assert!(
+                    (momentum(after, after_velocity, inertia) - world_momentum).length() < 1e-8
+                );
             }
         }
     }
@@ -346,10 +315,9 @@ mod tests {
     }
 
     #[test]
-    fn extreme_spin_uses_bounded_storage_and_requires_collision_envelopes() {
+    fn extreme_spin_uses_bounded_storage() {
         let trajectory =
             RotationTrajectory::new(DQuat::IDENTITY, DVec3::Z * 1e6, DMat3::IDENTITY, 0.1);
-        assert!(trajectory.requires_rotational_envelope());
         assert_eq!(trajectory.rotations.len(), MAX_SEGMENTS + 1);
         let (q, velocity) = trajectory.sample(0.053271);
         assert!(q.is_finite() && velocity.is_finite());
@@ -358,7 +326,5 @@ mod tests {
 
         let stationary = RotationTrajectory::new(q, DVec3::ZERO, DMat3::IDENTITY, 0.0);
         assert_eq!(stationary.sample(0.0), (q, DVec3::ZERO));
-        assert_eq!(stationary.angular_bound(), 0.0);
-        assert!(!stationary.requires_rotational_envelope());
     }
 }

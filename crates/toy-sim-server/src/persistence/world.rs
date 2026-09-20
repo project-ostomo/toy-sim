@@ -1272,7 +1272,19 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         }
     }
     for (entity, drive) in drives {
-        if let Some(drive) = drive {
+        if let Some(mut drive) = drive {
+            if let Some(installed) = world.get::<travel::SlipDrive>(entity) {
+                drive.power_w = installed.power_w;
+            }
+            if let Some(preparation) = &mut drive.preparation {
+                let origin = world
+                    .get::<precision::PreciseTransform>(entity)
+                    .unwrap()
+                    .translation_um;
+                preparation.required_j =
+                    travel::slip_energy_j(origin, preparation.destination, preparation.mass)
+                        .max(preparation.work_j);
+            }
             world.entity_mut(entity).insert(drive);
         }
     }
@@ -1316,7 +1328,10 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                     radius_m: gate.radius_m,
                     occludes: false,
                 },
-                gate.gate,
+                travel::Gate {
+                    exclusion_m: travel::GATE_EXCLUSION_M,
+                    ..gate.gate
+                },
                 gate.owner,
                 gate.access,
             ))
@@ -1957,7 +1972,7 @@ mod tests {
                 .position
                 .relative_to(destination)
                 .length()
-                < 10000.
+                <= 1_000_000.
         );
         let travel = &world.get::<travel::Travel>(ship).unwrap().0;
         assert_eq!(travel.orders, orders);

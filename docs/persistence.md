@@ -147,7 +147,7 @@ despawning; ordinary lookups then report that the object is unavailable. Invalid
 account or organization references, scalar bounds and oversized planning context
 are rejected before replacing world entities.
 
-Saved programs must implement the current ABI 30. Restore validates each
+Saved programs must implement the current ABI 31. Restore validates each
 program's content hash, imports and API-version export before replacing world
 entities. An unsupported saved program stops startup with an error.
 

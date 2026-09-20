@@ -56,7 +56,8 @@ struct ViewLayer(usize);
 struct Shield;
 
 pub(super) fn install(app: &mut App) {
-    app.add_plugins(toy_sim_ship_view::mechanisms::MechanismPlugin)
+    app.init_resource::<camera::CameraDrag>()
+        .add_plugins(toy_sim_ship_view::mechanisms::MechanismPlugin)
         .add_systems(Update, mechanism_time.in_set(PresentationSet::Render))
         .insert_resource(GlobalAmbientLight::NONE)
         .add_systems(Startup, setup_ui_camera)
@@ -65,7 +66,9 @@ pub(super) fn install(app: &mut App) {
             (
                 camera::setup_views,
                 camera::update_views,
-                camera::camera_controls,
+                camera::track_camera_drag,
+                camera::camera_controls.in_set(super::input::GameplayInput::Mouse),
+                camera::animate_camera,
             )
                 .chain()
                 .in_set(PresentationSet::Views),
@@ -85,7 +88,10 @@ pub(super) fn install(app: &mut App) {
         .add_systems(PostUpdate, propagate_layers);
     app.add_systems(
         toy_sim_ui::bevy_egui::EguiPrimaryContextPass,
-        camera::align_on_double_click,
+        (
+            camera::align_on_double_click.in_set(super::input::GameplayInput::Mouse),
+            camera::reset_focus.in_set(super::input::GameplayInput::Keyboard),
+        ),
     );
     lighting::install(app);
     surfaces::install(app);

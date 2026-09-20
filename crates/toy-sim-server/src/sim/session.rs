@@ -412,7 +412,7 @@ impl Session {
                 snapshot,
                 query,
                 tick,
-                usize::MAX,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
             )?;
             work = work.saturating_sub(page.gas_used);
             views.push(ViewState {
@@ -596,7 +596,6 @@ impl Session {
                             candidates: stats.candidates,
                             detailed_queries: stats.detailed_queries,
                             impacts: stats.impacts,
-                            contact_reviews: stats.contact_reviews,
                             dissipated_j: stats.dissipated_j,
                         }),
                     entity_count: world.entities().len() as u64,

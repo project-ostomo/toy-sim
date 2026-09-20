@@ -43,6 +43,7 @@ impl Default for Avionics {
 #[derive(Clone, Copy, Debug)]
 pub enum DeviceSource {
     Part(usize),
+    MicropulseGenerator(usize),
     Avionics,
 }
 pub const GRID: f64 = 0.1;
@@ -155,11 +156,12 @@ pub struct CompiledShipDesign {
     pub device_catalogue: Vec<crate::DeviceDescriptor>,
     pub device_sources: Vec<DeviceSource>,
     pub part_devices: Vec<Option<usize>>,
+    pub part_generators: Vec<Option<usize>>,
 }
 impl CompiledShipDesign {
     pub fn part_for_device(&self, handle: crate::DeviceHandle) -> Option<usize> {
         match self.device_sources.get(handle.0 as usize)? {
-            DeviceSource::Part(i) => Some(*i),
+            DeviceSource::Part(i) | DeviceSource::MicropulseGenerator(i) => Some(*i),
             DeviceSource::Avionics => None,
         }
     }
@@ -454,6 +456,7 @@ impl ShipBlueprint {
         let mut device_catalogue = Vec::new();
         let mut device_sources = Vec::new();
         let mut part_devices = vec![None; parts.len()];
+        let mut part_generators = vec![None; parts.len()];
         for (index, part) in parts.iter().enumerate() {
             if let Some(kind) = part.definition.equipment.device_kind() {
                 let device = device_catalogue.len();
@@ -466,6 +469,31 @@ impl ShipBlueprint {
                     alias: part.placed.alias.clone(),
                     groups: part.placed.groups.clone(),
                     kind,
+                    position_m: (part.centre - centre).to_array(),
+                    rotation: glam::DQuat::from_mat3(&part.rotation).to_array(),
+                });
+            }
+            if let Equipment::MicropulseEngine {
+                thrust_n,
+                specific_impulse_s,
+                ..
+            } = part.definition.equipment
+            {
+                let device = device_catalogue.len();
+                part_generators[index] = Some(device);
+                device_sources.push(DeviceSource::MicropulseGenerator(index));
+                device_catalogue.push(crate::DeviceDescriptor {
+                    handle: crate::DeviceHandle(device as u16),
+                    part_id: part.placed.id,
+                    control_enabled: true,
+                    alias: format!("{} generator", part.placed.alias),
+                    groups: part.placed.groups.clone(),
+                    kind: crate::DeviceKind::Generator {
+                        power_w: 0.005
+                            * thrust_n
+                            * crate::STANDARD_GRAVITY_M_S2
+                            * specific_impulse_s,
+                    },
                     position_m: (part.centre - centre).to_array(),
                     rotation: glam::DQuat::from_mat3(&part.rotation).to_array(),
                 });
@@ -567,6 +595,7 @@ impl ShipBlueprint {
             device_catalogue,
             device_sources,
             part_devices,
+            part_generators,
         })
     }
 }
@@ -770,27 +799,20 @@ pub fn expedition_patrol() -> ShipBlueprint {
     ship.attach("fuselage_4m", 0, "", "", 0);
     ship.attach("fuselage_end_4m", 1, "fore", "aft", 0);
     ship.attach("micropulse_engine_4m", 1, "aft", "fore", 0);
-    ship.attach("reactor_hot_4m", 2, "front", "back", 0);
-    ship.attach("command_2m", 4, "front", "back", 0);
-    ship.attach("laser_2m", 1, "left", "right", 0);
-    ship.attach("laser_2m", 1, "right", "left", 0);
+    ship.attach("command_2m", 2, "front", "back", 0);
+    ship.attach("laser_pulse_2m", 1, "left", "right", 0);
+    ship.attach("laser_pulse_2m", 1, "right", "left", 0);
     ship.attach("shield_emitter_2m", 1, "top", "bottom", 0);
-    ship.attach("coolant_tank", 8, "top", "bottom", 0);
+    ship.attach("coolant_tank", 7, "top", "bottom", 0);
     ship.attach("battery_2m", 4, "left", "right", 0);
     ship.attach("storage", 4, "right", "left", 0);
-    ship.attach("torquer_agile", 5, "top", "bottom", 0);
-    ship.attach("torquer_agile", 5, "bottom", "top", 0);
+    ship.attach("torquer_agile", 4, "top", "bottom", 0);
+    ship.attach("torquer_agile", 4, "bottom", "top", 0);
     ship.attach("slipdrive_2m", 1, "bottom", "top", 0);
-    for (resource, volume_m3, initial_fill) in [
-        ("micropulse_charge", 60., 0.5),
-        ("reactor_fuel", 1., 1.),
-        ("spent_fuel", 1., 0.),
-    ] {
-        ship.parts[0].tanks.push(Tank {
-            resource: resource.into(),
-            volume_m3,
-            initial_fill,
-        });
-    }
+    ship.parts[0].tanks.push(Tank {
+        resource: "micropulse_charge".into(),
+        volume_m3: 60.,
+        initial_fill: 0.5,
+    });
     ship
 }

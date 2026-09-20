@@ -1,3 +1,6 @@
+#[cfg(all(debug_assertions, not(target_family = "wasm")))]
+use bevy_dylib as _;
+
 pub use bevy_egui;
 pub use bevy_egui::egui;
 

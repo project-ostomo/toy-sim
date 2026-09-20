@@ -37,7 +37,24 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
     );
     super::navigation::validate_snapshot(&p.navigation)?;
     for ship in &p.ships {
+        ensure!(
+            ship.serial.cells.len() == toy_sim_model::serial::COLUMNS * toy_sim_model::serial::ROWS
+                && ship
+                    .serial
+                    .cells
+                    .iter()
+                    .all(|cell| !cell.character.is_control())
+                && ship.memory_limit_bytes > 0,
+            "invalid computer screen"
+        );
         let propulsion = &ship.propulsion;
+        ensure!(
+            propulsion.drives.len() <= 4096
+                && propulsion.drives.iter().all(|drive| drive.name.len() <= 128
+                    && drive.resource.len() <= 128
+                    && nonnegative(&[drive.delta_v_m_s, drive.full_delta_v_m_s, drive.flow_kg_s])),
+            "invalid drive reserves"
+        );
         ensure!(
             finite(&propulsion.force_n)
                 && finite(&propulsion.torque_nm)
@@ -50,7 +67,8 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
             [
                 &propulsion.propellants,
                 &propulsion.fuels,
-                &propulsion.charges
+                &propulsion.charges,
+                &propulsion.ammunition
             ]
             .into_iter()
             .all(|ids| ids.len() <= 4096 && ids.iter().all(|id| id.len() <= 128)),
@@ -61,7 +79,9 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
                 ship.mass_kg,
                 ship.hull_heat_capacity_j,
                 ship.power_generated_w,
+                ship.generation_capacity_w,
                 ship.power_consumed_w,
+                ship.power_requested_w,
                 ship.cargo_capacity_m3,
                 ship.cargo_used_m3
             ]) && finite(&ship.inertia_kg_m2)
@@ -72,6 +92,33 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
             resources(&ship.inventory) && ship.devices.len() <= 4096 && ship.screens.len() <= 8,
             "hardware limit"
         );
+        ensure!(
+            ship.slip_cooldown_s
+                .is_none_or(|seconds| seconds.is_finite() && seconds >= 0.),
+            "invalid slip cooldown"
+        );
+        ensure!(
+            ship.reactors.len() <= 4096
+                && ship.reactors.iter().all(|reactor| reactor.name.len() <= 128
+                    && nonnegative(&[
+                        reactor.temperature_k,
+                        reactor.coolant_temperature_k,
+                        reactor.operating_temperature_k,
+                        reactor.shutdown_temperature_k
+                    ])
+                    && reactor.shutdown_temperature_k > 0.),
+            "invalid reactor telemetry"
+        );
+        if let Some(charge) = &ship.slip_charge {
+            ensure!(
+                charge.stored_j <= charge.required_j
+                    && nonnegative(&[charge.input_w])
+                    && charge
+                        .remaining_s
+                        .is_none_or(|seconds| seconds.is_finite() && seconds >= 0.),
+                "invalid slip charge telemetry"
+            );
+        }
         super::industry::validate_cargo(&ship.cargo)?;
         match &ship.computer {
             ComputerStatus::Fault {
@@ -260,6 +307,18 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
     }
     for event in &p.combat {
         let valid = match &event.kind {
+            CombatEventKind::Beam {
+                start,
+                end,
+                velocity_m_s,
+                end_time_ns,
+                ..
+            } => {
+                position_valid(*start)
+                    && position_valid(*end)
+                    && finite(velocity_m_s)
+                    && *end_time_ns > event.sim_time_ns
+            }
             CombatEventKind::Projectile {
                 start,
                 end,
@@ -392,6 +451,8 @@ mod tests {
     fn execution_states_roundtrip_with_tick_usage_and_reject_invalid_allowances() {
         let mut frame = PresentationFrame::default();
         frame.ships.push(ShipPresentation {
+            serial: Default::default(),
+            memory_limit_bytes: 8 * 1024 * 1024,
             propulsion: Default::default(),
             ship: crate::Id([1; 16]),
             revision: 1,
@@ -405,7 +466,12 @@ mod tests {
             hull_heat_capacity_j: 1000.,
             battery_capacity_j: 1000,
             power_generated_w: 0.,
+            generation_capacity_w: 0.,
+            reactors: Vec::new(),
+            slip_cooldown_s: None,
             power_consumed_w: 0.,
+            power_requested_w: 0.,
+            slip_charge: None,
             inventory: Vec::new(),
             cargo: Vec::new(),
             cargo_capacity_m3: 0.,

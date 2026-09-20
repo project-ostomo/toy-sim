@@ -108,36 +108,58 @@ position is prepared on the main thread, then one task on Bevy's
 `AsyncComputeTaskPool` builds the texture. Each frame checks the task without
 waiting for it. Invalidation signals cancellation, discards stale results and
 starts a new bake at the latest position once the cancelled worker has stopped.
-Cancellation is checked before allocation, between mip levels, every 256 stars,
-and per rasterized row for resolved disks. Rotation does not invalidate the cache.
+Cancellation is checked before allocation, between mip levels and every 256
+stars. Rotation does not invalidate the cache.
 
 Each star's angular radius is `asin(min(radius / distance, 1))`. Authored stars
 use their configured physical radii. The compact Gaia records lack radii, so the
 renderer uses `696000 km * sqrt(luminosity / solar_luminosity)`: an explicitly
-approximate assumption of solar luminous surface brightness, not a measured radius.
-No binary format change is required.
+approximate assumption of solar luminous surface brightness, a rendering proxy
+rather than a measured radius. No binary format change is required.
 
-Stars larger than a texel are uniform-brightness spherical disks baked into all
-intersecting cube faces. Conservative projected bounds limit rasterization to the
-disk region; 4×4 sampling smooths edge texels. Two passes normalize coverage by
-solid angle before writing pixels, conserving integrated flux in 32-bit
-floating-point storage without an extra image-sized buffer. Subpixel disks blend
-continuously into bilinear point footprints. Each mip is baked independently with
-the same angular radius and flux, so stars retain their light when minified.
-Limb darkening and stellar surface detail are not modeled.
+The cubemap contains point sources only. Stars whose angular radius reaches
+`HANDOVER` — half a texel at the finest mip level, `1 / RESOLUTION` radians, in
+`bake.rs` — are diverted out of the bake entirely and drawn as emissive sphere
+meshes at their galactic coordinates
+(`crates/toy-sim-client/src/ui/scene/sky/geometry.rs`). Disk rasterization is
+gone: every baked star is below half a texel at the finest mip and therefore
+below half a texel at every coarser one, so only bilinear point footprints are
+splatted, normalized by solid angle, with edge-crossing taps reprojected onto
+adjacent faces. Each mip is still baked analytically at its own level with the
+same flux, so stars retain their light when minified. Limb darkening and stellar
+surface detail are not modeled.
 
-Exposure, brightness and bloom are applied live, not baked. No stellar sphere
-meshes are drawn. Their simulation bodies and lighting remain active as before.
+The meshes are one shared unit sphere scaled by the star radius. Emissive
+radiance is `luminosity / (4 pi^2 r^2)` times the sky brightness setting, chosen
+so the sphere's apparent irradiance `pi * radiance * (r/d)^2` equals the baked
+point flux `luminosity / (4 pi d^2)` exactly at handover. Spheres get true
+per-frame parallax — authored bodies track their live poses each frame — and
+participate in bloom through the existing HDR pipeline, so they are
+exposure-dependent. They never cast shadows and use a black base colour. The
+handover applies uniformly to authored celestial bodies and Gaia catalogue stars,
+since gate travel can put a player near any catalogue star, but spheres are only
+drawn inside the camera far plane: resolvable stars beyond `0.9e15` metres stay
+baked as flux-conserving point sources.
+
+Spheres appear and disappear as snapshots divert or drop their stars. A celestial
+that becomes unsubscribed is hidden until the next bake replaces the snapshot,
+and spheres are despawned together with their view.
+
+Exposure, brightness and bloom are applied live, not baked. Simulation bodies and
+their lighting remain active as before.
 
 Rotation and floating-origin rebases reuse the entire cube. Translation refreshes
 it when displacement from the baked position exceeds `nearest_star_distance / 8192`
-(`0.25 / 2048` times the distance). The nearest distance includes faint authored and
-Gaia stars as well as those currently visible. A new catalogue selection, magnitude
-limit change, or explicit relocation also invalidates it. Camera rotation, field of
-view, exposure and sky brightness do not require a rebake. The worker acknowledges cancellation before a new
-bake starts, bounding CPU work and memory without queuing camera poses. GPU
-transfers already submitted cannot be interrupted, but stale textures are never
-installed as the displayed sky.
+(`0.25 / 2048` times the distance, in `Snapshot::valid`). The nearest distance
+includes faint authored and Gaia stars as well as those currently visible, but
+diverted stars never enter the snapshot, so inside a system it is set by distant
+background stars instead of collapsing to the in-system star's distance. That
+greatly reduces rebake frequency while flying in-system. A new catalogue
+selection, magnitude limit change, or explicit relocation also invalidates the
+cube. Camera rotation, field of view, exposure and sky brightness do not require
+a rebake. The worker acknowledges cancellation before a new bake starts, bounding
+CPU work and memory without queuing camera poses. GPU transfers already submitted
+cannot be interrupted, but stale textures are never installed as the displayed sky.
 
 The old sky stays displayed until the render world has prepared the replacement
 texture. Only the displayed texture and an in-flight replacement need be retained;

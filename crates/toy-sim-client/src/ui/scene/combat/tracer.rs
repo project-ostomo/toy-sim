@@ -146,6 +146,7 @@ fn render(
             .map_or(1080., |size| size.y.max(1) as f64);
         let mut vertices = Vec::new();
         let mut uv = Vec::new();
+        let mut colors = Vec::new();
         if let Some(velocity) = velocity {
             for events in segments.values().take(MAX_TRACERS) {
                 let Some((mut tail, head)) = exposure(events, now, exposure_ns, position, velocity)
@@ -175,7 +176,53 @@ fn render(
                 ] {
                     vertices.push(point.as_vec3().to_array());
                     uv.push(tex);
+                    colors.push([1_f32; 4]);
                 }
+            }
+        }
+        for publication in &publications {
+            let event = &publication.0;
+            let CombatEventKind::Beam {
+                start,
+                end,
+                velocity_m_s,
+                end_time_ns,
+                ..
+            } = &event.kind
+            else {
+                continue;
+            };
+            if now < event.sim_time_ns || now >= *end_time_ns || vertices.len() >= MAX_TRACERS * 6 {
+                continue;
+            }
+            let motion = DVec3::from_array(*velocity_m_s) * (now - event.sim_time_ns) as f64 * 1e-9;
+            let start = start.relative_to(position) + motion;
+            let end = end.relative_to(position) + motion;
+            let direction = end - start;
+            if !direction.is_finite()
+                || direction.length_squared() < 1e-10
+                || start.length().min(end.length()) > 1e7
+            {
+                continue;
+            }
+            let side = direction
+                .cross(-start)
+                .try_normalize()
+                .unwrap_or(transform.rotation.as_dquat() * DVec3::X);
+            let pixel_width = (fov * 0.5).tan() * 2. / height;
+            let start_side = side * (start.length() * pixel_width).max(0.01) * 3.;
+            let end_side = side * (end.length() * pixel_width).max(0.01) * 3.;
+            for (point, tex) in [
+                (start - start_side, [0., 0.]),
+                (end - end_side, [1., 0.]),
+                (end + end_side, [1., 1.]),
+                (start - start_side, [0., 0.]),
+                (end + end_side, [1., 1.]),
+                (start + start_side, [0., 1.]),
+            ] {
+                vertices.push(point.as_vec3().to_array());
+                uv.push(tex);
+                colors.push([1., 0.12, 0.05, 0.8]);
             }
         }
         if vertices.is_empty() {
@@ -184,14 +231,13 @@ fn render(
             }
             continue;
         }
-        let count = vertices.len();
         let mesh = Mesh::new(
             PrimitiveTopology::TriangleList,
             RenderAssetUsages::default(),
         )
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, vertices)
         .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uv)
-        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, vec![[1_f32; 4]; count]);
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors);
         if let Some(handle) = &state.mesh {
             if let Some(mut existing) = meshes.get_mut(handle) {
                 *existing = mesh;

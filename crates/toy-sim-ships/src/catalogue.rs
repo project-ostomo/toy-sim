@@ -187,7 +187,7 @@ pub enum Equipment {
         thrust_n: f64,
         specific_impulse_s: f64,
         charge_energy_j_kg: f64,
-        electric_fraction: f64,
+        electric_efficiency: f64,
         absorbed_heat_fraction: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         plume: Option<VacuumPlume>,
@@ -372,7 +372,7 @@ impl Equipment {
                 thrust_n,
                 specific_impulse_s,
                 charge_energy_j_kg,
-                electric_fraction,
+                electric_efficiency,
                 absorbed_heat_fraction,
                 ..
             } => {
@@ -380,15 +380,13 @@ impl Equipment {
                 let jet_energy_j_kg = 0.5 * exhaust_velocity * exhaust_velocity;
                 let charge_flow_kg_s = thrust_n / exhaust_velocity;
                 let reaction_power_w = charge_flow_kg_s * charge_energy_j_kg;
-                if ![electric_fraction, absorbed_heat_fraction]
+                if ![electric_efficiency, absorbed_heat_fraction]
                     .iter()
                     .all(|fraction| fraction.is_finite() && (0.0..=1.0).contains(fraction))
+                    || electric_efficiency <= 0.01
                     || !jet_energy_j_kg.is_finite()
                     || !reaction_power_w.is_finite()
-                    || jet_energy_j_kg / charge_energy_j_kg
-                        + electric_fraction
-                        + absorbed_heat_fraction
-                        > 1.0
+                    || jet_energy_j_kg / charge_energy_j_kg + absorbed_heat_fraction > 1.0
                 {
                     return false;
                 }

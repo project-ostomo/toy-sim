@@ -139,8 +139,8 @@ pub enum Action {
         ship: String,
         authority_revision: u64,
         travel_revision: u64,
-        #[serde(default = "default_fuel_priority")]
-        fuel_priority: f64,
+        #[serde(default = "default_fuel_fraction")]
+        fuel_fraction: f64,
         orders: Vec<NavigationOrder>,
     },
     DockServices {
@@ -192,8 +192,8 @@ pub enum Action {
     },
 }
 
-fn default_fuel_priority() -> f64 {
-    1.0
+fn default_fuel_fraction() -> f64 {
+    0.5
 }
 
 pub fn authorize(world: &World, organization: &NpcOrganization) -> Result<()> {
@@ -298,7 +298,11 @@ fn world_query(
 ) -> Result<ProgramReply> {
     let source = commands::source(world, organization.officer, ship)?;
     charge(world, organization, source.query_work(&query)?)?;
-    source.query(query, false, 64 * 1024)
+    source.query(
+        query,
+        false,
+        toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+    )
 }
 
 pub fn query(world: &mut World, organization: &NpcOrganization, query: &Query) -> Result<Value> {
@@ -333,7 +337,11 @@ pub fn query(world: &mut World, organization: &NpcOrganization, query: &Query) -
             } else {
                 let travel = ProgramQuery::Travel;
                 charge(world, organization, source.query_work(&travel)?)?;
-                let ProgramReply::Travel { pose, .. } = source.query(travel, false, 64 * 1024)?
+                let ProgramReply::Travel { pose, .. } = source.query(
+                    travel,
+                    false,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+                )?
                 else {
                     anyhow::bail!("travel observation unavailable");
                 };
@@ -363,7 +371,12 @@ pub fn query(world: &mut World, organization: &NpcOrganization, query: &Query) -
 
             for _ in 0..18 {
                 charge(world, organization, source.query_work(&request)?)?;
-                let ProgramReply::Tracks(page) = source.query(request, false, 16 * 1024)? else {
+                let ProgramReply::Tracks(page) = source.query(
+                    request,
+                    false,
+                    toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+                )?
+                else {
                     anyhow::bail!("unexpected contact reply");
                 };
                 revision = page.revision;
@@ -607,7 +620,7 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
             ship,
             authority_revision,
             travel_revision,
-            fuel_priority,
+            fuel_fraction,
             orders,
         } => {
             ensure!(
@@ -625,7 +638,8 @@ pub fn action(world: &mut World, organization: &NpcOrganization, action: &Action
                 *authority_revision,
                 ShipCommand::SetTravel {
                     preferences: PlanningPreferences {
-                        fuel_priority: *fuel_priority,
+                        fuel_fraction: *fuel_fraction,
+                        ..Default::default()
                     },
                     engage: true,
                     expected_revision: *travel_revision,

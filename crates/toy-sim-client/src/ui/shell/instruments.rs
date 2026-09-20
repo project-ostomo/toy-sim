@@ -75,8 +75,8 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     );
     ui.separator();
     ui.label(format!(
-        "Fuel priority: {:.1}×",
-        ship.travel.preferences.fuel_priority
+        "Fuel allowance: {:.0}%",
+        ship.travel.preferences.fuel_fraction * 100.
     ));
     ui.small("Change the preference in Gate Network and preview the destination to replan.");
     fuel_budget(ui, model);

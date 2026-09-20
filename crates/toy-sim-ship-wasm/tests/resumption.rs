@@ -124,7 +124,7 @@ fn initialization_can_span_paid_slices_without_failing_preflight_validation() {
 #[test]
 fn locals_and_callback_identity_survive_many_small_grants() {
     let program = guest(
-        r#"(import "ship_v30" "persistent_write"
+        r#"(import "ship_v31" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "(global $calls (mut i64) (i64.const 0))",
         r#"
@@ -168,11 +168,11 @@ fn locals_and_callback_identity_survive_many_small_grants() {
 fn borrowed_snapshot_survives_implicit_wait_until_it_can_be_pinned() {
     let program = guest(
         r#"
-            (import "ship_v30" "tick_read"
+            (import "ship_v31" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v30" "snapshot_keep"
+            (import "ship_v31" "snapshot_keep"
                 (func $keep (param i64) (result i32)))
-            (import "ship_v30" "snapshot_drop"
+            (import "ship_v31" "snapshot_drop"
                 (func $drop (param i64) (result i32)))
         "#,
         "",
@@ -222,7 +222,12 @@ impl ScanSource for QuerySource {
         Ok(700)
     }
 
-    fn query(&self, _: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
+    fn query(
+        &self,
+        _: ProgramQuery,
+        _: bool,
+        _: toy_sim_model::wasm_world::ReplyCapacity,
+    ) -> anyhow::Result<ProgramReply> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(ProgramReply::Beacons(Vec::new()))
     }
@@ -230,21 +235,12 @@ impl ScanSource for QuerySource {
 
 #[test]
 fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
-    let query = postcard::to_allocvec(&ProgramQuery::Beacons {
-        after: None,
-        limit: 1,
-    })
-    .unwrap();
-    let data: String = query.iter().map(|byte| format!("\\{byte:02x}")).collect();
     let program = guest(
-        r#"(import "ship_v30" "world_query"
-            (func $query (param i32 i32 i32 i32) (result i32)))"#,
-        &format!(r#"(data (i32.const 0) "{data}")"#),
-        &format!(
-            "i32.const 0 i32.const {} i32.const 256 i32.const 128 call $query \
-             i32.const 0 i32.lt_s if unreachable end",
-            query.len(),
-        ),
+        r#"(import "ship_v31" "beacons_read"
+            (func $query (param i32 i32 i32 i32 i32 i32 i32) (result i32)))"#,
+        "",
+        "i32.const 0 i32.const 0 i32.const 512 i32.const 1 i32.const 4096 i32.const 128 i32.const 256 call $query \
+         i32.const 0 i32.lt_s if unreachable end",
     );
     let mut controller = boot(&program);
     let old_calls = Arc::new(AtomicUsize::new(0));
@@ -290,13 +286,13 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
 }
 
 #[test]
-fn malformed_large_query_still_requires_its_input_processing_allowance() {
+fn malformed_typed_query_returns_argument_error_without_calling_service() {
     let program = guest(
-        r#"(import "ship_v30" "world_query"
-            (func $query (param i32 i32 i32 i32) (result i32)))"#,
+        r#"(import "ship_v31" "destination_resolve"
+            (func $query (param i32 i32) (result i32)))"#,
         r#"(data (i32.const 0) "\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff")"#,
         &format!(
-            "i32.const 0 i32.const 65536 i32.const 0 i32.const 0 call $query \
+            "i32.const 0 i32.const 512 call $query \
              i32.const {} i32.ne if unreachable end",
             abi::ERR_ARGUMENT,
         ),
@@ -305,29 +301,22 @@ fn malformed_large_query_still_requires_its_input_processing_allowance() {
     let first = controller
         .run_slice(input(100), None, 1000, FUEL_PER_TICK)
         .unwrap();
-    assert!(!first.callback_completed);
+    assert!(first.callback_completed);
     assert!(controller.last_gas_used <= 1000);
-    assert!(controller.minimum_to_progress() >= abi::CALL_GAS + 8192);
-
-    let second = controller
-        .run_slice(input(101), None, 10_000, FUEL_PER_TICK)
-        .unwrap();
-    assert!(second.callback_completed);
-    assert!(controller.last_gas_used >= abi::CALL_GAS + 8192);
-    assert!(controller.last_gas_used <= 10_000);
+    assert!(controller.last_gas_used >= abi::CALL_GAS);
 }
 
 #[test]
 fn request_batches_stay_stable_while_observations_refresh() {
     let program = guest(
         r#"
-            (import "ship_v30" "request_info"
+            (import "ship_v31" "request_info"
                 (func $request (param i32 i32 i32) (result i32)))
-            (import "ship_v30" "request_reply"
+            (import "ship_v31" "request_reply"
                 (func $reply (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v30" "tick_read"
+            (import "ship_v31" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v30" "persistent_write"
+            (import "ship_v31" "persistent_write"
                 (func $save (param i32 i32) (result i32)))
         "#,
         "",
@@ -387,7 +376,7 @@ fn request_batches_stay_stable_while_observations_refresh() {
 #[test]
 fn later_trap_keeps_prior_slice_durable_writes_but_reboots_the_computer() {
     let program = guest(
-        r#"(import "ship_v30" "persistent_write"
+        r#"(import "ship_v31" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "",
         r#"

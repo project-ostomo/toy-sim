@@ -2,6 +2,7 @@ use super::*;
 use std::collections::BTreeSet;
 use toy_sim_model::ownership::Bloc;
 
+mod camera;
 mod canvas;
 mod layout;
 mod planner;
@@ -10,8 +11,7 @@ use layout::{ActiveRoute, Cache};
 #[derive(Default)]
 pub(super) struct State {
     selected: Option<Id>,
-    pan: egui::Vec2,
-    zoom: f32,
+    camera: camera::Camera,
     preference: Option<travel::PlanningPreferences>,
     search: String,
     sovereignty: Option<Id>,
@@ -43,8 +43,7 @@ pub(super) fn draw(
         state.active = ActiveRoute::default();
         state.suggested = ActiveRoute::default();
         state.selected = None;
-        state.pan = egui::Vec2::ZERO;
-        state.zoom = 0.;
+        state.camera = camera::Camera::default();
     }
     match model.navigation_status {
         NavigationStatus::Unavailable => {
@@ -111,15 +110,21 @@ pub(super) fn draw(
 
     let mut focus = None;
     let mut fit = false;
+    let mut fit_route = false;
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("WORMHOLE NETWORK")
-                .strong()
-                .color(ACCENT),
-        );
+        ui.label(egui::RichText::new("GALACTIC MAP").strong().color(ACCENT));
         ui.weak(format!("{} systems", catalogue.systems.len()));
         if ui.small_button("Fit").clicked() {
             fit = true;
+        }
+        if ui
+            .add_enabled(
+                !state.active.systems.is_empty() || state.route.plan().is_some(),
+                egui::Button::new("Fit route").small(),
+            )
+            .clicked()
+        {
+            fit_route = true;
         }
         if ui
             .add_enabled(origin.is_some(), egui::Button::new("My ship").small())
@@ -155,7 +160,7 @@ pub(super) fn draw(
                     instruments::fuel_budget(ui, model);
                 });
         });
-    canvas::draw(ui, state, model, origin, focus, fit);
+    canvas::draw(ui, state, model, origin, focus, fit, fit_route);
 }
 
 fn preferences(
@@ -168,28 +173,18 @@ fn preferences(
             .ship
             .map_or_else(Default::default, |ship| ship.travel.preferences)
     });
+    let previous = preference;
+    let mut percentage = preference.fuel_fraction * 100.;
+    ui.add(egui::Slider::new(&mut percentage, 1. ..=100.).text("Fuel allowance").suffix("%"))
+        .on_hover_text("Maximum estimated fuel use for the complete route, as a percentage of each remaining propulsion resource.");
+    preference.fuel_fraction = percentage / 100.;
     ui.horizontal(|ui| {
-        ui.label("Fuel priority");
-        let response = ui.add(
-            egui::Slider::new(&mut preference.fuel_priority, 0.1..=1000.)
-                .logarithmic(true)
-                .suffix("×"),
-        );
-        if response.changed() {
-            state.preference = Some(preference);
-            state.route = planner::Preview::default();
-        }
-        response.on_hover_text("Higher priority spends longer coasting to save propulsion fuel. Used when the server previews a destination or added waypoint.");
+        ui.checkbox(&mut preference.allow_wormholes, "Allow wormholes");
+        ui.checkbox(&mut preference.allow_slipdrive, "Allow slipdrive");
     });
-    if let (Some(ship), Some(details)) = (model.ship, model.details) {
-        let seconds = preference.cost(details.mass_kg).seconds_per_kg * 1000.;
-        ui.small(format!(
-            "Saving 1 t of propellant is worth {:.1} minutes",
-            seconds / 60.
-        ));
-        if preference != ship.travel.preferences && !ship.travel.orders.is_empty() {
-            ui.weak("Preview the destination again to use this preference.");
-        }
+    if preference != previous {
+        state.preference = Some(preference);
+        state.route = planner::Preview::default();
     }
     preference
 }

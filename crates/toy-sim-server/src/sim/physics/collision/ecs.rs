@@ -50,8 +50,7 @@ pub struct CollisionStats {
     pub candidates: u64,
     pub detailed_queries: u64,
     pub impacts: u64,
-    pub contact_reviews: u64,
-    pub rotation_envelope_fallbacks: u64,
+
     pub dissipated_j: f64,
     pub index_seconds: f64,
     pub query_seconds: f64,
@@ -120,9 +119,7 @@ pub fn step(world: &mut World) {
             feature: f64::INFINITY,
             generation: 0,
             impulse_dv: DVec3::ZERO,
-            impulse_dw: DVec3::ZERO,
             rotation_path: None,
-            rotational_envelopes: Vec::new(),
         });
     }
     let ships: Vec<_> = world
@@ -173,8 +170,8 @@ pub fn step(world: &mut World) {
         };
         let r = projectile.radius_m;
         let geometry = Arc::new(Geometry {
-            hull: SharedShape::ball(r),
-            shield: SharedShape::ball(r),
+            surface: SharedShape::ball(r),
+
             radius: r,
             shield_radius: r,
             feature: r * 2.0,
@@ -319,7 +316,7 @@ pub fn step(world: &mut World) {
             *sample = AccelerometerState {
                 specific_force_body: body.rotation.inverse()
                     * (force / mass.mass - gravity + body.impulse_dv / dt),
-                angular_acceleration_body: body.rotation.inverse() * (alpha + body.impulse_dw / dt),
+                angular_acceleration_body: body.rotation.inverse() * alpha,
                 angular_velocity_body: body.rotation.inverse() * angular,
                 time_s: Some(elapsed),
             };
@@ -376,8 +373,7 @@ pub fn step(world: &mut World) {
         candidates: report.candidates,
         detailed_queries: report.detailed,
         impacts: report.impacts,
-        contact_reviews: report.reviews,
-        rotation_envelope_fallbacks: report.rotation_envelope_fallbacks,
+
         dissipated_j: report.dissipated_j,
         index_seconds: report.index_seconds,
         query_seconds: report.query_seconds,

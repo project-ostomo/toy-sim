@@ -81,7 +81,7 @@ pub fn missile_patrol() -> ShipBlueprint {
     let launchers: Vec<_> = ship
         .parts
         .iter_mut()
-        .filter(|part| part.prototype == "laser_2m")
+        .filter(|part| part.prototype == "laser_pulse_2m")
         .map(|part| {
             part.prototype = LAUNCHER_PART.into();
             part.id

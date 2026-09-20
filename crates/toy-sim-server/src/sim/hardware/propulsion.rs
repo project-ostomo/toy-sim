@@ -86,6 +86,9 @@ pub fn telemetry(
             Equipment::MicropulseEngine { .. } => result.charges.push("micropulse_charge".into()),
             Equipment::Reactor { .. } => result.fuels.push("reactor_fuel".into()),
             Equipment::Generator { .. } => result.fuels.push("fuel".into()),
+            Equipment::Weapon { weapon } if weapon.laser.is_none() => {
+                result.ammunition.push(weapon.ammunition.clone())
+            }
             _ => {}
         }
         if matches!(part.definition.equipment, Equipment::ThermalEngine { .. }) {
@@ -96,11 +99,75 @@ pub fn telemetry(
         &mut result.propellants,
         &mut result.fuels,
         &mut result.charges,
+        &mut result.ammunition,
     ] {
         resources.sort();
         resources.dedup();
     }
     result
+}
+
+pub fn reserves(
+    design: &CompiledShipDesign,
+    mass: f64,
+    inventory: &[toy_sim_model::ResourceAmount],
+) -> Vec<toy_sim_model::DriveReserve> {
+    let mut families: std::collections::BTreeMap<(&str, &str), (f64, f64)> = Default::default();
+    for part in &design.parts {
+        let (name, resource, thrust, flow) = match &part.definition.equipment {
+            Equipment::Engine {
+                propellant_resource,
+                thrust_n,
+                propellant_kg_s,
+                ..
+            } => (
+                "Electric",
+                propellant_resource.as_str(),
+                *thrust_n,
+                *propellant_kg_s,
+            ),
+            Equipment::ThermalEngine {
+                propellant_resource,
+                thrust_n,
+                specific_impulse_s,
+                ..
+            } => (
+                "Nuclear thermal",
+                propellant_resource.as_str(),
+                *thrust_n,
+                thrust_n / (9.80665 * specific_impulse_s),
+            ),
+            Equipment::MicropulseEngine {
+                thrust_n,
+                specific_impulse_s,
+                ..
+            } => (
+                "Micropulse",
+                "micropulse_charge",
+                *thrust_n,
+                thrust_n / (9.80665 * specific_impulse_s),
+            ),
+            _ => continue,
+        };
+        let entry = families.entry((name, resource)).or_default();
+        entry.0 += thrust;
+        entry.1 += flow;
+    }
+    families
+        .into_iter()
+        .filter_map(|((name, resource), (thrust, flow))| {
+            let reserve = inventory.iter().find(|r| r.resource == resource)?;
+            let dry = (mass - reserve.amount_kg).max(1.);
+            let exhaust = if flow > 0. { thrust / flow } else { 0. };
+            Some(toy_sim_model::DriveReserve {
+                name: name.into(),
+                resource: resource.into(),
+                delta_v_m_s: exhaust * (mass.max(dry) / dry).ln(),
+                full_delta_v_m_s: exhaust * ((dry + reserve.capacity_kg) / dry).ln(),
+                flow_kg_s: flow,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]

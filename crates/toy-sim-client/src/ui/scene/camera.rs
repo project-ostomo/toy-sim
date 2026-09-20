@@ -10,6 +10,7 @@ use bevy::{
     prelude::*,
 };
 use toy_sim_model::{GalacticPosition, Id};
+use toy_sim_ui::egui;
 
 pub(in crate::ui) const LOOK_AT_RANGE_M: f64 = 100_000.0;
 
@@ -246,47 +247,35 @@ pub(super) fn update_views(
     }
 }
 
+#[derive(Resource, Default)]
+pub(super) struct CameraDrag(bool);
+
+pub(super) fn track_camera_drag(
+    buttons: Res<ButtonInput<MouseButton>>,
+    capture: Res<crate::ui::input::InputCapture>,
+    mut drag: ResMut<CameraDrag>,
+) {
+    if buttons.just_pressed(MouseButton::Right) {
+        drag.0 = capture.mouse_available;
+    } else if !buttons.pressed(MouseButton::Right) {
+        drag.0 = false;
+    }
+}
+
 pub(super) fn camera_controls(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
     windows: Query<&Window>,
-    mut cameras: Query<(&Camera, &mut ViewCamera, &mut Transform, &mut CameraOptions)>,
-    mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
+    mut cameras: Query<(&Camera, &mut ViewCamera)>,
     mut selection: ResMut<Selection>,
-    mut gui_drag: Local<bool>,
-    time: Res<Time<Real>>,
+    drag: Res<CameraDrag>,
 ) {
     let cursor = windows
         .iter()
         .next()
         .and_then(Window::physical_cursor_position);
-    let captured = contexts.ctx_mut().is_ok_and(|ctx| {
-        ctx.egui_wants_pointer_input()
-            || cursor.is_some_and(|cursor| {
-                let position = toy_sim_ui::egui::pos2(
-                    cursor.x / ctx.pixels_per_point(),
-                    cursor.y / ctx.pixels_per_point(),
-                );
-                ctx.layer_id_at(position)
-                    .is_some_and(|layer| layer.order >= toy_sim_ui::egui::Order::Middle)
-            })
-    });
-    let restore_focus = contexts.ctx_mut().is_ok_and(|ctx| {
-        !ctx.egui_wants_keyboard_input()
-            && ctx.input(|input| input.key_pressed(toy_sim_ui::egui::Key::Escape))
-    });
-    if buttons.just_pressed(MouseButton::Right) {
-        *gui_drag = captured;
-    }
-    let dragging = buttons.pressed(MouseButton::Right);
-    if !dragging {
-        *gui_drag = false;
-    }
-    for (camera, mut state, mut transform, mut options) in &mut cameras {
-        if restore_focus && selection.view == Some(state.view) {
-            options.focus = None;
-        }
+    for (camera, mut state) in &mut cameras {
         let over_view = cursor.is_some_and(|cursor| {
             camera.viewport.as_ref().is_none_or(|viewport| {
                 cursor.x >= viewport.physical_position.x as f32
@@ -295,17 +284,44 @@ pub(super) fn camera_controls(
                     && cursor.y < (viewport.physical_position.y + viewport.physical_size.y) as f32
             })
         });
-        if over_view && !captured {
-            if buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right) {
-                selection.view = Some(state.view);
-            }
-            if dragging && !*gui_drag {
-                state.aligned_to_sun = true;
-                state.yaw -= motion.delta.x * 0.0025;
-                state.pitch = (state.pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
-            }
-            state.distance *= (-scroll.delta.y * 0.05).exp();
+        if !over_view {
+            continue;
         }
+        if buttons.just_pressed(MouseButton::Left) || buttons.just_pressed(MouseButton::Right) {
+            selection.view = Some(state.view);
+        }
+        if drag.0 && buttons.pressed(MouseButton::Right) {
+            state.aligned_to_sun = true;
+            state.yaw -= motion.delta.x * 0.0025;
+            state.pitch = (state.pitch - motion.delta.y * 0.0025).clamp(-1.5, 1.5);
+        }
+        state.distance *= (-scroll.delta.y * 0.05).exp();
+    }
+}
+
+pub(super) fn reset_focus(
+    mut contexts: toy_sim_ui::bevy_egui::EguiContexts,
+    selection: Res<Selection>,
+    mut cameras: Query<(&ViewCamera, &mut CameraOptions)>,
+) -> Result {
+    if contexts
+        .ctx_mut()?
+        .input(|input| input.key_pressed(toy_sim_ui::egui::Key::Escape))
+    {
+        for (view, mut options) in &mut cameras {
+            if selection.view == Some(view.view) {
+                options.focus = None;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn animate_camera(
+    mut cameras: Query<(&mut ViewCamera, &mut Transform)>,
+    time: Res<Time<Real>>,
+) {
+    for (mut state, mut transform) in &mut cameras {
         state.distance = state.distance.clamp(
             (state.radius * 1.01).max(1.),
             if state.private {
@@ -330,8 +346,6 @@ pub(super) fn align_on_double_click(
     mut selection: ResMut<Selection>,
 ) -> Result {
     use toy_sim_model::{FlightCommand, ShipCommand, travel};
-    use toy_sim_ui::egui;
-
     let ctx = contexts.ctx_mut()?;
     let pointer = ctx.input(|input| {
         (input
@@ -344,12 +358,6 @@ pub(super) fn align_on_double_click(
     let Some(pointer) = pointer else {
         return Ok(());
     };
-    if ctx
-        .layer_id_at(pointer)
-        .is_some_and(|layer| layer.order != egui::Order::Background)
-    {
-        return Ok(());
-    }
     let Ok(window) = windows.single() else {
         return Ok(());
     };

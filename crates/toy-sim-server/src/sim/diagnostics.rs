@@ -49,8 +49,6 @@ pub fn tick(world: &mut World, duration_ms: f64) {
                 solve_ms = collision.solve_seconds * 1000.0,
                 bodies = collision.bodies, candidates = collision.candidates,
                 detailed_queries = collision.detailed_queries, impacts = collision.impacts,
-                contact_reviews = collision.contact_reviews,
-                rotation_envelope_fallbacks = collision.rotation_envelope_fallbacks,
                 "server tick completed (software work sums parallel workers)");
         };
     }

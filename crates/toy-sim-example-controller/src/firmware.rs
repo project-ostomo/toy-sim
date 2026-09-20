@@ -18,11 +18,18 @@ pub struct Computer {
     hardware: Hardware,
     weapons: crate::weapons::WeaponsController,
     scan_window: crate::budget::ScanWindow,
+    console_started: bool,
 }
 
 impl Computer {
     pub fn run(&mut self) -> Result<abi::TickContext, i32> {
         let tick = sdk::tick()?;
+        if !self.console_started {
+            sdk::serial_write(
+                "\x1b[2J\x1b[HSHIP COMPUTER // ONLINE\r\nDiscovering installed hardware...\r\n",
+            )?;
+            self.console_started = true;
+        }
 
         if !self.hardware.discover(&tick)? {
             sdk::interval(0.)?;
@@ -117,15 +124,6 @@ impl Computer {
         }
 
         let actuations = self.pilot.control(&sample, &self.hardware);
-        let actuating = actuations.iter().any(|actuation| match actuation {
-            crate::hardware::Actuation::Throttle { value, .. } => value.fraction != 0.,
-            crate::hardware::Actuation::Torque { value, .. } => {
-                value.torque_nm.iter().any(|torque| *torque != 0.)
-            }
-            crate::hardware::Actuation::Rcs { value, .. } => {
-                value.thrust_n.iter().any(|thrust| *thrust != 0.)
-            }
-        });
         for actuation in actuations {
             actuation.apply()?;
         }
@@ -143,15 +141,34 @@ impl Computer {
         sdk::weapons(&weapons.state, &weapons.rows)?;
 
         self.publish(&sample)?;
-        let active = self.executor.active
-            || self.pilot.navigation.phase.active()
-            || self.pilot.manual_throttle != 0.
-            || self.pilot.steering != glam::DVec3::ZERO
-            || self.pilot.aim.is_some()
-            || self.pilot.contact.is_some()
-            || weapons.state.target_contact != 0
-            || actuating;
-        sdk::interval(if active { 0. } else { 1. })?;
+        let navigation = &self.pilot.navigation;
+        let phase = match navigation.phase {
+            Phase::Ready if self.executor.active => "WAIT",
+            Phase::Ready => "IDLE",
+            Phase::Paused => "PAUSED",
+            Phase::Pursuing if navigation.pointing_error > 0.15 => "TURN",
+            Phase::Pursuing if navigation.throttle < 0.01 => "COAST",
+            Phase::Pursuing if navigation.acceleration.dot(navigation.u) < 0. => "BRAKE",
+            Phase::Pursuing => "BURN",
+        };
+        let report = if navigation.phase.active() && navigation.visible {
+            let distance = navigation.r.length();
+            let range = if distance >= 1e6 {
+                format!("{:.2} Mm", distance / 1e6)
+            } else if distance >= 1e3 {
+                format!("{:.2} km", distance / 1e3)
+            } else {
+                format!("{:.0} m", distance)
+            };
+            let closing = navigation.u.dot(navigation.r.normalize_or_zero());
+            format!("{phase} target {range} closing {closing:.0} m/s")
+        } else if navigation.phase == Phase::Paused {
+            format!("{phase} {}", navigation.reason)
+        } else {
+            phase.to_owned()
+        };
+        sdk::serial_write(&format!("[{}] {}\r\n", tick.tick, report))?;
+        sdk::interval(0.)?;
         Ok(tick)
     }
 

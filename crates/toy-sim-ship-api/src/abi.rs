@@ -1,9 +1,9 @@
-//! Ship ABI 30: fixed little-endian records and Postcard world services.
+//! Ship ABI: fixed little-endian C records and caller-owned output buffers.
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v30";
-pub const VERSION: u32 = 30;
+pub const IMPORT_MODULE: &str = "ship_v31";
+pub const VERSION: u32 = 31;
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -132,7 +132,7 @@ pub const WEAPON_ENERGY: u64 = 2048;
 pub const WEAPON_SOLUTION: u64 = 1;
 pub const WEAPON_ROW_GAS: u64 = 100;
 
-mod private {
+pub(crate) mod private {
     pub trait Sealed {}
 }
 
@@ -1248,13 +1248,32 @@ pub const IMPORTS: &[&str] = &[
     "llm_poll",
     "llm_cancel",
     "chat_send",
+    "serial_write",
     "chat_read",
     "missile_read",
     "missile_control",
     "persistent_read",
     "persistent_write",
-    "world_query",
-    "world_command",
+    "orrery_read",
+    "navigation_query",
+    "contact_get",
+    "slip_eligibility",
+    "travel_read",
+    "destination_resolve",
+    "route_request",
+    "route_poll",
+    "travel_use_route",
+    "travel_block",
+    "travel_estimate",
+    "travel_complete",
+    "travel_slip",
+    "travel_reserve_bay",
+    "travel_dock",
+    "travel_undock",
+    "intel_tracks",
+    "intel_continue",
+    "beacons_read",
+    "beacon_read",
     "tick_read",
     "budget_read",
     "flight_read",
@@ -1294,19 +1313,28 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v30")]
+    #[link(wasm_import_module = "ship_v31")]
     unsafe extern "C" {
-        pub fn llm_submit(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
-        pub fn llm_poll(id: u64, out: *mut u8, capacity: u32) -> i32;
+        pub fn llm_submit(id: u64, input: *const u8, bytes: u32, max_tokens: u32) -> i32;
+        pub fn llm_poll(
+            id: u64,
+            out: *mut u8,
+            capacity: u32,
+            status: *mut crate::services::LlmPoll,
+        ) -> i32;
         pub fn llm_cancel(id: u64) -> i32;
+        pub fn serial_write(input: *const u8, bytes: u32) -> i32;
         pub fn chat_send(id: u64, input: *const u8, bytes: u32) -> i32;
-        pub fn chat_read(after: u64, limit: u32, out: *mut u8, capacity: u32) -> i32;
+        pub fn chat_read(
+            after: u64,
+            out: *mut crate::services::ChatMessage,
+            capacity: u32,
+            page: *mut crate::services::ChatPage,
+        ) -> i32;
         pub fn missile_read(output: *mut u8, bytes: u32) -> i32;
         pub fn missile_control(input: *const u8, bytes: u32) -> i32;
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
         pub fn persistent_write(input: *const u8, length: u32) -> i32;
-        pub fn world_query(input: *const u8, bytes: u32, out: *mut u8, capacity: u32) -> i32;
-        pub fn world_command(input: *const u8, bytes: u32) -> i32;
         pub fn tick_read(out: *mut u8, bytes: u32) -> i32;
         pub fn budget_read(out: *mut u8, bytes: u32) -> i32;
         pub fn flight_read(out: *mut u8, bytes: u32) -> i32;

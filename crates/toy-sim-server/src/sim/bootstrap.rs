@@ -16,6 +16,24 @@ pub fn provision(
     debug_account: Option<AccountId>,
     ship: Option<PathBuf>,
 ) -> Result<App> {
+    provision_inner(accounts, debug_account, ship, false)
+}
+
+#[cfg(test)]
+pub(crate) fn provision_combat_fixture(
+    accounts: &[AccountId],
+    debug_account: Option<AccountId>,
+    ship: Option<PathBuf>,
+) -> Result<App> {
+    provision_inner(accounts, debug_account, ship, true)
+}
+
+fn provision_inner(
+    accounts: &[AccountId],
+    debug_account: Option<AccountId>,
+    ship: Option<PathBuf>,
+    spawn_hostile: bool,
+) -> Result<App> {
     let mut app = super::application(ship.clone());
     app.insert_resource(ScenarioConfig {
         accounts: accounts.to_vec(),
@@ -39,6 +57,17 @@ pub fn provision(
     let design = world.get::<vessel::ShipDesign>(player).unwrap().0.clone();
     let pose = *world.get::<precision::PreciseTransform>(player).unwrap();
     let velocity = world.get::<physics::Velocity>(player).unwrap().0;
+    if spawn_hostile {
+        let mut hostile_pose = pose;
+        hostile_pose.translation_um = pose.translation_um.offset_by(DVec3::Y * 1_000.0);
+        vessel::spawn_ship(
+            world,
+            design.clone(),
+            hostile_pose,
+            velocity,
+            "Hostile patrol".into(),
+        )?;
+    }
     for (index, &account) in accounts.iter().enumerate().skip(1) {
         let mut pose = pose;
         pose.translation_um = pose
@@ -230,7 +259,7 @@ mod tests {
     #[test]
     fn default_patrol_encounter_starts_close_and_hostile_fires_repeatedly_without_player_input() {
         let account = Id::new();
-        let mut app = provision(&[account], Some(account), None).unwrap();
+        let mut app = provision_combat_fixture(&[account], Some(account), None).unwrap();
         let world = app.world_mut();
         let ships = world
             .query_filtered::<Entity, (

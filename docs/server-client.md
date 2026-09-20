@@ -8,7 +8,7 @@ The server restores durable world state from SQLite checkpoints, including owner
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `toy-sim-model` | [crates/toy-sim-model](../crates/toy-sim-model) | Shared serde types: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel orders, drawing lists, and the program query/action types used by `world_query`/`world_command` |
+| `toy-sim-model` | [crates/toy-sim-model](../crates/toy-sim-model) | Shared serde types: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel orders and drawing lists; explicit conversions to the WASM C ABI records |
 | `toy-sim-protocol` | [crates/toy-sim-protocol](../crates/toy-sim-protocol) | Application message framing, sections and validation limits |
 | `toy-sim-net` | [crates/toy-sim-net](../crates/toy-sim-net) | TCP handshake, record encryption, Zstd compression and picomux multiplexing |
 | `toy-sim-spatial` | [crates/toy-sim-spatial](../crates/toy-sim-spatial) | Shared spatial hash for brightness, radius, nearest-neighbour, segment and metered cursor queries |
@@ -551,7 +551,7 @@ Every candidate is then filtered against all conditions.
 | Page call | 100 |
 | Each index step | 8 (plus 8 per tag for an `any` union); spatial cursors charge occupied-cell visits and candidate checks |
 | Each candidate examined | 1000 |
-| Each returned track | 1 per 8 bytes of its postcard encoding |
+| Each returned track | 1 per 8 bytes of its ABI record and variable-field arena |
 
 **Completion.** `Complete` means the source is exhausted. `ResultLimit` means `limit` tracks were returned. `WorkLimit` means the budget ran out. `gas_used` reports the work spent, and an empty result can still spend the whole budget. An incomplete page returns a `continuation` cursor. The cursor reads the same snapshot, and `revision` reports the snapshot's tick. A cursor expires 10 ticks after the query started. One `Queries` holds at most 8 live cursors.
 
@@ -560,7 +560,7 @@ Every candidate is then filtered against all conditions.
 | Caller | Budget | Cursors |
 | --- | --- | --- |
 | Network views | Shared 2,000,000 per frame | None; a fresh query every frame |
-| Flight programs (`world_query` `Tracks` and `Continue`) | At most 1,000,000 per call, paid from the computer's gas | Kept per ship, with separate stores for `ship_tick` and `ship_display` |
+| Flight programs (`intel_tracks` and `intel_continue`) | At most 1,000,000 per call, paid from the computer's gas | Kept per ship, with separate stores for `ship_tick` and `ship_display` |
 | `sensor_scan` | `n × 1200 + 100` per group snapshot | None |
 
 ### Contact handles
@@ -848,7 +848,7 @@ guidance uses relative position and velocity with the economical navigation
 law. Moving slip destinations are led through preparation and transit time,
 and their charging candidates are refreshed until departure. Bay requests use
 only bays reported as usable. Execution errors block the command for an explicit
-replan; the VM does not replace the queue itself. Server and firmware use ABI 30
+replan; the VM does not replace the queue itself. Server and firmware use ABI 31
 and must be rebuilt together.
 
 ## Client playback

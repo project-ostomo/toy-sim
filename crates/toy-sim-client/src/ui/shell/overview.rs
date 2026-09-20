@@ -29,7 +29,7 @@ pub(super) fn selected_item(
             );
         });
     });
-    if let Some(row) = row.filter(|row| matches!(row.target, SelectedTarget::Contact(_))) {
+    if let Some(row) = row.filter(|row| row.contact.is_some()) {
         ui.colored_label(
             super::super::standing::color(row.standing),
             format!(
@@ -47,10 +47,7 @@ pub(super) fn selected_item(
         }
     }
     let target = row.map(|row| row.target);
-    let contact = target.and_then(|target| match target {
-        SelectedTarget::Contact(reference) => Some(reference),
-        _ => None,
-    });
+    let contact = row.and_then(|row| row.contact);
     let marked = weapons.and_then(|weapons| weapons.target);
     let firing = weapons.is_some_and(|weapons| weapons.firing);
     ui.horizontal(|ui| {
@@ -212,7 +209,7 @@ pub(super) fn selected_item(
     ui.separator();
     let marked_name = marked.map(|target| {
         rows.iter()
-            .find(|row| row.target == SelectedTarget::Contact(target))
+            .find(|row| row.contact == Some(target))
             .map_or("Contact outside this view", |row| row.name.as_str())
     });
     ui.horizontal(|ui| {

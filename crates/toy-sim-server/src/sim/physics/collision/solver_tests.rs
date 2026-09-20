@@ -35,8 +35,8 @@ pub(super) fn object(
         members: vec![Member {
             entity,
             geometry: Arc::new(Geometry {
-                hull: shape,
-                shield: SharedShape::ball(radius),
+                surface: shape,
+
                 radius,
                 shield_radius: radius,
                 feature,
@@ -58,9 +58,7 @@ pub(super) fn object(
         feature,
         generation: 0,
         impulse_dv: DVec3::ZERO,
-        impulse_dw: DVec3::ZERO,
         rotation_path: None,
-        rotational_envelopes: Vec::new(),
     }
 }
 
@@ -172,8 +170,9 @@ fn shield_contact_uses_the_same_restitution_for_every_body_and_settles_slowly() 
 }
 
 #[test]
-fn fast_slug_hits_thin_box_but_misses_empty_bounding_sphere_space() {
-    for miss in [false, true] {
+fn fast_slug_hits_the_bounding_sphere_even_outside_the_hull() {
+    for offset in [0.0, 2.0, 6.0] {
+        let miss = offset > 5.1;
         let mut world = World::new();
         let mut bodies = vec![
             object(
@@ -181,7 +180,7 @@ fn fast_slug_hits_thin_box_but_misses_empty_bounding_sphere_space() {
                 SharedShape::ball(0.0005),
                 0.0005,
                 0.001,
-                DVec3::new(-50_000.0, if miss { 2.0 } else { 0.0 }, 0.0),
+                DVec3::new(-50_000.0, offset, 0.0),
                 DVec3::X * 1e6,
                 0.01,
             ),
@@ -199,6 +198,11 @@ fn fast_slug_hits_thin_box_but_misses_empty_bounding_sphere_space() {
         assert_eq!(report.impacts > 0, !miss);
         if !miss {
             assert!(bodies[0].position.x <= bodies[1].position.x);
+            let impact = &report.impact_events[0];
+            let surface = impact.surface_positions[1].relative_to(GalacticPosition::ZERO);
+            assert!((surface.x + 0.05).abs() < 1e-5);
+            assert!((surface.y - offset.min(0.5)).abs() < 1e-5);
+            assert!(surface.distance(impact.position.relative_to(GalacticPosition::ZERO)) > 1.0);
         }
     }
 }
@@ -244,7 +248,7 @@ fn large_common_position_and_velocity_do_not_change_impact_energy() {
 }
 
 #[test]
-fn rotation_alone_can_create_contact() {
+fn rotation_does_not_change_spherical_contacts() {
     let mut world = World::new();
     let mut rod = object(
         &mut world,
@@ -266,8 +270,8 @@ fn rotation_alone_can_create_contact() {
         1.0,
     );
     let report = simulate(&mut vec![rod, ball], 0.1);
-    assert!(report.impacts > 0);
-    assert!(report.dissipated_j > 0.0);
+    assert_eq!(report.impacts, 0);
+    assert_eq!(report.dissipated_j, 0.0);
 }
 
 #[test]
@@ -283,6 +287,7 @@ fn depleted_reserve_retests_hull_instead_of_damaging_at_field_surface() {
             DVec3::ZERO,
             1000.0,
         );
+        Arc::make_mut(&mut target.members[0].geometry).radius = 0.75_f64.sqrt();
         target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
         target.members[0].model.shield_deployed_kg = 5.0;
         target.members[0].thermal.shield_deployed_kg = 1e-8;
@@ -317,6 +322,7 @@ fn partial_shield_interception_preserves_projectile_and_residual_energy() {
         DVec3::ZERO,
         1000.0,
     );
+    Arc::make_mut(&mut target.members[0].geometry).radius = 0.75_f64.sqrt();
     target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
     target.members[0].model.shield_deployed_kg = 5.0;
     target.members[0].thermal.shield_deployed_kg = 0.00001;
@@ -460,11 +466,11 @@ fn scale_benchmark() {
             if scenario == "mixed" {
                 for body in bodies.iter_mut().step_by(2) {
                     body.members[0].geometry = Arc::new(Geometry {
-                        hull: SharedShape::compound(vec![(
+                        surface: SharedShape::compound(vec![(
                             Pose::identity(),
                             SharedShape::cuboid(9.0, 0.2, 0.2),
                         )]),
-                        shield: SharedShape::ball(12.0),
+
                         radius: 9.01,
                         shield_radius: 12.0,
                         feature: 0.4,
@@ -606,45 +612,6 @@ fn nearest_queries_match_exhaustive_selection_across_regions_and_ties() {
 }
 
 #[test]
-fn a_resting_part_does_not_mask_a_new_contact_on_the_same_compound() {
-    let mut world = World::new();
-    let corner = SharedShape::compound(vec![
-        (
-            pose(DVec3::new(0.0, -1.0, 0.0), DQuat::IDENTITY),
-            SharedShape::cuboid(10.0, 0.5, 2.0),
-        ),
-        (
-            pose(DVec3::new(3.0, 0.0, 0.0), DQuat::IDENTITY),
-            SharedShape::cuboid(0.5, 2.0, 2.0),
-        ),
-    ]);
-    let mut bodies = vec![
-        object(
-            &mut world,
-            corner,
-            11.0,
-            1.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            1e10,
-        ),
-        object(
-            &mut world,
-            SharedShape::cuboid(0.5, 0.5, 0.5),
-            0.9,
-            1.0,
-            DVec3::ZERO,
-            DVec3::X * 100.0,
-            1.0,
-        ),
-    ];
-
-    let report = simulate(&mut bodies, 0.1);
-    assert!(report.dissipated_j > 1000.0);
-    assert!(bodies[1].position.relative_to(bodies[0].position).x < 2.1);
-}
-
-#[test]
 fn destroying_a_docked_member_preserves_the_survivors_velocity_field() {
     let mut world = World::new();
     let mut body = object(
@@ -759,36 +726,7 @@ fn swept_storage_reuse_handles_migration_deletion_and_reordered_ids() {
 }
 
 #[test]
-fn rotation_sampler_stays_within_its_conservative_point_speed_bound() {
-    let mut world = World::new();
-    for axis_scale in [0.01, 1.0, 100.0] {
-        let mut body = object(
-            &mut world,
-            SharedShape::ball(1.0),
-            1.0,
-            2.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            1.0,
-        );
-        body.inertia_inv = DMat3::from_diagonal(DVec3::new(axis_scale, 0.5, 2.0));
-        body.rotation = DQuat::from_rotation_y(0.7) * DQuat::from_rotation_z(0.4);
-        body.momentum = DVec3::new(3.0, -2.0, 1.0);
-        let bound = body.angular_bound(0.1);
-        for sample in 0..100 {
-            let t = sample as f64 * 0.001;
-            let dt = 1e-6;
-            for p in [DVec3::X, DVec3::Y, DVec3::Z] {
-                let movement =
-                    (body.orientation(t + dt).0 * p - body.orientation(t).0 * p).length();
-                assert!(movement <= bound * dt * (1.0 + 1e-6));
-            }
-        }
-    }
-}
-
-#[test]
-fn off_centre_impacts_include_rotational_energy_in_heat_accounting() {
+fn glancing_sphere_impacts_conserve_energy_without_spurious_torque() {
     let mut world = World::new();
     let mut bodies = vec![
         object(
@@ -817,7 +755,7 @@ fn off_centre_impacts_include_rotational_energy_in_heat_accounting() {
     let initial: f64 = bodies.iter().map(energy).sum();
     let report = simulate(&mut bodies, 0.1);
     let remaining: f64 = bodies.iter().map(energy).sum();
-    assert!(bodies.iter().any(|b| b.momentum.length() > 1.0));
+    assert!(bodies.iter().all(|b| b.momentum.length() < 1e-8));
     assert!((initial - remaining - report.dissipated_j).abs() < initial * 1e-8);
     assert!(
         (bodies.iter().map(|b| b.velocity * b.mass).sum::<DVec3>() - DVec3::X * 1000.0).length()
@@ -1040,6 +978,7 @@ fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
     ];
     for body in &mut bodies {
         let member = &mut body.members[0];
+        Arc::make_mut(&mut member.geometry).radius = 0.5;
         member.model.shield_deployed_kg = 5.0;
         member.thermal.shield_deployed_kg = 5.0;
         member.thermal.shield_enabled = true;
@@ -1103,7 +1042,7 @@ fn touching_missiles_and_shield_finish_the_tick_without_inelastic_collapse() {
                 let geometry = Arc::new(Geometry::ship(design));
                 let mut body = object(
                     &mut world,
-                    geometry.hull.clone(),
+                    geometry.surface.clone(),
                     geometry.radius,
                     1.,
                     DVec3::ZERO,
@@ -1146,7 +1085,6 @@ fn touching_missiles_and_shield_finish_the_tick_without_inelastic_collapse() {
                 "{} detailed queries",
                 report.detailed
             );
-            assert_eq!(report.rotation_envelope_fallbacks, 0);
             assert!(bodies.iter().all(|body| body.time == duration));
             for body in &mut bodies {
                 assert!(
@@ -1233,7 +1171,7 @@ fn persistent_three_body_cluster_stays_bounded_and_dissipates_energy() {
 }
 
 #[test]
-fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
+fn extreme_rotation_cannot_change_sphere_sweeps() {
     let mut world = World::new();
     let mut rotor = object(
         &mut world,
@@ -1245,7 +1183,6 @@ fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
         1000.0,
     );
     let geometry = Arc::make_mut(&mut rotor.members[0].geometry);
-    geometry.shield = SharedShape::ball(3.0);
     geometry.shield_radius = 3.0;
     rotor.members[0].local_position = DVec3::X * 4.0;
     let mut opposite = rotor.members[0].clone();
@@ -1255,18 +1192,10 @@ fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
     rotor.mass = 2000.0;
     rotor.radius = 7.0;
     rotor.momentum = DVec3::Z * 1e8;
-    assert!(rotor.prepare_rotation(0.1));
+    rotor.prepare_rotation(0.1);
     for member in 0..rotor.members.len() {
-        let hull = rotor
-            .collision_shape(member, false)
-            .as_ball()
-            .unwrap()
-            .radius;
-        let shield = rotor
-            .collision_shape(member, true)
-            .as_ball()
-            .unwrap()
-            .radius;
+        let hull = rotor.collision_radius(member, false);
+        let shield = rotor.collision_radius(member, true);
         assert_eq!(hull, 6.01);
         assert_eq!(shield, 7.0);
         for step in 0..100 {
@@ -1286,19 +1215,11 @@ fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
     for (index, member) in ablated.members.iter().enumerate() {
         let offset = member.local_position.length();
         assert_eq!(
-            ablated
-                .collision_shape(index, false)
-                .as_ball()
-                .unwrap()
-                .radius,
+            ablated.collision_radius(index, false),
             offset + member.geometry.radius,
         );
         assert_eq!(
-            ablated
-                .collision_shape(index, true)
-                .as_ball()
-                .unwrap()
-                .radius,
+            ablated.collision_radius(index, true),
             offset + member.geometry.shield_radius,
         );
     }
@@ -1313,7 +1234,6 @@ fn extreme_rotation_uses_conservative_member_envelopes_without_tunneling() {
     );
     let mut bodies = vec![rotor, incoming];
     let report = simulate(&mut bodies, 0.1);
-    assert!(report.rotation_envelope_fallbacks > 0);
     assert!(report.impacts > 0);
     assert!(report.detailed < 1000);
     assert!(bodies[1].velocity.x < 300.0);

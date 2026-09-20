@@ -33,7 +33,7 @@ fn departure_composes_bay_rotation_and_inherits_motion_at_large_coordinates() {
     let bay = DQuat::from_rotation_x(0.4);
     let departure = departure_pose(&host, bay.to_array(), 1100., 15.);
     let rotation = DQuat::from_array(host.rotation) * bay;
-    let expected_offset = rotation * DVec3::NEG_Z * 1125.;
+    let expected_offset = rotation * DVec3::NEG_Z * 1215.;
     let actual_offset = departure.position.relative_to(host.position);
     assert!((actual_offset - expected_offset).length() < 2e-6);
     assert!(DQuat::from_array(departure.rotation).angle_between(rotation) < 1e-8);
@@ -47,7 +47,7 @@ fn departure_composes_bay_rotation_and_inherits_motion_at_large_coordinates() {
 }
 
 #[test]
-fn actual_undock_uses_the_shared_pose_and_clears_station_shield_envelope() {
+fn undocking_appears_at_docking_distance_even_when_the_exit_is_occupied() {
     let mut world = World::new();
     world.init_resource::<identity::IdentityIndex>();
     world.init_resource::<SimulationCounters>();
@@ -128,12 +128,21 @@ fn actual_undock_uses_the_shared_pose_and_clears_station_shield_envelope() {
     assert!(world.get::<SpatialBody>(child).is_none());
 
     let expected = undock_pose(&world, child, host, 0).unwrap();
-    let safe_separation =
-        collision_radius(&world, host).unwrap() + collision_radius(&world, child).unwrap();
+    world.spawn((
+        PreciseTransform {
+            translation_um: expected.position,
+            rotation: DQuat::IDENTITY,
+        },
+        SpatialBody {
+            radius_m: 100.,
+            occludes: true,
+        },
+    ));
     undock(&mut world, child).unwrap();
     let actual = ship_pose(&world, child).unwrap();
     assert_eq!(actual, expected);
-    assert!(actual.position.relative_to(GalacticPosition::ZERO).length() > safe_separation + 9.999);
+    let distance = actual.position.relative_to(GalacticPosition::ZERO).length();
+    assert!((distance - station_radius - child_radius - DOCKING_CLEARANCE_M).abs() < 1e-5);
     assert!(world.get::<Dormant>(child).is_none());
     assert!(world.get::<SpatialBody>(child).is_some());
 }

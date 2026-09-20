@@ -205,7 +205,9 @@ fn profiles_panel(ui: &mut egui::Ui, state: &mut State, snapshot: &SocietySnapsh
                     state.inspect(Principal::Organization(id));
                 }
                 if let Some(profile) = organizations::profile(id.0) {
-                    profile_record(ui, state, profile);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        profile_record(ui, state, profile);
+                    });
                 } else {
                     ui.heading(name(&snapshot.directory, Principal::Organization(id)));
                     ui.weak("This organization has no published historical profile.");

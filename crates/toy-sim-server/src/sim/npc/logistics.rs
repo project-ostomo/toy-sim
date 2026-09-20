@@ -252,7 +252,8 @@ fn step(world: &mut World, entity: Entity, duty: &mut HaulDuty) -> Result<()> {
                 ready.telemetry.authority_revision,
                 ShipCommand::SetTravel {
                     preferences: PlanningPreferences {
-                        fuel_priority: 10.0,
+                        fuel_fraction: 0.42,
+                        ..Default::default()
                     },
                     engage: true,
                     expected_revision: ready.telemetry.travel.revision,

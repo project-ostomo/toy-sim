@@ -163,7 +163,7 @@ fn update(
                         bevy::light::SunDisk::OFF,
                         DirectionalLight {
                             color: Color::srgb(0.6, 0.8, 1.),
-                            illuminance: 180000.,
+                            illuminance: if slip { 1200000. } else { 180000. },
                             shadow_maps_enabled: false,
                             ..default()
                         },
@@ -174,7 +174,7 @@ fn update(
                         bevy::light::SunDisk::OFF,
                         DirectionalLight {
                             color: Color::srgb(0.3, 0.5, 1.),
-                            illuminance: 90000.,
+                            illuminance: if slip { 450000. } else { 90000. },
                             shadow_maps_enabled: false,
                             ..default()
                         },

@@ -60,13 +60,9 @@ fn stock_computer_returns_through_a_solar_gate_with_complete_local_geometry() {
     let beacon = source.orbital.beacons.get(&entry_id).unwrap();
     let pose = source.orbital_pose(&beacon.beacon.pose, beacon.orbit.as_deref());
     let reply = source
-        .local_space(pose.position.offset_by(DVec3::NEG_Z * 333.), 1000., 0.)
+        .orrery(pose.position.offset_by(DVec3::NEG_Z * 333.))
         .unwrap();
-    assert!(
-        !reply.truncated,
-        "ordinary solar gate approach must fit the bounded query"
-    );
-    assert!(reply.obstacles.iter().any(|obstacle| {
+    assert!(reply.iter().any(|obstacle| {
         obstacle.reference
             == toy_sim_model::travel::Target::Destination(
                 toy_sim_model::travel::Destination::Beacon(entry_id),

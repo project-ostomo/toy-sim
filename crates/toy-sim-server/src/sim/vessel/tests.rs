@@ -109,6 +109,39 @@ fn throttle(world: &World, entity: Entity) -> f64 {
 }
 
 #[test]
+fn slip_transit_keeps_computer_callbacks_running() {
+    let program = wat::parse_str(format!(
+        r#"(module
+            (memory (export "memory") 1)
+            (global $ticks (mut i32) (i32.const 0))
+            (func (export "ship_api_version") (result i32) i32.const {})
+            (func (export "ship_tick")
+                global.get $ticks i32.const 1 i32.add global.set $ticks))"#,
+        abi::VERSION
+    ))
+    .unwrap();
+    let (mut app, ships) = fleet_with_program(1, program);
+    let ship = ships[0];
+    boot(&mut app, ship);
+    crate::sim::travel::set_dormant(
+        app.world_mut(),
+        ship,
+        toy_sim_model::travel::Presence::SlipTransit(toy_sim_model::Id::new()),
+    );
+    let clock = app.world().get::<HardwareClock>(ship).unwrap().0;
+    for _ in 0..10 {
+        step(&mut app);
+        let software = app.world().get::<ShipSoftware>(ship).unwrap();
+        assert!(software.controller.fault.is_none());
+        assert!(software.last_gas_used > 0);
+    }
+    assert_eq!(
+        app.world().get::<HardwareClock>(ship).unwrap().0,
+        clock + 10
+    );
+}
+
+#[test]
 fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold() {
     let (mut app, entities) = fleet_with_program(2, EXAMPLE_CONTROLLER.to_vec());
     let target = entities[1];

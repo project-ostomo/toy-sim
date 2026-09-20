@@ -47,7 +47,14 @@ pub(super) fn install(app: &mut App) {
             .after(super::camera::setup_views)
             .before(super::camera::update_views),
     )
-    .add_systems(EguiPrimaryContextPass, (toggle, draw_coasts).chain());
+    .add_systems(
+        EguiPrimaryContextPass,
+        (
+            toggle.in_set(crate::ui::input::GameplayInput::Keyboard),
+            draw_coasts,
+        )
+            .chain(),
+    );
 }
 
 fn refresh_views(
@@ -133,7 +140,7 @@ fn refresh_views(
 
 fn toggle(mut contexts: EguiContexts, mut views: Query<&mut ViewOptions>) -> Result {
     let ctx = contexts.ctx_mut()?;
-    if !ctx.egui_wants_keyboard_input() && ctx.input(|input| input.key_pressed(egui::Key::O)) {
+    if ctx.input(|input| input.key_pressed(egui::Key::O)) {
         for mut options in &mut views {
             options.enabled = !options.enabled;
         }
@@ -262,7 +269,7 @@ fn draw_coasts(
     let reserved: Vec<_> = ctx
         .memory(|memory| memory.areas().visible_layer_ids())
         .into_iter()
-        .filter(|layer| layer.order >= egui::Order::Middle)
+        .filter(|layer| layer.order >= egui::Order::Middle || *layer == crate::ui::console::layer())
         .filter_map(|layer| {
             egui::containers::AreaState::load(ctx, layer.id).map(|area| area.rect())
         })
@@ -299,12 +306,11 @@ fn draw_coasts(
                 )
             })
             .collect();
-        let painter = ctx
-            .layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new(("orbit_coasts", camera_state.view)),
-            ))
-            .with_clip_rect(rect);
+        let painter = toy_sim_ui::desktop::hud_painter(
+            ctx,
+            egui::Id::new(("orbit_coasts", camera_state.view)),
+        )
+        .with_clip_rect(rect);
         paint::draw(
             &painter,
             &view,

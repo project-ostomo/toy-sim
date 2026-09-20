@@ -27,6 +27,13 @@ struct Recorded {
 }
 
 enum RecordedKind {
+    Beam {
+        source: Id,
+        start: GalacticPosition,
+        end: GalacticPosition,
+        velocity: [f64; 3],
+        end_time_ns: u64,
+    },
     Fired {
         source: Id,
         position: GalacticPosition,
@@ -42,7 +49,7 @@ enum RecordedKind {
     },
     Impact {
         targets: [Option<Id>; 2],
-        position: GalacticPosition,
+        positions: [GalacticPosition; 2],
         velocity: [f64; 3],
         normal: [f64; 3],
         energy: f64,
@@ -78,6 +85,21 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
                 source,
                 position: shot.position,
                 energy: 0.5 * shot.mass_kg * (shot.velocity - velocity).length_squared(),
+            },
+        ));
+    }
+    for beam in &report.beam_traces {
+        let Some(source) = world.get::<Identity>(beam.owner).map(|id| id.0) else {
+            continue;
+        };
+        pending.push((
+            nanoseconds(epoch + beam.time),
+            RecordedKind::Beam {
+                source,
+                start: beam.start,
+                end: beam.end,
+                velocity: beam.velocity.to_array(),
+                end_time_ns: nanoseconds(epoch + beam.time + beam.duration_s),
             },
         ));
     }
@@ -133,7 +155,7 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
             nanoseconds(epoch + impact.time),
             RecordedKind::Impact {
                 targets,
-                position: impact.position,
+                positions: impact.surface_positions,
                 velocity: impact.velocity.to_array(),
                 normal: impact.normal.to_array(),
                 energy: impact.energy_j,
@@ -276,6 +298,22 @@ pub fn for_session(
                 })
             };
             let kind = match &event.kind {
+                RecordedKind::Beam {
+                    source,
+                    start,
+                    end,
+                    velocity,
+                    end_time_ns,
+                } => CombatEventKind::Beam {
+                    source: optically_visible
+                        .contains(source)
+                        .then(|| contact(*source))
+                        .flatten()?,
+                    start: *start,
+                    end: *end,
+                    velocity_m_s: *velocity,
+                    end_time_ns: *end_time_ns,
+                },
                 RecordedKind::Fired {
                     source,
                     position,
@@ -310,7 +348,7 @@ pub fn for_session(
                 },
                 RecordedKind::Impact {
                     targets,
-                    position,
+                    positions,
                     velocity,
                     normal,
                     energy,
@@ -323,7 +361,7 @@ pub fn for_session(
                     })?;
                     CombatEventKind::Impact {
                         target: Some(target),
-                        position: *position,
+                        position: positions[index],
                         velocity_m_s: *velocity,
                         normal: *normal,
                         energy_j: *energy,

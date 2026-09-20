@@ -4,11 +4,24 @@ use toy_sim_ui::bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
 pub(in crate::ui) fn details() -> ShipPresentation {
     ShipPresentation {
+        serial: {
+            let mut terminal = toy_sim_model::serial::Terminal::default();
+            terminal.write(b"SHIP COMPUTER // ONLINE\r\nNavigation: Pursuing\r\nFollowing queued destination\r\nThrust command: 60%\r\n\x1b[33mFuel allowance: 50%\x1b[0m\r\nRoute executor: Executing queued command");
+            terminal.screen
+        },
+        memory_limit_bytes: 8 * 1024 * 1024,
         cargo: Vec::new(),
         ship: Id([1; 16]),
         revision: 1,
         sim_time_ns: 1,
         propulsion: PropulsionTelemetry {
+            drives: vec![DriveReserve {
+                name: "Nuclear thermal".into(),
+                resource: "water".into(),
+                delta_v_m_s: 4500.,
+                full_delta_v_m_s: 5800.,
+                flow_kg_s: 85.,
+            }],
             force_n: [0., 0., -2.4e6],
             torque_nm: [1e5, -3e5, 0.],
             rated_forward_n: 4e6,
@@ -17,6 +30,7 @@ pub(in crate::ui) fn details() -> ShipPresentation {
             propellants: vec!["water".into()],
             fuels: vec![],
             charges: vec![],
+            ammunition: vec![],
         },
         environment: None,
         health: Some(ShipHealth {
@@ -35,7 +49,17 @@ pub(in crate::ui) fn details() -> ShipPresentation {
         hull_heat_capacity_j: 1e9,
         battery_capacity_j: 100_000_000,
         power_generated_w: 2e6,
+        generation_capacity_w: 200_000_000.,
+        reactors: Vec::new(),
+        slip_cooldown_s: Some(0.),
         power_consumed_w: 2.4e6,
+        power_requested_w: 100_000_000.,
+        slip_charge: Some(toy_sim_model::presentation::SlipChargeTelemetry {
+            stored_j: 4_000_000_000,
+            required_j: 10_000_000_000,
+            input_w: 80_000_000.,
+            remaining_s: Some(75.),
+        }),
         inventory: vec![ResourceAmount {
             resource: "water".into(),
             quantity: 8000,
@@ -147,6 +171,18 @@ fn console_headless_layout_and_manual_lockout() {
         let faulted = matches!(computer, ComputerStatus::Fault { .. });
         for mut details in world.query::<&mut ShipDetails>().iter_mut(&mut world) {
             details.0.computer = computer.clone();
+            details.0.reactors = if name == "normal" {
+                vec![ReactorTelemetry {
+                    name: "Test reactor".into(),
+                    status: ReactorStatus::Running,
+                    temperature_k: 2300.,
+                    coolant_temperature_k: 1200.,
+                    operating_temperature_k: 2300.,
+                    shutdown_temperature_k: 2500.,
+                }]
+            } else {
+                Vec::new()
+            };
             if faulted {
                 details.0.instruments = None;
                 details.0.propulsion.force_n = [0.; 3];

@@ -20,7 +20,7 @@ pub(crate) fn dock_heat_transfer(
     mut commands: Commands,
     docked: Query<
         (Entity, &super::super::travel::PresenceState),
-        With<super::super::travel::Dormant>,
+        With<super::super::travel::SystemsSuspended>,
     >,
     identities: Option<Res<super::super::identity::IdentityIndex>>,
     designs: Query<&ShipDesign>,
@@ -53,7 +53,10 @@ pub(crate) fn dock_heat_transfer(
     }
 }
 
-fn sink_temperature(thermal: &thermal::ThermalState, design: &CompiledShipDesign) -> f64 {
+pub(crate) fn sink_temperature(
+    thermal: &thermal::ThermalState,
+    design: &CompiledShipDesign,
+) -> f64 {
     if thermal.shield_deployed_kg > 0.0
         && matches!(
             thermal.shield_state,
@@ -120,7 +123,7 @@ pub(crate) fn generate(
         &ShipDesign,
         HardwareWrite,
         &mut DeviceOutputs,
-        Has<super::super::travel::Dormant>,
+        Has<super::super::travel::SystemsSuspended>,
         Option<&DockedSink>,
     )>,
     mut reactors: Query<(&mut Reactor, &mut Device)>,
@@ -165,7 +168,9 @@ pub(crate) fn generate(
             let enabled =
                 !dormant && device.0.operational && hardware.hull.0 > 0.0 && !reactor.shutdown;
             let demand_j = if enabled && eta > 0.0 {
-                (spec.thermal_power_w * throttle * dt).min(headroom / eta)
+                let target_energy = (spec.hot_temperature_k - 300.0) * spec.core_heat_capacity_j_k;
+                (spec.thermal_power_w * throttle * dt)
+                    .min((target_energy - reactor.core_energy_j).max(0.))
             } else {
                 0.0
             };
@@ -187,6 +192,11 @@ pub(crate) fn generate(
             let removed =
                 ((available_k - sink_k).max(0.0) * spec.core_heat_capacity_j_k * exchange_fraction)
                     .min(reactor.core_energy_j);
+            let removed = if enabled && eta > 0. {
+                removed.min(headroom / eta + spec.thermal_power_w * 0.01 * dt)
+            } else {
+                removed
+            };
             reactor.core_energy_j -= removed;
             let conversion_temperature = (available_k
                 - 0.5 * removed / spec.core_heat_capacity_j_k)
@@ -238,7 +248,7 @@ pub(crate) fn process(
     cat: Res<ShipCatalogue>,
     mut ships: Query<
         (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
-        Without<super::super::travel::Dormant>,
+        Without<super::super::travel::SystemsSuspended>,
     >,
     processors: Query<(&FuelProcessor, &Device)>,
 ) {
@@ -379,6 +389,31 @@ mod tests {
     }
 
     #[test]
+    fn hot_standby_retains_core_heat_and_supplies_a_new_load_immediately() {
+        let mut fixture = fixture("reactor_compact_2m");
+        let capacity = fixture.design.battery_j;
+        let target_energy = {
+            let world = fixture.app.world_mut();
+            let mut query = world.query::<&mut Reactor>();
+            let mut reactor = query.single_mut(world).unwrap();
+            let energy =
+                (reactor.spec.hot_temperature_k - 300.) * reactor.spec.core_heat_capacity_j_k;
+            reactor.core_energy_j = energy;
+            energy
+        };
+        for _ in 0..100 {
+            fixture.set_inventory(|inventory| inventory.energy_j = capacity);
+            fixture.advance();
+        }
+        let world = fixture.app.world_mut();
+        let mut query = world.query::<&Reactor>();
+        assert!(query.single(world).unwrap().core_energy_j > target_energy * 0.95);
+        fixture.set_inventory(|inventory| inventory.energy_j = 0);
+        fixture.advance();
+        assert!(fixture.state().inventory.energy_j > 100_000);
+    }
+
+    #[test]
     fn breeder_conserves_material_and_produces_power() {
         let mut fixture = fixture("reactor_breeder_4m");
         let cat = Catalogue::builtin();
@@ -499,7 +534,7 @@ mod tests {
     fn docking_transfers_guest_heat_to_host_without_radiating_it() {
         use crate::sim::{
             identity::IdentityIndex,
-            travel::{Dormant, PresenceState},
+            travel::{PresenceState, SystemsSuspended},
         };
         use bevy::ecs::system::RunSystemOnce;
         let mut fixture = fixture("reactor_compact_2m");
@@ -515,7 +550,7 @@ mod tests {
         index.0.insert(host_id, host);
         world.insert_resource(index);
         world.entity_mut(fixture.ship).insert((
-            Dormant,
+            SystemsSuspended,
             PresenceState(toy_sim_model::travel::Presence::Docked {
                 host: host_id,
                 bay: 0,

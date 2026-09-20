@@ -61,7 +61,7 @@ pub fn run(
             &mut ShipThermal,
             &mut ShipInventory,
         ),
-        Without<super::super::travel::Dormant>,
+        Without<super::super::travel::SystemsSuspended>,
     >,
     mut parts: Query<(&mut Device, Option<&Radiator>, Option<&EmergencyCooling>)>,
 ) {

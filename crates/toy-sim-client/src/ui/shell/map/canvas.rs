@@ -7,42 +7,46 @@ pub(super) fn draw(
     origin: Option<Id>,
     focus: Option<Id>,
     fit: bool,
+    fit_route: bool,
 ) {
     let (rect, response) = ui.allocate_exact_size(
         ui.available_size().max(egui::vec2(0., 220.)),
         egui::Sense::click_and_drag(),
     );
-    if state.zoom == 0. || fit {
-        state.zoom = (rect.width() / state.cache.bounds.x)
-            .min(rect.height() / state.cache.bounds.y)
-            .clamp(0.01, 1.5);
-        state.pan = egui::Vec2::ZERO;
+    if state.camera.scale == 0. || fit {
+        state
+            .camera
+            .fit(state.cache.positions.iter().copied(), rect);
+    }
+    if fit_route {
+        let route = if state.route.plan().is_some() {
+            &state.suggested
+        } else {
+            &state.active
+        };
+        state.camera.fit(
+            route
+                .systems
+                .iter()
+                .map(|&index| state.cache.positions[index]),
+            rect,
+        );
     }
     if let Some(&index) = focus.and_then(|id| state.cache.systems.get(&id)) {
-        state.zoom = state.zoom.max(1.4);
-        state.pan = -state.cache.positions[index] * state.zoom;
+        state.camera.focus(state.cache.positions[index]);
     }
-    if response.dragged() {
-        state.pan += ui.input(|input| input.pointer.delta());
-    }
-    if response.hovered() {
-        let old = state.zoom;
-        let factor = (ui.input(|input| input.smooth_scroll_delta.y) * 0.003).exp();
-        state.zoom = (old * factor).clamp(0.01, 12.);
-        if let Some(pointer) = response.hover_pos() {
-            let pivot = pointer - rect.center();
-            state.pan = pivot - (pivot - state.pan) * state.zoom / old;
-        }
-    }
+    state.camera.update(ui, &response);
 
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 2., egui::Color32::from_rgb(9, 17, 26));
-    let positions: Vec<_> = state
+    let projected: Vec<_> = state
         .cache
         .positions
         .iter()
-        .map(|position| rect.center() + state.pan + *position * state.zoom)
+        .map(|position| state.camera.project(*position, rect))
         .collect();
+    let positions: Vec<_> = projected.iter().map(|&(position, _)| position).collect();
+    reference_plane(&painter, rect, state);
     let selected = state.selected.or(origin);
     let search = state.search.trim().to_lowercase();
     let matching: Vec<_> = model
@@ -70,13 +74,14 @@ pub(super) fn draw(
         if !rect.intersects(egui::Rect::from_two_pos(a_pos, b_pos)) {
             continue;
         }
-        let delta = b_pos - a_pos;
-        let bend = a_pos
-            + egui::vec2(delta.x.signum(), delta.y.signum()) * delta.x.abs().min(delta.y.abs());
         let color = if planned {
             egui::Color32::from_rgb(255, 199, 98)
         } else if suggested {
             ACCENT
+        } else if selected.is_some_and(|id| {
+            model.navigation.systems[a].id == id || model.navigation.systems[b].id == id
+        }) {
+            egui::Color32::from_rgb(95, 124, 144)
         } else if matching[a] && matching[b] {
             egui::Color32::from_rgb(42, 64, 80)
         } else {
@@ -89,10 +94,7 @@ pub(super) fn draw(
         } else {
             0.7
         };
-        painter.add(egui::Shape::line(
-            vec![a_pos, bend, b_pos],
-            egui::Stroke::new(width, color),
-        ));
+        painter.line_segment([a_pos, b_pos], egui::Stroke::new(width, color));
     }
     for &(a, b) in state.active.slips.iter().chain(&state.suggested.slips) {
         let (a, b) = (positions[a], positions[b]);
@@ -116,7 +118,7 @@ pub(super) fn draw(
         );
     }
 
-    let visible: Vec<_> = positions
+    let mut visible: Vec<_> = positions
         .iter()
         .enumerate()
         .filter_map(|(index, &position)| rect.expand(10.).contains(position).then_some(index))
@@ -125,16 +127,27 @@ pub(super) fn draw(
         visible
             .iter()
             .copied()
-            .filter(|&index| matching[index] && positions[index].distance_sq(pointer) <= 81.)
+            .filter(|&index| {
+                (matching[index]
+                    || highlighted.contains(&index)
+                    || selected == Some(model.navigation.systems[index].id))
+                    && positions[index].distance_sq(pointer) <= 81.
+            })
             .min_by(|&a, &b| {
                 positions[a]
                     .distance_sq(pointer)
                     .total_cmp(&positions[b].distance_sq(pointer))
+                    .then_with(|| projected[b].1.total_cmp(&projected[a].1))
             })
     });
     if response.clicked() {
         if let Some(index) = hovered {
             state.selected = Some(model.navigation.systems[index].id);
+        }
+    }
+    if response.double_clicked() {
+        if let Some(index) = hovered {
+            state.camera.focus(state.cache.positions[index]);
         }
     }
     if let Some(index) = hovered {
@@ -148,12 +161,14 @@ pub(super) fn draw(
                 ui.label(&sovereignty.name);
             }
             ui.weak(format!(
-                "Population {} · Click to select",
+                "Population {} · Click to select · Double-click to focus",
                 population(system.population)
             ));
         });
     }
-    let radius = (3.5 * state.zoom.sqrt()).clamp(1.4, 6.);
+    let radius = (2.0 + state.camera.scale.sqrt() as f32 * 0.25).clamp(2., 5.);
+    visible.sort_unstable_by(|&a, &b| projected[a].1.total_cmp(&projected[b].1));
+    let depth_span = state.cache.bounds.length().max(1.);
     let mut labels = Vec::new();
     for index in visible {
         let system = &model.navigation.systems[index];
@@ -170,6 +185,9 @@ pub(super) fn draw(
         );
         if !matching[index] && !own && !chosen && !route {
             color = color.gamma_multiply(0.25);
+        } else if !own && !chosen && !route && !hovered {
+            let depth = (projected[index].1 / depth_span + 0.5).clamp(0., 1.);
+            color = color.gamma_multiply((0.45 + 0.55 * depth) as f32);
         }
         painter.circle_filled(position, radius, color);
         if own {
@@ -182,12 +200,7 @@ pub(super) fn draw(
         if chosen {
             painter.circle_stroke(position, radius + 6., egui::Stroke::new(1.5, ACCENT));
         }
-        if own
-            || chosen
-            || hovered
-            || (state.zoom >= 1.1 && matching[index])
-            || (route && state.zoom >= 0.65)
-        {
+        if own || chosen || hovered || (state.camera.scale >= 20. && matching[index]) || route {
             labels.push((!(own || chosen || hovered), !route, index, color));
         }
     }
@@ -211,6 +224,76 @@ pub(super) fn draw(
         occupied.extend(cells);
         painter.galley(position, galley, color);
     }
+    let route = if state.route.plan().is_some() {
+        &state.suggested
+    } else {
+        &state.active
+    };
+    for &(number, index) in &route.stops {
+        let position = positions[index];
+        if rect.contains(position) {
+            painter.text(
+                position + egui::vec2(radius + 5., -radius - 3.),
+                egui::Align2::LEFT_BOTTOM,
+                number.to_string(),
+                egui::FontId::monospace(11.),
+                ACCENT,
+            );
+        }
+    }
+    let distance = 10_f64.powf((90. / state.camera.scale).log10().floor());
+    let start = rect.left_bottom() + egui::vec2(14., -16.);
+    let end = start + egui::vec2((distance * state.camera.scale) as f32, 0.);
+    painter.line_segment([start, end], egui::Stroke::new(1., MUTED));
+    painter.text(
+        start - egui::vec2(0., 4.),
+        egui::Align2::LEFT_BOTTOM,
+        format!("{distance} ly"),
+        egui::FontId::monospace(10.),
+        MUTED,
+    );
+}
+
+fn reference_plane(painter: &egui::Painter, rect: egui::Rect, state: &State) {
+    let extent = state.cache.bounds.max_element().max(10.);
+    let step = 10_f64.powf((extent / 10.).log10().floor());
+    let limit = (extent * 0.5 / step).ceil() as i32;
+    let edge = limit as f64 * step;
+    for index in -limit..=limit {
+        let offset = index as f64 * step;
+        for (a, b) in [
+            (
+                glam::DVec3::new(-edge, offset, 0.),
+                glam::DVec3::new(edge, offset, 0.),
+            ),
+            (
+                glam::DVec3::new(offset, -edge, 0.),
+                glam::DVec3::new(offset, edge, 0.),
+            ),
+        ] {
+            let a = state.camera.project(a, rect).0;
+            let b = state.camera.project(b, rect).0;
+            painter.line_segment(
+                [a, b],
+                egui::Stroke::new(0.5, egui::Color32::from_rgb(17, 29, 39)),
+            );
+        }
+    }
+    if let Some(&index) = state.selected.and_then(|id| state.cache.systems.get(&id)) {
+        let point = state.cache.positions[index];
+        let foot = glam::DVec3::new(point.x, point.y, 0.);
+        let a = state.camera.project(point, rect).0;
+        let b = state.camera.project(foot, rect).0;
+        if rect.intersects(egui::Rect::from_two_pos(a, b)) {
+            let (a, b) = clip_segment(rect, a, b);
+            painter.add(egui::Shape::dashed_line(
+                &[a, b],
+                egui::Stroke::new(1., MUTED),
+                3.,
+                4.,
+            ));
+        }
+    }
 }
 
 pub(super) fn legend(ui: &mut egui::Ui) {
@@ -224,7 +307,7 @@ pub(super) fn legend(ui: &mut egui::Ui) {
         }
         ui.colored_label(egui::Color32::from_rgb(255, 199, 98), "Queued route");
         ui.colored_label(egui::Color32::from_rgb(221, 135, 240), "Slip");
-        ui.weak("Drag · scroll to zoom");
+        ui.weak("Right-drag rotate · Middle-drag / Shift+right-drag pan · Scroll zoom · Double-click focus");
     });
 }
 

@@ -1,6 +1,7 @@
 use super::*;
 use std::collections::BTreeMap;
 use toy_sim_model::navigation::GateNetwork;
+use toy_sim_universe::civilization::LIGHT_YEAR_M;
 
 #[derive(Default)]
 pub(super) struct Cache {
@@ -8,10 +9,10 @@ pub(super) struct Cache {
     pub network: GateNetwork,
     pub systems: BTreeMap<Id, usize>,
     pub beacons: BTreeMap<Id, usize>,
-    pub positions: Vec<egui::Vec2>,
+    pub positions: Vec<glam::DVec3>,
     pub names: Vec<String>,
     pub links: Vec<(usize, usize, Id, Id)>,
-    pub bounds: egui::Vec2,
+    pub bounds: glam::DVec3,
 }
 
 impl Cache {
@@ -63,68 +64,27 @@ impl Cache {
             .first_key_value()
             .map(|(_, &index)| catalogue.systems[index].position)
             .unwrap_or_default();
-        let projected: Vec<_> = catalogue
+        self.positions = catalogue
             .systems
             .iter()
-            .map(|system| {
-                let p = system.position.relative_to(anchor);
-                glam::DVec2::new(p.x + p.z * 0.2, p.y + p.z * 0.15)
-            })
+            .map(|system| system.position.relative_to(anchor) / LIGHT_YEAR_M)
             .collect();
-        let (lo, hi) = projected.iter().fold(
+        if self.positions.is_empty() {
+            self.bounds = glam::DVec3::ONE;
+            return true;
+        }
+        let (lo, hi) = self.positions.iter().fold(
             (
-                glam::DVec2::splat(f64::INFINITY),
-                glam::DVec2::splat(f64::NEG_INFINITY),
+                glam::DVec3::splat(f64::INFINITY),
+                glam::DVec3::splat(f64::NEG_INFINITY),
             ),
             |(lo, hi), &p| (lo.min(p), hi.max(p)),
         );
-        let span = (hi - lo).max_element().max(1.);
         let center = (lo + hi) * 0.5;
-        let cells = (catalogue.systems.len() as f64)
-            .sqrt()
-            .mul_add(1.6, 0.)
-            .ceil()
-            .max(8.);
-        let mut occupied = BTreeSet::new();
-        self.positions = vec![egui::Vec2::ZERO; projected.len()];
-        for &index in self.systems.values() {
-            let normalized = (projected[index] - center) / span;
-            let desired = (
-                (normalized.x * cells).round() as i32,
-                (normalized.y * cells).round() as i32,
-            );
-            let mut slot = desired;
-            if occupied.contains(&slot) {
-                'search: for radius in 1.. {
-                    for dx in -radius..=radius {
-                        for dy in [-radius, radius] {
-                            let candidate = (desired.0 + dx, desired.1 + dy);
-                            if !occupied.contains(&candidate) {
-                                slot = candidate;
-                                break 'search;
-                            }
-                        }
-                    }
-                    for dy in (-radius + 1)..radius {
-                        for dx in [-radius, radius] {
-                            let candidate = (desired.0 + dx, desired.1 + dy);
-                            if !occupied.contains(&candidate) {
-                                slot = candidate;
-                                break 'search;
-                            }
-                        }
-                    }
-                }
-            }
-            occupied.insert(slot);
-            self.positions[index] = egui::vec2(slot.0 as f32, slot.1 as f32) * 24.;
+        for position in &mut self.positions {
+            *position -= center;
         }
-        self.bounds = self
-            .positions
-            .iter()
-            .fold(egui::Vec2::splat(100.), |extent, p| {
-                extent.max(p.abs() * 2. + egui::Vec2::splat(100.))
-            });
+        self.bounds = (hi - lo).max(glam::DVec3::ONE);
         true
     }
 }
@@ -227,6 +187,7 @@ pub(super) struct ActiveRoute {
     pub gates: BTreeSet<Id>,
     pub systems: BTreeSet<usize>,
     pub slips: Vec<(usize, usize)>,
+    pub stops: Vec<(usize, usize)>,
 }
 
 impl ActiveRoute {
@@ -253,9 +214,19 @@ impl ActiveRoute {
         self.gates.clear();
         self.systems.clear();
         self.slips.clear();
+        self.stops.clear();
         let mut cursor = origin;
-        for action in &self.actions {
+        for (order_index, action) in self.actions.iter().enumerate() {
             let next = cache.order_system(catalogue, celestial_systems, action);
+            if let Some(&system_index) = next.and_then(|id| cache.systems.get(&id)) {
+                if self
+                    .stops
+                    .last()
+                    .is_none_or(|&(_, last)| last != system_index)
+                {
+                    self.stops.push((order_index + 1, system_index));
+                }
+            }
             if let travel::Order::Jump(id) = action {
                 self.gates.insert(*id);
             }

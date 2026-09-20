@@ -10,8 +10,11 @@ pub mod optical;
 pub mod ownership;
 pub mod presentation;
 pub mod routing;
+pub mod serial;
 pub mod transfer;
 pub mod travel;
+pub mod wasm_intel;
+pub mod wasm_world;
 pub use local_space::{LocalObstacle, LocalSpace};
 pub use presentation::*;
 
@@ -383,10 +386,8 @@ pub struct InputFrame {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramQuery {
-    LocalSpace {
-        destination: GalacticPosition,
-        range_m: f64,
-        after_seconds: f64,
+    Orrery {
+        reference: GalacticPosition,
     },
     RouteRequest(routing::Request),
     RoutePoll {
@@ -444,7 +445,7 @@ pub struct Beacon {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramReply {
-    LocalSpace(LocalSpace),
+    Orrery(Vec<LocalObstacle>),
     Route {
         id: u64,
         status: routing::Status,

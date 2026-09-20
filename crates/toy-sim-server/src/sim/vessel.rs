@@ -164,12 +164,9 @@ fn spawn(
     mut wasm: ResMut<WasmRuntime>,
     launch: Res<ShipLaunch>,
 ) {
-    let starter = ShipBlueprint::from_bytes(include_bytes!(
-        "../../../../assets/ships/expedition-patrol.ship"
-    ))
-    .expect("bundled patrol ship")
-    .compile(&cat.0)
-    .expect("starter design");
+    let starter = toy_sim_ships::expedition_patrol()
+        .compile(&cat.0)
+        .expect("starter design");
     let starter = Arc::new(starter);
     let selected = if let Some(path) = &launch.0 {
         match ShipBlueprint::load(path).and_then(|s| s.compile(&cat.0)) {
@@ -314,7 +311,7 @@ pub(crate) fn run(
         &MassProps,
         &super::identity::Identity,
         &super::ownership::AssetOwner,
-        Has<super::travel::Dormant>,
+        Has<super::travel::SystemsSuspended>,
         Option<&mut super::missiles::Launchers>,
     )>,
 ) {

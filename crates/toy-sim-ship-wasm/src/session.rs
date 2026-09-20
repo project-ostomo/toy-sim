@@ -6,6 +6,7 @@ use toy_sim_ship_api::abi;
 /// Committed host state. Each callback edits a private working copy.
 #[derive(Clone, Default)]
 pub struct Session {
+    pub serial: toy_sim_model::serial::Terminal,
     pub spatial: State,
     pub attitude: Option<abi::AttitudeState>,
     pub weapons: Option<abi::WeaponsState>,

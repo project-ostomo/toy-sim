@@ -20,6 +20,8 @@ pub struct PresentationFrame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipPresentation {
+    pub serial: crate::serial::Screen,
+    pub memory_limit_bytes: u64,
     pub propulsion: PropulsionTelemetry,
     pub ship: EntityId,
     pub revision: u64,
@@ -33,7 +35,12 @@ pub struct ShipPresentation {
     pub hull_heat_capacity_j: f64,
     pub battery_capacity_j: u64,
     pub power_generated_w: f64,
+    pub generation_capacity_w: f64,
+    pub reactors: Vec<ReactorTelemetry>,
+    pub slip_cooldown_s: Option<f64>,
     pub power_consumed_w: f64,
+    pub power_requested_w: f64,
+    pub slip_charge: Option<SlipChargeTelemetry>,
     pub inventory: Vec<ResourceAmount>,
     pub cargo: Vec<crate::industry::CargoStack>,
     pub cargo_capacity_m3: f64,
@@ -42,6 +49,32 @@ pub struct ShipPresentation {
     pub computer: ComputerStatus,
     pub instruments: Option<Instruments>,
     pub screens: Vec<ScreenDefinition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ReactorTelemetry {
+    pub name: String,
+    pub status: ReactorStatus,
+    pub temperature_k: f64,
+    pub coolant_temperature_k: f64,
+    pub operating_temperature_k: f64,
+    pub shutdown_temperature_k: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReactorStatus {
+    Running,
+    Standby,
+    Shutdown,
+    Damaged,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlipChargeTelemetry {
+    pub stored_j: u64,
+    pub required_j: u64,
+    pub input_w: f64,
+    pub remaining_s: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -54,6 +87,17 @@ pub struct PropulsionTelemetry {
     pub propellants: Vec<String>,
     pub fuels: Vec<String>,
     pub charges: Vec<String>,
+    pub ammunition: Vec<String>,
+    pub drives: Vec<DriveReserve>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DriveReserve {
+    pub name: String,
+    pub resource: String,
+    pub delta_v_m_s: f64,
+    pub full_delta_v_m_s: f64,
+    pub flow_kg_s: f64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -267,6 +311,13 @@ pub struct CombatEvent {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CombatEventKind {
+    Beam {
+        source: ContactRef,
+        start: GalacticPosition,
+        end: GalacticPosition,
+        velocity_m_s: [f64; 3],
+        end_time_ns: u64,
+    },
     Projectile {
         id: u64,
         source: Option<ContactRef>,
@@ -390,7 +441,6 @@ pub struct CollisionDiagnostics {
     pub candidates: u64,
     pub detailed_queries: u64,
     pub impacts: u64,
-    pub contact_reviews: u64,
     pub dissipated_j: f64,
 }
 

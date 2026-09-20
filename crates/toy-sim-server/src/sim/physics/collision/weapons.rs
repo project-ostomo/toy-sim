@@ -124,7 +124,7 @@ fn clear_muzzle(
             ball.as_ref(),
             &base,
             vector(DVec3::ZERO),
-            other.shape().as_ref(),
+            SharedShape::ball(other.geometry.radius).as_ref(),
             options,
         )
         .expect("supported assembly clearance")
@@ -227,38 +227,16 @@ pub fn fire(
     let pivot = body.rotation * body.members[member].local_position
         + part_rotation * (part.centre - ship.design.centre)
         + mount * DVec3::from_array(spec.pivot_device_m);
-    let physical_muzzle = pivot + barrel * DVec3::from_array(spec.muzzle_offset_m);
-    let direction = barrel * DVec3::NEG_Z;
-    let member_pose = pose(
-        body.rotation * body.members[member].local_position,
-        body.rotation * body.members[member].local_rotation,
-    );
-    let hull = &body.members[member].geometry.hull;
-    let mut muzzle = physical_muzzle;
-    // A sub-metre barrel can end inside the conservative voxel envelope. Clear
-    // that envelope, while the real part geometry still vetoes obstructed fire.
-    for _ in 0..8 {
-        if !hull.contains_point(&member_pose, vector(muzzle)) {
-            break;
-        }
-        let ray = query::Ray::new(vector(muzzle), vector(direction));
-        let Some(exit) = hull.cast_ray(&member_pose, &ray, 3., false) else {
-            break;
-        };
-        muzzle += direction * (exit + spec.projectile_radius_m * 2. + 0.001);
-    }
-    if (muzzle - physical_muzzle).length() > 3.
-        || hull.contains_point(&member_pose, vector(muzzle))
-        || !clear_muzzle(
-            body,
-            member,
-            part_index,
-            ship,
-            pivot,
-            muzzle,
-            spec.projectile_radius_m,
-        )
-    {
+    let muzzle = pivot + barrel * DVec3::from_array(spec.muzzle_offset_m);
+    if !clear_muzzle(
+        body,
+        member,
+        part_index,
+        ship,
+        pivot,
+        muzzle,
+        spec.projectile_radius_m,
+    ) {
         ship.weapons[index].inhibit_flags = abi::WEAPON_BLOCKED;
         return None;
     }
@@ -279,6 +257,7 @@ pub fn fire(
             range_m: spec.beam_range_m,
             energy_j: optical,
             divergence_rad: spec.dispersion_half_angle_rad,
+            duration_s: spec.cycle_interval_s,
         });
         return None;
     }
@@ -372,8 +351,8 @@ pub fn projectile_body(
 ) -> Body {
     let inertia = DMat3::IDENTITY * (0.4 * mass * radius * radius);
     let geometry = Arc::new(Geometry {
-        hull: SharedShape::ball(radius),
-        shield: SharedShape::ball(radius),
+        surface: SharedShape::ball(radius),
+
         radius,
         shield_radius: radius,
         feature: 2.0 * radius,
@@ -391,9 +370,8 @@ pub fn projectile_body(
         feature: 2.0 * radius,
         generation: 0,
         impulse_dv: DVec3::ZERO,
-        impulse_dw: DVec3::ZERO,
         rotation_path: None,
-        rotational_envelopes: Vec::new(),
+
         projectile: true,
         launch_owner: None,
         expires_at: Some(t + 2.0),
@@ -458,6 +436,7 @@ mod tests {
                 range_m: 100.0,
                 energy_j: 1000.0,
                 divergence_rad: 0.00002,
+                duration_s: 0.1,
             },
             &mut bodies,
             0.0,
@@ -468,6 +447,11 @@ mod tests {
         assert_eq!(bodies[0].members[0].thermal.hull_energy_j, 1000.0);
         assert_eq!(bodies[1].members[0].thermal.hull_energy_j, 0.0);
         assert!(report.shots.is_empty());
+        assert_eq!(report.beam_traces.len(), 1);
+        let trace = &report.beam_traces[0];
+        assert_eq!(trace.owner, owner);
+        assert!((trace.end.relative_to(trace.start).length() - 9.0).abs() < 1e-6);
+        assert_eq!(trace.duration_s, 0.1);
         assert_eq!(report.beam_hits.len(), 1);
         assert_eq!(report.beam_hits[0].source, owner);
         assert_eq!(report.beam_hits[0].target, bodies[0].members[0].entity);
@@ -482,7 +466,7 @@ mod tests {
         let geometry = Arc::new(Geometry::ship(&design));
         let mut body = super::super::solver_tests::object(
             world,
-            geometry.hull.clone(),
+            geometry.surface.clone(),
             geometry.radius,
             geometry.feature,
             DVec3::ZERO,
@@ -535,12 +519,16 @@ mod tests {
             range_m: 10.0,
             energy_j: 1000.0,
             divergence_rad: 0.00002,
+            duration_s: 0.1,
         };
         let mut report = Report::default();
         assert_eq!(
             resolve_beam(beam.clone(), &mut bodies, 0.0, &mut report),
             None
         );
+        assert_eq!(report.beam_traces.len(), 1);
+        let trace = &report.beam_traces[0];
+        assert!((trace.end.relative_to(trace.start).length() - 10.0).abs() < 1e-6);
         assert_eq!(
             resolve_beam(
                 BeamEvent {
@@ -696,7 +684,6 @@ mod tests {
                     < 1e-10
             );
             assert_eq!(body.impulse_dv, DVec3::ZERO);
-            assert_eq!(body.impulse_dw, DVec3::ZERO);
 
             let spec = ship.design.weapon_specs[0];
             let propellant = toy_sim_ships::weapons::shot_propellant_kg(&spec);
@@ -738,8 +725,8 @@ mod tests {
                     let mut obstruction = body.members[0].clone();
                     obstruction.entity = world.spawn_empty().id();
                     obstruction.geometry = Arc::new(Geometry {
-                        hull: SharedShape::ball(100.0),
-                        shield: SharedShape::ball(100.0),
+                        surface: SharedShape::ball(100.0),
+
                         radius: 100.0,
                         shield_radius: 100.0,
                         feature: 200.0,
@@ -884,6 +871,17 @@ pub struct BeamEvent {
     pub range_m: f64,
     pub energy_j: f64,
     pub divergence_rad: f64,
+    pub duration_s: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct BeamTrace {
+    pub owner: Entity,
+    pub time: f64,
+    pub duration_s: f64,
+    pub start: GalacticPosition,
+    pub end: GalacticPosition,
+    pub velocity: DVec3,
 }
 
 #[derive(Clone, Debug)]
@@ -898,25 +896,38 @@ pub fn resolve_beam(
     t: f64,
     report: &mut Report,
 ) -> Option<usize> {
-    let ray = query::Ray::new(vector(DVec3::ZERO), vector(beam.direction));
     let mut closest = None;
     let mut distance = beam.range_m;
     for (body_index, body) in bodies.iter().enumerate() {
         for (member_index, member) in body.members.iter().enumerate() {
-            if member.destroyed {
+            if member.destroyed || member.entity == beam.owner {
                 continue;
             }
-            let pose = body.shape_pose(member_index, t, beam.position);
-            let shape = body.collision_shape(
-                member_index,
-                member.entity != beam.owner && member.shielded(),
-            );
-            if let Some(hit) = shape.cast_ray(&pose, &ray, distance, true) {
+            let center = body.position.relative_to(beam.position) + body.velocity * (t - body.time);
+            let radius = body.collision_radius(member_index, member.shielded());
+            if let Some((hit, _)) = sphere_interval(center, -beam.direction, radius, distance) {
                 distance = hit;
                 closest = Some((body_index, member_index));
             }
         }
     }
+    let velocity = bodies
+        .iter()
+        .find_map(|body| {
+            body.members
+                .iter()
+                .any(|member| member.entity == beam.owner)
+                .then_some(body.velocity)
+        })
+        .unwrap_or(DVec3::ZERO);
+    report.beam_traces.push(BeamTrace {
+        owner: beam.owner,
+        time: t,
+        duration_s: beam.duration_s,
+        start: beam.position,
+        end: beam.position.offset_by(beam.direction * distance),
+        velocity,
+    });
     let (body_index, member_index) = closest?;
     let body = &mut bodies[body_index];
     record_motion(body, t, report);
@@ -932,18 +943,22 @@ pub fn resolve_beam(
     let spot = (distance * beam.divergence_rad).max(0.001);
     let energy = beam.energy_j * (radius * radius / (spot * spot)).min(1.0);
     member.deposit(shield, energy);
+    let target = member.entity;
+    let position = beam.position.offset_by(beam.direction * distance);
+    let surface = body.impact_surface(member_index, position, t, shield);
     report.impact_events.push(ImpactEvent {
-        entities: [beam.owner, member.entity],
+        entities: [target, beam.owner],
         time: t,
-        position: beam.position.offset_by(beam.direction * distance),
+        position,
+        surface_positions: [surface, surface],
         velocity: body.velocity,
         normal: -beam.direction,
-        shields: [false, shield],
+        shields: [shield, false],
         energy_j: energy,
     });
     report.beam_hits.push(BeamHit {
         source: beam.owner,
-        target: member.entity,
+        target,
     });
     report.impacts += 1;
     report.dissipated_j += energy;

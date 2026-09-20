@@ -7,7 +7,10 @@ use toy_sim_model::{
     local_space::{MAX_LOCAL_OBSTACLES, QUERY_GAS},
     travel::Target,
 };
-use toy_sim_ship_api::abi;
+use toy_sim_ship_api::{
+    abi::{self, Record},
+    world,
+};
 use toy_sim_ship_wasm::{ControllerRuntime, FUEL_PER_TICK, Input, ScanSource, SensorContact};
 
 struct LocalSource {
@@ -20,33 +23,32 @@ impl ScanSource for LocalSource {
         Vec::new()
     }
 
-    fn query(&self, query: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
-        let ProgramQuery::LocalSpace {
-            range_m,
-            after_seconds,
-            ..
-        } = query
-        else {
+    fn query(
+        &self,
+        query: ProgramQuery,
+        _: bool,
+        capacity: toy_sim_model::wasm_world::ReplyCapacity,
+    ) -> anyhow::Result<ProgramReply> {
+        assert!(capacity.records >= self.reply.obstacles.len());
+        let ProgramQuery::Orrery { reference } = query else {
             anyhow::bail!("unexpected query");
         };
-        assert_eq!((range_m, after_seconds), (1e6, 10.));
+        assert_eq!(reference, GalacticPosition::ZERO);
         self.calls.fetch_add(1, Ordering::SeqCst);
-        Ok(ProgramReply::LocalSpace(self.reply.clone()))
+        Ok(ProgramReply::Orrery(self.reply.obstacles.clone()))
     }
 }
 
 #[test]
 fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply() {
-    let request = ProgramQuery::LocalSpace {
-        destination: GalacticPosition::ZERO,
-        range_m: 1e6,
-        after_seconds: 10.,
+    let request = ProgramQuery::Orrery {
+        reference: GalacticPosition::ZERO,
     };
     assert_eq!(toy_sim_ship_wasm::query_work(&request), QUERY_GAS);
     let source = Arc::new(LocalSource {
         calls: AtomicUsize::new(0),
         reply: LocalSpace {
-            obstacles: (0..MAX_LOCAL_OBSTACLES)
+            obstacles: (0..256.min(MAX_LOCAL_OBSTACLES))
                 .map(|index| LocalObstacle {
                     reference: Target::Contact(ContactRef {
                         group: Id([2; 16]),
@@ -60,23 +62,25 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
             truncated: true,
         },
     });
-    let reply_bytes =
-        postcard::to_allocvec(&ProgramReply::LocalSpace(source.reply.clone())).unwrap();
-    assert!(reply_bytes.len() < 65536);
-    let bytes = postcard::to_allocvec(&request).unwrap();
+    let request = world::OrreryQuery {
+        reference: Default::default(),
+    };
+    let bytes = request.bytes();
+    let capacity = 256;
+    assert!(capacity * std::mem::size_of::<world::LocalObstacle>() > 65536);
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     let program = wat::parse_str(format!(
         r#"(module
-            (import "ship_v30" "world_query" (func $query (param i32 i32 i32 i32) (result i32)))
-            (memory (export "memory") 2)
+            (import "ship_v31" "orrery_read" (func $query (param i32 i32 i32 i32) (result i32)))
+            (memory (export "memory") 4)
             (data (i32.const 0) "{data}")
             (func (export "ship_api_version") (result i32) i32.const {version})
             (func (export "ship_tick")
-                i32.const 0 i32.const {length} i32.const 4096 i32.const 65536 call $query
-                i32.const {reply_length} i32.ne if unreachable end))"#,
+                i32.const 0 i32.const 4096 i32.const {capacity} i32.const 1024 call $query
+                i32.const 0 i32.ne if unreachable end
+                i32.const 1024 i64.load i64.const {count} i64.ne if unreachable end))"#,
         version = abi::VERSION,
-        length = bytes.len(),
-        reply_length = reply_bytes.len(),
+        count = 256,
     ))
     .unwrap();
     let mut runtime = ControllerRuntime::new().unwrap();

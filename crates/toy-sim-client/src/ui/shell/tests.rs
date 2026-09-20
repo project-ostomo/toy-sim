@@ -6,6 +6,10 @@ fn row(id: u8, x: f64) -> Row {
             group: Id([7; 16]),
             track: Id([id; 16]),
         }),
+        contact: Some(ContactRef {
+            group: Id([7; 16]),
+            track: Id([id; 16]),
+        }),
         name: "Same name".into(),
         kind: "Ship".into(),
         offset: glam::DVec3::new(x, 0., 0.),
@@ -129,13 +133,15 @@ fn commands_use_target_identity_safe_range_and_normalized_galactic_direction() {
 fn overview_ties_are_stable_and_filters_preserve_selection_identity() {
     let rows = [row(3, 500.), row(2, 500.)];
     let mut shell = Shell::default();
-    assert_eq!(sorted_rows(&rows, &shell)[0].key(), rows[1].key());
+    assert_eq!(sorted_rows(&rows, &shell, None)[0].key(), rows[1].key());
     shell.descending = true;
-    assert_eq!(sorted_rows(&rows, &shell)[0].key(), rows[1].key());
+    assert_eq!(sorted_rows(&rows, &shell, None)[0].key(), rows[1].key());
     shell.search = "same NAME".into();
-    assert_eq!(sorted_rows(&rows, &shell).len(), 2);
+    assert_eq!(sorted_rows(&rows, &shell, None).len(), 2);
     shell.filter = Filter::Celestials;
-    assert!(sorted_rows(&rows, &shell).is_empty());
+    assert!(sorted_rows(&rows, &shell, None).is_empty());
+    shell.search = "no matching name".into();
+    assert_eq!(sorted_rows(&rows, &shell, Some(rows[0].target)).len(), 1);
 }
 
 #[test]

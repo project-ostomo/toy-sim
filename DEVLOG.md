@@ -1855,3 +1855,153 @@ assertion failing. After correction its replacement passed, as did fresh reruns
 of the other three corrected regressions: 869 current tests verified, with six
 manual benchmarks ignored. Client UI and transfer tests ran headlessly. No new
 live keyboard or mouse playtesting was performed.
+
+### UI bars, HUD ordering and debug linking — 2026-09-19
+
+The status bar now begins after the 56-point launcher. Frame margins include
+border widths, and the launcher occupies the full left edge. World HUD painters
+are registered as children of egui's base background layer, beneath the ship
+console and floating windows. Orbit labels reserve the console area; hidden HUD
+markers and world alignment no longer receive clicks through it.
+
+Native debug Bevy linking is centralized in the shared UI and server crates.
+The editor's redundant direct import was removed. Builds succeeded for the debug
+launcher, standalone client, server and editor; ELF dynamic dependencies confirm
+that all four load bevy_dylib. The import is disabled for release and WASM builds.
+No tests were added or run for these adjustments, as requested.
+
+## 2026-09-19 — Ship control panel and navigation usability
+
+Implemented the approved Resources / Computer / Systems bottom panel. It uses neutral white and gray gauges, vertical battery and thermal meters, independent drive-family delta-V estimates, compact fitted fuel/ammunition reserves, and shield material. Thrust remains clickable when manual control is available; the three torque indicators show server-reported actuator output.
+
+The computer publishes a fixed 64-column, eight-row serial screen with no retained scrollback. The metered `serial_write` syscall accepts streamed UTF-8, carriage return, line feed, cursor positioning, clearing, and ANSI colors. The stock controller prints startup and navigation status. CPU and memory gauges use actual execution gas and allocated linear memory. Rebuilt the bundled firmware and generated bindings.
+
+Route preferences now specify a percentage of remaining propulsion fuel (default 50%) and independent wormhole/slipdrive toggles. Queued commands carry the planner's resolved transfer cost for firmware execution. The current search returns the first estimated feasible route; global optimality is not promised. Account charges for route computation have been removed. A request-local eligibility cache, earlier edge pruning, and reuse of computed slip distances reduce redundant work. A separate agent is benchmarking replacement searches in /tmp against the actual galaxy topology.
+
+Undocking immediately places the ship at docking clearance even when another object occupies the exit. HUD object markers share the Overview rows, default to General, use green/red/white standing colors with partial opacity, retain invisible square hit targets under filters, and display marked targets with a red circle. Selection overrides Overview filters.
+
+Verification completed during this change: 124 client UI checks including a software-rendered panel capture; 17 routing checks; seven undocking-related checks; streamed terminal control parsing; and stock firmware execution with serial output. The client/server build succeeded. Earlier full-galaxy searches exceeded the 30-second check; after removing repeated refinement searches, the full-fuel and half-fuel Terminus cases completed in approximately 20 and 17 seconds. Navigation performance remains an explicit follow-up for the benchmark work.
+
+Protocol version is 30 and world snapshot section version is 7. Existing databases are preserved; use a new state directory for this build.
+
+Final playable-build check: the headless debug client connected, received ship state, and the server saved its final checkpoint on clean shutdown. Binding the loopback socket required running that check outside the filesystem/network sandbox. All three Terminus allowance cases (100%, 50%, 25%) completed within their per-request timeout and respected their estimated fuel caps; their measured request times were approximately 20, 17, and 15 seconds. The larger routing redesign remains with the benchmark task.
+
+## 2026-09-19 — Direct slip planning
+
+When wormholes are disabled, routing now compares ordinary local flight against a single slip transfer with departure and arrival staging near the two endpoints. It does not search intermediate galactic slip destinations. Exclusion escape and final approach remain estimated parts of strategic commands, executed by firmware.
+
+The full-galaxy starter-to-Terminus slip-only request now returns in about 70 ms. In that scenario it reports that the estimated fuel requirement exceeds the allowance, rather than remaining in the network search; the retained-velocity arrival/approach costs still apply. A feasible direct-slip fixture returns the same itinerary as general search. Nineteen focused slip checks passed and the debug/server binaries rebuilt successfully.
+
+## 2026-09-19 — Typed WASM service ABI 31
+
+Replaced the serialized world dispatcher with typed travel, routing, navigation,
+beacon and intelligence syscalls. Programs supply fixed C records, arrays and
+variable-field arenas; there is no generic 64 KiB response limit, automatic
+buffer growth or query retry. Collection services expose pagination and bounded
+work explicitly. Guest memory ranges are validated before service execution,
+and unused caller capacity is refunded from copy admission. Route search remains
+outside the VM.
+
+Chat and LLM services now use C records and caller-owned UTF-8 buffers. LLM
+submission returns a scalar status, avoiding an output-buffer failure after a
+paid request is accepted. Chatter checkpoint bytes retain their own storage
+encoding. Updated the stock firmware callers and boundary tests for admission,
+invalid output ranges and an output array larger than 64 KiB.
+
+Generated C and AssemblyScript bindings include all service records, tags and
+typed pointers. The generator computes alignment and rejects implicit padding.
+The generated ABI 31 C header passes native and wasm32 layout checks. Updated
+the ABI, architecture and persistence documentation; saved programs must use
+the current ABI. Repository prose uses the previously verified Claude spending
+limit fallback.
+
+## 2026-09-19 — Navigation surveys and slipspace rendering
+
+Removed the local-space syscall. Navigation builds its obstacle survey from
+ordinary fused sensors, public beacons and bounded orrery records when a command
+starts. It extrapolates cached observations during steering, refreshes known
+contacts by ID once per second and public references every ten seconds, and
+surveys again after travelling outside the cached region. Newly arriving
+contacts do not yet trigger discovery notifications. The bounded ABI check,
+both routing checks and a physical solar-gate transit regression passed;
+bundled firmware was rebuilt.
+
+Slipspace uses a persistent sphere with animated HDR trails and a bright blue
+tunnel. Two directional lights illuminate the ship, and emission responds to
+exposure and bloom. A standalone llvmpipe screenshot rendered successfully
+without shader errors; this verified a metallic test object rather than the
+full client scene.
+
+## 2026-09-19 — Micropulse electrical generation
+
+Micropulse engines expose independent propulsion and generator controls. Their
+maximum electrical output is one percent of rated exhaust kinetic power; the
+boosted 4 m engine supplies up to 55.16 GW. Generator mode disperses exhaust
+with zero net thrust. Propulsion and generation share pulse fuel, electrical
+extraction reduces exhaust energy, and conversion losses become onboard heat.
+The generator responds to demand and battery headroom. A temporary supply
+budget lets loads use more energy during a tick than the battery can store;
+remaining battery energy is bounded again before publication.
+
+The expedition patrol now relies on its micropulse engine for electricity.
+Its conventional reactor and associated fuel tanks were removed. The additional
+generator device changes saved device handles, so snapshot section version 8
+requires a fresh world. Existing databases are left intact. Part information and
+the power display describe the new generator capacity. The debug application compile
+check and seven focused server micropulse tests passed.
+
+Slip energy costs were subsequently increased fiftyfold and fitted charging
+power raised to 500 MW. Expedition patrols carry two 5 GW optical lasers,
+drawing 25 GW together at forty percent efficiency. The smaller point-defence
+laser remains available. Missile patrols still replace the expedition laser
+mounts with launchers. End-of-tick electrical telemetry includes weapon loads.
+All twenty slip checks and six catalogue/missile checks passed. The moving-mouth
+forecast fixture now reads the installed drive's charging power rather than
+using an unrelated fixed power rating.
+
+## 2026-09-19 — Operating systems during slip and reactor instruments
+
+Slip transit no longer suspends the ship computer or ordinary onboard systems.
+Absence from normal-space physics remains distinct from suspended hardware.
+Generation, shields, cooling and resource consumption continue; propulsion and
+external firing are inhibited. Transit ships advance their thermal state every
+tick, so removing the collision body does not remove cooling. Targeted checks
+exercise actual WASM callbacks during transit and powered shield cooling.
+
+The Systems panel now places a reactor status box beside hull integrity.
+It shows the worst operating status and minimum thermal margin, with detailed
+core and coolant temperatures on hover. Ships without conventional reactors
+show a neutral NO REACTOR box. The power section retains generation, consumption
+and slip charging. Protocol version 34 carries explicit reactor status and
+coolant temperature. Headless captures cover fitted and absent reactors.
+
+Regenerated the bundled expedition and missile patrol designs. The scenario
+previously loaded a bundled file, so changing only the blueprint constructor
+had left the starting ship with its old reactor and lasers. The scenario now
+uses the constructor directly to prevent this drift. Fresh starting ships use
+the intended reactor-free micropulse design and 5 GW lasers.
+
+All forty hardware checks and twenty-two slip checks passed. The hardware pass
+also exposed an electrical ordering regression: actuators could apply thrust
+before avionics power loss was detected. Avionics now receives power before
+actuation, and an unpowered computer cannot apply propulsive commands. Both
+server and debug client were rebuilt with the matching protocol.
+
+## 2026-09-19 — Egui 3D galactic map
+
+Replaced the displaced subway grid with actual three-dimensional galactic
+positions, stored relative to a stable origin in light-years. The map projects
+and paints these positions entirely in egui. Right-drag rotates an orthographic
+view, middle-drag or Shift/right-drag pans, and wheel zoom keeps the pointed
+location fixed. Search results and double-click smoothly focus a system.
+
+The map keeps existing route requests and fuel preferences. It shows straight
+wormhole links, dashed slip legs, numbered route stops, faction colours, depth
+fading, a reference plane and a distance scale. Fit route frames the preview or
+active route; My ship focuses the current system. Labels and offscreen geometry
+are culled to keep the display readable.
+
+All fourteen map checks passed, including projection/zoom anchoring, route
+selection, window layout and actual three-dimensional coordinate preservation.
+The 3,000-system headless draw measured 0.46 ms median and 0.59 ms p95 on this
+machine; zoom reduced painted shapes from 6,172 to 646.

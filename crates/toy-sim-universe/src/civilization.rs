@@ -54,8 +54,24 @@ pub struct CivilizationMap {
 pub fn stars() -> &'static [CatalogueStar] {
     static STARS: OnceLock<Vec<CatalogueStar>> = OnceLock::new();
     STARS.get_or_init(|| {
-        serde_json::from_str(include_str!("../data/inhabited-stars.json"))
-            .expect("bundled nearby star catalogue")
+        #[derive(serde::Deserialize)]
+        struct Names {
+            names: std::collections::BTreeMap<String, String>,
+        }
+
+        let aliases: Names = serde_json::from_str(include_str!("../data/star-names.json"))
+            .expect("bundled star names");
+        let mut stars: Vec<CatalogueStar> =
+            serde_json::from_str(include_str!("../data/inhabited-stars.json"))
+                .expect("bundled nearby star catalogue");
+        for star in &mut stars {
+            if star.name.starts_with("Gaia ") {
+                if let Some(name) = aliases.names.get(&star.id) {
+                    star.name.clone_from(name);
+                }
+            }
+        }
+        stars
     })
 }
 
@@ -271,6 +287,9 @@ fn generate() -> CivilizationMap {
         }
     }
 
+    network
+        .links
+        .retain(|link| systems[link.a].name != "Sol" && systems[link.b].name != "Sol");
     network.links.sort_by_key(|link| (link.a, link.b));
     CivilizationMap {
         generation_version: GENERATION_VERSION,
@@ -380,7 +399,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn connected_map_preserves_named_routes_and_has_distinct_political_networks() {
+    fn map_isolates_sol_and_has_distinct_political_networks() {
         let map = map();
         assert_eq!(map.systems.len(), INHABITED_SYSTEMS);
         let mut adjacency = vec![Vec::new(); map.systems.len()];
@@ -398,14 +417,15 @@ mod tests {
                 pending.extend(&adjacency[node]);
             }
         }
-        assert_eq!(reached.len(), INHABITED_SYSTEMS);
+        assert_eq!(reached, BTreeSet::from([1]));
+        assert!(adjacency[1].is_empty());
         assert!(
             adjacency
                 .iter()
                 .all(|neighbors| neighbors.len() <= MAX_SYSTEM_CONNECTIONS)
         );
         for a in 0..9 {
-            assert!(links.contains(&(a, a + 1)));
+            assert_eq!(links.contains(&(a, a + 1)), a > 1);
         }
         let mut names = BTreeSet::new();
         let mut identities = BTreeSet::new();
@@ -503,7 +523,13 @@ mod tests {
                     }
                 }
             }
-            diameter = diameter.max(*distances.iter().max().unwrap());
+            diameter = diameter.max(
+                distances
+                    .into_iter()
+                    .filter(|&distance| distance != u16::MAX)
+                    .max()
+                    .unwrap(),
+            );
         }
         let mut sovereigns = BTreeMap::<&str, usize>::new();
         for system in &map.systems {

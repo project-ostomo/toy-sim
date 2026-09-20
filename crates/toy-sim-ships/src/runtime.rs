@@ -146,6 +146,8 @@ pub struct DeviceState {
     pub operational: bool,
     pub powered: bool,
     pub actual: f64,
+    #[serde(skip)]
+    pub generated_w: f64,
     pub thrust_n: [f64; 3],
 }
 impl Default for DeviceState {
@@ -154,6 +156,7 @@ impl Default for DeviceState {
             operational: true,
             powered: true,
             actual: 0.,
+            generated_w: 0.,
             thrust_n: [0.; 3],
         }
     }
@@ -242,11 +245,17 @@ impl ShipState {
             .zip(&d.device_sources)
             .map(|(descriptor, source)| {
                 let state = match source {
-                    DeviceSource::Part(part) => &self.devices[*part],
+                    DeviceSource::Part(part) | DeviceSource::MicropulseGenerator(part) => {
+                        &self.devices[*part]
+                    }
                     DeviceSource::Avionics => &self.avionics,
                 };
                 let actual = if state.operational && state.powered {
-                    state.actual
+                    if matches!(source, DeviceSource::MicropulseGenerator(_)) {
+                        state.generated_w
+                    } else {
+                        state.actual
+                    }
                 } else {
                     0.
                 };

@@ -67,7 +67,11 @@ fn computer_reads_only_the_current_order_and_cannot_complete_a_stale_queue() {
     let ship_id = world.get::<Identity>(ship).unwrap().0;
     let source = crate::sim::commands::source(world, account, ship_id).unwrap();
     let toy_sim_model::ProgramReply::Travel { state, .. } = source
-        .query(toy_sim_model::ProgramQuery::Travel, false, 4096)
+        .query(
+            toy_sim_model::ProgramQuery::Travel,
+            false,
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
         .unwrap()
     else {
         panic!("expected the active command");

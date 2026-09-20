@@ -31,7 +31,7 @@ pub struct MicropulseEngine {
     pub thrust_n: f64,
     pub specific_impulse_s: f64,
     pub charge_energy_j_kg: f64,
-    pub electric_fraction: f64,
+    pub electric_efficiency: f64,
     pub absorbed_heat_fraction: f64,
 }
 
@@ -61,7 +61,6 @@ pub struct Demand {
     pub secondary_resource_input: Option<(usize, f64)>,
     pub resource_output: Option<(usize, f64)>,
     pub delayed_heat_j: f64,
-    pub generated_energy_j: f64,
     pub force: DVec3,
     pub torque: DVec3,
     pub actual: f64,
@@ -127,7 +126,7 @@ pub fn install(part: &mut EntityCommands, equipment: &Equipment) {
             thrust_n,
             specific_impulse_s,
             charge_energy_j_kg,
-            electric_fraction,
+            electric_efficiency,
             absorbed_heat_fraction,
             ..
         } => {
@@ -136,7 +135,7 @@ pub fn install(part: &mut EntityCommands, equipment: &Equipment) {
                     thrust_n,
                     specific_impulse_s,
                     charge_energy_j_kg,
-                    electric_fraction,
+                    electric_efficiency,
                     absorbed_heat_fraction,
                 },
                 Demand::default(),
@@ -217,8 +216,18 @@ pub(crate) fn prepare_engines(
 pub(crate) fn prepare_micropulse_engines(
     time: Res<Time<Fixed>>,
     catalogue: Res<ShipCatalogue>,
-    ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::Dormant>>,
-    mut devices: Query<(&InstalledPart, &MicropulseEngine, &mut Demand), With<ActiveDevice>>,
+    mut ships: Query<
+        (
+            &ShipDesign,
+            HardwareWrite,
+            &mut DeviceOutputs,
+            &mut ElectricalTick,
+            Has<super::super::travel::Dormant>,
+        ),
+        Without<super::super::travel::SystemsSuspended>,
+    >,
+    mut devices: Query<(&MicropulseEngine, &Device, &mut Demand), With<ActiveDevice>>,
+    other_demands: Query<(&Device, &Demand), Without<MicropulseEngine>>,
 ) {
     let dt = time.delta_secs_f64();
     let charge = catalogue
@@ -228,38 +237,112 @@ pub(crate) fn prepare_micropulse_engines(
         .enumerate()
         .find(|(_, resource)| resource.id == "micropulse_charge");
 
-    devices
-        .par_iter_mut()
-        .for_each(|(installed, engine, mut demand)| {
+    for (design, mut hardware, mut outputs, mut electrical, absent) in &mut ships {
+        let design = &design.0;
+        electrical.requested_weapon_j = 0.0;
+        let mut electricity_needed = design
+            .battery_j
+            .saturating_sub(hardware.inventory.0.energy_j)
+            as f64;
+
+        for (index, entity) in hardware.parts.0.iter().enumerate() {
+            if let Ok((device, demand)) = other_demands.get(*entity) {
+                if device.0.operational && demand.enabled {
+                    electricity_needed += demand.inputs[2];
+                }
+            }
+            if let Equipment::Utility {
+                utility: toy_sim_ships::utilities::UtilityDef::Command { power_w },
+            } = design.parts[index].definition.equipment
+            {
+                electricity_needed += power_w * dt;
+            }
+            if let Some(weapon) = design.part_weapons[index].filter(|_| !absent) {
+                let handle = design.part_devices[index].unwrap();
+                if matches!(hardware.settings.0[handle], Some(DeviceSetting::Weapon(setting)) if setting.trigger != 0)
+                {
+                    let spec = &design.weapon_specs[weapon];
+                    let energy = weapons::shot_energy(spec) * (dt / spec.cycle_interval_s).ceil();
+                    electricity_needed += energy;
+                    electrical.requested_weapon_j += energy;
+                }
+            }
+        }
+        if design.blueprint.avionics.sensor_enabled {
+            electricity_needed += SENSOR_POWER_W * dt;
+        }
+
+        for (index, installed) in hardware.parts.0.iter().copied().enumerate() {
+            let Ok((engine, device, mut demand)) = devices.get_mut(installed) else {
+                continue;
+            };
             *demand = Demand::default();
+            outputs.0[index].power.recovered_w = 0.0;
             let Some((resource, charge)) = charge else {
-                return;
+                continue;
             };
-            let Ok((design, settings)) = ships.get(installed.ship) else {
-                return;
-            };
-            let design = &design.0;
-            let part = &design.parts[installed.index];
-            let throttle = match settings.0[design.part_devices[installed.index].unwrap()] {
+            if !device.0.operational || hardware.hull.0 <= 0.0 {
+                continue;
+            }
+
+            let part = &design.parts[index];
+            let throttle = match hardware.settings.0[design.part_devices[index].unwrap()] {
+                _ if absent => 0.0,
                 Some(DeviceSetting::Throttle(value)) => value.clamp(0.0, 1.0),
                 _ => 0.0,
             };
-            let actual = engine.thrust_n * throttle;
-            let charge_mass = actual / (STANDARD_GRAVITY_M_S2 * engine.specific_impulse_s) * dt;
+            let generation = match hardware.settings.0[design.part_generators[index].unwrap()] {
+                Some(DeviceSetting::GeneratorDemand(value)) => value.clamp(0.0, 1.0),
+                _ => 0.0,
+            };
+
+            let exhaust_velocity = STANDARD_GRAVITY_M_S2 * engine.specific_impulse_s;
+            let jet_power = 0.5 * engine.thrust_n * exhaust_velocity;
+            let max_electric = 0.01 * jet_power;
+            let requested_electric = (max_electric * generation * dt).min(electricity_needed);
+            let pulse = throttle.max(requested_electric / (max_electric * dt));
+            let wanted_mass = engine.thrust_n / exhaust_velocity * pulse * dt;
+            let fraction = if wanted_mass > 0.0 {
+                (hardware.inventory.0.available(resource) * charge.mass_kg / wanted_mass).min(1.0)
+            } else {
+                1.0
+            };
+            let charge_mass = wanted_mass * fraction;
+            hardware
+                .inventory
+                .0
+                .consume(resource, charge_mass / charge.mass_kg);
+
             let released_energy = charge_mass * engine.charge_energy_j_kg;
+            let generated = requested_electric * fraction;
+            let extracted = generated / engine.electric_efficiency;
+            let jet_energy = jet_power * pulse * fraction * dt;
+            let thrust_fraction = if jet_energy > 0.0 {
+                (1.0 - extracted / jet_energy).max(0.0).sqrt()
+            } else {
+                1.0
+            };
+            let actual = engine.thrust_n * throttle * fraction * thrust_fraction;
+            let deposited = hardware.inventory.0.energy_j.deposit(generated, u64::MAX);
+            electricity_needed = (electricity_needed - deposited as f64).max(0.0);
+            outputs.0[index].power.recovered_w = deposited as f64 / dt;
+            hardware.thermal.0.add_waste_heat(
+                released_energy * engine.absorbed_heat_fraction + extracted - generated,
+                dt,
+            );
             let force = part.rotation * DVec3::NEG_Z * actual;
 
             *demand = Demand {
-                resource_input: Some((resource, charge_mass / charge.mass_kg)),
-                generated_energy_j: released_energy * engine.electric_fraction,
-                waste_heat_j: released_energy * engine.absorbed_heat_fraction,
                 force,
                 torque: (part.centre - design.centre).cross(force),
                 actual,
-                enabled: true,
+                enabled: fraction > 0.0
+                    && hardware.inventory.0.available(resource) + charge_mass / charge.mass_kg
+                        > 0.0,
                 ..default()
             };
-        });
+        }
+    }
 }
 
 pub(crate) fn prepare_rcs(
@@ -342,7 +425,7 @@ pub(crate) fn prepare_torquers(
 
 pub(crate) fn prepare_shields(
     time: Res<Time<Fixed>>,
-    ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::Dormant>>,
+    ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::SystemsSuspended>>,
     mut devices: Query<(&InstalledPart, &Shield, &mut Demand), With<ActiveDevice>>,
 ) {
     let dt = time.delta_secs_f64();
@@ -487,7 +570,7 @@ pub(crate) fn thermal_engine_decay(
         &DeviceOutputs,
         &mut ShipThermal,
         &Hull,
-        Has<super::super::travel::Dormant>,
+        Has<super::super::travel::SystemsSuspended>,
     )>,
     mut parts: Query<(
         &InstalledPart,

@@ -21,10 +21,10 @@ pub(super) fn advertised_principal(tags: &BTreeSet<Tag>) -> Option<Principal> {
 
 pub(super) fn color(standing: Option<Standing>) -> egui::Color32 {
     match standing {
-        Some(Standing::Friendly) => egui::Color32::from_rgb(113, 194, 245),
-        Some(Standing::Neutral) => egui::Color32::from_rgb(221, 191, 116),
+        Some(Standing::Friendly) => egui::Color32::from_rgb(115, 225, 145),
+        Some(Standing::Neutral) => egui::Color32::WHITE,
         Some(Standing::Hostile) => THREAT,
-        None => egui::Color32::from_rgb(156, 169, 180),
+        None => egui::Color32::WHITE,
     }
 }
 
@@ -67,15 +67,6 @@ mod tests {
         let tags = BTreeSet::from([Tag::IffOwner(advertised)]);
         assert_eq!(color(directory.track_standing(observer, &tags)), THREAT);
         assert_eq!(directory.track_standing(observer, &BTreeSet::new()), None);
-        let colors = [
-            None,
-            Some(Standing::Friendly),
-            Some(Standing::Neutral),
-            Some(Standing::Hostile),
-        ]
-        .map(color);
-        for (i, value) in colors.iter().enumerate() {
-            assert!(colors[i + 1..].iter().all(|other| other != value));
-        }
+        assert_eq!(color(None), color(Some(Standing::Neutral)));
     }
 }

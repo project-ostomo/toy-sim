@@ -37,7 +37,10 @@ fn paused_server_route_survives_computer_restart_with_its_full_fuel_budget() {
         .offset_by(DVec3::X * 1_000_000.);
     let original = TravelState {
         autopilot_enabled: false,
-        preferences: PlanningPreferences { fuel_priority: 20. },
+        preferences: PlanningPreferences {
+            fuel_fraction: 0.42,
+            ..Default::default()
+        },
         revision: 27,
         order: 1,
         orders: vec![
@@ -99,8 +102,13 @@ fn paused_server_route_survives_computer_restart_with_its_full_fuel_budget() {
     );
 
     let source = crate::sim::commands::source(world, account, ship_id).unwrap();
-    let ProgramReply::Travel { state, .. } =
-        source.query(ProgramQuery::Travel, false, 4096).unwrap()
+    let ProgramReply::Travel { state, .. } = source
+        .query(
+            ProgramQuery::Travel,
+            false,
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
+        .unwrap()
     else {
         panic!("expected the current command");
     };

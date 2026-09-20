@@ -1,5 +1,4 @@
 //! Time-ordered, dissipative contacts. Swept spatial hashes find candidates;
-//! Parry supplies geometry and continuous contact queries.
 mod ecs;
 mod gates;
 #[cfg(test)]
@@ -17,7 +16,6 @@ use bevy::{
     prelude::Entity,
 };
 use parry3d_f64::{
-    bounding_volume::BoundingVolume,
     math::{Pose, Rotation},
     query,
     shape::SharedShape,
@@ -39,8 +37,7 @@ pub fn pose(position: DVec3, rotation: DQuat) -> Pose {
 
 #[derive(Clone)]
 pub struct Geometry {
-    pub hull: SharedShape,
-    pub shield: SharedShape,
+    pub surface: SharedShape,
     pub radius: f64,
     pub shield_radius: f64,
     pub feature: f64,
@@ -65,8 +62,7 @@ impl Geometry {
             .collect();
         let shield_radius = toy_sim_ships::thermal::shield_radius(radius);
         Self {
-            hull: SharedShape::compound(parts),
-            shield: SharedShape::ball(shield_radius),
+            surface: SharedShape::compound(parts),
             radius,
             shield_radius,
             feature,
@@ -92,13 +88,6 @@ pub struct Member {
 impl Member {
     fn shielded(&self) -> bool {
         self.thermal.shield_state == abi::SHIELD_ACTIVE
-    }
-    fn shape(&self) -> &SharedShape {
-        if self.shielded() {
-            &self.geometry.shield
-        } else {
-            &self.geometry.hull
-        }
     }
     fn shielded_against(&self, other: &Body) -> bool {
         self.shielded() && other.launch_owner != Some(self.entity)
@@ -151,9 +140,7 @@ pub struct Body {
     pub feature: f64,
     pub generation: u64,
     pub impulse_dv: DVec3,
-    pub impulse_dw: DVec3,
     rotation_path: Option<rotation::RotationTrajectory>,
-    rotational_envelopes: Vec<(SharedShape, SharedShape)>,
 }
 
 impl Body {
@@ -173,88 +160,36 @@ impl Body {
         }
     }
 
-    fn prepare_rotation(&mut self, end: f64) -> bool {
+    fn prepare_rotation(&mut self, end: f64) {
         self.rotation_path = None;
-        self.rotational_envelopes.clear();
         let duration = (end - self.time).max(0.0);
         let trace =
             self.inertia_inv.x_axis.x + self.inertia_inv.y_axis.y + self.inertia_inv.z_axis.z;
-        if self.momentum == DVec3::ZERO || trace * self.momentum.length() * duration <= 0.1 {
-            return false;
-        }
-        let path = rotation::RotationTrajectory::new(
-            self.rotation,
-            self.momentum,
-            self.inertia_inv,
-            duration,
-        );
-        let envelope = path.requires_rotational_envelope();
-        if envelope {
-            self.refit_rotational_envelopes();
-        }
-        self.rotation_path = Some(path);
-        envelope
-    }
-
-    fn refit_rotational_envelopes(&mut self) {
-        self.rotational_envelopes.clear();
-        self.rotational_envelopes
-            .extend(self.members.iter().map(|member| {
-                let offset = member.local_position.length();
-                (
-                    SharedShape::ball(offset + member.geometry.radius),
-                    SharedShape::ball(offset + member.geometry.shield_radius),
-                )
-            }));
-    }
-
-    fn collision_shape(&self, member: usize, shield: bool) -> &SharedShape {
-        if let Some((hull, shield_shape)) = self.rotational_envelopes.get(member) {
-            if shield { shield_shape } else { hull }
-        } else if shield {
-            &self.members[member].geometry.shield
-        } else {
-            &self.members[member].geometry.hull
+        if self.momentum != DVec3::ZERO && trace * self.momentum.length() * duration > 0.1 {
+            self.rotation_path = Some(rotation::RotationTrajectory::new(
+                self.rotation,
+                self.momentum,
+                self.inertia_inv,
+                duration,
+            ));
         }
     }
 
-    fn shape_against(&self, member: usize, other: &Body) -> &SharedShape {
-        self.collision_shape(member, self.members[member].shielded_against(other))
+    fn collision_radius(&self, member: usize, shield: bool) -> f64 {
+        let member = &self.members[member];
+        member.local_position.length()
+            + if shield {
+                member.geometry.shield_radius
+            } else {
+                member.geometry.radius
+            }
     }
 
-    fn rotation_invariant(&self, other: &Body) -> bool {
-        !self.rotational_envelopes.is_empty()
-            || self.momentum == DVec3::ZERO
-            || self
-                .members
-                .iter()
-                .enumerate()
-                .filter(|(_, m)| !m.destroyed)
-                .all(|(index, m)| {
-                    m.local_position == DVec3::ZERO
-                        && self.shape_against(index, other).as_ball().is_some()
-                })
-    }
-
-    fn pose_against(&self, member: usize, other: &Body, t: f64, anchor: GalacticPosition) -> Pose {
-        if self.members[member].local_position == DVec3::ZERO
-            && self.shape_against(member, other).as_ball().is_some()
-        {
-            return pose(
-                self.position.relative_to(anchor) + self.velocity * (t - self.time),
-                DQuat::IDENTITY,
-            );
-        }
-        self.shape_pose(member, t, anchor)
+    fn radius_against(&self, member: usize, other: &Body) -> f64 {
+        self.collision_radius(member, self.members[member].shielded_against(other))
     }
 
     fn shape_pose(&self, member: usize, t: f64, anchor: GalacticPosition) -> Pose {
-        if !self.rotational_envelopes.is_empty() {
-            return pose(
-                self.position.relative_to(anchor) + self.velocity * (t - self.time),
-                DQuat::IDENTITY,
-            );
-        }
         let q = self.orientation(t).0;
         let m = &self.members[member];
         pose(
@@ -263,6 +198,24 @@ impl Body {
                 + q * m.local_position,
             q * m.local_rotation,
         )
+    }
+
+    fn impact_surface(
+        &self,
+        member: usize,
+        position: GalacticPosition,
+        t: f64,
+        shield: bool,
+    ) -> GalacticPosition {
+        if shield {
+            return position;
+        }
+        let surface = &self.members[member].geometry.surface;
+        let transform = self.shape_pose(member, t, position);
+        let point = surface
+            .project_point(&transform, vector(DVec3::ZERO), false)
+            .point;
+        position.offset_by(dvec(point))
     }
 
     pub fn alive(&self) -> bool {
@@ -285,28 +238,6 @@ impl Body {
             displacement: (self.velocity - frame_velocity) * (end - self.time),
             radius: self.radius + 0.002,
         }
-    }
-
-    fn angular_bound(&self, end: f64) -> f64 {
-        if let Some(path) = &self.rotation_path {
-            return path.angular_bound();
-        }
-        let axes = rotation::cholesky_columns(self.inertia_inv);
-        let mut bound = 0.0;
-        // For R_i(t)=R_(i-1)(t) exp(c_i(c_i·R_(i-1)^T L) f_i t),
-        // the added rate is <= f_i|c_i|²|L|(1+t B_(i-1)). This
-        // recurrence bounds the actual five-stage sampled curve, not just ω(0).
-        for (axis, fraction) in [
-            (axes[0], 0.5),
-            (axes[1], 0.5),
-            (axes[2], 1.0),
-            (axes[1], 0.5),
-            (axes[0], 0.5),
-        ] {
-            let a = fraction * axis.length_squared() * self.momentum.length();
-            bound = (1.0 + a * (end - self.time)) * bound + a;
-        }
-        bound
     }
 
     fn rebase(&mut self, t: f64) {
@@ -357,9 +288,6 @@ impl Body {
         self.inertia_inv = inertia.inverse();
         self.momentum = self.rotation * (inertia * (self.rotation.inverse() * omega));
         self.rotation_path = None;
-        if !self.rotational_envelopes.is_empty() {
-            self.refit_rotational_envelopes();
-        }
     }
 
     fn advance_thermal(&mut self, t: f64) {
@@ -393,7 +321,6 @@ enum Kind {
         sequence: u64,
     },
     Contact(Hit),
-    Review,
     Thermal(usize),
     Gate(usize),
 }
@@ -454,250 +381,6 @@ fn sphere_interval(r: DVec3, velocity: DVec3, radius: f64, duration: f64) -> Opt
     (enter <= exit).then_some((enter, exit))
 }
 
-/// Translation-only geometry has a direct library sweep. A failed numerical
-/// status returns to conservative advancement; it never becomes a missed hit.
-fn linear_prediction(
-    a_id: usize,
-    b_id: usize,
-    a: &Body,
-    b: &Body,
-    start: f64,
-    end: f64,
-    epsilon: f64,
-) -> Result<Option<Event>, ()> {
-    let anchor = a.position.offset_by(a.velocity * (start - a.time));
-    let mut best: Option<Event> = None;
-    for (ma, _) in a.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-        for (mb, _) in b.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-            let pa = a.pose_against(ma, b, start, anchor);
-            let pb = b.pose_against(mb, a, start, anchor);
-            if query::contact(
-                &pa,
-                a.shape_against(ma, b).as_ref(),
-                &pb,
-                b.shape_against(mb, a).as_ref(),
-                0.0,
-            )
-            .map_err(|_| ())?
-            .is_some_and(|c| c.dist < -epsilon)
-            {
-                return Err(());
-            }
-            let options = query::ShapeCastOptions {
-                max_time_of_impact: end - start,
-                target_distance: epsilon,
-                stop_at_penetration: false,
-                compute_impact_geometry_on_penetration: true,
-            };
-            let hit = query::cast_shapes(
-                &pa,
-                vector(a.velocity),
-                a.shape_against(ma, b).as_ref(),
-                &pb,
-                vector(b.velocity),
-                b.shape_against(mb, a).as_ref(),
-                options,
-            )
-            .map_err(|_| ())?;
-            let Some(hit) = hit else {
-                continue;
-            };
-            if matches!(
-                hit.status,
-                query::ShapeCastStatus::Failed | query::ShapeCastStatus::OutOfIterations
-            ) {
-                return Err(());
-            }
-            let t = start + hit.time_of_impact;
-            // The cast freezes orientation, including for spinning balls whose
-            // geometry is unchanged. Its witnesses belong to that frozen frame.
-            let pa = Pose::from_parts(
-                pa.translation + vector(a.velocity * (t - start)),
-                pa.rotation,
-            );
-            let pb = Pose::from_parts(
-                pb.translation + vector(b.velocity * (t - start)),
-                pb.rotation,
-            );
-            // Keep the cast's feature. A fresh compound contact query could
-            // return an unrelated resting face and hide this new collision.
-            let point1 = pa * hit.witness1;
-            let point2 = pb * hit.witness2;
-            let normal1 = pa.rotation * hit.normal1;
-            let contact = query::Contact {
-                point1,
-                point2,
-                normal1,
-                normal2: -normal1,
-                dist: (point2 - point1).dot(normal1),
-            };
-            let closing = (b.velocity - a.velocity).dot(dvec(contact.normal1));
-            if closing >= -1e-7 && contact.dist >= -epsilon {
-                continue;
-            }
-            let event = Event {
-                t,
-                a: a_id,
-                b: b_id,
-                ga: a.generation,
-                gb: b.generation,
-                kind: Kind::Contact(Hit {
-                    ma,
-                    mb,
-                    contact,
-                    anchor,
-                }),
-            };
-            if best.is_none_or(|old| event.t < old.t) {
-                best = Some(event);
-            }
-        }
-    }
-    Ok(best)
-}
-
-fn primitive_parts(shape: &SharedShape) -> Vec<(Pose, &dyn parry3d_f64::shape::Shape)> {
-    if let Some(compound) = shape.as_compound() {
-        compound
-            .shapes()
-            .iter()
-            .map(|(p, s)| (*p, s.as_ref()))
-            .collect()
-    } else {
-        vec![(Pose::identity(), shape.as_ref())]
-    }
-}
-
-/// A resting contact must not hide another part of the same ship. Sweep the
-/// other primitive pairs up to the next contact review, pruning against each
-/// compound's BVH before entering the primitive distance loop.
-fn review_contacts(
-    a_id: usize,
-    b_id: usize,
-    a: &Body,
-    b: &Body,
-    start: f64,
-    end: f64,
-    speed: f64,
-    epsilon: f64,
-) -> (Option<Event>, u64) {
-    let step = 0.01_f64.min(0.25 * a.feature.min(b.feature) / speed.max(1e-12));
-    let stop = (start + step).min(end);
-    let mut best = (stop < end).then_some(Event {
-        t: stop,
-        a: a_id,
-        b: b_id,
-        ga: a.generation,
-        gb: b.generation,
-        kind: Kind::Review,
-    });
-    let mut queries = 0;
-    let anchor = a.position.offset_by(a.velocity * (start - a.time));
-    for (ma, _) in a.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-        for (mb, _) in b.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-            let pa = a.pose_against(ma, b, start, anchor);
-            let pb = b.pose_against(mb, a, start, anchor);
-            let parts_a = primitive_parts(a.shape_against(ma, b));
-            let parts_b = primitive_parts(b.shape_against(mb, a));
-            for (local_a, shape_a) in parts_a {
-                let candidates: Vec<usize> =
-                    if let Some(compound) = b.shape_against(mb, a).as_compound() {
-                        let relative = pb.inverse() * pa * local_a;
-                        compound
-                            .bvh()
-                            .intersect_aabb(
-                                &shape_a
-                                    .compute_aabb(&relative)
-                                    .loosened(speed * (stop - start) + 3.0 * epsilon),
-                            )
-                            .map(|i| i as usize)
-                            .collect()
-                    } else {
-                        vec![0]
-                    };
-                for ib in candidates {
-                    let (local_b, shape_b) = parts_b[ib];
-                    let mut t = start;
-                    loop {
-                        let pa = a.pose_against(ma, b, t, anchor) * local_a;
-                        let pb = b.pose_against(mb, a, t, anchor) * local_b;
-                        queries += 1;
-                        let distance = query::distance(&pa, shape_a, &pb, shape_b)
-                            .expect("primitive distance");
-                        if distance <= 2.0 * epsilon {
-                            use query::PersistentQueryDispatcher;
-                            let mut manifold = query::ContactManifold::<(), ()>::new();
-                            query::DefaultQueryDispatcher
-                                .contact_manifold_convex_convex(
-                                    &pa.inv_mul(&pb),
-                                    shape_a,
-                                    shape_b,
-                                    None,
-                                    None,
-                                    2.1 * epsilon,
-                                    &mut manifold,
-                                )
-                                .expect("primitive manifold");
-                            for point in &manifold.points {
-                                let contact = query::Contact {
-                                    point1: pa * point.local_p1,
-                                    point2: pb * point.local_p2,
-                                    normal1: pa.rotation * manifold.local_n1,
-                                    normal2: pb.rotation * manifold.local_n2,
-                                    dist: point.dist,
-                                };
-                                let ra = dvec(contact.point1)
-                                    - (a.position.relative_to(anchor) + a.velocity * (t - a.time));
-                                let rb = dvec(contact.point2)
-                                    - (b.position.relative_to(anchor) + b.velocity * (t - b.time));
-                                let relative = b.velocity - a.velocity
-                                    + b.orientation(t).1.cross(rb)
-                                    - a.orientation(t).1.cross(ra);
-                                if relative.dot(dvec(contact.normal1)) < -1e-7
-                                    || contact.dist < -epsilon
-                                {
-                                    let event = Event {
-                                        t,
-                                        a: a_id,
-                                        b: b_id,
-                                        ga: a.generation,
-                                        gb: b.generation,
-                                        kind: Kind::Contact(Hit {
-                                            ma,
-                                            mb,
-                                            contact,
-                                            anchor,
-                                        }),
-                                    };
-                                    if best.is_none_or(|e| {
-                                        t < e.t || (t == e.t && matches!(e.kind, Kind::Review))
-                                    }) {
-                                        best = Some(event);
-                                    }
-                                }
-                            }
-                            break;
-                        }
-                        if speed == 0.0 {
-                            break;
-                        }
-                        let next = t + 0.9 * (distance - epsilon) / speed;
-                        if next > best.map_or(stop, |e| e.t) {
-                            break;
-                        }
-                        assert!(
-                            next > t,
-                            "contact sweep exhausted numerical time resolution"
-                        );
-                        t = next;
-                    }
-                }
-            }
-        }
-    }
-    (best, queries)
-}
-
 fn contact_epsilon(a: &Body, b: &Body) -> f64 {
     (a.feature.min(b.feature) * 0.001).clamp(1e-5, 1e-3)
 }
@@ -714,75 +397,63 @@ fn prediction(
         return (None, 0);
     }
     let start = start.max(a.time).max(b.time);
-    let relative = b.position.relative_to(a.position) + b.velocity * (start - b.time)
-        - a.velocity * (start - a.time);
-    let Some((entry, exit)) = sphere_interval(
-        relative,
-        b.velocity - a.velocity,
-        a.radius + b.radius + 0.004,
-        end - start,
-    ) else {
+    if start > end {
         return (None, 0);
-    };
-    let epsilon = contact_epsilon(a, b);
-    let invariant_a = a.rotation_invariant(b);
-    let invariant_b = b.rotation_invariant(a);
-    if invariant_a && invariant_b {
-        if let Ok(hit) = linear_prediction(a_id, b_id, a, b, start + entry, start + exit, epsilon) {
-            return (hit, (a.members.len() * b.members.len()) as u64);
-        }
     }
-    let stop = start + exit;
-    let speed = (a.velocity - b.velocity).length()
-        + if invariant_a {
-            0.0
-        } else {
-            a.radius * a.angular_bound(stop)
-        }
-        + if invariant_b {
-            0.0
-        } else {
-            b.radius * b.angular_bound(stop)
-        };
-    let mut t = start + entry;
+    let anchor = a.position.offset_by(a.velocity * (start - a.time));
+    let relative = b.position.relative_to(anchor) + b.velocity * (start - b.time);
+    let velocity = b.velocity - a.velocity;
+    let epsilon = contact_epsilon(a, b);
+    let mut best: Option<Event> = None;
     let mut queries = 0;
-    let mut nearest;
-    loop {
-        nearest = f64::INFINITY;
-        let anchor = a.position.offset_by(a.velocity * (t - a.time));
-        for (ma, _) in a.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-            for (mb, _) in b.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
-                let pa = a.pose_against(ma, b, t, anchor);
-                let pb = b.pose_against(mb, a, t, anchor);
-                queries += 1;
-                let distance = query::distance(
-                    &pa,
-                    a.shape_against(ma, b).as_ref(),
-                    &pb,
-                    b.shape_against(mb, a).as_ref(),
-                )
-                .expect("supported collision primitives");
-                nearest = nearest.min(distance);
-                if distance <= 2.0 * epsilon {
-                    let (event, extra) = review_contacts(a_id, b_id, a, b, t, end, speed, epsilon);
-                    return (event, queries + extra);
-                }
+    for (ma, member_a) in a.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
+        for (mb, member_b) in b.members.iter().enumerate().filter(|(_, m)| !m.destroyed) {
+            if a.launch_owner == Some(member_b.entity) || b.launch_owner == Some(member_a.entity) {
+                continue;
+            }
+            queries += 1;
+            let ra = a.radius_against(ma, b);
+            let rb = b.radius_against(mb, a);
+            let Some((entry, _)) =
+                sphere_interval(relative, velocity, ra + rb + epsilon, end - start)
+            else {
+                continue;
+            };
+            let separation = relative + velocity * entry;
+            let normal = separation
+                .try_normalize()
+                .unwrap_or_else(|| (-velocity).try_normalize().unwrap_or(DVec3::X));
+            let distance = separation.length() - ra - rb;
+            if velocity.dot(normal) >= -1e-7 && distance >= -epsilon {
+                continue;
+            }
+            let point_a = a.velocity * entry + normal * ra;
+            let point_b = relative + b.velocity * entry - normal * rb;
+            let event = Event {
+                t: start + entry,
+                a: a_id,
+                b: b_id,
+                ga: a.generation,
+                gb: b.generation,
+                kind: Kind::Contact(Hit {
+                    ma,
+                    mb,
+                    anchor,
+                    contact: query::Contact {
+                        point1: vector(point_a),
+                        point2: vector(point_b),
+                        normal1: vector(normal),
+                        normal2: vector(-normal),
+                        dist: distance,
+                    },
+                }),
+            };
+            if best.is_none_or(|old| event.t < old.t) {
+                best = Some(event);
             }
         }
-        if speed == 0.0 || t >= stop {
-            return (None, queries);
-        }
-        let advance = 0.9 * (nearest - epsilon) / speed;
-        if t + advance > stop {
-            return (None, queries);
-        }
-        let next = t + advance;
-        assert!(
-            next > t,
-            "CCD exhausted numerical time resolution at separation {nearest}"
-        );
-        t = next;
     }
+    (best, queries)
 }
 
 fn thermal_event(id: usize, body: &Body, end: f64) -> Option<Event> {
@@ -873,6 +544,7 @@ pub struct ImpactEvent {
     pub velocity: DVec3,
     pub normal: DVec3,
     pub shields: [bool; 2],
+    pub surface_positions: [GalacticPosition; 2],
     pub energy_j: f64,
 }
 
@@ -899,6 +571,7 @@ pub struct Report {
     pub shots: Vec<weapons::ShotEvent>,
     pub beams: Vec<weapons::BeamEvent>,
     pub beam_hits: Vec<weapons::BeamHit>,
+    pub beam_traces: Vec<weapons::BeamTrace>,
     pub impact_events: Vec<ImpactEvent>,
     pub motion: Vec<MotionSegment>,
     traced: std::collections::HashSet<Entity>,
@@ -906,8 +579,6 @@ pub struct Report {
     pub candidates: u64,
     pub detailed: u64,
     pub impacts: u64,
-    pub reviews: u64,
-    pub rotation_envelope_fallbacks: u64,
     pub dissipated_j: f64,
     pub destroyed: Vec<Destruction>,
     pub index_seconds: f64,
@@ -975,21 +646,7 @@ fn record_deaths(body: &mut Body, t: f64, report: &mut Report) {
         body.inertia_inv = inertia.inverse();
         body.momentum = body.rotation * (inertia * (body.rotation.inverse() * omega));
         body.rotation_path = None;
-        if !body.rotational_envelopes.is_empty() {
-            body.refit_rotational_envelopes();
-        }
     }
-}
-
-#[derive(Default)]
-struct ContactCache {
-    manifolds: Vec<query::ContactManifold<(), ()>>,
-    workspace: Option<query::ContactManifoldsWorkspace>,
-    shields: (bool, bool),
-    envelopes: (bool, bool),
-    used: u64,
-    // Keep pointer identities alive while they are keys in the cache.
-    geometry: Option<(Arc<Geometry>, Arc<Geometry>)>,
 }
 
 #[derive(bevy::prelude::Resource, Default)]
@@ -998,64 +655,6 @@ pub struct SolverWorkspace {
     pub time_s: f64,
     gates: Vec<gates::Mouth>,
     index: SweptIndex,
-    contacts: ahash::AHashMap<(Entity, Entity, usize, usize), ContactCache>,
-    epoch: u64,
-}
-
-fn manifold_hits(a: &Body, b: &Body, hit: Hit, t: f64, cache: &mut ContactCache) -> Vec<Hit> {
-    use query::PersistentQueryDispatcher;
-    let ma = &a.members[hit.ma];
-    let mb = &b.members[hit.mb];
-    let shields = (ma.shielded(), mb.shielded());
-    let envelopes = (
-        !a.rotational_envelopes.is_empty(),
-        !b.rotational_envelopes.is_empty(),
-    );
-    if cache.shields != shields || cache.envelopes != envelopes {
-        *cache = ContactCache {
-            shields,
-            envelopes,
-            used: cache.used,
-            geometry: cache.geometry.clone(),
-            ..Default::default()
-        };
-    }
-    let pa = a.pose_against(hit.ma, b, t, hit.anchor);
-    let pb = b.pose_against(hit.mb, a, t, hit.anchor);
-    let epsilon = contact_epsilon(a, b);
-    query::DefaultQueryDispatcher
-        .contact_manifolds(
-            &pa.inv_mul(&pb),
-            a.shape_against(hit.ma, b).as_ref(),
-            b.shape_against(hit.mb, a).as_ref(),
-            2.1 * epsilon,
-            &mut cache.manifolds,
-            &mut cache.workspace,
-        )
-        .expect("supported persistent manifolds");
-    // The triggering witness must be resolved even if a retained manifold
-    // chooses a different feature at the edge of a face.
-    let mut result = vec![hit];
-    for manifold in &cache.manifolds {
-        let p1 = manifold.subshape_pos1().map_or(pa, |local| pa * *local);
-        let p2 = manifold.subshape_pos2().map_or(pb, |local| pb * *local);
-        for point in &manifold.points {
-            if point.dist > 2.1 * epsilon {
-                continue;
-            }
-            result.push(Hit {
-                contact: query::Contact {
-                    point1: p1 * point.local_p1,
-                    point2: p2 * point.local_p2,
-                    normal1: p1.rotation * manifold.local_n1,
-                    normal2: p2.rotation * manifold.local_n2,
-                    dist: point.dist,
-                },
-                ..hit
-            });
-        }
-    }
-    result
 }
 
 fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
@@ -1072,18 +671,9 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
         return;
     }
     let n = dvec(hit.contact.normal1);
-    let ra = dvec(hit.contact.point1) - a.position.relative_to(hit.anchor);
-    let rb = dvec(hit.contact.point2) - b.position.relative_to(hit.anchor);
-    let ia = a.world_inverse();
-    let ib = b.world_inverse();
-    let wa = ia * a.momentum;
-    let wb = ib * b.momentum;
-    let closing = -(b.velocity - a.velocity + wb.cross(rb) - wa.cross(ra)).dot(n);
+    let closing = -(b.velocity - a.velocity).dot(n);
     if closing > 0.0 {
-        let k = 1.0 / a.mass
-            + 1.0 / b.mass
-            + ra.cross(n).dot(ia * ra.cross(n))
-            + rb.cross(n).dot(ib * rb.cross(n));
+        let k = 1.0 / a.mass + 1.0 / b.mass;
         let maximum_q = closing * closing / (2.0 * k);
         let restitution = if closing >= 0.1 { 0.3 } else { 0.0 };
         let rebound_q = maximum_q * (1.0 - restitution * restitution);
@@ -1104,12 +694,8 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
         let j = n * impulse;
         a.velocity -= j / a.mass;
         b.velocity += j / b.mass;
-        a.momentum -= ra.cross(j);
-        b.momentum += rb.cross(j);
         a.impulse_dv -= j / a.mass;
         b.impulse_dv += j / b.mass;
-        a.impulse_dw += ia * a.momentum - wa;
-        b.impulse_dw += ib * b.momentum - wb;
         let shields = [
             a.members[hit.ma].shielded_against(b),
             b.members[hit.mb].shielded_against(a),
@@ -1127,6 +713,20 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
             velocity: (a.velocity * a.mass + b.velocity * b.mass) / (a.mass + b.mass),
             normal: n,
             shields,
+            surface_positions: [
+                a.impact_surface(
+                    hit.ma,
+                    hit.anchor.offset_by(dvec(hit.contact.point1)),
+                    t,
+                    shields[0],
+                ),
+                b.impact_surface(
+                    hit.mb,
+                    hit.anchor.offset_by(dvec(hit.contact.point2)),
+                    t,
+                    shields[1],
+                ),
+            ],
             energy_j: q,
         });
         report.dissipated_j += q;
@@ -1148,28 +748,19 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
     // Ten times the shared detection tolerance also leaves room for the
     // micrometre position quantum; the resulting skin is 0.1mm to 1cm.
     let skin = 10.0 * contact_epsilon(a, b);
-    let pa = a.pose_against(hit.ma, b, t, hit.anchor);
-    let pb = b.pose_against(hit.mb, a, t, hit.anchor);
-    if let Some(contact) = query::contact(
-        &pa,
-        a.shape_against(hit.ma, b).as_ref(),
-        &pb,
-        b.shape_against(hit.mb, a).as_ref(),
-        skin,
-    )
-    .expect("supported correction")
-    {
-        if contact.dist < skin {
-            let correction = skin - contact.dist;
-            let normal = dvec(contact.normal1);
-            let total_inverse = 1.0 / a.mass + 1.0 / b.mass;
-            a.position = a
-                .position
-                .offset_by(-normal * correction / (a.mass * total_inverse));
-            b.position = b
-                .position
-                .offset_by(normal * correction / (b.mass * total_inverse));
-        }
+    let separation = b.position.relative_to(a.position);
+    let radius = a.radius_against(hit.ma, b) + b.radius_against(hit.mb, a);
+    let distance = separation.length() - radius;
+    if distance < skin {
+        let correction = skin - distance;
+        let normal = separation.try_normalize().unwrap_or(n);
+        let total_inverse = 1.0 / a.mass + 1.0 / b.mass;
+        a.position = a
+            .position
+            .offset_by(-normal * correction / (a.mass * total_inverse));
+        b.position = b
+            .position
+            .offset_by(normal * correction / (b.mass * total_inverse));
     }
     record_deaths(a, t, report);
     record_deaths(b, t, report);
@@ -1192,7 +783,7 @@ pub fn simulate_with_workspace(
 ) -> Report {
     let mut report = Report::default();
     for body in bodies.iter_mut() {
-        report.rotation_envelope_fallbacks += u64::from(body.prepare_rotation(end));
+        body.prepare_rotation(end);
     }
     // A common translating frame leaves collisions unchanged while avoiding
     // enormous swept boxes for ships sharing an orbital velocity.
@@ -1211,7 +802,6 @@ pub fn simulate_with_workspace(
         .filter(|(_, b)| b.alive())
         .map(|(i, b)| b.proxy_in_frame(i, end, frame))
         .collect();
-    workspace.epoch = workspace.epoch.wrapping_add(1);
     workspace.index.refresh(&proxies);
     let index = &mut workspace.index;
     let pairs = index.pairs();
@@ -1269,7 +859,6 @@ pub fn simulate_with_workspace(
     }
     report.query_seconds = timer.elapsed().as_secs_f64();
     let timer = std::time::Instant::now();
-    let contact_cache = &mut workspace.contacts;
     while let Some(event) = events.pop() {
         if !matches!(event.kind, Kind::Fire { .. })
             && (event.ga != bodies[event.a].generation || event.gb != bodies[event.b].generation)
@@ -1277,22 +866,6 @@ pub fn simulate_with_workspace(
             continue;
         }
         if !bodies[event.a].alive() || !bodies[event.b].alive() {
-            continue;
-        }
-        if matches!(event.kind, Kind::Review) {
-            report.reviews += 1;
-            let (next, queries) = prediction(
-                event.a,
-                event.b,
-                &bodies[event.a],
-                &bodies[event.b],
-                event.t,
-                end,
-            );
-            report.detailed += queries;
-            if let Some(next) = next {
-                events.push(next);
-            }
             continue;
         }
         let mut changed = vec![event.a, event.b];
@@ -1346,39 +919,8 @@ pub fn simulate_with_workspace(
                 }
             }
             Kind::Contact(hit) => {
-                let ma = &bodies[event.a].members[hit.ma];
-                let mb = &bodies[event.b].members[hit.mb];
-                let cache = contact_cache
-                    .entry((
-                        ma.entity,
-                        mb.entity,
-                        Arc::as_ptr(&ma.geometry) as usize,
-                        Arc::as_ptr(&mb.geometry) as usize,
-                    ))
-                    .or_insert_with(|| ContactCache {
-                        geometry: Some((ma.geometry.clone(), mb.geometry.clone())),
-                        ..Default::default()
-                    });
-                cache.used = workspace.epoch;
-                let hits = manifold_hits(&bodies[event.a], &bodies[event.b], hit, event.t, cache);
-                let shields = (
-                    bodies[event.a].members[hit.ma].shielded(),
-                    bodies[event.b].members[hit.mb].shielded(),
-                );
                 let (left, right) = bodies.split_at_mut(event.b);
-                let a = &mut left[event.a];
-                let b = &mut right[0];
-                for contact in hits {
-                    if !a.alive()
-                        || !b.alive()
-                        || a.members[hit.ma].destroyed
-                        || b.members[hit.mb].destroyed
-                        || (a.members[hit.ma].shielded(), b.members[hit.mb].shielded()) != shields
-                    {
-                        break;
-                    }
-                    resolve(a, b, contact, event.t, &mut report);
-                }
+                resolve(&mut left[event.a], &mut right[0], hit, event.t, &mut report);
             }
             Kind::Gate(mouth) => {
                 gates::cross(
@@ -1398,14 +940,13 @@ pub fn simulate_with_workspace(
                 record_deaths(b, event.t, &mut report);
                 b.generation += 1;
             }
-            Kind::Review => unreachable!(),
         }
         changed.sort_unstable();
         changed.dedup();
         let mut pairs = Vec::new();
         for &id in &changed {
             if bodies[id].alive() {
-                report.rotation_envelope_fallbacks += u64::from(bodies[id].prepare_rotation(end));
+                bodies[id].prepare_rotation(end);
                 index.update(bodies[id].proxy_in_frame(id, end, frame));
             } else {
                 index.remove(id as u32);
@@ -1455,7 +996,6 @@ pub fn simulate_with_workspace(
         body.advance_thermal(end);
     });
 
-    contact_cache.retain(|_, cache| cache.used == workspace.epoch);
     report.solve_seconds = timer.elapsed().as_secs_f64();
     report
 }
@@ -1495,7 +1035,7 @@ pub fn activate(bodies: &mut [Body]) {
     let index = SweptIndex::build(&proxies);
     for (a, member) in pending {
         let anchor = bodies[a].position;
-        let pa = bodies[a].shape_pose(member, 0.0, anchor);
+        let radius = bodies[a].collision_radius(member, true);
         let blocked = index
             .neighbors(bodies[a].proxy(a, 0.0))
             .into_iter()
@@ -1509,13 +1049,8 @@ pub fn activate(bodies: &mut [Body]) {
                     .enumerate()
                     .filter(|(_, m)| !m.destroyed)
                     .any(|(mb, m)| {
-                        query::intersection_test(
-                            &pa,
-                            bodies[a].members[member].geometry.shield.as_ref(),
-                            &b.shape_pose(mb, 0.0, anchor),
-                            m.shape().as_ref(),
-                        )
-                        .expect("supported shield clearance")
+                        b.position.relative_to(anchor).length_squared()
+                            < (radius + b.collision_radius(mb, m.shielded())).powi(2)
                     })
             });
         if !blocked {

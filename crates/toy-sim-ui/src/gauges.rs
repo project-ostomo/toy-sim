@@ -35,7 +35,7 @@ impl Tone {
         } else if severity > 0. {
             egui::Color32::from_rgb(240, 184, 88)
         } else {
-            egui::Color32::from_rgb(125, 190, 207)
+            egui::Color32::from_rgb(224, 224, 218)
         }
     }
 }
@@ -60,7 +60,7 @@ pub fn gauge(
     );
     let p = ui.painter_at(rect);
     let accent = tone.color(fraction);
-    p.rect_filled(rect, 0., egui::Color32::from_rgb(10, 15, 20));
+    p.rect_filled(rect, 0., egui::Color32::from_gray(12));
     let fill = egui::Rect::from_min_max(
         rect.min,
         egui::pos2(
@@ -123,14 +123,14 @@ pub fn bipolar(ui: &mut egui::Ui, label: &str, value: f64, negative: f64, positi
         0.
     } as f32;
     let end = center + fraction * rect.width() * 0.5;
-    p.rect_filled(rect, 0., egui::Color32::from_rgb(10, 15, 20));
+    p.rect_filled(rect, 0., egui::Color32::from_gray(12));
     p.rect_filled(
         egui::Rect::from_min_max(
             egui::pos2(center.min(end), rect.top()),
             egui::pos2(center.max(end), rect.bottom()),
         ),
         0.,
-        egui::Color32::from_rgb(42, 70, 80),
+        egui::Color32::from_gray(75),
     );
     p.line_segment(
         [
@@ -146,4 +146,61 @@ pub fn bipolar(ui: &mut egui::Ui, label: &str, value: f64, negative: f64, positi
         egui::FontId::monospace(10.),
         egui::Color32::LIGHT_GRAY,
     );
+}
+
+pub fn vertical(
+    ui: &mut egui::Ui,
+    label: &str,
+    text: &str,
+    fraction: f64,
+    tone: Tone,
+    size: egui::Vec2,
+) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let color = tone.color(fraction);
+    let painter = ui.painter_at(rect);
+    let meter = rect.shrink2(egui::vec2(3., 22.));
+    painter.rect_stroke(
+        meter,
+        0.,
+        egui::Stroke::new(1., color.gamma_multiply(0.5)),
+        egui::StrokeKind::Inside,
+    );
+    for row in 0..20 {
+        for col in 0..4 {
+            let width = (meter.width() - 6.) / 4.;
+            let height = (meter.height() - 6.) / 20.;
+            let cell = egui::Rect::from_min_size(
+                egui::pos2(
+                    meter.left() + 3. + col as f32 * width,
+                    meter.bottom() - 3. - (row + 1) as f32 * height,
+                ),
+                egui::vec2((width - 2.).max(1.), (height - 2.).max(1.)),
+            );
+            painter.rect_filled(
+                cell,
+                0.,
+                if (row as f64 + 0.5) / 20. <= fraction.clamp(0., 1.) {
+                    color
+                } else {
+                    egui::Color32::from_gray(28)
+                },
+            );
+        }
+    }
+    painter.text(
+        rect.center_top(),
+        egui::Align2::CENTER_TOP,
+        label,
+        egui::FontId::monospace(10.),
+        egui::Color32::LIGHT_GRAY,
+    );
+    painter.text(
+        rect.center_bottom(),
+        egui::Align2::CENTER_BOTTOM,
+        text,
+        egui::FontId::monospace(11.),
+        color,
+    );
+    response
 }

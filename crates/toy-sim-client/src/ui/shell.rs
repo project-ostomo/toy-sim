@@ -122,6 +122,7 @@ const SETTINGS: WindowSpec = WindowSpec {
 #[derive(Default, PartialEq, Eq, Clone, Copy)]
 enum Filter {
     #[default]
+    General,
     All,
     Ships,
     Celestials,
@@ -135,8 +136,18 @@ enum Sort {
     Speed,
 }
 
+pub(super) struct HudObject {
+    pub target: SelectedTarget,
+    pub contact: Option<ContactRef>,
+    pub position: toy_sim_model::GalacticPosition,
+    pub name: String,
+    pub standing: Option<ownership::Standing>,
+    pub visible: bool,
+}
+
 #[derive(Resource)]
-struct Shell {
+pub(super) struct Shell {
+    pub(super) hud: Vec<HudObject>,
     desktop: Desktop,
     inventory: inventory::State,
     industry: industry::State,
@@ -181,6 +192,7 @@ impl Feedback {
 impl Default for Shell {
     fn default() -> Self {
         Self {
+            hud: Vec::new(),
             desktop: Desktop::default(),
             inventory: inventory::State::default(),
             industry: industry::State::default(),
@@ -321,6 +333,7 @@ fn draw(
             let kind = super::contacts::kind(&track.tags).to_owned();
             rows.push(Row {
                 target: SelectedTarget::Contact(contact.1),
+                contact: Some(contact.1),
                 name,
                 kind,
                 offset: pose.0.position.relative_to(origin),
@@ -370,6 +383,7 @@ fn draw(
 
             rows.push(Row {
                 target: SelectedTarget::Celestial(body.0.entity),
+                contact: None,
                 name: body.0.name.clone(),
                 kind: if body.0.luminosity_lumens > 0. {
                     "Star"
@@ -397,6 +411,15 @@ fn draw(
         }
         rows.push(Row {
             target: SelectedTarget::Beacon(beacon.id),
+            contact: view.and_then(|(view, ..)| {
+                contacts.iter().find_map(|(contact, _)| {
+                    (beacon.gate_exit.is_none()
+                        && contact.0.entity == Some(beacon.id)
+                        && contact.1.group == view.0.group
+                        && view.0.tracks.contains(&contact.0.id))
+                    .then_some(contact.1)
+                })
+            }),
             name: beacon.name.clone(),
             kind: if beacon.gate_exit.is_some() {
                 "Stargate"
@@ -472,6 +495,18 @@ fn draw(
         &session.chat,
         &mut intents,
     );
+    shell.hud = model
+        .rows
+        .iter()
+        .map(|row| HudObject {
+            target: row.target,
+            contact: row.contact,
+            position: origin.offset_by(row.offset),
+            name: row.name.clone(),
+            standing: row.standing,
+            visible: row_visible(row, &shell, selection.target),
+        })
+        .collect();
     for intent in intents {
         match intent {
             Intent::Chat(text) => {

@@ -172,7 +172,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
                     track: hidden
                 }),
                 true,
-                65536
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED
             )
             .is_err()
     );
@@ -185,7 +185,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
                 ..Default::default()
             }),
             true,
-            65536,
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
         )
         .unwrap()
     else {
@@ -199,7 +199,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
                 track: observed,
             }),
             true,
-            65536,
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
         )
         .unwrap()
     else {
@@ -260,7 +260,13 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
         state,
         pose,
         slip_ready,
-    } = reader.query(ProgramQuery::Travel, true, 65536).unwrap()
+    } = reader
+        .query(
+            ProgramQuery::Travel,
+            true,
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
+        .unwrap()
     else {
         panic!("expected current travel state")
     };

@@ -46,3 +46,6 @@ version = "0.10"
 
 [dev-dependencies.zstd]
 version = "0.13.3"
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+bevy_dylib.workspace = true

@@ -7378,7 +7378,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bevy",
- "bevy_dylib",
  "toy-sim-ship-api",
  "toy-sim-ship-view",
  "toy-sim-ship-wasm",
@@ -7444,7 +7443,6 @@ dependencies = [
  "anyhow",
  "blake3",
  "glam 0.32.1",
- "postcard",
  "serde",
  "toy-sim-model",
  "toy-sim-spatial",
@@ -7456,6 +7454,7 @@ version = "0.1.0"
 dependencies = [
  "rand 0.10.2",
  "serde",
+ "toy-sim-ship-api",
  "toy-sim-space",
  "uuid",
 ]
@@ -7495,6 +7494,7 @@ dependencies = [
  "ahash",
  "anyhow",
  "bevy",
+ "bevy_dylib",
  "blake3",
  "ed25519-dalek",
  "hifitime",
@@ -7607,6 +7607,7 @@ name = "toy-sim-ui"
 version = "0.1.0"
 dependencies = [
  "bevy",
+ "bevy_dylib",
  "bevy_egui",
  "skrifa 0.44.0",
  "toy-sim-model",

@@ -1,31 +1,13 @@
 use glam::DVec3;
 use toy_sim_model::{travel::*, *};
-use toy_sim_ship_api::{abi, sdk};
+use toy_sim_ship_api::abi;
 
 fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
-    let bytes = postcard::to_allocvec(query).map_err(|_| abi::ERR_ARGUMENT)?;
-    let mut reply = Vec::<u8>::with_capacity(65536);
-    let length = unsafe {
-        abi::raw::world_query(
-            bytes.as_ptr(),
-            bytes.len() as u32,
-            reply.as_mut_ptr(),
-            reply.capacity() as u32,
-        )
-    };
-    sdk::check(length)?;
-    let length = length as usize;
-    if length > reply.capacity() {
-        return Err(abi::ERR_BUFFER);
-    }
-    // A successful host call initializes exactly the returned byte count.
-    unsafe { reply.set_len(length) };
-    postcard::from_bytes(&reply).map_err(|_| abi::ERR_ARGUMENT)
+    toy_sim_model::wasm_world::query(query)
 }
 
 fn command(action: ProgramAction) -> Result<(), i32> {
-    let bytes = postcard::to_allocvec(&action).map_err(|_| abi::ERR_ARGUMENT)?;
-    sdk::check(unsafe { abi::raw::world_command(bytes.as_ptr(), bytes.len() as u32) })
+    toy_sim_model::wasm_world::command(action)
 }
 
 #[derive(Default)]
@@ -45,11 +27,13 @@ pub struct Executor {
     turn_s: f64,
     own_radius: f64,
     avoidance: crate::local_guidance::Avoidance,
-    gate: crate::local_guidance::GateApproach,
+    environment: Option<(u64, GalacticPosition, LocalSpace)>,
+    sensor_targets: Vec<(usize, TrackId)>,
+    tick: u64,
     slip_clearance: f64,
     slip_attempts: u8,
     pub speed_limit: f64,
-    pub preferences: PlanningPreferences,
+    pub preferences: toy_sim_model::transfer::TransferCost,
 }
 
 impl Executor {
@@ -89,12 +73,9 @@ impl Executor {
         let direction = offset.normalize_or_zero();
         let closing = velocity.dot(direction);
         let lateral = (velocity - direction * closing).length();
-        let (time, fuel) = self.preferences.cost(self.mass).remaining(
-            offset.length(),
-            closing,
-            self.acceleration,
-            self.flow,
-        );
+        let (time, fuel) =
+            self.preferences
+                .remaining(offset.length(), closing, self.acceleration, self.flow);
         let correction_s = lateral / self.acceleration;
         (
             time + correction_s + 2. * self.turn_s,
@@ -127,6 +108,7 @@ impl Executor {
     }
 
     fn step(&mut self, tick: u64) -> Result<Option<abi::Contact>, i32> {
+        self.tick = tick;
         self.aim_direction = None;
         self.active = false;
         self.speed_limit = f64::INFINITY;
@@ -140,14 +122,17 @@ impl Executor {
         };
         self.state_revision = state.revision;
         self.state_index = state.index;
-        self.preferences = state.preferences;
+        self.preferences = state
+            .order
+            .as_ref()
+            .map_or_else(Default::default, |order| order.transfer_cost);
         if self.revision != Some((state.revision, state.index)) {
             self.revision = Some((state.revision, state.index));
             self.reference_changed = true;
             self.bay = None;
             self.next_estimate = tick;
             self.avoidance.reset();
-            self.gate = Default::default();
+            self.environment = None;
             self.slip_clearance = 0.;
             self.slip_attempts = 0;
         }
@@ -289,7 +274,7 @@ impl Executor {
             }
             Order::Slip { destination } => {
                 let target = resolve_at(destination, 0.)?;
-                let space = self.local_space(&pose, &target, 0.)?;
+                let space = self.navigation_environment(&pose)?;
                 let departure = crate::local_guidance::outside_exclusions(
                     pose.position,
                     target.position.relative_to(pose.position),
@@ -312,27 +297,18 @@ impl Executor {
                     }) {
                         local.velocity = obstacle.pose.velocity;
                     }
+                    let outward = departure.relative_to(pose.position).normalize_or_zero();
+                    let relative_velocity =
+                        DVec3::from_array(pose.velocity) - DVec3::from_array(local.velocity);
+                    local.velocity = (DVec3::from_array(local.velocity)
+                        + outward * relative_velocity.dot(outward).max(50.))
+                    .to_array();
                     let relative = contact(&pose, &local);
                     self.estimate(tick, &state, Some(self.transfer_estimate(&relative)))?;
                     return self.steer(&pose, &local, None).map(Some);
                 }
 
                 if slip_ready {
-                    let anchor = space
-                        .obstacles
-                        .iter()
-                        .find(|obstacle| {
-                            obstacle.reference == Target::Destination(destination.clone())
-                        })
-                        .map_or(target.position, |obstacle| obstacle.pose.position);
-                    let arrival = crate::local_guidance::outside_exclusions(
-                        anchor,
-                        pose.position.relative_to(anchor),
-                        &space,
-                        self.own_radius + self.slip_clearance,
-                    )
-                    .ok_or(abi::ERR_UNAVAILABLE)?;
-                    let arrival_offset = arrival.relative_to(anchor);
                     let solution = solve_slip(
                         |after| {
                             Ok(pose
@@ -341,7 +317,7 @@ impl Executor {
                         },
                         |after| {
                             let target = resolve_at(destination, after)?;
-                            Ok(target.position.offset_by(arrival_offset))
+                            Ok(target.position)
                         },
                     );
                     let solution = match solution {
@@ -390,16 +366,19 @@ impl Executor {
                     return Err(abi::ERR_UNAVAILABLE);
                 }
                 let stand_off = beacon.radius_m + own_radius + 100.;
-                let target = self.gate.guide(&pose, &beacon.pose, stand_off);
-                self.reference_changed |= target.changed;
-                let relative = contact(&pose, &target.pose);
+                let target = crate::local_guidance::gate_target(&pose, &beacon.pose);
+                let relative = contact(&pose, &target);
                 let (time, fuel) = self.transfer_estimate(&relative);
                 self.estimate(tick, &state, Some((time + 0.1, fuel)))?;
-                let ignored = target
-                    .crossing
-                    .then_some(Target::Destination(Destination::Beacon(*entry)));
-                let result = self.steer(&pose, &target.pose, ignored.as_ref())?;
-                self.speed_limit = self.speed_limit.min(target.speed_limit);
+                let ignored = Target::Destination(Destination::Beacon(*entry));
+                let result = self.steer(&pose, &target, Some(&ignored))?;
+                let distance = beacon.pose.position.relative_to(pose.position).length();
+                let entry_limit = crate::navigation::arrival_speed(
+                    (distance - stand_off).max(0.),
+                    self.acceleration,
+                    self.turn_s + 0.1,
+                );
+                self.speed_limit = self.speed_limit.min(entry_limit);
                 Ok(Some(result))
             }
             Order::Undock => {
@@ -494,27 +473,107 @@ impl Executor {
         resolve_at(destination, 0.)
     }
 
-    fn local_space(
-        &self,
-        pose: &Pose,
-        target: &Pose,
-        after_seconds: f64,
-    ) -> Result<LocalSpace, i32> {
-        let relative_speed =
-            (DVec3::from_array(pose.velocity) - DVec3::from_array(target.velocity)).length();
-        let response = 2. * self.turn_s + 2.;
-        let range_m = (relative_speed * relative_speed / self.acceleration
-            + relative_speed * response
-            + 1000.)
-            .clamp(1000., toy_sim_model::local_space::MAX_RANGE_M);
-        let ProgramReply::LocalSpace(space) = query(&ProgramQuery::LocalSpace {
-            destination: target.position,
-            range_m,
-            after_seconds,
-        })?
-        else {
-            return Err(abi::ERR_ARGUMENT);
-        };
+    fn navigation_environment(&mut self, pose: &Pose) -> Result<LocalSpace, i32> {
+        const SURVEY_RADIUS: f64 = 1e8;
+        let needs_survey = self.environment.as_ref().is_none_or(|(_, origin, _)| {
+            pose.position.relative_to(*origin).length() > SURVEY_RADIUS * 0.5
+        });
+        if needs_survey {
+            self.sensor_targets.clear();
+            let ProgramReply::Orrery(mut obstacles) = query(&ProgramQuery::Orrery {
+                reference: pose.position,
+            })?
+            else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            let ProgramReply::Tracks(mut page) = query(&ProgramQuery::Tracks(TrackQuery {
+                sphere: Some((pose.position, SURVEY_RADIUS)),
+                limit: 256,
+                work: 65536,
+                ..Default::default()
+            }))?
+            else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            page.tracks.sort_by(|a, b| {
+                a.pose
+                    .position
+                    .relative_to(pose.position)
+                    .length_squared()
+                    .total_cmp(&b.pose.position.relative_to(pose.position).length_squared())
+            });
+            page.tracks.truncate(32);
+            for track in page.tracks {
+                if track.pose.position.relative_to(pose.position).length() < self.own_radius {
+                    continue;
+                }
+                if obstacles.iter().any(|obstacle| {
+                    matches!(&obstacle.reference,
+                        Target::Destination(Destination::Beacon(id))
+                            if Some(*id) == track.entity)
+                }) {
+                    continue;
+                }
+                self.sensor_targets.push((obstacles.len(), track.id));
+                obstacles.push(LocalObstacle {
+                    reference: Target::Destination(Destination::Galactic(track.pose.position)),
+                    radius_m: track.radius_m.unwrap_or(1.) + 3. * track.position_sigma_m,
+                    pose: track.pose,
+                    slip_exclusion_m: 0.,
+                });
+            }
+            self.environment = Some((
+                self.tick,
+                pose.position,
+                LocalSpace {
+                    obstacles,
+                    truncated: false,
+                },
+            ));
+        }
+        let (observed_tick, _, cached) = self.environment.as_mut().unwrap();
+        if self.tick.saturating_sub(*observed_tick) >= 10 {
+            let elapsed = self.tick.saturating_sub(*observed_tick) as f64 * 0.1;
+            for obstacle in &mut cached.obstacles {
+                obstacle.pose.position = obstacle
+                    .pose
+                    .position
+                    .offset_by(DVec3::from_array(obstacle.pose.velocity) * elapsed);
+                if self.tick % 100 < 10 {
+                    if let Target::Destination(destination) = &obstacle.reference {
+                        if !matches!(destination, Destination::Galactic(_)) {
+                            if let Ok(updated) = resolve_at(destination, 0.) {
+                                obstacle.pose = updated;
+                            }
+                        }
+                    }
+                }
+            }
+            for &(index, track) in &self.sensor_targets {
+                if let Ok(ProgramReply::Tracks(page)) = query(&ProgramQuery::Tracks(TrackQuery {
+                    track: Some(track),
+                    limit: 1,
+                    work: 256,
+                    ..Default::default()
+                })) {
+                    if let Some(observation) = page.tracks.first() {
+                        cached.obstacles[index].pose = observation.pose.clone();
+                        cached.obstacles[index].radius_m =
+                            observation.radius_m.unwrap_or(1.) + 3. * observation.position_sigma_m;
+                    }
+                }
+            }
+            *observed_tick = self.tick;
+        }
+        let (observed_tick, _, cached) = self.environment.as_ref().unwrap();
+        let elapsed = self.tick.saturating_sub(*observed_tick) as f64 * 0.1;
+        let mut space = cached.clone();
+        for obstacle in &mut space.obstacles {
+            obstacle.pose.position = obstacle
+                .pose
+                .position
+                .offset_by(DVec3::from_array(obstacle.pose.velocity) * elapsed);
+        }
         Ok(space)
     }
 
@@ -524,7 +583,7 @@ impl Executor {
         target: &Pose,
         ignored: Option<&Target>,
     ) -> Result<abi::Contact, i32> {
-        let space = self.local_space(pose, target, 0.)?;
+        let space = self.navigation_environment(pose)?;
         let steering = self
             .avoidance
             .steer(pose, target, &space, self.own_radius, ignored);
@@ -541,12 +600,9 @@ impl Executor {
                 })
                 .fold(f64::INFINITY, f64::min)
                 .max(0.);
-            let local_speed = crate::navigation::arrival_speed(
-                clearance,
-                self.acceleration,
-                2. * self.turn_s + 2.,
-            )
-            .max(40.);
+            let local_speed =
+                crate::navigation::arrival_speed(clearance, self.acceleration, self.turn_s + 0.1)
+                    .max(40.);
             self.speed_limit = self.speed_limit.min(local_speed);
         }
         Ok(contact(pose, &steering.target))

@@ -108,7 +108,7 @@ pub const INITIAL_SCENARIO: InitialScenario = InitialScenario {
     camera_distance: 100.0,
     camera_yaw: 0.0,
     camera_pitch: 0.0,
-    traffic_count: 1,
+    traffic_count: 0,
     // Preserve the former nearest target (Traffic 243) from the 500-ship fleet.
     traffic_orbit_start: 243,
 };

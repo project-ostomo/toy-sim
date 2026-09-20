@@ -273,10 +273,7 @@ fn markers(
             }
         }
         if let Some(pointer) = pointer.filter(|point| {
-            point.distance(screen) < 12.
-                && ctx
-                    .layer_id_at(*point)
-                    .is_none_or(|layer| layer.order <= egui::Order::Background)
+            crate::ui::input::pointer_available(ctx) && point.distance(screen) < 12.
         }) {
             egui::Area::new(painter.layer_id().id.with(("orbit_marker", marker.id)))
                 .order(egui::Order::Tooltip)

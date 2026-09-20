@@ -264,7 +264,7 @@ pub(super) fn draw(
         .and_then(|details| details.instruments.as_ref())
         .and_then(|instruments| instruments.weapons_state.as_ref())
         .and_then(|weapons| weapons.target);
-    let rows = sorted_rows(&model.rows, shell);
+    let rows = sorted_rows(&model.rows, shell, selection.target);
     let mut filter = shell.filter;
     let mut sort = shell.sort;
     let mut descending = shell.descending;
@@ -276,6 +276,7 @@ pub(super) fn draw(
     shell.desktop.show(ctx, overview_spec, |ui| {
         ui.horizontal(|ui| {
             for (value, label) in [
+                (Filter::General, "General"),
                 (Filter::All, "All"),
                 (Filter::Ships, "Ships"),
                 (Filter::Celestials, "Celestials"),
@@ -298,8 +299,7 @@ pub(super) fn draw(
                 ui.spacing_mut().item_spacing.y = 0.;
                 for index in range {
                     let row = rows[index];
-                    let targeted =
-                        marked.is_some_and(|target| row.target == SelectedTarget::Contact(target));
+                    let targeted = marked.is_some_and(|target| row.contact == Some(target));
                     let response = overview_row(
                         ui,
                         row,
@@ -334,7 +334,7 @@ pub(super) fn draw(
                             intents.push(Intent::Align(row.target));
                             ui.close();
                         }
-                        if let SelectedTarget::Contact(reference) = row.target {
+                        if let Some(reference) = row.contact {
                             if ui
                                 .add_enabled(can_control, egui::Button::new("Keep range"))
                                 .clicked()

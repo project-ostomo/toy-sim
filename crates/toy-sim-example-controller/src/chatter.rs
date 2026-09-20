@@ -2,11 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use toy_sim_model::{
     Id,
-    chat::{ChatPage, MAX_HISTORY_MESSAGES, MAX_MESSAGE_BYTES, MAX_PAGE_MESSAGES},
+    chat::{MAX_HISTORY_MESSAGES, MAX_MESSAGE_BYTES, MAX_PAGE_MESSAGES},
     firmware::{ChatterProfile, ProgramMemory},
-    llm::{LlmRequest, LlmStatus, LlmSubmission, MAX_PROMPT_BYTES, MAX_RESULT_BYTES},
+    llm::{LlmRequest, MAX_PROMPT_BYTES, MAX_RESULT_BYTES},
 };
-use toy_sim_ship_api::{abi, sdk};
+use toy_sim_ship_api::{abi, sdk, services};
 
 const STATE_HEADER: &[u8] = b"CHAT\x01";
 const MAX_MEMORY_BYTES: usize = 65_536;
@@ -125,9 +125,9 @@ impl Chatter {
     }
 
     fn receive(&mut self) -> Result<(), i32> {
-        let mut bytes = vec![0; MAX_MEMORY_BYTES];
-        let length = match sdk::chat_read(self.state.after, MAX_PAGE_MESSAGES as u32, &mut bytes) {
-            Ok(length) => length,
+        let mut messages = vec![services::ChatMessage::default(); MAX_PAGE_MESSAGES];
+        let page = match services::chat_read(self.state.after, &mut messages) {
+            Ok(page) => page,
             Err(error) => {
                 self.caught_up = false;
                 if self.state.after != 0 {
@@ -137,9 +137,7 @@ impl Chatter {
                 return Err(error);
             }
         };
-        let page: ChatPage =
-            postcard::from_bytes(&bytes[..length]).map_err(|_| abi::ERR_ARGUMENT)?;
-        self.caught_up = page.messages.len() < MAX_PAGE_MESSAGES;
+        self.caught_up = (page.count as usize) < MAX_PAGE_MESSAGES;
         if self.state.after != page.next_sequence {
             self.state.after = page.next_sequence;
             self.dirty = true;
@@ -149,15 +147,20 @@ impl Chatter {
             self.dirty = true;
         }
 
-        for message in page.messages {
-            if self.state.seen.contains(&message.id) {
+        for message in messages.iter().take(page.count as usize) {
+            let id = Id(message.id);
+            if self.state.seen.contains(&id) {
                 continue;
             }
-            self.state.seen.push_back(message.id);
+            self.state.seen.push_back(id);
             while self.state.seen.len() > MAX_HISTORY_MESSAGES {
                 self.state.seen.pop_front();
             }
-            let mut line = format!("{}: {}", message.sender_name, message.text);
+            let sender = std::str::from_utf8(&message.sender[..message.sender_bytes as usize])
+                .map_err(|_| abi::ERR_ARGUMENT)?;
+            let text = std::str::from_utf8(&message.text[..message.text_bytes as usize])
+                .map_err(|_| abi::ERR_ARGUMENT)?;
+            let mut line = format!("{sender}: {text}");
             if line.len() > MAX_CONTEXT_LINE_BYTES {
                 truncate(&mut line, MAX_CONTEXT_LINE_BYTES - "…".len());
                 line.push('…');
@@ -220,26 +223,23 @@ impl Chatter {
         }
 
         if let Some(request) = &self.state.request {
-            let mut bytes = vec![0; MAX_RESULT_BYTES + 32];
-            let length = sdk::llm_poll(request.id, &mut bytes)?;
-            let status: LlmStatus =
-                postcard::from_bytes(&bytes[..length]).map_err(|_| abi::ERR_ARGUMENT)?;
-            match status {
-                LlmStatus::Unknown => {
-                    let bytes = postcard::to_allocvec(request).map_err(|_| abi::ERR_LIMIT)?;
-                    let mut reply = [0; 8];
-                    let length = sdk::llm_submit(&bytes, &mut reply)?;
-                    let submission: LlmSubmission =
-                        postcard::from_bytes(&reply[..length]).map_err(|_| abi::ERR_ARGUMENT)?;
+            let mut bytes = vec![0; MAX_RESULT_BYTES];
+            let status = services::llm_poll(request.id, &mut bytes)?;
+            match status.state {
+                services::LLM_UNKNOWN => {
+                    let submission =
+                        services::llm_submit(request.id, &request.prompt, request.max_tokens)?;
                     if !matches!(
                         submission,
-                        LlmSubmission::Accepted | LlmSubmission::AlreadyKnown
+                        services::LLM_ACCEPTED | services::LLM_ALREADY_KNOWN
                     ) {
                         self.next_poll_s = now + 10.0;
                     }
                 }
-                LlmStatus::Pending => {}
-                LlmStatus::Ready { text } => {
+                services::LLM_PENDING => {}
+                services::LLM_READY => {
+                    let text = std::str::from_utf8(&bytes[..status.bytes as usize])
+                        .map_err(|_| abi::ERR_ARGUMENT)?;
                     let mut message: String = text
                         .chars()
                         .map(|character| {
@@ -258,11 +258,12 @@ impl Chatter {
                     self.state.next_due_s = now + f64::from(profile.interval_seconds);
                     self.dirty = true;
                 }
-                LlmStatus::Failed { .. } | LlmStatus::Cancelled | LlmStatus::Indeterminate => {
+                services::LLM_FAILED | services::LLM_CANCELLED | services::LLM_INDETERMINATE => {
                     self.state.request = None;
                     self.state.next_due_s = now + f64::from(profile.interval_seconds);
                     self.dirty = true;
                 }
+                _ => return Err(abi::ERR_ARGUMENT),
             }
             return Ok(());
         }

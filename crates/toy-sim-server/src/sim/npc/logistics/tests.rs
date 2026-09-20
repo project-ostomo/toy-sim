@@ -437,10 +437,7 @@ fn physical_roundtrip(frame_velocity: DVec3) {
         .get::<crate::sim::physics::MassProps>(ship)
         .unwrap()
         .mass;
-    let cost = PlanningPreferences {
-        fuel_priority: 10.0,
-    }
-    .cost(initial_mass);
+    let cost = toy_sim_model::transfer::TransferCost::default();
     let acceleration = 250_000.0 / initial_mass;
     let flow = 250_000.0 / (300.0 * 9.80665);
     let rcs_flow = app
@@ -459,7 +456,7 @@ fn physical_roundtrip(frame_velocity: DVec3) {
         .sum::<f64>();
     eprintln!("freight frame={frame_velocity:?}; hardware RCS rated flow={rcs_flow} kg/s");
     eprintln!(
-        "freight initial mass={initial_mass:.1} kg, priority10 ideal={:?}, cruise={:.2} m/s",
+        "freight initial mass={initial_mass:.1} kg, default ideal={:?}, cruise={:.2} m/s",
         cost.estimate(100_000.0, acceleration, flow),
         cost.cruise_speed(100_000.0, 0.0, acceleration, flow)
     );

@@ -9,6 +9,7 @@ pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
 
 pub(super) struct Row {
     pub target: SelectedTarget,
+    pub contact: Option<ContactRef>,
     pub name: String,
     pub kind: String,
     pub offset: glam::DVec3,
@@ -75,17 +76,34 @@ pub(super) fn short_id(id: Id) -> String {
     id.to_string().chars().take(8).collect()
 }
 
-pub(super) fn sorted_rows<'a>(rows: &'a [Row], state: &Shell) -> Vec<&'a Row> {
+pub(super) fn row_visible(row: &Row, state: &Shell, selected: Option<SelectedTarget>) -> bool {
+    if selected == Some(row.target) {
+        return true;
+    }
+    let kind_matches = match state.filter {
+        Filter::General => {
+            !row.kind.eq_ignore_ascii_case("missile")
+                && !row.kind.eq_ignore_ascii_case("projectile")
+        }
+        Filter::All => true,
+        Filter::Ships => matches!(row.target, SelectedTarget::Contact(_)) && row.kind != "Missile",
+        Filter::Celestials => matches!(row.target, SelectedTarget::Celestial(_)),
+    };
     let search = state.search.to_lowercase();
+    kind_matches
+        && (search.is_empty()
+            || row.name.to_lowercase().contains(&search)
+            || row.kind.to_lowercase().contains(&search))
+}
+
+pub(super) fn sorted_rows<'a>(
+    rows: &'a [Row],
+    state: &Shell,
+    selected: Option<SelectedTarget>,
+) -> Vec<&'a Row> {
     let mut rows: Vec<_> = rows
         .iter()
-        .filter(|row| {
-            let ship = matches!(row.target, SelectedTarget::Contact(_));
-            (state.filter == Filter::All || ship == (state.filter == Filter::Ships))
-                && (search.is_empty()
-                    || row.name.to_lowercase().contains(&search)
-                    || row.kind.to_lowercase().contains(&search))
-        })
+        .filter(|row| row_visible(row, state, selected))
         .collect();
     rows.sort_by(|a, b| {
         let order = match state.sort {

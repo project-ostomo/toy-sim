@@ -65,7 +65,7 @@ fn micropulse_charge_tanks_and_engine_metadata_use_complete_charge_mass() {
     };
     assert_eq!(propellant_resource, "micropulse_charge");
     assert_eq!(*power_w, 0.);
-    assert!((thrust_n / propellant_kg_s - 49_033.25).abs() < 1e-8);
+    assert!((thrust_n / propellant_kg_s - 490_332.5).abs() < 1e-8);
     state
         .apply_commands(
             &design,
@@ -80,13 +80,13 @@ fn micropulse_charge_tanks_and_engine_metadata_use_complete_charge_mass() {
 #[test]
 fn micropulse_energy_budget_rejects_unphysical_or_nonfinite_rates() {
     for (isp, energy, electric, heat) in [
-        (5000., 1e9, 0.0005, 0.001),
-        (5000., 3e9, 0.6, 0.1),
-        (f64::NAN, 3e9, 0.0005, 0.001),
-        (1e-300, 3e9, 0.0005, 0.001),
-        (5000., f64::INFINITY, 0.0005, 0.001),
+        (5000., 1e9, 0.99, 0.001),
+        (5000., 3e9, 1.1, 0.1),
+        (f64::NAN, 3e9, 0.99, 0.001),
+        (1e-300, 3e9, 0.99, 0.001),
+        (5000., f64::INFINITY, 0.99, 0.001),
         (5000., 3e9, -0.1, 0.001),
-        (5000., 3e9, 0.0005, f64::NAN),
+        (5000., 3e9, 0.99, f64::NAN),
     ] {
         let mut catalogue = Catalogue::builtin();
         catalogue
@@ -98,7 +98,7 @@ fn micropulse_energy_budget_rejects_unphysical_or_nonfinite_rates() {
             thrust_n: 1e7,
             specific_impulse_s: isp,
             charge_energy_j_kg: energy,
-            electric_fraction: electric,
+            electric_efficiency: electric,
             absorbed_heat_fraction: heat,
             plume: None,
         };

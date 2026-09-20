@@ -29,7 +29,12 @@ impl ScanSource for CurrentCommand {
         Vec::new()
     }
 
-    fn query(&self, query: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
+    fn query(
+        &self,
+        query: ProgramQuery,
+        _: bool,
+        _: toy_sim_model::wasm_world::ReplyCapacity,
+    ) -> anyhow::Result<ProgramReply> {
         match query {
             ProgramQuery::Travel => {
                 self.reads.fetch_add(1, Ordering::Relaxed);
@@ -153,10 +158,22 @@ impl ScanSource for MovingSlip {
         Vec::new()
     }
 
-    fn query(&self, query: ProgramQuery, _: bool, _: usize) -> anyhow::Result<ProgramReply> {
+    fn query(
+        &self,
+        query: ProgramQuery,
+        _: bool,
+        _: toy_sim_model::wasm_world::ReplyCapacity,
+    ) -> anyhow::Result<ProgramReply> {
         let seconds = self.tick.load(Ordering::Relaxed) as f64 * 0.1;
         Ok(match query {
-            ProgramQuery::LocalSpace { .. } => ProgramReply::LocalSpace(Default::default()),
+            ProgramQuery::Orrery { .. } => ProgramReply::Orrery(Default::default()),
+            ProgramQuery::Tracks(_) => ProgramReply::Tracks(toy_sim_model::QueryPage {
+                revision: 0,
+                tracks: Vec::new(),
+                completion: toy_sim_model::Completion::Complete,
+                continuation: None,
+                gas_used: 0,
+            }),
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: CurrentOrder {
                     autopilot_enabled: true,

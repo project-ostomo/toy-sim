@@ -284,30 +284,32 @@ impl PartDescription {
                 thrust_n,
                 specific_impulse_s,
                 charge_energy_j_kg,
-                electric_fraction,
+                electric_efficiency,
                 absorbed_heat_fraction,
                 ..
             } => {
                 let exhaust_velocity = specific_impulse_s * toy_sim_ships::STANDARD_GRAVITY_M_S2;
                 let charge_flow = thrust_n / exhaust_velocity;
                 let reaction_power = charge_flow * charge_energy_j_kg;
+                let electric_power = 0.01 * 0.5 * thrust_n * exhaust_velocity;
 
                 performance.quantity("Maximum thrust", *thrust_n, Force);
                 performance.quantity("Specific impulse", *specific_impulse_s, Seconds);
                 performance.quantity("Exhaust velocity", exhaust_velocity, Speed);
-                performance.quantity(
-                    "Electrical output",
-                    reaction_power * electric_fraction,
-                    Power,
-                );
+                performance.quantity("Electrical output", electric_power, Power);
                 requirements.quantity("Micropulse charges", charge_flow, MassFlow);
                 requirements.quantity(
                     "Absorbed heat",
                     reaction_power * absorbed_heat_fraction,
                     Power,
                 );
+                requirements.quantity(
+                    "Generator conversion heat",
+                    electric_power * (1.0 / electric_efficiency - 1.0),
+                    Power,
+                );
                 requirements.note = Some(
-                    "Full-thrust ratings. Charges include reaction mass. Electricity is generated while firing; thrust acts along −Z.",
+                    "Maximum-output ratings. Charges include reaction mass. Thrust and electrical output are independently controlled and share pulse fuel. Generation works at zero thrust; thrust acts along −Z.",
                 );
                 (
                     "Micropulse engine",

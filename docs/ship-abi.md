@@ -1,14 +1,20 @@
-# Ship controller ABI (version 30)
+# Ship controller ABI (version 31)
 
-A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host only through the imports of module `ship_v30`. Almost every import exchanges fixed-size little-endian C records without serialization. The exceptions are the two world-service imports added in ABI 12, `world_query` and `world_command`, which exchange postcard-encoded `toy-sim-model` values ([World services](#world-services)).
+A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v31`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
+
+ABI 31 replaces `world_query` and `world_command` with typed service imports.
+Programs allocate their output storage and specify element or byte capacities.
+There is no generic 64 KiB response ceiling, size-probing call, automatic retry,
+or host-owned response slot. Query work, pagination, per-service limits and the
+VM memory allowance remain bounded. Rebuild firmware and bindings together.
 
 ABI 30 moves route search and the full order queue to the server. `Travel` now
 returns `CurrentOrder`, containing the current order, its revision and index,
 autopilot status, preferences and active arrival estimate. Programs can request a
 server route preview and poll its asynchronous job, then commit it with
 `UseRoute`. Physical actions carry both the revision and order index, so a
-suspended callback cannot act on a later command. The changed Postcard enums and
-import namespace require rebuilding programs and bindings together.
+suspended callback cannot act on a later command. ABI 31 carries these values
+in C records rather than serialized enums.
 
 ABI 28 adds an optional `missile_tick(handle: u64)` export and the
 `missile_read` and `missile_control` imports. Missile callbacks run in their
@@ -77,10 +83,10 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v30` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship_v31` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 28; end`, allowing the host to verify the ABI without running guest code.
+- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 31; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
 
@@ -279,16 +285,19 @@ missile. It becomes effective at a successful slice commit. Rust programs use
 
 ## World services
 
-ABI 12 adds two imports that connect firmware to the authoritative world's travel, beacon and intelligence services. Their payloads are [postcard](https://docs.rs/postcard) encodings of types in [toy-sim-model](../crates/toy-sim-model/src/lib.rs). They do not use fixed records, and the generated C header and AssemblyScript bindings declare the imports only. Firmware in those languages must produce postcard bytes itself.
+Typed imports connect firmware to the authoritative travel, beacon and intelligence services. Records live in `ship-api/src/world.rs` and `world_intel.rs`; generated C and AssemblyScript bindings include their layouts and constants. UUIDs use 16 bytes, galactic positions use six `u64` words, and enum choices use explicit integer tags.
 
 | Import | Notes |
 | --- | --- |
-| `world_query(input, bytes, out, capacity)` | Decodes a `ProgramQuery` from `input` and writes a postcard `ProgramReply` into `out`. Returns the reply length. |
-| `world_command(input, bytes)` | Decodes a `ProgramAction` and stages it. Returns 0. |
+| `travel_read`, `contact_get`, `destination_resolve`, `slip_eligibility` | Read fixed output records. |
+| `local_space_query`, `navigation_query` | Fill caller-owned record arrays and a page header. |
+| `intel_tracks`, `intel_continue`, `beacon_read`, `beacons_read` | Fill record arrays, page metadata, and a separate byte arena for variable-length fields. |
+| `route_request`, `route_poll` | Fill route metadata plus separate order and fuel-requirement arrays. |
+| `travel_use_route`, `travel_block`, `travel_estimate`, `travel_complete`, `travel_slip`, `travel_reserve_bay`, `travel_dock`, `travel_undock` | Accept a typed input record and stage the corresponding action. |
 
-### `world_query`
+### Query buffers and gas
 
-**Buffers.** `bytes` and `capacity` are each at most 65,536. The reply must fit in `capacity`, otherwise the call returns `ERR_BUFFER`. Unlike record imports, `out` does not need to match the reply size exactly. Track pages stop at the encoded output capacity and retain the next unreturned track for continuation. If even one track and its page header cannot fit, the call returns `ERR_BUFFER` before changing its cursor.
+**Buffers.** Array capacities count records; arena capacities count bytes. The program allocates enough storage for the requested result. Host admission validates memory ranges before service work. Fixed results require their declared layout; atomic results that cannot fit return `ERR_BUFFER`. Bounded collection queries report completion, truncation or continuation explicitly. Track pages retain unreturned records for a later page; this is pagination, not automatic buffer resizing or re-execution. Variable fields use offsets into the returned arena, never host pointers. Unused caller capacity is not charged as copied data.
 
 **Gas.**
 
@@ -301,7 +310,7 @@ ABI 12 adds two imports that connect firmware to the authoritative world's trave
 inspect at most 4096 bays across its results; a larger page returns `ERR_LIMIT`
 without silently truncating its bay lists.
 
-**Errors.** Undecodable input, a failed query or an invalid query returns `ERR_ARGUMENT`. A host with no world provider returns `ERR_UNAVAILABLE`.
+**Errors.** Invalid record values or a failed query return `ERR_ARGUMENT`. A host with no world provider returns `ERR_UNAVAILABLE`. Invalid guest memory traps.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
@@ -332,9 +341,9 @@ service supplies observations only: local waypoints and steering decisions
 remain in the ship program. It does not append manoeuvres to the server queue.
 
 Route request and polling each admit 8192 work gas in addition to the normal
-call and serialization costs. Search runs outside the non-preemptible syscall;
-its work is charged separately to the ship owner's account. Requests and ready
-plans are bounded to 256 orders, and serialized plans to 48 KiB. Submission
+call and copy costs. Search runs outside the non-preemptible syscall;
+the public routing service does not debit the owner's account for search work.
+Requests and ready plans are bounded to 256 orders. Submission
 checks reply capacity before accepting or changing a job. Jobs are scoped to the
 current world, ship, owner and control revision. Commit also requires the
 expected queue revision. Preview age, ordinary movement and unrelated global
@@ -352,9 +361,9 @@ callback. Flight duration uses the same tick rounding as the transit schedule.
 
 Track queries are metered as described in [server-client.md](server-client.md#metered-queries). A cursor expires 10 ticks after its query started. Each ship keeps separate cursor stores for its flight instance and its display instance.
 
-### `world_command`
+### Travel actions
 
-**Limits.** Input is at most 65,536 bytes, and a callback can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. It returns `ERR_ARGUMENT` for undecodable input, for a display instance, or when the limit is reached.
+**Limits.** Each import takes one fixed input record, and a slice can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. Invalid values return `ERR_ARGUMENT`; display instances and a full staged-action list return `ERR_UNAVAILABLE`.
 
 **Application.** Staged actions are applied only after a successful slice commit. The world applies them after every ship's slice has run, grouped by ship ID and in staging order. A stale revision or order index is ignored without changing the current queue. Other rejected actions do not fault the computer; an active-command failure sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
 
@@ -379,7 +388,25 @@ Candidate changes and cancellation do not refund energy already spent.
 
 ### Availability
 
-Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `toy-sim-debug`. `world_command` stages validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
+Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `toy-sim-debug`. Travel action imports stage validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
+
+### Chat and LLM services
+
+`services.rs` defines the service records and Rust helpers. `llm_submit(id,
+prompt, bytes, max_tokens)` returns a submission status directly, so accepting
+a paid request does not depend on an output buffer. `llm_poll(id, text,
+capacity, status)` fills caller-owned UTF-8 bytes and an eight-byte `LlmPoll`
+record containing the state and byte count. It never allocates guest memory or
+retries. `llm_cancel(id)` returns whether cancellation succeeded.
+
+`chat_send(id, text, bytes)` sends UTF-8. `chat_read(after, messages, capacity,
+page)` fills up to 32 fixed `ChatMessage` records and a `ChatPage` header. The
+header reports count, next sequence and missed messages. Each message contains
+explicit lengths, up to 128 sender bytes and 1024 text bytes, identity flags,
+timestamps and UUIDs. Further messages are read with the returned sequence.
+Oversized fields are rejected rather than truncated. The 64 KiB LLM result
+policy and 64 KiB persistent store are separate service/storage limits; neither
+is a general ABI output-buffer limit.
 
 ## Display entry point
 
@@ -391,8 +418,8 @@ Every production flight computer uses the server's fused scan and world-service 
 
 A display instance is a separate WebAssembly instance with its own memory, session, screens and query cursors. Its boot and execution consume the ship's shared physical tick allowance and the same owner's gas account. It shares no memory with the flight instance. The same imports are linked, with these differences:
 
-- `device_write` and `world_command` return `ERR_ARGUMENT`.
-- `world_query` uses the display cursor store.
+- `device_write` rejects writes, and travel action imports return `ERR_UNAVAILABLE`.
+- Intelligence queries use the display cursor store.
 
 The authoritative server creates a display instance only while a network client subscribes to one of the ship's screens. It passes the flight computer's latest observation with requests removed, sets `requested_screens` to the due subscribed slots, delivers screen input from clients, and keeps only screen frames from the result. Other publications from a display instance are ignored. The lifecycle is described in [server-client.md](server-client.md#display-instances).
 
@@ -501,7 +528,7 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 Depend on `toy-sim-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. It also exports a drawing-only `ship_display` that draws a "Ship status" text screen (simulation time, speed, mass and battery energy) on every requested slot; it ignores screen events and does not call world services. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/toy-sim-example-controller/src/world.rs). It uses `world_query` to read the active host-owned command and `world_command` to report estimates, completion, or physical actions guarded by the queue revision and order index. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
+The minimal `no_std` example is [examples/embedded.rs](../crates/toy-sim-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [toy-sim-example-controller](../crates/toy-sim-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/toy-sim-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/toy-sim-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
 
 [examples/custom_screen.rs](../crates/toy-sim-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 
@@ -526,17 +553,17 @@ Include [ship.h](../crates/toy-sim-ship-api/include/ship.h). It declares `ship_<
 
 ### AssemblyScript
 
-[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v30", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
+[ship.ts](../crates/toy-sim-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v31", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
 
 ### Regenerating bindings
 
-After changing `abi.rs`, regenerate both binding files:
+After changing ABI records or imports, regenerate both binding files:
 
 ```sh
 python3 tools/generate_ship_bindings.py
 ```
 
-The script parses the record structs, `Text` sizes, integer constants and the `raw` import declarations in `abi.rs`. It computes offsets assuming 8-byte fields, then writes `include/ship.h` and `bindings/ship.ts`.
+The script reads `abi.rs`, `world.rs`, `world_intel.rs` and `services.rs`, including macro-defined records and typed pointers. It computes field sizes and alignments, rejects implicit padding, and writes `include/ship.h` and `bindings/ship.ts` with layout assertions and offsets.
 
 ## Host API
 

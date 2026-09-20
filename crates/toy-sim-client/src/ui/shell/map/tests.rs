@@ -14,7 +14,7 @@ fn catalogue() -> NavigationCatalogue {
         let position = GalacticPosition::from_meters(glam::DVec3::new(
             (index % 60) as f64 * 1e16,
             (index / 60) as f64 * 1e16,
-            0.,
+            ((index * 7) % 19) as f64 * 1e15,
         ));
         catalogue.systems.push(NavigationSystem {
             id: id(index),
@@ -92,9 +92,15 @@ fn large_layout_is_stable_cached_and_contains_only_reciprocal_gate_links() {
     let slots: BTreeSet<_> = cache
         .positions
         .iter()
-        .map(|p| (p.x.to_bits(), p.y.to_bits()))
+        .map(|p| (p.x.to_bits(), p.y.to_bits(), p.z.to_bits()))
         .collect();
     assert_eq!(slots.len(), 3000);
+    let actual_displacement = catalogue.systems[1234]
+        .position
+        .relative_to(catalogue.systems[0].position)
+        / toy_sim_universe::civilization::LIGHT_YEAR_M;
+    assert!((cache.positions[1234] - cache.positions[0] - actual_displacement).length() < 1e-12);
+    assert!(cache.bounds.z > 1.);
     let allocation = cache.positions.as_ptr();
     catalogue.beacons[0].pose.position = GalacticPosition::ZERO;
     assert!(!cache.update(&catalogue));
@@ -148,6 +154,27 @@ fn large_layout_is_stable_cached_and_contains_only_reciprocal_gate_links() {
 }
 
 #[test]
+fn empty_and_single_system_maps_have_finite_bounds() {
+    let mut catalogue = NavigationCatalogue::default();
+    let mut cache = Cache::default();
+    cache.update(&catalogue);
+    assert!(cache.positions.is_empty());
+    assert_eq!(cache.bounds, glam::DVec3::ONE);
+
+    catalogue.systems.push(NavigationSystem {
+        id: id(1),
+        name: "Isolated".into(),
+        position: GalacticPosition::from_meters(glam::DVec3::splat(1e20)),
+        sovereignty: None,
+        population: 0,
+    });
+    catalogue.topology_revision += 1;
+    cache.update(&catalogue);
+    assert_eq!(cache.positions, [glam::DVec3::ZERO]);
+    assert_eq!(cache.bounds, glam::DVec3::ONE);
+}
+
+#[test]
 fn search_and_active_slip_route_keep_all_systems_accessible() {
     let catalogue = catalogue();
     let mut cache = Cache::default();
@@ -175,6 +202,7 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
     );
     assert_eq!(active.gates, BTreeSet::from([id(10001)]));
     assert_eq!(active.slips, [(1, 2999)]);
+    assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(
         &cache,
@@ -267,7 +295,7 @@ fn large_map_headless_draw_culls_zoomed_geometry_and_reports_frame_cpu() {
     let mut zoomed_shapes = 0;
     for frame in 0..80 {
         if frame == 40 {
-            state.zoom = 2.;
+            state.camera.zoom_at(8., egui::Vec2::ZERO);
         }
         let start = Instant::now();
         let mut output = context.run_ui(
@@ -303,7 +331,7 @@ fn large_map_headless_draw_culls_zoomed_geometry_and_reports_frame_cpu() {
         zoomed_shapes < full_shapes / 3,
         "zoomed {zoomed_shapes}, full {full_shapes}"
     );
-    assert!(state.zoom.is_finite());
+    assert!(state.camera.scale.is_finite() && state.camera.scale > 0.);
 }
 
 #[test]
@@ -376,7 +404,10 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
     toy_sim_ui::theme::install(&context);
     let mut state = State {
         search: "System 2999".into(),
-        preference: Some(travel::PlanningPreferences { fuel_priority: 42. }),
+        preference: Some(travel::PlanningPreferences {
+            fuel_fraction: 0.42,
+            ..Default::default()
+        }),
         ..Default::default()
     };
     let mut intents = Vec::new();
@@ -447,7 +478,7 @@ fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
     assert!(state.route.plan().is_none());
     assert!(intents.iter().any(|intent| matches!(intent,
         Intent::PlanRoute(orders, false, preference)
-            if preference.fuel_priority == 42. && matches!(&orders[..],
+            if preference.fuel_fraction == 0.42 && matches!(&orders[..],
                 [travel::Order::TravelTo(travel::Destination::Beacon(destination))]
                     if *destination == id(15998)))));
 }

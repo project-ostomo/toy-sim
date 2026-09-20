@@ -1,3 +1,6 @@
+#[cfg(all(debug_assertions, not(target_family = "wasm")))]
+use bevy_dylib as _;
+
 mod blueprint_uploads;
 pub mod launch;
 pub mod persistence;

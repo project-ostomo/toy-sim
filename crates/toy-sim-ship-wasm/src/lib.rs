@@ -41,11 +41,21 @@ pub trait ScanSource: Send + Sync {
         Ok(query_work(query))
     }
 
+    fn query_output_bytes(
+        &self,
+        _query: &toy_sim_model::ProgramQuery,
+        _display: bool,
+        _capacity: toy_sim_model::wasm_world::ReplyCapacity,
+        maximum: usize,
+    ) -> Result<usize> {
+        Ok(maximum)
+    }
+
     fn query(
         &self,
         _query: toy_sim_model::ProgramQuery,
         _display: bool,
-        _reply_capacity: usize,
+        _reply_capacity: toy_sim_model::wasm_world::ReplyCapacity,
     ) -> Result<toy_sim_model::ProgramReply> {
         anyhow::bail!("world service unavailable")
     }

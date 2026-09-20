@@ -9,6 +9,7 @@ use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
+use toy_sim_model::wasm_world::ReplyCapacity;
 use toy_sim_model::{travel::*, *};
 use toy_sim_ship_api::abi;
 
@@ -231,28 +232,66 @@ fn query_buffer_error(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
-fn check_reply_capacity(reply: &ProgramReply, capacity: usize) -> Result<()> {
-    let bytes = postcard::experimental::serialized_size(reply)?;
-    if bytes > capacity {
+fn check_reply_capacity(reply: &ProgramReply, capacity: ReplyCapacity) -> Result<()> {
+    if !wasm_intel::reply_fits(reply, capacity) {
         return Err(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall.into());
     }
     Ok(())
 }
 
 impl toy_sim_ship_wasm::ScanSource for FusedScan {
+    fn query_output_bytes(
+        &self,
+        query: &ProgramQuery,
+        display: bool,
+        capacity: ReplyCapacity,
+        maximum: usize,
+    ) -> Result<usize> {
+        use toy_sim_ship_api::world_intel;
+        let bytes = match query {
+            ProgramQuery::Tracks(query) => {
+                toy_sim_intel::query::output_bytes(&self.snapshot, query.limit as usize, capacity)
+            }
+            ProgramQuery::Continue { cursor, .. } => {
+                let queries = if display {
+                    &self.display_queries
+                } else {
+                    &self.queries
+                };
+                queries.lock().unwrap().output_bytes(*cursor, capacity)?
+            }
+            ProgramQuery::Beacon(id) => {
+                std::mem::size_of::<world_intel::BeaconPage>()
+                    + self
+                        .beacons
+                        .get(id)
+                        .or_else(|| self.orbital.beacons.get(id))
+                        .map_or(0, |beacon| {
+                            std::mem::size_of::<world_intel::Beacon>()
+                                + wasm_intel::beacon_arena_bytes(&beacon.beacon)
+                        })
+            }
+            ProgramQuery::Beacons { after, limit } => {
+                std::mem::size_of::<world_intel::BeaconPage>()
+                    + merged_page(
+                        &self.beacons,
+                        &self.orbital.beacons,
+                        *after,
+                        *limit as usize,
+                    )
+                    .iter()
+                    .map(|(_, beacon)| {
+                        std::mem::size_of::<world_intel::Beacon>()
+                            + wasm_intel::beacon_arena_bytes(&beacon.beacon)
+                    })
+                    .sum::<usize>()
+            }
+            _ => maximum,
+        };
+        Ok(bytes.min(maximum))
+    }
+
     fn query_work(&self, query: &ProgramQuery) -> Result<u64> {
-        if let ProgramQuery::LocalSpace {
-            destination,
-            range_m,
-            after_seconds,
-        } = query
-        {
-            toy_sim_protocol::local_space::validate_request(
-                *destination,
-                *range_m,
-                *after_seconds,
-            )?;
-        }
         let bays = match query {
             ProgramQuery::Beacon(id) => self
                 .beacons
@@ -285,7 +324,7 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
         &self,
         query: ProgramQuery,
         display: bool,
-        reply_capacity: usize,
+        reply_capacity: ReplyCapacity,
     ) -> Result<ProgramReply> {
         self.query_work(&query)?;
         let queries = if display {
@@ -294,11 +333,7 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
             &self.queries
         };
         let reply = match query {
-            ProgramQuery::LocalSpace {
-                destination,
-                range_m,
-                after_seconds,
-            } => ProgramReply::LocalSpace(self.local_space(destination, range_m, after_seconds)?),
+            ProgramQuery::Orrery { reference } => ProgramReply::Orrery(self.orrery(reference)?),
             ProgramQuery::RouteRequest(request) => {
                 toy_sim_protocol::routing::validate_request(&request)?;
                 let (service, caller) = self
@@ -338,9 +373,7 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                     self.tick,
                 );
                 ProgramReply::SlipEligibility {
-                    ready: self.slip_ready
-                        && self.admissible_at(origin, departure)
-                        && self.admissible_at(destination, arrival),
+                    ready: self.slip_ready && self.admissible_at(origin, departure),
                     preparation_s,
                     duration_s,
                 }
@@ -486,7 +519,11 @@ impl toy_sim_ship_wasm::ScanSource for FusedScan {
                 snapshot.clone(),
                 query,
                 snapshot.tick,
-                65_536,
+                ReplyCapacity {
+                    records: count,
+                    bytes: usize::MAX,
+                    auxiliary: 0,
+                },
             ) {
                 candidates.extend(page.tracks.into_iter().map(|track| (group, track)));
             }
@@ -1190,8 +1227,8 @@ pub fn prepare_sources(
             &super::ownership::AssetOwner,
             Option<&super::identity::Control>,
             &PreciseTransform,
-            &Velocity,
-            &AngularVelocity,
+            Option<&Velocity>,
+            Option<&AngularVelocity>,
             &super::vessel::ShipDesign,
             &super::physics::MassProps,
             Option<&super::travel::Travel>,
@@ -1199,7 +1236,7 @@ pub fn prepare_sources(
             Option<&ServiceState>,
             &mut ShipSoftware,
         ),
-        Without<super::travel::Dormant>,
+        Without<super::travel::SystemsSuspended>,
     >,
 ) {
     for (
@@ -1230,7 +1267,7 @@ pub fn prepare_sources(
         let state = state
             .filter(|state| state.group == Some(group.id))
             .unwrap_or(&fresh);
-        let pose = super::intelligence::pose(transform, Some(velocity), Some(angular));
+        let pose = super::intelligence::pose(transform, velocity, angular);
         software.world_source = Some(fused_source(
             &publication,
             clock.ticks,
@@ -1638,19 +1675,29 @@ mod tests {
             arrival_after_seconds,
         };
         assert!(matches!(
-            source.query(query(0.0), false, 65_536).unwrap(),
+            source
+                .query(query(0.0), false, ReplyCapacity::UNLIMITED)
+                .unwrap(),
             ProgramReply::SlipEligibility { ready: true, .. }
         ));
         assert!(matches!(
-            source.query(query(10.037), false, 65_536).unwrap(),
+            source
+                .query(query(10.037), false, ReplyCapacity::UNLIMITED)
+                .unwrap(),
             ProgramReply::SlipEligibility { ready: false, .. }
         ));
         assert!(matches!(
-            source.query(query(20.0), false, 65_536).unwrap(),
+            source
+                .query(query(20.0), false, ReplyCapacity::UNLIMITED)
+                .unwrap(),
             ProgramReply::SlipEligibility { ready: true, .. }
         ));
         for invalid in [-1.0, f64::NAN, f64::INFINITY, MAX_PREDICTION_SECONDS + 1.0] {
-            assert!(source.query(query(invalid), false, 65_536).is_err());
+            assert!(
+                source
+                    .query(query(invalid), false, ReplyCapacity::UNLIMITED)
+                    .is_err()
+            );
         }
     }
 
@@ -1694,7 +1741,10 @@ mod tests {
             })
         };
         let old = retained_source(&mut world, parent).unwrap();
-        assert!(old.query(contact(first), false, 1024).is_ok());
+        assert!(
+            old.query(contact(first), false, ReplyCapacity::UNLIMITED)
+                .is_ok()
+        );
 
         let mut next = toy_sim_intel::Snapshot::default();
         next.tick = 2;
@@ -1702,9 +1752,14 @@ mod tests {
         world.get_mut::<Group>(group).unwrap().snapshot = Arc::new(next);
         world.resource_mut::<SimulationCounters>().ticks = 2;
         let current = retained_source(&mut world, parent).unwrap();
-        assert!(current.query(contact(first), false, 1024).is_err());
-        let ProgramReply::Contact { pose, .. } =
-            current.query(contact(second), false, 1024).unwrap()
+        assert!(
+            current
+                .query(contact(first), false, ReplyCapacity::UNLIMITED)
+                .is_err()
+        );
+        let ProgramReply::Contact { pose, .. } = current
+            .query(contact(second), false, ReplyCapacity::UNLIMITED)
+            .unwrap()
         else {
             panic!("expected shared contact");
         };
@@ -1716,9 +1771,15 @@ mod tests {
             group: Id::new(),
             track: second,
         });
-        assert!(current.query(foreign, false, 1024).is_err());
+        assert!(
+            current
+                .query(foreign, false, ReplyCapacity::UNLIMITED)
+                .is_err()
+        );
         assert!(matches!(
-            current.query(ProgramQuery::Travel, false, 4096).unwrap(),
+            current
+                .query(ProgramQuery::Travel, false, ReplyCapacity::UNLIMITED)
+                .unwrap(),
             ProgramReply::Travel {
                 slip_ready: false,
                 ..
@@ -1840,6 +1901,7 @@ mod tests {
         source.physical = ship;
         source.radius = radius;
         source.mass = 1000.0;
+        source.slip_power_w = world.get::<travel::SlipDrive>(ship).unwrap().power_w;
         let start = world.resource::<SimulationCounters>().ticks;
         let mut first_endpoint = None;
         let mut transit = None;
@@ -1874,7 +1936,7 @@ mod tests {
                             after_seconds: lead,
                         },
                         false,
-                        65_536,
+                        ReplyCapacity::UNLIMITED,
                     )
                     .unwrap()
                 else {
@@ -1894,7 +1956,7 @@ mod tests {
                             arrival_after_seconds: lead,
                         },
                         false,
-                        65_536,
+                        ReplyCapacity::UNLIMITED,
                     )
                     .unwrap()
                 else {
@@ -1945,13 +2007,11 @@ mod tests {
             "moving mouth obstructed arrival"
         );
         assert!(world.get::<travel::Dormant>(ship).is_none());
-        assert_eq!(
-            world
-                .get::<precision::PreciseTransform>(ship)
-                .unwrap()
-                .translation_um,
-            transit.destination
-        );
+        let actual = world
+            .get::<precision::PreciseTransform>(ship)
+            .unwrap()
+            .translation_um;
+        assert!(travel::slip_admissible(world, ship, actual, 10.));
         let mouth_position = world
             .get::<precision::PreciseTransform>(mouth)
             .unwrap()
@@ -1998,7 +2058,7 @@ mod tests {
                         reference: GalacticPosition::ZERO,
                     },
                     false,
-                    65_536,
+                    ReplyCapacity::UNLIMITED,
                 )
                 .unwrap()
             else {
@@ -2028,7 +2088,7 @@ mod tests {
                         reference: GalacticPosition::ZERO
                     },
                     false,
-                    65_536
+                    ReplyCapacity::UNLIMITED
                 )
                 .is_err()
         );
@@ -2065,10 +2125,16 @@ mod tests {
             ..Default::default()
         });
         for _ in 0..8 {
-            source.query(query.clone(), false, 65_536).unwrap();
+            source
+                .query(query.clone(), false, ReplyCapacity::UNLIMITED)
+                .unwrap();
         }
-        assert!(source.query(query.clone(), false, 65_536).is_err());
-        assert!(source.query(query, true, 65_536).is_ok());
+        assert!(
+            source
+                .query(query.clone(), false, ReplyCapacity::UNLIMITED)
+                .is_err()
+        );
+        assert!(source.query(query, true, ReplyCapacity::UNLIMITED).is_ok());
     }
 
     #[test]
@@ -2413,31 +2479,42 @@ mod tests {
         ));
         assert!(matches!(
             source
-                .query(page, false, usize::MAX)
+                .query(page, false, ReplyCapacity::UNLIMITED)
                 .unwrap_err()
                 .downcast_ref(),
             Some(toy_sim_ship_wasm::WorldQueryError::LimitExceeded)
         ));
 
         let one = ProgramQuery::Beacon(first);
+        let reserved = source
+            .query_output_bytes(&one, false, ReplyCapacity::UNLIMITED, usize::MAX)
+            .unwrap();
+        assert_eq!(
+            reserved,
+            std::mem::size_of::<toy_sim_ship_api::world_intel::BeaconPage>()
+                + std::mem::size_of::<toy_sim_ship_api::world_intel::Beacon>()
+                + MAX_QUERY_BEACON_BAYS * std::mem::size_of::<toy_sim_ship_api::world_intel::Bay>()
+        );
         let expected =
             toy_sim_ship_wasm::query_work(&one) + QUERY_BAY_GAS * MAX_QUERY_BEACON_BAYS as u64;
         assert_eq!(source.query_work(&one).unwrap(), expected);
         assert!(matches!(
             source
-                .query(one.clone(), false, 1)
+                .query(one.clone(), false, ReplyCapacity::default())
                 .unwrap_err()
                 .downcast_ref(),
             Some(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall)
         ));
-        let ProgramReply::Beacons(beacons) = source.query(one, false, usize::MAX).unwrap() else {
+        let ProgramReply::Beacons(beacons) =
+            source.query(one, false, ReplyCapacity::UNLIMITED).unwrap()
+        else {
             panic!("expected beacons");
         };
         assert_eq!(beacons[0].bays.len(), MAX_QUERY_BEACON_BAYS);
     }
 
     #[test]
-    fn small_contact_reply_does_not_allocate_or_retire_handles() {
+    fn contact_query_allocates_one_handle() {
         let mut source = source();
         let id = Id::new();
         Arc::make_mut(&mut source.snapshot).put(track(id, DVec3::ZERO, false));
@@ -2445,15 +2522,12 @@ mod tests {
             group: source.group,
             track: id,
         });
-        let error = source.query(query.clone(), false, 1).unwrap_err();
-        assert!(matches!(
-            error.downcast_ref(),
-            Some(toy_sim_ship_wasm::WorldQueryError::BufferTooSmall)
-        ));
         assert!(source.handles.lock().unwrap().entries.is_empty());
 
         assert!(matches!(
-            source.query(query, false, 1024).unwrap(),
+            source
+                .query(query, false, ReplyCapacity::UNLIMITED)
+                .unwrap(),
             ProgramReply::Contact { .. }
         ));
         assert_eq!(source.handles.lock().unwrap().entries.len(), 1);
@@ -2553,7 +2627,7 @@ mod tests {
                     after_seconds: 0.0,
                 },
                 false,
-                65_536,
+                ReplyCapacity::UNLIMITED,
             )
             .unwrap();
         let ProgramReply::Pose(resolved) = reply else {

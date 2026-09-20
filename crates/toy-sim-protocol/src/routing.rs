@@ -14,7 +14,7 @@ pub fn validate_request(request: &toy_sim_model::routing::Request) -> Result<()>
 }
 
 pub fn validate_status(status: &toy_sim_model::routing::Status) -> Result<()> {
-    use toy_sim_model::routing::{MAX_ORDERS, MAX_PLAN_BYTES, Status};
+    use toy_sim_model::routing::{MAX_ORDERS, Status};
 
     match status {
         Status::Unknown => {}
@@ -47,10 +47,6 @@ pub fn validate_status(status: &toy_sim_model::routing::Status) -> Result<()> {
                     "invalid route propellant estimate"
                 );
             }
-            ensure!(
-                postcard::to_allocvec(plan)?.len() <= MAX_PLAN_BYTES,
-                "planned route exceeds byte limit"
-            );
         }
     }
     Ok(())

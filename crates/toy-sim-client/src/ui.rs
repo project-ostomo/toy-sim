@@ -1,6 +1,7 @@
 mod celestials;
 mod console;
 mod contacts;
+mod input;
 mod scene;
 mod selection;
 mod shell;
@@ -54,23 +55,28 @@ pub fn run(endpoint: Endpoint, local: bool) {
     app.add_observer(state::reset_resource::<Selection>);
     app.add_observer(state::reset_resource::<selection::Subscriptions>);
 
-    app.add_plugins((scene::install, console::install, shell::install))
-        .add_systems(Startup, toy_sim_ship_view::prepare_visuals)
-        .add_systems(Update, toy_sim_ship_view::add_weapon_visuals)
-        .add_systems(
-            Update,
-            selection::synchronize
-                .after(state::PresentationSet::Interpolate)
-                .after(celestials::CelestialSystems::Evaluate)
-                .before(state::PresentationSet::Views),
-        )
-        .configure_sets(
-            PostUpdate,
-            toy_sim_ui::bevy_egui::EguiPostUpdateSet::EndPass
-                .after(bevy::transform::TransformSystems::Propagate)
-                .after(bevy::camera::CameraUpdateSystems),
-        )
-        .run();
+    app.add_plugins((
+        input::install,
+        scene::install,
+        console::install,
+        shell::install,
+    ))
+    .add_systems(Startup, toy_sim_ship_view::prepare_visuals)
+    .add_systems(Update, toy_sim_ship_view::add_weapon_visuals)
+    .add_systems(
+        Update,
+        selection::synchronize
+            .after(state::PresentationSet::Interpolate)
+            .after(celestials::CelestialSystems::Evaluate)
+            .before(state::PresentationSet::Views),
+    )
+    .configure_sets(
+        PostUpdate,
+        toy_sim_ui::bevy_egui::EguiPostUpdateSet::EndPass
+            .after(bevy::transform::TransformSystems::Propagate)
+            .after(bevy::camera::CameraUpdateSystems),
+    )
+    .run();
 }
 
 #[cfg(test)]

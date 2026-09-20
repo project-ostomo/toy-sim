@@ -87,13 +87,15 @@ pub fn run(
             &mut DockServices,
             Has<EquipmentBeacon>,
             &mut crate::sim::sensors::Sensor,
+            Has<Dormant>,
         ),
-        Without<Dormant>,
+        Without<super::super::travel::SystemsSuspended>,
     >,
     mut parts: Query<(&Utility, &mut Device, &mut DevicePower)>,
 ) {
     let dt = time.delta_secs_f64();
-    for (ship, design, mut h, mut crew, mut services, had_beacon, mut sensor) in &mut ships {
+    for (ship, design, mut h, mut crew, mut services, had_beacon, mut sensor, absent) in &mut ships
+    {
         commands.entity(ship).remove::<DockServiceRequest>();
         *services = DockServices::default();
         let mut beacon = false;
@@ -116,6 +118,16 @@ pub fn run(
                 continue;
             }
             if !device.0.operational || h.hull.0 <= 0. {
+                continue;
+            }
+            if absent
+                && matches!(
+                    utility.0,
+                    UtilityDef::Sensor { .. }
+                        | UtilityDef::Beacon { .. }
+                        | UtilityDef::MissileLauncher { .. }
+                )
+            {
                 continue;
             }
             let requested = match utility.0 {

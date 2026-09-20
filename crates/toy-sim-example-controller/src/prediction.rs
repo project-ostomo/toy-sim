@@ -62,7 +62,7 @@ struct State {
 struct Rollout {
     state: State,
     bindings: Bindings,
-    preferences: toy_sim_model::travel::PlanningPreferences,
+    preferences: toy_sim_model::transfer::TransferCost,
     inertia: DMat3,
     inverse: DMat3,
     initial_r: DVec3,
@@ -167,7 +167,7 @@ impl Rollout {
             self.force / s.mass,
             self.response(),
             self.bindings.propellant_rate * self.ceiling,
-            self.preferences.cost(s.mass),
+            self.preferences,
             self.speed_limit,
         )
     }

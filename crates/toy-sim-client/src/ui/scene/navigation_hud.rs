@@ -12,10 +12,12 @@ use toy_sim_ui::{
 };
 
 const ROUTE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 202, 110);
-const BEACON_COLOR: egui::Color32 = egui::Color32::from_rgb(113, 206, 229);
 
 pub(super) fn install(app: &mut App) {
-    app.add_systems(EguiPrimaryContextPass, draw);
+    app.add_systems(
+        EguiPrimaryContextPass,
+        draw.after(crate::ui::shell::ShellDraw),
+    );
 }
 
 struct Waypoint {
@@ -154,12 +156,9 @@ fn draw(
                 )
             })
             .collect();
-        let painter = ctx
-            .layer_painter(egui::LayerId::new(
-                egui::Order::Background,
-                egui::Id::new(("navigation_hud", view.view)),
-            ))
-            .with_clip_rect(rect);
+        let painter =
+            toy_sim_ui::desktop::hud_painter(ctx, egui::Id::new(("navigation_hud", view.view)))
+                .with_clip_rect(rect);
         let label_bounds = rect.intersect(toy_sim_ui::desktop::workspace_in(ctx));
 
         let mut previous = Some(origin);
@@ -180,42 +179,6 @@ fn draw(
                 }
                 previous = Some(waypoint.position);
             }
-        }
-
-        for (beacon, pose) in &beacons {
-            if queue.iter().filter_map(|(_, w)| w.as_ref()).any(|w| {
-                w.position == pose.0.position
-                    && w.target == Some(SelectedTarget::Beacon(beacon.0.id))
-            }) {
-                continue;
-            }
-            let offset = pose.0.position.relative_to(view.origin);
-            if offset.length() > 1e12 {
-                continue;
-            }
-            let (point, offscreen) = projection.marker(offset);
-            if offscreen {
-                continue;
-            }
-            marker(&painter, point, BEACON_COLOR);
-            label(
-                &painter,
-                label_bounds,
-                point,
-                &format!(
-                    "{} · {}",
-                    beacon.0.name,
-                    distance(pose.0.position.relative_to(origin).length())
-                ),
-                BEACON_COLOR,
-            );
-            select(
-                ctx,
-                &mut selected,
-                point,
-                Some(SelectedTarget::Beacon(beacon.0.id)),
-                view.view,
-            );
         }
 
         let mut labels: Vec<egui::Pos2> = Vec::new();
@@ -298,12 +261,10 @@ fn select(
     view: u64,
 ) {
     if let Some(pointer) = ctx.input(|i| i.pointer.interact_pos()) {
-        if target.is_some()
+        if crate::ui::input::pointer_available(ctx)
+            && target.is_some()
             && ctx.input(|i| i.pointer.primary_clicked())
             && pointer.distance(point) < 13.
-            && ctx
-                .layer_id_at(pointer)
-                .is_none_or(|l| l.order == egui::Order::Background)
         {
             selected.target = target;
             selected.view = Some(view);

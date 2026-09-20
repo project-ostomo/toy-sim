@@ -23,7 +23,7 @@ fn input(tick: u64) -> Input {
 }
 
 #[test]
-fn stock_idle_sleeps_but_commands_maneuvers_and_shared_missiles_stay_responsive() {
+fn stock_status_reports_commands_and_shared_missiles_stay_responsive_each_tick() {
     let mut computer = ControllerRuntime::new()
         .unwrap()
         .instantiate(toy_sim_ships::EXAMPLE_CONTROLLER)
@@ -45,7 +45,7 @@ fn stock_idle_sleeps_but_commands_maneuvers_and_shared_missiles_stay_responsive(
         let slice = computer
             .run_slice(input(tick), None, FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap();
-        if slice.callback_completed && slice.output.tick_interval_seconds == Some(1.) {
+        if slice.callback_completed && slice.output.tick_interval_seconds == Some(0.) {
             schedule.completed(slice.output.tick_interval_seconds);
             break;
         }
@@ -61,14 +61,14 @@ fn stock_idle_sleeps_but_commands_maneuvers_and_shared_missiles_stay_responsive(
                 .run_slice(input(tick), None, FUEL_PER_TICK, FUEL_PER_TICK)
                 .unwrap();
             assert!(slice.callback_completed);
-            assert_eq!(slice.output.tick_interval_seconds, Some(1.));
+            assert_eq!(slice.output.tick_interval_seconds, Some(0.));
             schedule.completed(slice.output.tick_interval_seconds);
             callbacks += 1;
         }
     }
-    assert_eq!(callbacks, 10);
+    assert_eq!(callbacks, 100);
     schedule.advance(0.1);
-    assert!(!schedule.ready(false));
+    assert!(schedule.ready(false));
     assert!(schedule.ready(true));
 
     let mut command = input(tick + 1);
@@ -113,9 +113,9 @@ fn stock_idle_sleeps_but_commands_maneuvers_and_shared_missiles_stay_responsive(
     let slice = computer
         .run_slice(command, None, FUEL_PER_TICK, FUEL_PER_TICK)
         .unwrap();
-    assert_eq!(slice.output.tick_interval_seconds, Some(1.));
+    assert_eq!(slice.output.tick_interval_seconds, Some(0.));
     schedule.completed(slice.output.tick_interval_seconds);
-    assert!(!schedule.ready(false));
+    assert!(schedule.ready(false));
 
     let slice = computer
         .run_callback_slice(
@@ -134,7 +134,7 @@ fn stock_idle_sleeps_but_commands_maneuvers_and_shared_missiles_stay_responsive(
     assert!(slice.callback_completed);
     assert_eq!(slice.callback, Some(CallbackKind::Missile(7)));
     assert_eq!(slice.output.missiles.len(), 1);
-    assert!(!schedule.ready(false));
+    assert!(schedule.ready(false));
     schedule.wake();
     assert!(schedule.ready(false));
 }

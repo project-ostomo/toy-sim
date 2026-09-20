@@ -46,3 +46,19 @@ including clicks and drags, unless the user explicitly requests it.
 Limit UI refinement to the requested requirements and concrete failures. Stop
 once the relevant checks pass; do not continue cosmetic tweaking or repeated
 visual refinement unless the user specifically asks for it.
+
+## (Codex) File editing
+
+For manual source-code edits, MUST use Codex's native `apply_patch` tool.
+
+Do not modify files by writing Python, Perl, Ruby, sed, awk, cat,
+heredocs, or other shell scripts when `apply_patch` can reasonably
+perform the edit.
+
+Python/scripts are allowed only for:
+- genuinely generated output,
+- large mechanical/bulk transformations,
+- edits where scripting is materially safer or more reliable,
+- or after `apply_patch` has failed.
+
+Prefer several small `apply_patch` calls over a Python rewrite.

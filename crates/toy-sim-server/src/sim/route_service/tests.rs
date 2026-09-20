@@ -1,5 +1,9 @@
 use super::*;
-use crate::sim::{gas::STARTING_GAS, precision::PreciseTransform, vessel};
+use crate::sim::{
+    gas::{GasLedger, STARTING_GAS},
+    precision::PreciseTransform,
+    vessel,
+};
 use bevy::math::DVec3;
 use toy_sim_model::travel::{Destination, Order, PlanningPreferences};
 
@@ -24,24 +28,48 @@ fn request(id: u64) -> Request {
 }
 
 #[test]
-fn enqueue_capacity_idempotence_namespace_and_revision_checks_precede_mutation() {
+fn enqueue_idempotence_namespace_and_revision_checks_precede_mutation() {
     let service = RouteService::default();
     let caller = identity();
-    let error = service.submit(caller, request(1), 0).unwrap_err();
-    assert!(error.is::<toy_sim_ship_wasm::WorldQueryError>());
     assert!(matches!(service.poll(caller, 1), Status::Unknown));
     assert!(service.0.lock().unwrap().queue.is_empty());
 
-    service.submit(caller, request(1), 65_536).unwrap();
-    service.submit(caller, request(1), 65_536).unwrap();
+    service
+        .submit(
+            caller,
+            request(1),
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
+        .unwrap();
+    service
+        .submit(
+            caller,
+            request(1),
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
+        .unwrap();
     assert_eq!(service.0.lock().unwrap().queue.len(), 1);
     let mut conflict = request(1);
     conflict.orders = vec![Order::WaitUntil(700)];
-    assert!(service.submit(caller, conflict, 65_536).is_err());
+    assert!(
+        service
+            .submit(
+                caller,
+                conflict,
+                toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED
+            )
+            .is_err()
+    );
 
     let mut automatic = caller;
     automatic.origin = Origin::Automatic;
-    service.submit(automatic, request(1), 65_536).unwrap();
+    service
+        .submit(
+            automatic,
+            request(1),
+            toy_sim_model::wasm_world::ReplyCapacity::UNLIMITED,
+        )
+        .unwrap();
     assert_eq!(service.0.lock().unwrap().queue.len(), 2);
     let mut stale = caller;
     stale.travel_revision += 1;
@@ -117,7 +145,7 @@ fn completed(world: &mut World, ship: Entity, id: u64) -> Plan {
 }
 
 #[test]
-fn worker_uses_public_inputs_and_pays_gas() {
+fn worker_uses_public_inputs_without_charging_route_computation() {
     let player = Id::new();
     let mut app = crate::sim::provision(&[player], None, None).unwrap();
     app.update();
@@ -153,7 +181,7 @@ fn worker_uses_public_inputs_and_pays_gas() {
         .resource::<GasLedger>()
         .account(current.owner)
         .unwrap();
-    assert!(paid.spent > initial.spent && paid.spent - initial.spent < 100_000_000);
+    assert_eq!(paid.spent, initial.spent);
     assert_eq!(paid.available + paid.spent, STARTING_GAS);
 
     reset(world);

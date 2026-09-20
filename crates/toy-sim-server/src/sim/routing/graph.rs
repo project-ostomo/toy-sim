@@ -176,18 +176,129 @@ impl<'a> Graph<'a> {
         Ok(allowed)
     }
 
+    pub fn direct(
+        &mut self,
+        request: &RouteRequest,
+        environment: &impl RouteEnvironment,
+        work: &mut Work,
+        weights: toy_sim_model::transfer::TransferCost,
+    ) -> Result<Vec<Edge>> {
+        let local = transfer(
+            &request.performance,
+            weights,
+            &self.nodes[0].pose,
+            &self.nodes[1].pose,
+        );
+        let mut best_cost = local.0 + weights.seconds_per_kg * local.1;
+        let mut best = vec![Edge {
+            from: 0,
+            to: 1,
+            kind: EdgeKind::Sublight,
+            time_s: local.0,
+            fuel_kg: local.1,
+        }];
+        if !request.preferences.allow_slipdrive || request.performance.slip_power_w <= 0.0 {
+            return Ok(best);
+        }
+
+        let candidates = |endpoint: usize| {
+            let mut nodes = vec![endpoint];
+            if let Some(gates) = self.nodes[endpoint]
+                .system
+                .and_then(|system| self.groups.get(&system))
+            {
+                nodes.extend(gates.iter().map(|gate| 2 + self.gates.len() + gate));
+            }
+            nodes
+        };
+        let departures = candidates(0);
+        let arrivals = candidates(1);
+        for from in departures {
+            work.charge(1, environment)?;
+            if !self.slip_allowed(from, environment, work)? {
+                continue;
+            }
+            let departure = transfer(
+                &request.performance,
+                weights,
+                &self.nodes[0].pose,
+                &self.nodes[from].pose,
+            );
+            for &to in &arrivals {
+                work.charge(1, environment)?;
+                let (preparation, transit) = crate::sim::travel::slip_times(
+                    self.nodes[from].pose.position,
+                    self.nodes[to].pose.position,
+                    request.performance.mass_kg,
+                    request.performance.slip_power_w,
+                    None,
+                    0,
+                );
+                let rendezvous = slip_rendezvous(
+                    &request.performance,
+                    weights,
+                    &self.nodes[from].pose,
+                    &self.nodes[to].pose,
+                );
+                let arrival = transfer(
+                    &request.performance,
+                    weights,
+                    &self.nodes[to].pose,
+                    &self.nodes[1].pose,
+                );
+                let slip = (preparation + transit + rendezvous.0, rendezvous.1);
+                let cost = departure.0
+                    + slip.0
+                    + arrival.0
+                    + weights.seconds_per_kg * (departure.1 + slip.1 + arrival.1);
+                if cost >= best_cost {
+                    continue;
+                }
+                best_cost = cost;
+                best.clear();
+                if from != 0 {
+                    best.push(Edge {
+                        from: 0,
+                        to: from,
+                        kind: EdgeKind::Sublight,
+                        time_s: departure.0,
+                        fuel_kg: departure.1,
+                    });
+                }
+                best.push(Edge {
+                    from,
+                    to,
+                    kind: EdgeKind::Slip,
+                    time_s: slip.0,
+                    fuel_kg: slip.1,
+                });
+                if to != 1 {
+                    best.push(Edge {
+                        from: to,
+                        to: 1,
+                        kind: EdgeKind::Sublight,
+                        time_s: arrival.0,
+                        fuel_kg: arrival.1,
+                    });
+                }
+            }
+        }
+        ensure!(best_cost.is_finite(), "no reachable direct transfer");
+        Ok(best)
+    }
+
     pub fn search(
         &mut self,
         request: &RouteRequest,
         environment: &impl RouteEnvironment,
         work: &mut Work,
+        weights: toy_sim_model::transfer::TransferCost,
     ) -> Result<Vec<Edge>> {
         work.charge(self.nodes.len() as u64, environment)?;
         let mut costs = vec![f64::INFINITY; self.nodes.len()];
         let mut previous = vec![None::<Edge>; self.nodes.len()];
         let mut queue = BinaryHeap::new();
         let mut settled = vec![false; self.nodes.len()];
-        let weights = request.preferences.cost(request.performance.mass_kg);
         costs[0] = 0.0;
         queue.push(QueueEntry { node: 0, cost: 0.0 });
 
@@ -218,10 +329,12 @@ impl<'a> Graph<'a> {
             let mut edges = Vec::with_capacity(2 + 2 * local.len());
             edges.push((1, EdgeKind::Sublight));
             for gate in local {
-                if let Some(exit) = self.exits[gate] {
+                if request.preferences.allow_wormholes
+                    && let Some(exit) = self.exits[gate]
+                {
                     edges.push((2 + exit, EdgeKind::Jump(gate)));
                 }
-                if request.performance.slip_power_w > 0.0 {
+                if request.preferences.allow_slipdrive && request.performance.slip_power_w > 0.0 {
                     edges.push((2 + self.gates.len() + gate, EdgeKind::Sublight));
                 }
             }
@@ -248,21 +361,16 @@ impl<'a> Graph<'a> {
                         );
                         let approach = transfer(
                             &request.performance,
-                            request.preferences,
+                            weights,
                             &self.nodes[from].pose,
                             &checkpoint,
                         );
-                        let crossing = transfer(
-                            &request.performance,
-                            request.preferences,
-                            &checkpoint,
-                            mouth,
-                        );
+                        let crossing = transfer(&request.performance, weights, &checkpoint, mouth);
                         let mut clearance = self.nodes[to].pose.clone();
                         clearance.position = clearance.position.offset_by(DVec3::Z * 98.0);
                         let departure = transfer(
                             &request.performance,
-                            request.preferences,
+                            weights,
                             &self.nodes[to].pose,
                             &clearance,
                         );
@@ -273,7 +381,7 @@ impl<'a> Graph<'a> {
                     }
                     _ => transfer(
                         &request.performance,
-                        request.preferences,
+                        weights,
                         &self.nodes[from].pose,
                         &self.nodes[to].pose,
                     ),
@@ -292,7 +400,9 @@ impl<'a> Graph<'a> {
                 }
             }
 
-            if !self.slip_allowed(from, environment, work)? {
+            if !request.preferences.allow_slipdrive
+                || !self.slip_allowed(from, environment, work)?
+            {
                 continue;
             }
             for to in std::iter::once(1).chain(2 + self.gates.len()..self.nodes.len()) {
@@ -308,23 +418,19 @@ impl<'a> Graph<'a> {
                 if distance <= 1.0 {
                     continue;
                 }
-                let (preparation, transit) = crate::sim::travel::slip_times(
-                    self.nodes[from].pose.position,
-                    self.nodes[to].pose.position,
+                let (preparation, transit) = crate::sim::travel::slip_times_for_distance(
+                    distance,
                     request.performance.mass_kg,
                     request.performance.slip_power_w,
                     None,
                     0,
                 );
-                if current.cost + preparation + transit >= costs[1] {
-                    continue;
-                }
-                if !self.slip_allowed(to, environment, work)? {
+                if current.cost + preparation + transit >= costs[1].min(costs[to]) {
                     continue;
                 }
                 let rendezvous = slip_rendezvous(
                     &request.performance,
-                    request.preferences,
+                    weights,
                     &self.nodes[from].pose,
                     &self.nodes[to].pose,
                 );
