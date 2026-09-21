@@ -21,6 +21,60 @@ struct CaptureScene {
 }
 
 #[test]
+fn observer_departure_effects_follow_shared_orbital_motion() {
+    use bevy::math::DVec3;
+    use osg_model::{CombatEvent, Completion, GalacticPosition, ViewState};
+
+    let mut app = App::new();
+    app.init_resource::<RenderTime>()
+        .init_resource::<bevy::asset::Assets<Mesh>>()
+        .init_resource::<bevy::asset::Assets<SlipMaterial>>()
+        .add_systems(Startup, setup)
+        .add_systems(
+            Update,
+            (super::super::camera::setup_views, prepare, draw).chain(),
+        );
+    let origin = GalacticPosition::splat(1_000_000_000_000_000_000_000);
+    let velocity = DVec3::new(30_000.0, 20_000.0, -40_000.0);
+    let offset = Vec3::new(-200.0, 100.0, -600.0);
+    app.world_mut().spawn(ViewObservation(ViewState {
+        id: 1,
+        revision: 1,
+        group: Id([1; 16]),
+        focused_ship: None,
+        origin: origin.offset_by(velocity * 0.2),
+        tracks: vec![],
+        completion: Completion::Complete,
+    }));
+    app.world_mut().spawn(CombatPublication(CombatEvent {
+        sequence: 1,
+        sim_time_ns: 1_000_000_000,
+        kind: CombatEventKind::Slip {
+            position: origin.offset_by(offset.as_dvec3()),
+            velocity_m_s: velocity.to_array(),
+            direction: [0.0, 0.0, -1.0],
+            radius_m: 15.0,
+            arriving: false,
+        },
+    }));
+    app.world_mut().resource_mut::<RenderTime>().display_ns = 1_200_000_000;
+    app.update();
+    let mut effects = app.world_mut().query::<(&Effect, &Transform)>();
+    let flash = effects
+        .iter(app.world())
+        .find(|(effect, _)| effect.mode == 3)
+        .unwrap()
+        .1;
+    assert!(flash.translation.distance(offset) < 0.001);
+    let trail = effects
+        .iter(app.world())
+        .find(|(effect, _)| effect.mode == 2)
+        .unwrap()
+        .1;
+    assert!(trail.translation.distance(offset + Vec3::NEG_Z * 256.0) < 0.001);
+}
+
+#[test]
 fn transitions_keep_departure_anchor_and_use_actual_speed() {
     use osg_model::{
         Completion, GalacticPosition, IffIdentity, InfoGroupKey, ShipTelemetry,

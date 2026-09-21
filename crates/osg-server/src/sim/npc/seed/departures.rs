@@ -194,14 +194,79 @@ mod tests {
         }
         let mut charged = [None; 3];
         let mut departed = [false; 3];
+        let player_id = app.world().get::<identity::Identity>(player).unwrap().0;
+        let connection = crate::sim::session::connect(
+            app.world_mut(),
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
+        app.world_mut()
+            .get_mut::<crate::sim::session::Session>(connection)
+            .unwrap()
+            .views
+            .insert(
+                1,
+                osg_model::ViewSubscription {
+                    id: 1,
+                    revision: 1,
+                    group: osg_model::PUBLIC_GROUP,
+                    focused_ship: Some(player_id),
+                    query: osg_model::TrackQuery {
+                        limit: 256,
+                        work: 100_000,
+                        ..Default::default()
+                    },
+                },
+            );
+        let mut departure_effects = 0;
+        let mut glowing = [false; 3];
         for _ in 0..1800 {
             app.update();
+            let frame = crate::sim::session::frame(app.world_mut(), connection).unwrap();
+            for event in &frame.presentation.combat {
+                if matches!(event.kind, osg_model::CombatEventKind::Slip { .. }) {
+                    assert!(
+                        frame.sim_time_ns.abs_diff(event.sim_time_ns) < 300_000_000,
+                        "departure timestamp {} differs from frame {}",
+                        event.sim_time_ns,
+                        frame.sim_time_ns
+                    );
+                }
+            }
+            departure_effects += frame
+                .presentation
+                .combat
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event.kind,
+                        osg_model::CombatEventKind::Slip {
+                            arriving: false,
+                            ..
+                        }
+                    )
+                })
+                .count();
             let world = app.world();
             let position = world
                 .get::<PreciseTransform>(player)
                 .unwrap()
                 .translation_um;
             for (index, &ship) in ships.iter().enumerate() {
+                if world.get::<travel::Transit>(ship).is_none() {
+                    let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+                    let optical = frame
+                        .optical
+                        .iter()
+                        .find(|object| object.pose.position.relative_to(position).length() < 1.0);
+                    assert!(
+                        optical.is_some(),
+                        "courier {index} vanished at tick {} before departure",
+                        frame.tick
+                    );
+                    glowing[index] |= optical.unwrap().visual.slip_readiness > 0.5;
+                }
                 if world
                     .get::<travel::SlipDrive>(ship)
                     .unwrap()
@@ -239,6 +304,8 @@ mod tests {
                 .map(|ship| &app.world().get::<travel::Travel>(*ship).unwrap().0)
                 .collect::<Vec<_>>()
         );
+        assert_eq!(glowing, [true; 3]);
+        assert_eq!(departure_effects, 3);
         assert!(
             charged
                 .windows(2)

@@ -323,6 +323,7 @@ pub struct CombatEvent {
 pub enum CombatEventKind {
     Slip {
         position: GalacticPosition,
+        velocity_m_s: [f64; 3],
         direction: [f64; 3],
         radius_m: f64,
         arriving: bool,

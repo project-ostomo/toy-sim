@@ -30,6 +30,7 @@ enum RecordedKind {
     Slip {
         ship: Id,
         position: GalacticPosition,
+        velocity: [f64; 3],
         direction: [f64; 3],
         radius: f64,
         arriving: bool,
@@ -261,6 +262,7 @@ pub fn record_slip(
     world: &mut World,
     entity: Entity,
     position: GalacticPosition,
+    velocity: [f64; 3],
     direction: [f64; 3],
     arriving: bool,
 ) {
@@ -281,6 +283,7 @@ pub fn record_slip(
             RecordedKind::Slip {
                 ship,
                 position,
+                velocity,
                 direction,
                 radius,
                 arriving,
@@ -342,6 +345,7 @@ pub fn for_session(
                 RecordedKind::Slip {
                     ship,
                     position,
+                    velocity,
                     direction,
                     radius,
                     arriving,
@@ -351,6 +355,7 @@ pub fn for_session(
                     }
                     CombatEventKind::Slip {
                         position: *position,
+                        velocity_m_s: *velocity,
                         direction: *direction,
                         radius_m: *radius,
                         arriving: *arriving,
@@ -470,6 +475,7 @@ mod tests {
             &mut world,
             ship,
             GalacticPosition::ZERO,
+            [30_000.0, 0.0, 0.0],
             [0.0, 0.0, -1.0],
             false,
         );
@@ -483,6 +489,7 @@ mod tests {
             departed[0].kind,
             CombatEventKind::Slip {
                 arriving: false,
+                velocity_m_s: [30_000.0, 0.0, 0.0],
                 ..
             }
         ));

@@ -315,11 +315,13 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
         let valid = match &event.kind {
             CombatEventKind::Slip {
                 position,
+                velocity_m_s,
                 direction,
                 radius_m,
                 ..
             } => {
                 position_valid(*position)
+                    && finite(velocity_m_s)
                     && finite(direction)
                     && (direction.iter().map(|v| v * v).sum::<f64>() - 1.0).abs() < 1e-5
                     && nonnegative(&[*radius_m])

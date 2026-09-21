@@ -234,6 +234,7 @@ fn draw(
             {
                 let CombatEventKind::Slip {
                     position,
+                    velocity_m_s,
                     direction,
                     radius_m,
                     arriving,
@@ -246,7 +247,11 @@ fn draw(
                     continue;
                 }
                 let axis = Vec3::from_array(direction.map(|v| v as f32)).normalize();
-                let origin = position.relative_to(camera.origin).as_vec3();
+                let elapsed = (clock.display_ns - event.0.sim_time_ns) as f64 * 1e-9;
+                let origin = position
+                    .offset_by(bevy::math::DVec3::from_array(velocity_m_s) * elapsed)
+                    .relative_to(camera.origin)
+                    .as_vec3();
                 let radius = (radius_m as f32).max(8.0);
                 let length = 512.0 * (age / 0.2).clamp(0.05, 1.0);
                 let center = origin + axis * length * if arriving { -0.5 } else { 0.5 };

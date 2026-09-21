@@ -239,7 +239,7 @@ Messages are defined in [osg-protocol](../crates/osg-protocol/src/lib.rs). The `
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 39 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 40 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`, 3 `Session`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input`, 1 KiB for `Session` |
 
@@ -1125,7 +1125,9 @@ emissive channels brighten with the lesser of charging work and preparation time
 Transit telemetry supplies the committed direction and speed, which drives the
 animation rate. Entry and exit take 1.25 seconds visually without delaying physics:
 filaments envelop the traveller and peel away again. Visible departures and
-arrivals send sequenced optical flash/trail events to observers. Other ships do
+arrivals send sequenced optical flash/trail events to observers. These effects
+retain the ship's ordinary inertial velocity so they remain beside observers
+sharing its orbital motion. Other ships do
 not receive the traveller's tunnel.
 
 Fresh scenarios include three Helion couriers within 2 km of the player. They
