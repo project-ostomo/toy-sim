@@ -125,7 +125,7 @@ fn render(
     mut glints: Query<
         (
             Entity,
-            &RenderSource,
+            Option<&RenderSource>,
             &ViewMember,
             &mut Transform,
             &mut MeshTag,
@@ -142,7 +142,9 @@ fn render(
         .collect();
     let existing: HashMap<_, _> = glints
         .iter()
-        .map(|(entity, source, member, ..)| ((member.0, source.0), entity))
+        .filter_map(|(entity, source, member, ..)| {
+            source.map(|source| ((member.0, source.0), entity))
+        })
         .collect();
     let mut retained = HashSet::new();
 
@@ -272,6 +274,7 @@ mod tests {
                             luminosity_w: light.display_w,
                             appearance: None,
                             visual: osg_model::ShipVisual {
+                                slip_readiness: 0.0,
                                 engines: Vec::new(),
                                 turrets: Vec::new(),
                                 shield: None,
@@ -368,6 +371,7 @@ mod tests {
         assert_eq!(app.world().resource::<Assets<GlintMaterial>>().len(), 1);
 
         app.world_mut().despawn(sources[0]);
+        app.update();
         assert!(app.world().get_entity(glint).is_err());
         assert!(app.world().get_entity(other).is_ok());
         app.world_mut().despawn(view);

@@ -115,6 +115,16 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
                 "invalid slip charge telemetry"
             );
         }
+        if let Some(transit) = &ship.slip_transit {
+            ensure!(
+                finite(&transit.direction)
+                    && (transit.direction.iter().map(|v| v * v).sum::<f64>() - 1.0).abs() < 1e-5
+                    && transit.speed_ly_s.is_finite()
+                    && transit.speed_ly_s > 0.0
+                    && transit.speed_ly_s <= travel::slip::MAX_SPEED_LY_S,
+                "invalid slip transit telemetry"
+            );
+        }
         super::industry::validate_cargo(&ship.cargo)?;
         match &ship.computer {
             ComputerStatus::Fault {
@@ -303,6 +313,17 @@ pub fn validate(p: &PresentationFrame) -> Result<()> {
     }
     for event in &p.combat {
         let valid = match &event.kind {
+            CombatEventKind::Slip {
+                position,
+                direction,
+                radius_m,
+                ..
+            } => {
+                position_valid(*position)
+                    && finite(direction)
+                    && (direction.iter().map(|v| v * v).sum::<f64>() - 1.0).abs() < 1e-5
+                    && nonnegative(&[*radius_m])
+            }
             CombatEventKind::Beam {
                 start,
                 end,
@@ -416,6 +437,7 @@ mod tests {
             power_consumed_w: 0.,
             power_requested_w: 0.,
             slip_charge: None,
+            slip_transit: None,
             slip_available: false,
             slip_exotic_fuel_kg: None,
             slip_navigation_lock: None,
@@ -459,6 +481,10 @@ mod tests {
 }
 
 pub(super) fn validate_visual(v: &ShipVisual) -> Result<()> {
+    ensure!(
+        v.slip_readiness.is_finite() && (0.0..=1.0).contains(&v.slip_readiness),
+        "invalid slip readiness"
+    );
     ensure!(
         v.engines.len() <= 4096 && v.turrets.len() <= 4096,
         "visual device limit"

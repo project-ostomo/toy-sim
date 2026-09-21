@@ -47,7 +47,14 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
         record
             .validate(world.resource::<SimulationCounters>().ticks)
             .unwrap();
-        assert_eq!(record.assets.len(), 3);
+        assert_eq!(
+            record.assets.len(),
+            if record.organization == ownership::organization_id(COOPERATIVE) {
+                6
+            } else {
+                3
+            }
+        );
         let account = identity::lookup(world, record.officer).unwrap();
         assert!(groups.insert(world.get::<identity::Account>(account).unwrap().group));
         let owner = Principal::Organization(record.organization);
@@ -74,9 +81,17 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
                 record.officer
             );
             let design = &world.get::<vessel::ShipDesign>(entity).unwrap().0;
+            let courier = (0..3).any(|index| {
+                asset.id
+                    == population_id(record.organization, &format!("departure-courier-{index}"))
+            });
             assert_eq!(
                 design.blueprint.controller_bytes(),
-                osg_ships::CHATTER_CONTROLLER
+                if courier {
+                    osg_ships::EXAMPLE_CONTROLLER
+                } else {
+                    osg_ships::CHATTER_CONTROLLER
+                }
             );
             let inventory = &world.get::<hardware::ShipInventory>(entity).unwrap().0;
             inventory.validate_cargo(&catalogue).unwrap();
@@ -112,9 +127,9 @@ fn every_public_organization_has_finite_physical_assets_and_private_paid_compute
             }
         }
     }
-    assert_eq!(assets.len(), 324);
+    assert_eq!(assets.len(), 327);
     assert!(
-        (8..=12).contains(&active_support),
+        (11..=15).contains(&active_support),
         "active support={active_support}"
     );
     assert!(docked_support >= 204);

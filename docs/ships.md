@@ -8,7 +8,7 @@ Related guides: [ship-editor.md](ship-editor.md) for building designs, [ship-abi
 
 The catalogue is [crates/osg-ships/data/catalogue.toml](../crates/osg-ships/data/catalogue.toml). `Catalogue::builtin()` parses and validates it at startup, and the binaries embed it at compile time. It has three top-level keys:
 
-- `revision` (currently `3`): blueprints must name the same revision.
+- `revision` (currently `4`): blueprints must name the same revision.
 - `resources`: slot 0 must be `propellant` and slot 1 must be `fuel`. Resource IDs must be unique and non-empty. `mass_kg` and `volume_m3` must be positive.
 - `parts`: part definitions.
 
@@ -83,7 +83,7 @@ A `ShipBlueprint` ([design.rs](../crates/osg-ships/src/design.rs)) contains:
 | --- | --- | --- |
 | `format_version` | u32 | Must equal `SHIP_FORMAT_VERSION` = 3. A missing value reads as 0 and is rejected. |
 | `name` | string | "Untitled ship" in a new design; at most 256 bytes |
-| `catalogue_revision` | u32 | 3 |
+| `catalogue_revision` | u32 | 4 |
 | `parts` | list of `PlacedPart` | |
 | `firmware` | `Standard` or `Custom(bytes)` | `Standard` |
 | `avionics` | `Avionics` | sensor enabled, orientation 0, no exclusions |

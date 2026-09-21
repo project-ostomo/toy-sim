@@ -5,6 +5,7 @@ mod glints;
 mod lighting;
 mod navigation_hud;
 mod projection;
+mod slip;
 mod transit;
 pub(super) use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
 pub(super) use orbit::ViewOptions;
@@ -38,7 +39,7 @@ pub(super) struct ViewMembers(Vec<Entity>);
 struct RenderSource(Entity);
 
 #[derive(Component, Default)]
-#[relationship_target(relationship = RenderSource, linked_spawn)]
+#[relationship_target(relationship = RenderSource)]
 struct SourceInstances(Vec<Entity>);
 
 #[derive(Component)]
@@ -58,6 +59,7 @@ struct Shield;
 pub(super) fn install(app: &mut App) {
     app.init_resource::<camera::CameraDrag>()
         .add_plugins(osg_ship_view::mechanisms::MechanismPlugin)
+        .add_plugins(osg_ship_view::slip::SlipRingPlugin)
         .add_systems(Update, mechanism_time.in_set(PresentationSet::Render))
         .insert_resource(GlobalAmbientLight::NONE)
         .add_systems(Startup, setup_ui_camera)
@@ -65,6 +67,7 @@ pub(super) fn install(app: &mut App) {
             Update,
             (
                 camera::setup_views,
+                slip::prepare,
                 camera::update_views,
                 camera::track_camera_drag,
                 camera::camera_controls.in_set(super::input::GameplayInput::Mouse),
@@ -78,6 +81,7 @@ pub(super) fn install(app: &mut App) {
             (
                 sync_ships,
                 sync_celestials,
+                cleanup_orphans,
                 own_visuals,
                 apply_visuals,
                 shield::update_flashes,
@@ -97,6 +101,7 @@ pub(super) fn install(app: &mut App) {
     surfaces::install(app);
     glints::install(app);
     transit::install(app);
+    slip::install(app);
     navigation_hud::install(app);
     sky::install(app);
     combat::install(app);
@@ -168,6 +173,7 @@ fn sync_ships(
     assets: Res<PartVisualAssets>,
     loader: Res<AssetServer>,
     thermal: Res<osg_ship_view::thermal::ThermalAssets>,
+    slips: Query<&slip::SlipView>,
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
@@ -175,6 +181,15 @@ fn sync_ships(
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, observation, camera, render_camera, projection, camera_transform) in &views {
+        if slips.get(view_entity).is_ok_and(|state| state.entering) {
+            visible.extend(
+                objects
+                    .iter()
+                    .filter(|(_, member, ..)| member.0 == view_entity)
+                    .map(|(entity, ..)| entity),
+            );
+            continue;
+        }
         let view = &observation.0;
         let height = render_camera
             .physical_viewport_size()
@@ -344,6 +359,7 @@ fn sync_celestials(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut surfaces: ResMut<surfaces::SurfaceCache>,
+    slips: Query<&slip::SlipView>,
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
@@ -351,6 +367,15 @@ fn sync_celestials(
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, camera, systems) in &views {
+        if slips.get(view_entity).is_ok_and(|state| state.entering) {
+            visible.extend(
+                objects
+                    .iter()
+                    .filter(|(_, member, ..)| member.0 == view_entity)
+                    .map(|(entity, ..)| entity),
+            );
+            continue;
+        }
         if camera.private {
             continue;
         }
@@ -434,6 +459,21 @@ fn sync_celestials(
     }
 }
 
+fn cleanup_orphans(
+    mut commands: Commands,
+    objects: Query<
+        (Entity, &ViewMember),
+        (Without<RenderSource>, Or<(With<ShipMesh>, With<BodyMesh>)>),
+    >,
+    slips: Query<&slip::SlipView>,
+) {
+    for (entity, member) in &objects {
+        if !slips.get(member.0).is_ok_and(|state| state.entering) {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 fn spawn_ship(
     commands: &mut Commands,
     design: &PreparedAppearance,
@@ -482,6 +522,8 @@ fn propagate_layers(
 fn apply_visuals(
     ships: Query<&RenderSource>,
     visuals: Query<&DisplayVisual>,
+    owned: Query<&OwnedShip>,
+    mut rings: Query<(&ChildOf, &mut osg_ship_view::slip::SlipRing)>,
     parts: Query<(&ChildOf, &osg_ship_view::PartVisual)>,
     mut plumes: Query<(
         &ChildOf,
@@ -495,6 +537,19 @@ fn apply_visuals(
         &mut Transform,
     )>,
 ) {
+    for (parent, mut ring) in &mut rings {
+        ring.readiness = ships.get(parent.parent()).ok().map_or(0.0, |source| {
+            if owned.get(source.0).is_ok_and(|ship| {
+                matches!(ship.0.presence, osg_model::travel::Presence::SlipTransit(_))
+            }) {
+                1.0
+            } else {
+                visuals
+                    .get(source.0)
+                    .map_or(0.0, |visual| visual.0.slip_readiness as f32)
+            }
+        });
+    }
     for (parent, mut plume, nozzle) in &mut plumes {
         plume.output = parts
             .get(parent.parent())
@@ -555,11 +610,20 @@ mod tests {
 
     #[test]
     fn view_and_source_lifetimes_remove_render_instances() {
+        use bevy::ecs::system::RunSystemOnce;
+
         let mut world = World::new();
-        let view = world.spawn_empty().id();
+        let view = world.spawn(slip::SlipView::default()).id();
         let source = world.spawn_empty().id();
-        let mesh = world.spawn((ViewMember(view), RenderSource(source))).id();
+        let mesh = world
+            .spawn((ViewMember(view), RenderSource(source), BodyMesh))
+            .id();
+        world.get_mut::<slip::SlipView>(view).unwrap().entering = true;
         world.despawn(source);
+        world.run_system_once(cleanup_orphans).unwrap();
+        assert!(world.get_entity(mesh).is_ok());
+        world.get_mut::<slip::SlipView>(view).unwrap().entering = false;
+        world.run_system_once(cleanup_orphans).unwrap();
         assert!(world.get_entity(mesh).is_err());
         assert!(world.get_entity(view).is_ok());
 

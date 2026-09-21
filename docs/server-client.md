@@ -239,7 +239,7 @@ Messages are defined in [osg-protocol](../crates/osg-protocol/src/lib.rs). The `
 | Offset | Size | Field |
 | --- | --- | --- |
 | 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 38 (`VERSION`) |
+| 4 | 2 | Protocol version, which must be 39 (`VERSION`) |
 | 6 | 2 | Kind: 1 `State`, 2 `Input`, 3 `Session`. Any other kind is rejected. |
 | 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input`, 1 KiB for `Session` |
 
@@ -1120,7 +1120,19 @@ of at least 0.1 light-years use ly.
 
 Docked and transiting ships have private meshes independent of sensor contacts.
 Docking opens a client-rendered hangar with orbit-camera controls; slip transit
-uses a procedural streak tunnel. See [stations-navigation.md](stations-navigation.md)
+uses a procedural streak tunnel. A fixed 16 m slip ring surrounds the hull; its
+emissive channels brighten with the lesser of charging work and preparation time.
+Transit telemetry supplies the committed direction and speed, which drives the
+animation rate. Entry and exit take 1.25 seconds visually without delaying physics:
+filaments envelop the traveller and peel away again. Visible departures and
+arrivals send sequenced optical flash/trail events to observers. Other ships do
+not receive the traveller's tunnel.
+
+Fresh scenarios include three Helion couriers within 2 km of the player. They
+wait 20, 45 and 70 seconds before following ordinary assisted routes to three
+distinct nearby systems, with the default 100 ppm risk and 50% fuel allowance.
+The ring requires catalogue revision 4 and world format 12; start a fresh world.
+See [stations-navigation.md](stations-navigation.md)
 for the controls and verification commands.
 
 Protocol version 8 changes battery charge and capacity fields to `u64` joules, including ship telemetry, device readings, and weapon-instrument battery readings. Server-generated snapshots are validated during encoding; an invalid snapshot panics and aborts the server process. Network I/O failures remain connection errors.

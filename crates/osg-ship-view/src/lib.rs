@@ -4,6 +4,7 @@ use osg_ships::appearance::PreparedAppearance;
 use osg_ships::*;
 use std::collections::BTreeMap;
 pub mod plume;
+pub mod slip;
 pub mod thermal;
 #[derive(Component)]
 pub struct PartVisual {
@@ -80,6 +81,14 @@ pub fn attach_part_body(
     assets: &PartVisualAssets,
     loader: &AssetServer,
 ) {
+    if matches!(
+        definition.equipment,
+        Equipment::Utility {
+            utility: osg_ships::utilities::UtilityDef::SlipDrive { .. }
+        }
+    ) {
+        commands.entity(entity).insert(slip::SlipRing::default());
+    }
     if let Some(model) = &definition.model {
         let model_entity = commands
             .spawn((

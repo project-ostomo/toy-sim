@@ -88,7 +88,9 @@ fn sample(
             (radius_m * 0.7).clamp(2., 200.),
             2.,
         ),
-        CombatEventKind::Projectile { .. } | CombatEventKind::Beam { .. } => return None,
+        CombatEventKind::Projectile { .. }
+        | CombatEventKind::Beam { .. }
+        | CombatEventKind::Slip { .. } => return None,
     };
     if !energy.is_finite() || energy <= 0. || !scale.is_finite() {
         return None;

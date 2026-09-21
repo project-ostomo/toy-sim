@@ -578,6 +578,7 @@ mod tests {
                 luminosity_w: 100.0,
                 appearance: (index % 3 == 0).then_some([7; 32]),
                 visual: ShipVisual {
+                    slip_readiness: 0.0,
                     engines: (0..(index % 7) * 128)
                         .map(|part| EngineVisual {
                             part: part as u64,
@@ -671,6 +672,7 @@ mod tests {
             luminosity_w: 1e6,
             appearance: Some([7; 32]),
             visual: ShipVisual {
+                slip_readiness: 0.0,
                 engines: (0..4096)
                     .map(|part| EngineVisual {
                         part,

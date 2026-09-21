@@ -59,7 +59,17 @@ impl Designs {
             .find(|part| part.prototype == "storage")
             .context("NTR freighter base has no storage mount")?;
         cargo.prototype = "cargo_hold_4m".into();
-        freighter.attach("slipdrive_2m", 11, "bottom", "top", 0);
+        // Put the shield and its coolant tank ahead of the ring's opening.
+        freighter
+            .parts
+            .iter_mut()
+            .find(|part| part.id == 7)
+            .unwrap()
+            .attachment
+            .as_mut()
+            .unwrap()
+            .parent = 4;
+        freighter.attach("slipdrive_ring_16m", 11, "bottom", "hull", 0);
         let water = freighter.parts[0]
             .tanks
             .iter_mut()
@@ -142,7 +152,15 @@ mod tests {
                 Firmware::Custom(CHATTER_CONTROLLER.to_vec()),
             );
             assert!(design.blueprint.avionics.sensor_enabled);
-            assert!(has_filled_tank(design, "reactor_fuel"));
+            if design
+                .parts
+                .iter()
+                .any(|part| matches!(part.definition.equipment, Equipment::Reactor { .. }))
+            {
+                assert!(has_filled_tank(design, "reactor_fuel"));
+            } else {
+                assert!(design.battery_j > 0);
+            }
             assert!(design.parts.iter().all(|part| {
                 part.definition.model.is_some()
                     && (part.placed.id == 1 || part.placed.attachment.is_some())

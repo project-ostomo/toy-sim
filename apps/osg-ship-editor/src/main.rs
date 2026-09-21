@@ -349,6 +349,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(osg_ui::UiPlugin)
         .add_plugins(osg_ship_view::plume::PlumePlugin)
         .add_plugins(osg_ship_view::mechanisms::MechanismPlugin)
+        .add_plugins(osg_ship_view::slip::SlipRingPlugin)
         .add_systems(
             Update,
             |time: Res<Time>, mut clock: ResMut<osg_ship_view::mechanisms::MechanismTime>| {

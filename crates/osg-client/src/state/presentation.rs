@@ -42,6 +42,8 @@ pub(super) fn interpolate(
 
 fn interpolate_visual(previous: &ShipVisual, current: &ShipVisual, alpha: f64) -> ShipVisual {
     let mut visual = current.clone();
+    visual.slip_readiness =
+        previous.slip_readiness + (current.slip_readiness - previous.slip_readiness) * alpha;
     for turret in &mut visual.turrets {
         if let Some(old) = previous.turrets.iter().find(|old| old.part == turret.part) {
             let delta = (turret.yaw_rad - old.yaw_rad + std::f64::consts::PI)
@@ -75,6 +77,7 @@ mod tests {
     #[test]
     fn visual_interpolation_wraps_turret_yaw() {
         let visual = |yaw| ShipVisual {
+            slip_readiness: 0.0,
             engines: Vec::new(),
             shield: None,
             turrets: vec![TurretVisual {

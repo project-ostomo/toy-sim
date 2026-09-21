@@ -25,7 +25,7 @@ fn populated_organizations_restore_private_groups_assets_and_physical_stock() {
             .iter()
             .map(|organization| organization.assets.len())
             .sum::<usize>(),
-        324
+        327
     );
 
     let durable_state = |record: &WorldRecord| {

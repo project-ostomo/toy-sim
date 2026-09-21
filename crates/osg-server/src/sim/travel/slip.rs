@@ -547,6 +547,7 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
             .is_finite()
             .then(|| now.saturating_add((duration * 10.0).ceil() as u64));
     }
+    crate::sim::combat::record_slip(world, ship, pose.position, direction.to_array(), false);
     set_dormant(world, ship, Presence::SlipTransit(Id::new()));
     emit(world, ship, "slip-departed", None);
     Ok(())
@@ -589,6 +590,7 @@ fn lose_beacon(world: &mut World, ship: Entity, transit: &mut Transit) {
 }
 
 fn arrive(world: &mut World, ship: Entity, transit: &Transit, capture: Capture) {
+    crate::sim::combat::record_slip(world, ship, transit.position, transit.direction, true);
     world
         .get_mut::<PreciseTransform>(ship)
         .unwrap()

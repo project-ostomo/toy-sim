@@ -28,6 +28,7 @@ use crate::sim::{
     travel, vessel,
 };
 
+mod departures;
 mod designs;
 #[cfg(test)]
 mod tests;
@@ -247,6 +248,12 @@ pub fn populate(world: &mut World) -> Result<()> {
     industry::refresh_publication(world);
     infrastructure::publish_navigation(world);
     travel::geometry::refresh(world);
+    if seeded_cooperative {
+        world
+            .run_system_once(crate::sim::services::publish_indexes)
+            .map_err(|error| anyhow::anyhow!("publish courier navigation: {error:?}"))?;
+        departures::seed(world, &catalogue)?;
+    }
     Ok(())
 }
 

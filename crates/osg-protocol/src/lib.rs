@@ -10,7 +10,7 @@ use osg_model::*;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub const VERSION: u16 = 38;
+pub const VERSION: u16 = 39;
 pub const MAX_FRAME: usize = 8 * 1024 * 1024;
 pub const MAX_INPUT: usize = 64 * 1024;
 pub const HEADER_SIZE: usize = 12;
@@ -959,6 +959,7 @@ mod tests {
             luminosity_w: 100.,
             appearance: None,
             visual: ShipVisual {
+                slip_readiness: 0.0,
                 engines: Vec::new(),
                 turrets: Vec::new(),
                 shield: None,
@@ -990,6 +991,7 @@ mod tests {
             luminosity_w: 42.,
             appearance: Some([7; 32]),
             visual: ShipVisual {
+                slip_readiness: 0.0,
                 engines: Vec::new(),
                 turrets: Vec::new(),
                 shield: None,

@@ -27,6 +27,13 @@ struct Recorded {
 }
 
 enum RecordedKind {
+    Slip {
+        ship: Id,
+        position: GalacticPosition,
+        direction: [f64; 3],
+        radius: f64,
+        arriving: bool,
+    },
     Beam {
         source: Id,
         start: GalacticPosition,
@@ -250,6 +257,40 @@ pub fn flush_travel(world: &mut World) {
     }
 }
 
+pub fn record_slip(
+    world: &mut World,
+    entity: Entity,
+    position: GalacticPosition,
+    direction: [f64; 3],
+    arriving: bool,
+) {
+    let Some(ship) = world.get::<Identity>(entity).map(|id| id.0) else {
+        return;
+    };
+    let radius = world
+        .get::<super::vessel::ShipDesign>(entity)
+        .map_or(1.0, |d| d.0.radius);
+    let time_ns = world
+        .resource::<super::simulation::SimulationCounters>()
+        .ticks
+        * 100_000_000;
+    append(
+        world,
+        vec![(
+            time_ns,
+            RecordedKind::Slip {
+                ship,
+                position,
+                direction,
+                radius,
+                arriving,
+            },
+        )],
+        "slip-transition",
+        Some(ship),
+    );
+}
+
 pub fn prune(world: &mut World, published: u64) {
     if let Some(mut history) = world.get_resource_mut::<CombatHistory>() {
         while history
@@ -298,6 +339,23 @@ pub fn for_session(
                 })
             };
             let kind = match &event.kind {
+                RecordedKind::Slip {
+                    ship,
+                    position,
+                    direction,
+                    radius,
+                    arriving,
+                } => {
+                    if !optically_visible.contains(ship) && !previously_visible.contains(ship) {
+                        return None;
+                    }
+                    CombatEventKind::Slip {
+                        position: *position,
+                        direction: *direction,
+                        radius_m: *radius,
+                        arriving: *arriving,
+                    }
+                }
                 RecordedKind::Beam {
                     source,
                     start,
@@ -401,6 +459,48 @@ mod tests {
     use super::*;
     use bevy::math::{DQuat, DVec3};
     use osg_model::Provenance;
+
+    #[test]
+    fn slip_events_require_optical_visibility_and_survive_departure() {
+        let mut world = World::new();
+        world.init_resource::<super::super::simulation::SimulationCounters>();
+        let id = Id::new();
+        let ship = world.spawn(Identity(id)).id();
+        record_slip(
+            &mut world,
+            ship,
+            GalacticPosition::ZERO,
+            [0.0, 0.0, -1.0],
+            false,
+        );
+        world.despawn(ship);
+        let empty = BTreeSet::new();
+        assert!(for_session(&world, &observed(id, 0.0), &empty, &empty, 0).is_empty());
+        let visible = BTreeSet::from([id]);
+        let departed = for_session(&world, &BTreeMap::new(), &empty, &visible, 0);
+        assert_eq!(departed.len(), 1);
+        assert!(matches!(
+            departed[0].kind,
+            CombatEventKind::Slip {
+                arriving: false,
+                ..
+            }
+        ));
+        assert!(
+            for_session(
+                &world,
+                &BTreeMap::new(),
+                &empty,
+                &visible,
+                departed[0].sequence
+            )
+            .is_empty()
+        );
+        assert_eq!(
+            for_session(&world, &BTreeMap::new(), &visible, &empty, 0).len(),
+            1
+        );
+    }
 
     fn observed(id: Id, sigma: f64) -> BTreeMap<GroupId, BTreeMap<TrackId, Track>> {
         let group = Id::new();

@@ -56,6 +56,7 @@ pub(in crate::ui) fn details() -> ShipPresentation {
         slip_navigation_lock: None,
         power_consumed_w: 2.4e6,
         power_requested_w: 100_000_000.,
+        slip_transit: None,
         slip_charge: Some(osg_model::presentation::SlipChargeTelemetry {
             stored_j: 4_000_000_000,
             required_j: 10_000_000_000,

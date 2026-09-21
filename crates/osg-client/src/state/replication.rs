@@ -964,6 +964,7 @@ mod tests {
             luminosity_w,
             appearance: Some([11; 32]),
             visual: ShipVisual {
+                slip_readiness: 0.0,
                 engines: Vec::new(),
                 turrets: Vec::new(),
                 shield: None,

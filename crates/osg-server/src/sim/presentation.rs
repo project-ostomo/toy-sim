@@ -411,6 +411,13 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 slip_input
             },
         slip_charge,
+        slip_transit: world.get::<super::travel::Transit>(entity).map(|transit| {
+            SlipTransitTelemetry {
+                departed_ns: transit.departed * 100_000_000,
+                speed_ly_s: transit.speed_ly_s,
+                direction: transit.direction,
+            }
+        }),
         inventory,
         devices,
         computer,
@@ -619,6 +626,7 @@ pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
         }
     }
     Some(ShipVisual {
+        slip_readiness: slip_readiness(world, entity),
         engines,
         turrets,
         shield: state.shield_active().then(|| ShieldVisual {
@@ -626,6 +634,26 @@ pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
             coverage: state.shield_strength(design),
         }),
     })
+}
+
+pub fn slip_readiness(world: &World, entity: Entity) -> f64 {
+    if world.get::<super::travel::Transit>(entity).is_some() {
+        return 1.0;
+    }
+    let Some(preparation) = world
+        .get::<super::travel::SlipDrive>(entity)
+        .and_then(|drive| drive.preparation.as_ref())
+    else {
+        return 0.0;
+    };
+    let tick = world
+        .resource::<super::simulation::SimulationCounters>()
+        .ticks;
+    let energy = preparation.work_j / preparation.required_j.max(1.0);
+    let elapsed = tick.saturating_sub(preparation.started) as f64 * 0.1;
+    energy
+        .min(elapsed / osg_model::travel::slip::MIN_CHARGE_SECONDS)
+        .clamp(0.0, 1.0)
 }
 
 #[cfg(test)]

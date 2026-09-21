@@ -42,6 +42,7 @@ pub struct ShipPresentation {
     pub power_consumed_w: f64,
     pub power_requested_w: f64,
     pub slip_charge: Option<SlipChargeTelemetry>,
+    pub slip_transit: Option<SlipTransitTelemetry>,
     pub inventory: Vec<ResourceAmount>,
     pub cargo: Vec<crate::industry::CargoStack>,
     pub cargo_capacity_m3: f64,
@@ -76,6 +77,13 @@ pub struct SlipChargeTelemetry {
     pub required_j: u64,
     pub input_w: f64,
     pub remaining_s: Option<f64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SlipTransitTelemetry {
+    pub departed_ns: u64,
+    pub speed_ly_s: f64,
+    pub direction: [f64; 3],
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -278,6 +286,7 @@ pub struct ScreenDefinition {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ShipVisual {
+    pub slip_readiness: f64,
     pub engines: Vec<EngineVisual>,
     pub turrets: Vec<TurretVisual>,
     pub shield: Option<ShieldVisual>,
@@ -312,6 +321,12 @@ pub struct CombatEvent {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CombatEventKind {
+    Slip {
+        position: GalacticPosition,
+        direction: [f64; 3],
+        radius_m: f64,
+        arriving: bool,
+    },
     Beam {
         source: ContactRef,
         start: GalacticPosition,

@@ -120,6 +120,7 @@ pub(super) fn update_views(
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window>,
     beacons: Query<(&crate::state::NavigationObject, &DisplayPose)>,
+    slips: Query<&super::slip::SlipView>,
 ) {
     let size = windows
         .iter()
@@ -155,9 +156,22 @@ pub(super) fn update_views(
         if own_ship.is_some_and(|(ship, _)| ship.0.presence != osg_model::travel::Presence::Space) {
             options.focus = None;
         }
-        let private =
+        let mut private =
             own_ship.is_some_and(|(ship, _)| ship.0.presence != osg_model::travel::Presence::Space);
-        if private && !state.private {
+        if let Ok(slip) = slips.get(entity) {
+            if slip.entering {
+                private = false;
+                if let Some(anchor) = &slip.anchor {
+                    origin = anchor.position;
+                }
+            }
+        }
+        if private
+            && !state.private
+            && own_ship.is_some_and(|(ship, _)| {
+                matches!(ship.0.presence, osg_model::travel::Presence::Docked { .. })
+            })
+        {
             let rotation = own_ship
                 .map(|(_, pose)| Quat::from_array(pose.0.rotation.map(|n| n as f32)))
                 .unwrap_or_default();

@@ -233,7 +233,7 @@ def main():
     attach('attitude-actuator', frame, 'torquer', point=(3, 0, 18))
     attach('thermal-shield', frame, 'thermal_shield', point=(0, 0, 22))
 
-    lines = ['revision = 3', '', '[[resources]]', 'id = "cs_rocket_propellant"',
+    lines = ['revision = 4', '', '[[resources]]', 'id = "cs_rocket_propellant"',
              'title = "Common Sky chemical propellant mixture (kg)"',
              'mass_kg = 1.0', 'volume_m3 = 0.001', '']
     for part in parts.values():

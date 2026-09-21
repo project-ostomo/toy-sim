@@ -574,7 +574,7 @@ pub fn advance(world: &mut World) {
     world.resource_mut::<Workers>().0 = workers;
 }
 
-fn prepare(
+pub(crate) fn prepare(
     world: &mut World,
     admitted: Caller,
     request: &Request,

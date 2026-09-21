@@ -86,7 +86,7 @@ impl Default for ShipBlueprint {
         Self {
             name: "Untitled ship".into(),
             format_version: SHIP_FORMAT_VERSION,
-            catalogue_revision: 3,
+            catalogue_revision: 4,
             parts: vec![],
             firmware: Firmware::Standard,
             avionics: Avionics::default(),
@@ -808,7 +808,7 @@ pub fn expedition_patrol() -> ShipBlueprint {
     ship.attach("storage", 4, "right", "left", 0);
     ship.attach("torquer_agile", 4, "top", "bottom", 0);
     ship.attach("torquer_agile", 4, "bottom", "top", 0);
-    ship.attach("slipdrive_2m", 1, "bottom", "top", 0);
+    ship.attach("slipdrive_ring_16m", 1, "bottom", "hull", 0);
     ship.parts[0].tanks.push(Tank {
         resource: "micropulse_charge".into(),
         volume_m3: 60.,
