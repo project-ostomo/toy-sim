@@ -1,0 +1,39 @@
+[package]
+name = "osg-spatial-hash"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ahash.workspace = true
+slab = "0.4.12"
+arrayvec = "0.7.8"
+
+[features]
+# Capacity variants for benchmarks; when combined, the largest selected size wins.
+# Hybrid cells with capacity 1 are always enabled, even with no default features.
+hybrid-cells-1 = []
+hybrid-cells-2 = []
+hybrid-cells-4 = []
+hybrid-cells-8 = []
+hybrid-cells-16 = []
+hybrid-cells-32 = []
+# Allocation-only mode of the movement benchmark; excluded from timing builds.
+bench-allocations = []
+# Optional removal experiment; boxed sets are unconditional.
+occupied-cell-removal = []
+
+# Optional scale experiments; defaults remain luminosity ×2 and spatial ×4.
+luminosity-scale-4 = []
+spatial-scale-2 = []
+
+[dev-dependencies]
+criterion.workspace = true
+oorandom = "11.1.5"
+
+[[bench]]
+name = "gaia"
+harness = false
+
+[[bench]]
+name = "movement"
+harness = false

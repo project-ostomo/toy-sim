@@ -4,13 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+dynamic_linking = ["dep:bevy_dylib"]
 profile = ["bevy/trace_chrome"]
 
 [dependencies]
 bevy = { version = "0.19.1", default-features = false, features = ["std", "multi_threaded", "bevy_state", "bevy_asset", "bevy_log", "serialize"] }
 parry3d-f64.workspace = true
 rayon = "1.12"
-ahash = "0.8"
+ahash.workspace = true
 ordered-float = "5.5"
 hifitime = "4.3.1"
 smol_str = { version = "0.3.6", features = ["serde"] }
@@ -45,4 +46,4 @@ version = "0.10"
 version = "0.13.3"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
-bevy_dylib.workspace = true
+bevy_dylib = { workspace = true, optional = true }

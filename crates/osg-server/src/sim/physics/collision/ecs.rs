@@ -81,6 +81,7 @@ pub fn install(app: &mut App) {
 
 pub fn step(world: &mut World) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("collision_step");
+    let prepare_profile = crate::sim::diagnostics::ProfileScope::new("collision_prepare_bodies");
     let timer = std::time::Instant::now();
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
     let elapsed = world.resource::<Time<Fixed>>().elapsed_secs_f64();
@@ -206,7 +207,9 @@ pub fn step(world: &mut World) {
             destroyed: false,
         });
     }
+    drop(prepare_profile);
     let epoch = elapsed - dt;
+    let rebuild_profile = crate::sim::diagnostics::ProfileScope::new("collision_spatial_rebuild");
     let index_timer = std::time::Instant::now();
     crate::sim::spatial::rebuild_with_collisions(
         world,
@@ -217,6 +220,7 @@ pub fn step(world: &mut World) {
             .collect(),
     );
     let build_seconds = index_timer.elapsed().as_secs_f64();
+    drop(rebuild_profile);
     {
         let _profile = crate::sim::diagnostics::ProfileScope::new("shield_activation");
         let spatial = world
@@ -224,6 +228,7 @@ pub fn step(world: &mut World) {
             .service();
         activate(&mut bodies, spatial);
     }
+    let combat_profile = crate::sim::diagnostics::ProfileScope::new("collision_prepare_weapons");
     let mut combat = std::collections::BTreeMap::new();
     for (entity, design) in world
         .query_filtered::<(Entity, &ShipDesign), Without<crate::sim::travel::Dormant>>()
@@ -263,6 +268,8 @@ pub fn step(world: &mut World) {
             },
         );
     }
+    drop(combat_profile);
+    let solver_profile = crate::sim::diagnostics::ProfileScope::new("collision_simulate");
     let (report, mut combat) =
         world.resource_scope(|world, mut workspace: Mut<SolverWorkspace>| {
             workspace.weapons = combat;
@@ -277,6 +284,8 @@ pub fn step(world: &mut World) {
             report.index_seconds += build_seconds;
             (report, std::mem::take(&mut workspace.weapons))
         });
+    drop(solver_profile);
+    let _writeback_profile = crate::sim::diagnostics::ProfileScope::new("collision_writeback");
     for shot in &report.shots {
         world
             .spawn_at(

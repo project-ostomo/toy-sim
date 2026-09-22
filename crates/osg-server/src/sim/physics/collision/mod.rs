@@ -788,9 +788,12 @@ pub fn simulate_with_workspace(
     allocate: &mut dyn FnMut() -> Entity,
 ) -> Report {
     let mut report = Report::default();
+    let rotation_profile = crate::sim::diagnostics::ProfileScope::new("collision_prepare_rotation");
     for body in bodies.iter_mut() {
         body.prepare_rotation(end);
     }
+    drop(rotation_profile);
+    let broadphase_profile = crate::sim::diagnostics::ProfileScope::new("collision_broadphase");
     let timer = std::time::Instant::now();
     let slots: ahash::AHashMap<_, _> = bodies
         .iter()
@@ -811,6 +814,9 @@ pub fn simulate_with_workspace(
     pairs.sort_unstable();
     report.index_seconds = timer.elapsed().as_secs_f64();
     report.candidates = pairs.len() as u64;
+    drop(broadphase_profile);
+    let prediction_profile =
+        crate::sim::diagnostics::ProfileScope::new("collision_predict_contacts");
     let timer = std::time::Instant::now();
     let (mut events, detailed) = pairs
         .par_iter()
@@ -840,6 +846,8 @@ pub fn simulate_with_workspace(
             },
         );
     report.detailed = detailed;
+    drop(prediction_profile);
+    let events_profile = crate::sim::diagnostics::ProfileScope::new("collision_prepare_events");
     for (id, body) in bodies.iter().enumerate() {
         if let Some(event) = thermal_event(id, body, end) {
             events.push(event);
@@ -865,6 +873,8 @@ pub fn simulate_with_workspace(
         }
     }
     report.query_seconds = timer.elapsed().as_secs_f64();
+    drop(events_profile);
+    let solve_profile = crate::sim::diagnostics::ProfileScope::new("collision_resolve_events");
     let timer = std::time::Instant::now();
     while let Some(event) = events.pop() {
         if !matches!(event.kind, Kind::Fire { .. })
@@ -982,6 +992,8 @@ pub fn simulate_with_workspace(
             }
         }
     }
+    drop(solve_profile);
+    let final_profile = crate::sim::diagnostics::ProfileScope::new("collision_finalize_weapons");
     for b in bodies.iter() {
         for (member, m) in b.members.iter().enumerate() {
             if let Some(ship) = workspace.weapons.get_mut(&m.entity) {
@@ -995,6 +1007,8 @@ pub fn simulate_with_workspace(
     }
 
     // Independent drift and cooling retain their existing fleet-wide parallelism.
+    drop(final_profile);
+    let _drift_profile = crate::sim::diagnostics::ProfileScope::new("collision_drift_cooling");
     bodies.par_iter_mut().for_each(|body| {
         body.rebase(end);
         body.advance_thermal(end);

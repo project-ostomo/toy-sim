@@ -5565,6 +5565,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "osg-spatial-hash"
+version = "0.1.0"
+dependencies = [
+ "ahash",
+ "arrayvec",
+ "criterion",
+ "oorandom",
+ "slab",
+]
+
+[[package]]
 name = "osg-star-query"
 version = "0.1.0"
 dependencies = [

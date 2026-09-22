@@ -29,6 +29,7 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 | Package | Path | Purpose |
 | --- | --- | --- |
 | `osg-spatial-bvh` | [crates/osg-spatial-bvh](crates/osg-spatial-bvh) | Shared immutable BVHs for visibility, sensors, collisions and world queries. |
+| `osg-spatial-hash` | [crates/osg-spatial-hash](crates/osg-spatial-hash) | Spatial hash indexes for neighbor and luminosity queries, with Gaia and movement benchmarks. |
 | `osg-space` | [crates/osg-space](crates/osg-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
 | `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, shared BVH queries and the embedded Gaia catalogue. |
 | `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` Rust C-ABI records, typed world/service imports, caller-owned output arrays and a small SDK. |
@@ -57,6 +58,11 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 You need a Rust toolchain that supports edition 2024 and resolver 3. Bevy 0.19 is built with the `wayland`, `file_watcher`, `embedded_watcher` and `jpeg` features, so the usual Bevy system requirements for your platform apply to the client and the editor. The server uses Bevy without rendering.
 
 The dev profile compiles workspace code at `opt-level = 1` and dependencies at `opt-level = 3`.
+
+Bevy dynamic linking is optional. To speed up development linking, build with
+`cargo build -p osg-server -p osg-debug -p osg-ui --features osg-server/dynamic_linking,osg-ui/dynamic_linking`.
+Omit these features for release builds; Cargo still compiles enabled dependencies
+even when their Rust imports are guarded by `debug_assertions`.
 
 Optional tools:
 

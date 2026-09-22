@@ -1,4 +1,5 @@
 /target
+.syncthing.*.tmp
 /demo/
 *.blend[0-9]*
 

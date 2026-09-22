@@ -1,4 +1,8 @@
-#[cfg(all(debug_assertions, not(target_family = "wasm")))]
+#[cfg(all(
+    feature = "dynamic_linking",
+    debug_assertions,
+    not(target_family = "wasm")
+))]
 use bevy_dylib as _;
 
 mod blueprint_uploads;
