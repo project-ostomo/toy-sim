@@ -5,7 +5,7 @@ use crate::{Bindings, attitude};
 use glam::{DMat3, DVec3};
 use osg_ship_api::abi::{self, Contact};
 
-pub const CONTACT_GRACE_S: f64 = 2.;
+pub const OBSERVATION_LEASE_S: f64 = 2.;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
@@ -43,7 +43,6 @@ pub struct Pursuit {
     pub disturbance: DVec3,
     previous: Option<(f64, DVec3)>,
     last_seen: Option<f64>,
-    state_time: Option<f64>,
     pub effectiveness: f64,
     pub acceleration: DVec3,
     pub pointing_error: f64,
@@ -72,7 +71,6 @@ impl Default for Pursuit {
             disturbance: DVec3::ZERO,
             previous: None,
             last_seen: None,
-            state_time: None,
             effectiveness: 1.,
             acceleration: DVec3::ZERO,
             pointing_error: 0.,
@@ -226,29 +224,7 @@ impl Pursuit {
             self.visible = false;
             self.previous = None;
             if self.phase.active() {
-                let age = self
-                    .last_seen
-                    .map_or(f64::INFINITY, |t| obs.tick.time_s - t);
-                let dt = self
-                    .state_time
-                    .map_or(f64::INFINITY, |t| obs.tick.time_s - t);
-                if !age.is_finite()
-                    || !(0. ..=CONTACT_GRACE_S).contains(&age)
-                    || !dt.is_finite()
-                    || !(0. ..=CONTACT_GRACE_S).contains(&dt)
-                {
-                    self.pause("Target lost - re-engage after reacquisition");
-                } else if let Some(a) = measured.filter(|a| a.is_finite()) {
-                    // IMU reports the previous tick's delivered thrust. Keep the
-                    // target's last estimated external motion, not its hidden state.
-                    let old_u = self.u;
-                    self.u += (a + self.disturbance) * dt;
-                    self.r -= (old_u + self.u) * (0.5 * dt);
-                    self.state_time = Some(obs.tick.time_s);
-                    self.reason = "Target lost - pursuing last observed motion".into();
-                } else {
-                    self.pause("Inertial sensing unavailable");
-                }
+                self.pause("Target lost - re-engage after reacquisition");
             }
             return;
         };
@@ -287,14 +263,16 @@ impl Pursuit {
         self.visible = true;
         self.previous = Some((obs.tick.time_s, u));
         self.last_seen = Some(obs.tick.time_s);
-        self.state_time = Some(obs.tick.time_s);
         if self.phase.active() {
             self.reason.clear();
         }
     }
     pub fn tracking_remaining(&self, now: f64) -> f64 {
+        if !self.visible {
+            return 0.;
+        }
         self.last_seen.map_or(0., |t| {
-            (CONTACT_GRACE_S - (now - t)).clamp(0., CONTACT_GRACE_S)
+            (OBSERVATION_LEASE_S - (now - t)).clamp(0., OBSERVATION_LEASE_S)
         })
     }
     pub fn capability(&mut self, actual: f64, previous_throttle: f64, rated: f64, dt: f64) {
@@ -519,20 +497,19 @@ mod tests {
         assert_eq!(nav.effectiveness, 1.);
     }
     #[test]
-    fn grace_extrapolates_only_observed_motion_and_does_not_extend_itself() {
+    fn losing_detection_pauses_guidance_until_explicit_reengagement() {
         let mut nav = Pursuit::default();
         let mut obs = Sample::default();
         nav.select(1, &[contact(10.)], &obs).unwrap();
         nav.start(1., 100., 5.).unwrap();
-        for i in 1..=20 {
-            obs.tick.time_s = i as f64 * 0.1;
-            nav.observe(&[], &obs, Some(DVec3::ZERO));
-            assert!(nav.phase.active());
-            assert!((nav.r.x - (1000. - obs.tick.time_s * 10.)).abs() < 1e-8);
-        }
-        obs.tick.time_s = 2.1;
+
+        obs.tick.time_s = 0.1;
         nav.observe(&[], &obs, Some(DVec3::ZERO));
         assert_eq!(nav.phase, Phase::Paused);
+        assert!(!nav.visible);
+        assert_eq!(nav.throttle, 0.);
+        assert_eq!(nav.tracking_remaining(obs.tick.time_s), 0.);
+
         nav.observe(&[contact(10.)], &obs, Some(DVec3::ZERO));
         assert!(nav.visible);
         assert_eq!(nav.phase, Phase::Paused);

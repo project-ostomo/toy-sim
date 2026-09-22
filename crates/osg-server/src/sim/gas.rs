@@ -32,64 +32,7 @@ struct LedgerState {
 #[derive(Resource, Clone, Default)]
 pub struct GasLedger(Arc<Mutex<LedgerState>>);
 
-/// A settled payment for bounded background work. A checkpoint can safely
-/// capture the ledger while this receipt exists; interrupted work retains its
-/// prepaid charge. The consuming settlement method prevents a second refund.
-pub struct PrepaidGas {
-    ledger: GasLedger,
-    owner: Principal,
-    paid: u64,
-}
-
-impl PrepaidGas {
-    pub fn settle(self, used: u64) -> Result<()> {
-        ensure!(used <= self.paid, "background work exceeded prepaid gas");
-        let refund = self.paid - used;
-        let mut ledger = self.ledger.0.lock().unwrap();
-        let account = ledger
-            .accounts
-            .get_mut(&self.owner)
-            .context("prepaid gas account unavailable")?;
-        let spent = account
-            .spent
-            .checked_sub(refund)
-            .context("prepaid gas accounting underflow")?;
-        let available = account
-            .available
-            .checked_add(refund)
-            .context("prepaid gas balance overflow")?;
-        account.spent = spent;
-        account.available = available;
-        Ok(())
-    }
-}
-
 impl GasLedger {
-    pub fn prepay(&self, owner: Principal, maximum: u64) -> Result<PrepaidGas> {
-        let mut ledger = self.0.lock().unwrap();
-        let account = ledger
-            .accounts
-            .get_mut(&owner)
-            .context("gas account unavailable")?;
-        let available = account
-            .available
-            .checked_sub(maximum)
-            .context("insufficient global gas")?;
-        let spent = account
-            .spent
-            .checked_add(maximum)
-            .context("gas lifetime accounting overflow")?;
-        account.available = available;
-        account.spent = spent;
-        drop(ledger);
-
-        Ok(PrepaidGas {
-            ledger: self.clone(),
-            owner,
-            paid: maximum,
-        })
-    }
-
     pub fn ensure_account(&self, owner: Principal, initial_gas: u64) {
         self.0
             .lock()

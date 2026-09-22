@@ -4,7 +4,7 @@ use chacha20poly1305::{
     aead::{Aead, Payload},
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use osg_model::AccountId;
+use osg_model::{AccountId, GAME_VERSION};
 use rand::{RngCore, rngs::OsRng};
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -21,14 +21,14 @@ pub struct Keys {
 fn hello() -> (EphemeralSecret, [u8; 66]) {
     let secret = EphemeralSecret::random_from_rng(OsRng);
     let mut bytes = [0; 66];
-    bytes[..2].copy_from_slice(&1_u16.to_le_bytes());
+    bytes[..2].copy_from_slice(&GAME_VERSION.to_le_bytes());
     OsRng.fill_bytes(&mut bytes[2..34]);
     bytes[34..].copy_from_slice(PublicKey::from(&secret).as_bytes());
     (secret, bytes)
 }
 
 fn transcript(client: &[u8; 66], server: &[u8; 66]) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame transport v1 handshake");
+    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame handshake");
     hash.update(client);
     hash.update(server);
     *hash.finalize().as_bytes()
@@ -46,14 +46,13 @@ fn derive(
     material[..32].copy_from_slice(shared.as_bytes());
     material[32..].copy_from_slice(transcript);
     Ok((
-        blake3::derive_key("OpenSpaceGame transport v1 c2s", &material),
-        blake3::derive_key("OpenSpaceGame transport v1 s2c", &material),
+        blake3::derive_key("OpenSpaceGame c2s", &material),
+        blake3::derive_key("OpenSpaceGame s2c", &material),
     ))
 }
 
 fn account_challenge(account: AccountId, transcript: &[u8; 32]) -> [u8; 32] {
-    let mut hash =
-        blake3::Hasher::new_derive_key("OpenSpaceGame transport v1 account authentication");
+    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame account authentication");
     hash.update(&account.0);
     hash.update(transcript);
     *hash.finalize().as_bytes()
@@ -73,8 +72,8 @@ pub async fn client<S: AsyncRead + AsyncWrite + Unpin>(
     stream.read_exact(&mut server).await?;
     stream.read_exact(&mut signature).await?;
     ensure!(
-        &server[..2] == &1_u16.to_le_bytes(),
-        "unsupported transport version"
+        server[..2] == GAME_VERSION.to_le_bytes(),
+        "unsupported game version"
     );
     let transcript = transcript(&client, &server);
     server_key
@@ -110,8 +109,8 @@ pub async fn server<S: AsyncRead + AsyncWrite + Unpin>(
     let mut client = [0; 66];
     stream.read_exact(&mut client).await?;
     ensure!(
-        &client[..2] == &1_u16.to_le_bytes(),
-        "unsupported transport version"
+        client[..2] == GAME_VERSION.to_le_bytes(),
+        "unsupported game version"
     );
     let (secret, server) = hello();
     let transcript = transcript(&client, &server);

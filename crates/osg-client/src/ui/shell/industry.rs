@@ -255,7 +255,7 @@ fn production(
     });
     ui.label(format!(
         "{} · {:.2} MJ process energy",
-        duration(recipe.duration_ticks as f64 * 0.1 * f64::from(state.batches)),
+        duration(recipe.duration_ticks as f64 * osg_model::TICK_SECONDS * f64::from(state.batches)),
         recipe.energy_j as f64 * f64::from(state.batches) / 1e6
     ));
     ui.strong("Inputs reserved when the job starts");
@@ -467,7 +467,7 @@ fn blueprint_controls(
     ui.strong(&blueprint.name);
     ui.label(format!(
         "{} · {:.2} MJ assembly energy",
-        duration(blueprint.duration_ticks as f64 * 0.1),
+        duration(blueprint.duration_ticks as f64 * osg_model::TICK_SECONDS),
         blueprint.energy_j as f64 / 1e6
     ));
     let enough = requirements(ui, &blueprint.inputs, facility, 1);
@@ -616,7 +616,10 @@ fn jobs(ui: &mut egui::Ui, model: &FrameModel, facility: &FacilityView, intents:
             egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
                 .text(format!(
                     "{status} · {} remaining",
-                    duration(job.duration_ticks.saturating_sub(job.progress_ticks) as f64 * 0.1)
+                    duration(
+                        job.duration_ticks.saturating_sub(job.progress_ticks) as f64
+                            * osg_model::TICK_SECONDS
+                    )
                 ))
                 .fill(if job.status == JobStatus::Running {
                     ACCENT

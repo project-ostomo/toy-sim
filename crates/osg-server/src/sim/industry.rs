@@ -741,7 +741,7 @@ pub fn advance(world: &mut World) {
                         - (u128::from(paid) * u128::from(heat_total) / u128::from(job.energy_j)))
                         as u64
                 };
-                hardware::add_travel_heat(world, entity, heat as f64, 0.1);
+                hardware::add_travel_heat(world, entity, heat as f64, osg_model::TICK_SECONDS);
                 if let Some(mut device) = world.get_mut::<hardware::Device>(lane.device) {
                     device.0.powered = true;
                     device.0.actual += 1.;

@@ -177,7 +177,6 @@ pub fn run(
                     UtilityDef::Sensor { .. }
                         | UtilityDef::DirectoryTransmitter { .. }
                         | UtilityDef::NavigationBeacon { .. }
-                        | UtilityDef::MissileLauncher { .. }
                 )
             {
                 continue;
@@ -190,7 +189,6 @@ pub fn run(
                 | UtilityDef::LifeSupport { power_w, .. }
                 | UtilityDef::Workshop { power_w, .. }
                 | UtilityDef::CargoHandler { power_w, .. } => power_w,
-                UtilityDef::MissileLauncher { spec } => spec.power_w,
                 _ => 0.,
             };
             power.requested_w = requested;
@@ -386,7 +384,6 @@ mod tests {
     use super::super::fixtures::HardwareFixture;
     use super::*;
     use bevy::ecs::system::RunSystemOnce;
-    use std::time::Duration;
 
     fn add(fixture: &mut HardwareFixture, utility: UtilityDef) -> Entity {
         let entity = fixture
@@ -413,7 +410,7 @@ mod tests {
             .app
             .world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         fixture.app.world_mut().run_system_once(run).unwrap();
     }
 
@@ -742,7 +739,7 @@ mod tests {
             .app
             .world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         fixture
             .app
             .world_mut()

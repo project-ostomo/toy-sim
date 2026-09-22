@@ -3,7 +3,6 @@ use crate::sim::{physics::MassProps, precision::PreciseTransform, simulation::Si
 use bevy::math::DVec3;
 use osg_model::ownership::{AccessGrant, AccessPolicy};
 use osg_ships::DeviceSetting;
-use std::time::Duration;
 
 struct Fixture {
     app: App,
@@ -187,7 +186,7 @@ impl Fixture {
         world.resource_mut::<SimulationCounters>().ticks += 1;
         world
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         advance(world);
     }
 

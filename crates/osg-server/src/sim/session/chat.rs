@@ -167,10 +167,7 @@ mod tests {
         identity::{Control, Identity},
         ownership::{AssetAccess, AssetOwner},
     };
-    use osg_model::{
-        PUBLIC_GROUP,
-        ownership::{AccessPolicy, Permission, Principal},
-    };
+    use osg_model::ownership::{AccessPolicy, Permission, Principal};
     use std::collections::BTreeSet;
 
     #[test]
@@ -192,9 +189,7 @@ mod tests {
             ViewSubscription {
                 id: 1,
                 revision: 1,
-                group: PUBLIC_GROUP,
                 focused_ship: Some(own),
-                query: Default::default(),
             },
         )]);
         let mut session = ChatSession::default();

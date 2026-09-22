@@ -2,7 +2,7 @@ use bevy::prelude::*;
 
 use crate::sim::GameState;
 
-pub const TICK_RATE_HZ: f64 = 10.0;
+use osg_model::TICK_RATE_HZ;
 
 pub struct SimulationPlugin;
 
@@ -17,7 +17,7 @@ pub enum SimulationSystems {
     Integrate,
     Celestials,
     Complete,
-    Intelligence,
+    Observations,
 }
 
 /// Application frames and completed gameplay simulation ticks, counted separately.

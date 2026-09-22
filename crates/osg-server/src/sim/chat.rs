@@ -171,12 +171,6 @@ impl ChatService {
 
 fn physical_origin(world: &World, mut entity: Entity) -> Option<GalacticPosition> {
     for _ in 0..16 {
-        if world
-            .get::<super::missiles::RetainedComputer>(entity)
-            .is_some()
-        {
-            return None;
-        }
         match world
             .get::<super::travel::PresenceState>(entity)
             .map(|state| &state.0)
@@ -426,10 +420,6 @@ mod tests {
         world
             .entity_mut(host)
             .insert(PresenceState(osg_model::travel::Presence::Space));
-        world
-            .entity_mut(ship)
-            .insert(super::super::missiles::RetainedComputer);
-        assert_eq!(physical_origin(&world, ship), None);
     }
 
     #[test]
@@ -447,11 +437,7 @@ mod tests {
         world.resource::<ChatService>().latest(id).unwrap();
 
         super::super::travel::destroy(world, ship);
-        assert!(
-            world
-                .get::<super::super::missiles::RetainedComputer>(ship)
-                .is_none()
-        );
+
         refresh(world);
         let service = world.resource::<ChatService>();
         assert!(service.latest(id).is_err());

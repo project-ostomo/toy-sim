@@ -509,10 +509,7 @@ mod tests {
             sequence: 1,
             sim_time_ns: 1_000_000_000,
             kind: CombatEventKind::Destroyed {
-                target: osg_model::ContactRef {
-                    group: osg_model::Id([1; 16]),
-                    track: osg_model::Id([2; 16]),
-                },
+                target: osg_model::Id([2; 16]),
                 pose: Pose::default(),
                 appearance: None,
                 energy_j: 1e6,

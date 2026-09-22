@@ -223,7 +223,7 @@ mod tests {
     use super::*;
     use crate::state::ViewObservation;
     use bevy::{ecs::system::RunSystemOnce, render::MainWorld};
-    use osg_model::{Completion, GalacticPosition, Id, ViewState};
+    use osg_model::{GalacticPosition, Id, ViewState};
 
     fn atmosphere(body: u8) -> ViewAtmosphere {
         ViewAtmosphere {
@@ -353,9 +353,6 @@ mod tests {
                     origin: GalacticPosition::ZERO,
                     id: 1,
                     revision: 1,
-                    group: Id([2; 16]),
-                    tracks: Vec::new(),
-                    completion: Completion::Complete,
                 }),
                 ViewSystems(vec![system]),
             ))
@@ -390,9 +387,6 @@ mod tests {
                     origin: GalacticPosition::ZERO,
                     id: 1,
                     revision: 1,
-                    group: Id([1; 16]),
-                    tracks: Vec::new(),
-                    completion: Completion::Complete,
                 }),
                 atmosphere(1),
                 AtmosphereSettings::default(),

@@ -22,10 +22,8 @@ pub(super) fn receive(
                     outgoing.clear();
                 }
                 let calendar_unix_ms = frame.calendar_unix_ms;
-                match playback.0.receive(frame) {
-                    Ok(()) => calendar.observe(calendar_unix_ms, real_time.elapsed()),
-                    Err(error) => info.status = error.to_string(),
-                }
+                playback.0.receive(frame);
+                calendar.observe(calendar_unix_ms, real_time.elapsed());
             }
             Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
             Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {

@@ -7,7 +7,7 @@ use std::sync::Arc;
 fn conservative_radius_contains_voxel_and_shield_geometry_for_dormant_ships() {
     let catalogue = osg_ships::Catalogue::builtin();
     let mut world = World::new();
-    for blueprint in [osg_ships::armed_starter(), osg_ships::missiles::blueprint()] {
+    for blueprint in [osg_ships::armed_starter(), osg_ships::expedition_patrol()] {
         let design = Arc::new(blueprint.compile(&catalogue).unwrap());
         let actual = super::super::physics::collision::Geometry::ship(&design).shield_radius;
         let ship = world.spawn((ShipDesign(design), Dormant)).id();
@@ -51,9 +51,12 @@ fn undocking_appears_at_docking_distance_even_when_the_exit_is_occupied() {
     let account = Id::new();
     let catalogue = osg_ships::Catalogue::builtin();
     let station_design = Arc::new(
-        osg_ships::missiles::missile_defense_station()
-            .compile(&catalogue)
-            .unwrap(),
+        osg_ships::ShipBlueprint::from_bytes(include_bytes!(
+            "../../../../../assets/ships/neris-anchorage.ship"
+        ))
+        .unwrap()
+        .compile(&catalogue)
+        .unwrap(),
     );
     let child_design = Arc::new(osg_ships::armed_starter().compile(&catalogue).unwrap());
     let station_radius = station_design.radius;

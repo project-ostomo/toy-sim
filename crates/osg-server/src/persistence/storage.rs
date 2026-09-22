@@ -1,20 +1,12 @@
 use anyhow::{Context, Result, ensure};
+use osg_model::GAME_VERSION;
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs::File, path::Path, time::Duration};
+use std::{fs::File, path::Path, time::Duration};
 
-pub const FORMAT_VERSION: u32 = 1;
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Snapshot {
     pub tick: u64,
     pub saved_at_unix_ms: u64,
-    pub sections: BTreeMap<String, SectionData>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SectionData {
-    pub version: u32,
     pub bytes: Vec<u8>,
 }
 
@@ -45,12 +37,6 @@ impl Database {
         };
         let connection = Connection::open(path).context("open world snapshot database")?;
         connection.busy_timeout(Duration::from_secs(30))?;
-        let schema_version: u32 =
-            connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        ensure!(
-            schema_version <= 1,
-            "unsupported world database schema {schema_version}"
-        );
         let application_id: u32 =
             connection.query_row("PRAGMA application_id", [], |row| row.get(0))?;
         if application_id == 0 {
@@ -65,32 +51,27 @@ impl Database {
                 application_id == 0x5453594d,
                 "database belongs to another application"
             );
+            let version: u16 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+            ensure!(
+                version == GAME_VERSION,
+                "world database game version {version} does not match {GAME_VERSION}; start a new world"
+            );
         }
         connection.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=FULL;
-             PRAGMA foreign_keys=ON;
              BEGIN IMMEDIATE;
              CREATE TABLE IF NOT EXISTS snapshots (
                  generation INTEGER PRIMARY KEY AUTOINCREMENT,
-                 format_version INTEGER NOT NULL,
                  simulation_tick INTEGER NOT NULL,
                  saved_at_unix_ms INTEGER NOT NULL,
-                 section_count INTEGER NOT NULL,
+                 payload BLOB NOT NULL,
                  checksum BLOB NOT NULL
              );
-             CREATE TABLE IF NOT EXISTS snapshot_sections (
-                 generation INTEGER NOT NULL REFERENCES snapshots(generation) ON DELETE CASCADE,
-                 name TEXT NOT NULL,
-                 version INTEGER NOT NULL,
-                 payload BLOB NOT NULL,
-                 checksum BLOB NOT NULL,
-                 PRIMARY KEY (generation, name)
-             );
-             PRAGMA user_version=1;
-             PRAGMA application_id=1414748493;
-             COMMIT;",
+             PRAGMA application_id=1414748493;",
         )?;
+        connection.pragma_update(None, "user_version", GAME_VERSION)?;
+        connection.execute_batch("COMMIT;")?;
         Ok(Self {
             connection,
             _lock: lock,
@@ -101,32 +82,16 @@ impl Database {
         let digest = checksum(snapshot);
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT INTO snapshots (format_version, simulation_tick, saved_at_unix_ms, section_count, checksum)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO snapshots (simulation_tick, saved_at_unix_ms, payload, checksum)
+             VALUES (?1, ?2, ?3, ?4)",
             params![
-                FORMAT_VERSION,
                 snapshot.tick,
                 snapshot.saved_at_unix_ms,
-                snapshot.sections.len() as u64,
+                snapshot.bytes,
                 digest.as_slice()
             ],
         )?;
         let generation = transaction.last_insert_rowid();
-        {
-            let mut insert = transaction.prepare_cached(
-                "INSERT INTO snapshot_sections (generation, name, version, payload, checksum)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )?;
-            for (name, section) in &snapshot.sections {
-                insert.execute(params![
-                    generation,
-                    name,
-                    section.version,
-                    section.bytes,
-                    blake3::hash(&section.bytes).as_bytes().as_slice()
-                ])?;
-            }
-        }
         transaction.execute(
             "DELETE FROM snapshots WHERE generation NOT IN
              (SELECT generation FROM snapshots ORDER BY generation DESC LIMIT 3)",
@@ -158,71 +123,31 @@ impl Database {
     }
 
     fn load_generation(&self, generation: i64) -> Result<Snapshot> {
-        let (version, tick, saved_at_unix_ms, count, expected): (u32, u64, u64, usize, Vec<u8>) =
+        let (tick, saved_at_unix_ms, bytes, expected): (u64, u64, Vec<u8>, Vec<u8>) =
             self.connection.query_row(
-                "SELECT format_version, simulation_tick, saved_at_unix_ms, section_count, checksum
+                "SELECT simulation_tick, saved_at_unix_ms, payload, checksum
                  FROM snapshots WHERE generation=?1",
                 [generation],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                },
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-        ensure!(
-            version == FORMAT_VERSION,
-            "unsupported snapshot format {version}"
-        );
-        let mut statement = self.connection.prepare(
-            "SELECT name, version, payload, checksum FROM snapshot_sections
-             WHERE generation=?1 ORDER BY name",
-        )?;
-        let rows = statement.query_map([generation], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, u32>(1)?,
-                row.get::<_, Vec<u8>>(2)?,
-                row.get::<_, Vec<u8>>(3)?,
-            ))
-        })?;
-        let mut sections = BTreeMap::new();
-        for row in rows {
-            let (name, version, bytes, expected) = row?;
-            ensure!(
-                blake3::hash(&bytes).as_bytes().as_slice() == expected,
-                "snapshot section {name} checksum mismatch"
-            );
-            sections.insert(name, SectionData { version, bytes });
-        }
-        ensure!(sections.len() == count, "incomplete snapshot generation");
         let snapshot = Snapshot {
             tick,
             saved_at_unix_ms,
-            sections,
+            bytes,
         };
         ensure!(
             checksum(&snapshot).as_slice() == expected,
-            "snapshot manifest checksum mismatch"
+            "snapshot checksum mismatch"
         );
         Ok(snapshot)
     }
 }
 
 fn checksum(snapshot: &Snapshot) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame world checkpoint v1");
+    let mut hash = blake3::Hasher::new();
     hash.update(&snapshot.tick.to_le_bytes());
     hash.update(&snapshot.saved_at_unix_ms.to_le_bytes());
-    for (name, section) in &snapshot.sections {
-        hash.update(&(name.len() as u64).to_le_bytes());
-        hash.update(name.as_bytes());
-        hash.update(&section.version.to_le_bytes());
-        hash.update(&(section.bytes.len() as u64).to_le_bytes());
-        hash.update(blake3::hash(&section.bytes).as_bytes());
-    }
+    hash.update(&snapshot.bytes);
     *hash.finalize().as_bytes()
 }
 
@@ -234,22 +159,7 @@ mod tests {
         Snapshot {
             tick,
             saved_at_unix_ms: 1234 + tick,
-            sections: BTreeMap::from([
-                (
-                    "world".into(),
-                    SectionData {
-                        version: 1,
-                        bytes: vec![1, 2, 3],
-                    },
-                ),
-                (
-                    "economy".into(),
-                    SectionData {
-                        version: 2,
-                        bytes: vec![4, 5, 6],
-                    },
-                ),
-            ]),
+            bytes: vec![1, 2, 3],
         }
     }
 
@@ -260,10 +170,7 @@ mod tests {
         db.save(&snapshot(2)).unwrap();
         assert_eq!(db.load().unwrap(), Some(snapshot(2)));
         db.connection
-            .execute(
-                "UPDATE snapshot_sections SET payload=x'00' WHERE generation=2 AND name='world'",
-                [],
-            )
+            .execute("UPDATE snapshots SET payload=x'00' WHERE generation=2", [])
             .unwrap();
         assert!(db.load().is_err());
         assert_eq!(db.load_generation(1).unwrap(), snapshot(1));
@@ -275,8 +182,7 @@ mod tests {
         db.save(&snapshot(1)).unwrap();
         db.connection
             .execute_batch(
-                "CREATE TRIGGER fail_world BEFORE INSERT ON snapshot_sections
-                 WHEN NEW.name='world' BEGIN
+                "CREATE TRIGGER fail_world BEFORE INSERT ON snapshots BEGIN
                      SELECT RAISE(ABORT, 'simulated disk write failure');
                  END;",
             )
@@ -291,20 +197,18 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_latest_format_is_rejected() {
-        let mut database = Database::open(Path::new(":memory:")).unwrap();
-        database.save(&snapshot(1)).unwrap();
-        database.save(&snapshot(2)).unwrap();
+    fn mismatched_game_version_is_rejected() {
+        let directory = std::env::temp_dir().join(format!("osg-version-{}", osg_model::Id::new()));
+        let path = directory.join("world.sqlite");
+        let database = Database::open(&path).unwrap();
         database
             .connection
-            .execute(
-                "UPDATE snapshots SET format_version=99 WHERE generation=2",
-                [],
-            )
+            .pragma_update(None, "user_version", GAME_VERSION + 1)
             .unwrap();
-
-        let error = database.load().unwrap_err();
-        assert!(format!("{error:#}").contains("unsupported snapshot format 99"));
+        drop(database);
+        let error = Database::open(&path).err().unwrap();
+        assert!(error.to_string().contains("game version"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
@@ -323,15 +227,6 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert_eq!(generations, [4, 5, 6]);
-        let orphan_sections: u64 = database
-            .connection
-            .query_row(
-                "SELECT COUNT(*) FROM snapshot_sections WHERE generation NOT IN (SELECT generation FROM snapshots)",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert_eq!(orphan_sections, 0);
         assert_eq!(database.load().unwrap(), Some(snapshot(6)));
     }
 
@@ -362,6 +257,6 @@ mod tests {
             .unwrap();
 
         let error = database.load().unwrap_err();
-        assert!(format!("{error:#}").contains("manifest checksum mismatch"));
+        assert!(format!("{error:#}").contains("snapshot checksum mismatch"));
     }
 }

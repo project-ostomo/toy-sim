@@ -8,6 +8,7 @@ use rand::RngExt;
 #[derive(Component, Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct SlipDrive {
     pub power_w: f64,
+    pub axis: [f64; 3],
     pub preparation: Option<Preparation>,
     /// Fuel already consumed from the next inventory gram.
     pub fuel_fraction_g: f64,
@@ -17,6 +18,7 @@ impl Default for SlipDrive {
     fn default() -> Self {
         Self {
             power_w: 500e6,
+            axis: [0.0, 0.0, -1.0],
             preparation: None,
             fuel_fraction_g: 0.0,
         }
@@ -33,7 +35,6 @@ pub struct ArrivalOffset(pub f64);
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Preparation {
     pub destination: GalacticPosition,
-    pub speed_ly_s: f64,
     pub navigation_beacon: Option<EntityId>,
     pub started: u64,
     pub mass: f64,
@@ -56,8 +57,8 @@ pub struct Transit {
     pub consumed_fuel_g: f64,
     pub navigation_beacon: Option<EntityId>,
     pub beacon_lost: bool,
-    pub departure_error: [f64; 2],
-    pub beacon_loss_error: Option<[f64; 2]>,
+    pub nominal_direction: [f64; 3],
+    pub variance_m2: f64,
     pub intended_capture: Option<CelestialRef>,
     pub risk_target: Option<GalacticPosition>,
     pub capture_radius_m: f64,
@@ -65,6 +66,29 @@ pub struct Transit {
 }
 
 impl Transit {
+    fn remaining_variance(&self) -> f64 {
+        let axis = DVec3::from_array(self.nominal_direction);
+        let progress = self.position.relative_to(self.origin).dot(axis).max(0.0);
+        let remaining = self
+            .risk_target
+            .map_or(0.0, |target| target.relative_to(self.position).dot(axis));
+        math::walk_variance(
+            progress,
+            remaining,
+            self.navigation_beacon.is_some() && !self.beacon_lost,
+        )
+    }
+
+    pub fn failure_ppm(&self) -> f64 {
+        let Some(target) = self.risk_target else {
+            return 1e6;
+        };
+        let axis = DVec3::from_array(self.nominal_direction);
+        let delta = target.relative_to(self.position);
+        let offset = (delta - axis * delta.dot(axis)).length();
+        math::displaced_capture_loss(self.capture_radius_m, offset, self.remaining_variance()) * 1e6
+    }
+
     pub fn pose(&self, rotation: [f64; 4]) -> Pose {
         Pose {
             position: self.position,
@@ -80,15 +104,15 @@ pub(crate) fn epoch(world: &World) -> Epoch {
         return crate::sim::physics::sim_time(time) - Duration::from_seconds(time.delta_secs_f64());
     }
     Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
-        + Duration::from_seconds(tick(world) as f64 * 0.1)
+        + Duration::from_seconds(tick(world) as f64 * osg_model::TICK_SECONDS)
 }
 
 fn slip_flight_seconds(
     origin: GalacticPosition,
     destination: GalacticPosition,
-    speed_ly_s: f64,
+    assisted: bool,
 ) -> f64 {
-    origin.relative_to(destination).length() / (speed_ly_s * math::LY_M)
+    math::flight_seconds(origin.relative_to(destination).length(), assisted)
 }
 
 fn fuel_index(world: &World) -> Option<usize> {
@@ -146,12 +170,10 @@ pub fn prepare_slip(
     world: &mut World,
     ship: Entity,
     destination: GalacticPosition,
-    speed_ly_s: f64,
     navigation_beacon: Option<EntityId>,
 ) -> Result<()> {
     osg_protocol::validate_order(&Order::Slip {
         destination: Destination::Galactic(destination),
-        speed_ly_s,
         navigation_beacon,
     })?;
     ensure!(active(world, ship), "slip requires a ship in space");
@@ -181,7 +203,6 @@ pub fn prepare_slip(
             "ship mass increased during charging"
         );
         preparation.destination = destination;
-        preparation.speed_ly_s = speed_ly_s;
         preparation.navigation_beacon = navigation_beacon;
         preparation.required_j = math::charging_energy_j(
             preparation.mass,
@@ -191,7 +212,6 @@ pub fn prepare_slip(
     } else {
         drive.preparation = Some(Preparation {
             destination,
-            speed_ly_s,
             navigation_beacon,
             started: now,
             mass,
@@ -207,7 +227,10 @@ pub fn prepare_slip(
 }
 
 fn gaussian_pair() -> [f64; 2] {
-    let mut rng = rand::rng();
+    gaussian_pair_with(&mut rand::rng())
+}
+
+fn gaussian_pair_with(rng: &mut impl RngExt) -> [f64; 2] {
     let radius = (-2.0 * (1.0 - rng.random::<f64>()).ln()).sqrt();
     let angle = std::f64::consts::TAU * rng.random::<f64>();
     [radius * angle.cos(), radius * angle.sin()]
@@ -221,7 +244,7 @@ fn deflected(direction: DVec3, error: [f64; 2]) -> DVec3 {
     };
     let across = direction.cross(axis).normalize();
     let up = direction.cross(across);
-    (direction + across * error[0].tan() + up * error[1].tan()).normalize()
+    (direction + across * error[0] + up * error[1]).normalize()
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -427,7 +450,6 @@ fn departure_forecast(
     target: CelestialRef,
     origin: GalacticPosition,
     direction: DVec3,
-    speed_ly_s: f64,
     assisted: bool,
     fuel_range_ly: f64,
 ) -> Option<(GalacticPosition, f64, f64)> {
@@ -439,7 +461,7 @@ fn departure_forecast(
     }
     let start_epoch = epoch(world);
     let current = system.solver.solve_position(&body.name, start_epoch)?;
-    let duration = slip_flight_seconds(origin, current, speed_ly_s);
+    let duration = slip_flight_seconds(origin, current, assisted);
     if !duration.is_finite() || duration > MAX_PREDICTION_SECONDS {
         return None;
     }
@@ -454,11 +476,11 @@ fn departure_forecast(
         if distance <= 0.0 || distance / math::LY_M > fuel_range_ly || body.radius >= exclusion {
             f64::INFINITY
         } else {
-            math::log_loss_from_ppm(math::capture_loss_ppm(
-                margin, distance, speed_ly_s, assisted,
-            ))
+            math::log_loss_from_ppm(math::capture_loss_ppm(margin, distance, assisted))
         };
-    Some((center, margin, log_loss))
+    let reachable =
+        distance > 0.0 && distance / math::LY_M <= fuel_range_ly && body.radius < exclusion;
+    Some((center, if reachable { exclusion } else { 0.0 }, log_loss))
 }
 
 fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<()> {
@@ -467,7 +489,6 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
         .get::<MassProps>(ship)
         .context("ship mass unavailable")?
         .mass;
-    let speed = preparation.speed_ly_s;
     let assisted = preparation.navigation_beacon.is_some_and(|beacon| {
         crate::sim::infrastructure::authenticated_navigation_beacon(world, ship, beacon)
     });
@@ -495,14 +516,17 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
         "slip direction is undefined"
     );
     let direction = aim.normalize();
-    let duration = slip_flight_seconds(pose.position, destination, speed);
+    ensure!(
+        rings_aligned(world, ship, direction),
+        "slip rings must align within one degree"
+    );
+    let duration = slip_flight_seconds(pose.position, destination, assisted);
     let forecast = target.and_then(|target| {
         departure_forecast(
             world,
             target,
             pose.position,
             direction,
-            speed,
             assisted,
             math::exotic_range_ly(mass, fuel_grams(world, ship) * 0.001),
         )
@@ -510,14 +534,25 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
     let risk_target = forecast.map(|forecast| forecast.0);
     let capture_radius_m = forecast.map_or(0.0, |forecast| forecast.1);
     let log_loss = forecast.map_or(f64::INFINITY, |forecast| forecast.2);
-    let sigma = math::dispersion_rad(speed, assisted);
-    let departure_error = gaussian_pair().map(|sample| sample * sigma);
-    let beacon_loss_error = assisted.then(|| {
-        let blind = math::dispersion_rad(speed, false);
-        let additional = (blind * blind - sigma * sigma).sqrt();
-        gaussian_pair().map(|sample| sample * additional)
-    });
-    let direction = deflected(direction, departure_error);
+    let mut speed = math::cruise_speed_ly_s(assisted);
+    // Fit short transits to three seconds using the actual first capture surface.
+    // Iteration accounts for a moving capture body at the slower transit speed.
+    for _ in 0..8 {
+        let Some(capture) = first_capture(
+            world,
+            pose.position,
+            direction * speed * math::LY_M,
+            math::MIN_TRANSIT_SECONDS,
+            epoch(world),
+            radius(world, ship)?,
+        ) else {
+            break;
+        };
+        if capture.physical || capture.seconds >= math::MIN_TRANSIT_SECONDS - 1e-8 {
+            break;
+        }
+        speed *= (capture.seconds / math::MIN_TRANSIT_SECONDS).max(1e-9);
+    }
     let now = tick(world);
     world.entity_mut(ship).insert(Transit {
         origin: pose.position,
@@ -533,8 +568,8 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
         consumed_fuel_g: 0.0,
         navigation_beacon: preparation.navigation_beacon,
         beacon_lost: false,
-        departure_error,
-        beacon_loss_error,
+        nominal_direction: direction.to_array(),
+        variance_m2: 0.0,
         intended_capture: target,
         risk_target,
         capture_radius_m,
@@ -545,15 +580,16 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
         travel.0.risk_budget.spent_log_loss += log_loss;
         travel.0.estimated_arrival_tick = duration
             .is_finite()
-            .then(|| now.saturating_add((duration * 10.0).ceil() as u64));
+            .then(|| now.saturating_add((duration * osg_model::TICK_RATE_HZ).ceil() as u64));
     }
-    crate::sim::combat::record_slip(
+    crate::sim::slip_effects::record_transition(
         world,
         ship,
         pose.position,
         pose.velocity,
         direction.to_array(),
         false,
+        now * osg_model::TICK_NS,
     );
     set_dormant(world, ship, Presence::SlipTransit(Id::new()));
     emit(world, ship, "slip-departed", None);
@@ -569,41 +605,35 @@ fn lose_beacon(world: &mut World, ship: Entity, transit: &mut Transit) {
     }) {
         return;
     }
-    let blind = math::dispersion_rad(transit.speed_ly_s, false);
-    let assisted = math::dispersion_rad(transit.speed_ly_s, true);
-    let additional = (blind * blind - assisted * assisted).sqrt();
-    let error = transit
-        .beacon_loss_error
-        .expect("assisted transit stores its loss error");
-    transit.direction = deflected(DVec3::from_array(transit.direction), error).to_array();
     transit.beacon_lost = true;
+    transit.speed_ly_s *= 0.1;
     if let Some(target) = transit.risk_target {
-        let remaining = target.relative_to(transit.position).length();
-        let total = target.relative_to(transit.origin).length();
-        let variance = (total * assisted).powi(2) + (remaining * additional).powi(2);
-        let loss_ppm = if variance > 0.0 {
-            (-transit.capture_radius_m.powi(2) / (2.0 * variance)).exp() * 1e6
-        } else {
-            0.0
-        };
+        let axis = DVec3::from_array(transit.nominal_direction);
+        let delta = target.relative_to(transit.origin);
+        let offset = (delta - axis * delta.dot(axis)).length();
+        let variance = transit.variance_m2 + transit.remaining_variance();
+        let loss_ppm =
+            math::displaced_capture_loss(transit.capture_radius_m, offset, variance) * 1e6;
         let revised = math::log_loss_from_ppm(loss_ppm);
-        if revised > transit.planned_log_loss
-            && let Some(mut travel) = world.get_mut::<Travel>(ship)
-        {
-            travel.0.risk_budget.spent_log_loss += revised - transit.planned_log_loss;
+        if revised > transit.planned_log_loss {
+            if let Some(mut travel) = world.get_mut::<Travel>(ship) {
+                travel.0.risk_budget.spent_log_loss += revised - transit.planned_log_loss;
+            }
+            transit.planned_log_loss = revised;
         }
     }
     emit(world, ship, "slip-beacon-lost", Some(transit.position));
 }
 
 fn arrive(world: &mut World, ship: Entity, transit: &Transit, capture: Capture) {
-    crate::sim::combat::record_slip(
+    crate::sim::slip_effects::record_transition(
         world,
         ship,
         transit.position,
         transit.retained_velocity,
         transit.direction,
         true,
+        tick(world) * osg_model::TICK_NS + (capture.seconds * 1e9).round() as u64,
     );
     world
         .get_mut::<PreciseTransform>(ship)
@@ -649,6 +679,29 @@ fn arrive(world: &mut World, ship: Entity, transit: &Transit, capture: Capture) 
     emit(world, ship, "slip-arrived", Some(transit.position));
 }
 
+fn walk_direction(transit: &Transit, distance: f64, samples: [f64; 2]) -> (DVec3, f64) {
+    let axis = DVec3::from_array(transit.nominal_direction);
+    let progress = transit
+        .position
+        .relative_to(transit.origin)
+        .dot(axis)
+        .max(0.0);
+    let variance = math::walk_variance(
+        progress,
+        distance,
+        transit.navigation_beacon.is_some() && !transit.beacon_lost,
+    );
+    let scale = if distance > 0.0 {
+        variance.sqrt() / distance
+    } else {
+        0.0
+    };
+    (
+        deflected(axis, samples.map(|sample| sample * scale)),
+        variance,
+    )
+}
+
 fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
     let now = tick(world);
     if transit.advanced_tick > now {
@@ -659,18 +712,54 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
     let paid_kg = transit.consumed_fuel_g * 0.001;
     let max_distance = math::exotic_range_ly(transit.departure_mass_kg, paid_kg + fuel * 0.001);
     let seconds_left = ((max_distance - transit.distance_ly) / transit.speed_ly_s).max(0.0);
-    let duration = 0.1_f64.min(seconds_left);
-    let velocity = DVec3::from_array(transit.direction) * transit.speed_ly_s * math::LY_M;
-    let capture = first_capture(
-        world,
-        transit.position,
-        velocity,
-        duration,
-        epoch(world),
-        radius(world, ship).unwrap_or(0.0),
-    );
-    let elapsed = capture.map_or(duration, |capture| capture.seconds);
-    transit.position = transit.position.offset_by(velocity * elapsed);
+    let duration = osg_model::TICK_SECONDS.min(seconds_left);
+    let speed = transit.speed_ly_s * math::LY_M;
+    let mut elapsed = 0.0;
+    let mut capture = None;
+    while elapsed < duration {
+        let mut step = duration - elapsed;
+        // Sample at the target plane, even when a tick spans its entire sphere.
+        // This preserves the calibrated endpoint variance for swept captures.
+        if let Some(target) = transit.risk_target {
+            let remaining = target
+                .relative_to(transit.position)
+                .dot(DVec3::from_array(transit.nominal_direction));
+            if remaining > speed * 1e-10 {
+                step = step.min(remaining / speed);
+            }
+        }
+        let (direction, variance) = walk_direction(&transit, speed * step, gaussian_pair());
+        let velocity = direction * speed;
+        let hit = first_capture(
+            world,
+            transit.position,
+            velocity,
+            step,
+            epoch(world) + Duration::from_seconds(elapsed),
+            radius(world, ship).unwrap_or(0.0),
+        );
+        let travelled = hit.map_or(step, |hit| hit.seconds);
+        let previous = transit.position;
+        transit.position = transit.position.offset_by(velocity * travelled);
+        transit.direction = direction.to_array();
+        transit.variance_m2 += variance * (travelled / step).powi(2);
+        crate::sim::slip_effects::record_span(
+            world,
+            ship,
+            previous,
+            transit.position,
+            now * osg_model::TICK_NS + (elapsed * 1e9).round() as u64,
+            now * osg_model::TICK_NS + ((elapsed + travelled) * 1e9).round() as u64,
+            transit.retained_velocity,
+        );
+        if let Some(mut hit) = hit {
+            hit.seconds += elapsed;
+            elapsed += travelled;
+            capture = Some(hit);
+            break;
+        }
+        elapsed += travelled;
+    }
     transit.distance_ly += transit.speed_ly_s * elapsed;
     let cumulative = math::exotic_fuel_kg(transit.departure_mass_kg, transit.distance_ly) * 1000.0;
     consume_fuel(
@@ -680,18 +769,41 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
     );
     transit.consumed_fuel_g = cumulative;
     transit.advanced_tick = now + 1;
+    // Account for only the time actually spent in slipspace, including arrivals
+    // partway through a tick. Ordinary physics handles the rest of that tick.
+    if let Ok((design, mut hull, mut thermal)) = world
+        .query::<(
+            &ShipDesign,
+            &mut crate::sim::hardware::Hull,
+            &mut crate::sim::hardware::ShipThermal,
+        )>()
+        .get_mut(world, ship)
+    {
+        thermal.0.advance_in_environment(
+            &mut hull.0,
+            design.0.as_ref().into(),
+            elapsed,
+            osg_ships::thermal::SLIPSPACE_K,
+        );
+    }
     world
         .get_mut::<PreciseTransform>(ship)
         .unwrap()
         .translation_um = transit.position;
-    if let Some(capture) = capture {
+    if world
+        .get::<crate::sim::hardware::Hull>(ship)
+        .is_some_and(|hull| hull.0 <= 0.0)
+    {
+        destroy(world, ship);
+        emit(world, ship, "slip-overheated", Some(transit.position));
+    } else if let Some(capture) = capture {
         if capture.physical {
             destroy(world, ship);
             emit(world, ship, "slip-collision", Some(transit.position));
         } else {
             arrive(world, ship, &transit, capture);
         }
-    } else if seconds_left <= 0.1 {
+    } else if seconds_left <= osg_model::TICK_SECONDS {
         destroy(world, ship);
         emit(world, ship, "slip-fuel-exhausted", Some(transit.position));
     } else {
@@ -732,7 +844,7 @@ pub(super) fn advance(world: &mut World) {
             preparation.destination.relative_to(pose.position).length() / math::LY_M,
         )
         .ceil();
-        let requested = (power * 0.1)
+        let requested = (power * osg_model::TICK_SECONDS)
             .min(preparation.required_j - preparation.work_j)
             .max(0.0)
             .ceil() as u64;
@@ -745,14 +857,30 @@ pub(super) fn advance(world: &mut World) {
         };
         world
             .entity_mut(ship)
-            .insert(SlipChargingPower(paid as f64 * 10.0));
-        crate::sim::hardware::add_travel_heat(world, ship, paid as f64 * 0.2, 0.1);
+            .insert(SlipChargingPower(paid as f64 * osg_model::TICK_RATE_HZ));
+        crate::sim::hardware::add_travel_heat(
+            world,
+            ship,
+            paid as f64 * 0.2,
+            osg_model::TICK_SECONDS,
+        );
         let mut drive = world.get_mut::<SlipDrive>(ship).unwrap();
         let stored = drive.preparation.as_mut().unwrap();
         stored.required_j = preparation.required_j;
         stored.work_j += paid as f64;
         let work = preparation.work_j + paid as f64;
-        if work >= preparation.required_j && now >= preparation.started + 100 {
+        if work >= preparation.required_j
+            && (now.saturating_sub(preparation.started) as f64 * osg_model::TICK_SECONDS)
+                >= math::MIN_CHARGE_SECONDS
+            && rings_aligned(
+                world,
+                ship,
+                preparation
+                    .destination
+                    .relative_to(pose.position)
+                    .normalize_or_zero(),
+            )
+        {
             if let Err(error) = depart(world, ship, &preparation) {
                 cancel_pending(world, ship);
                 blocked(world, ship, error.to_string());
@@ -776,6 +904,34 @@ pub(super) fn advance(world: &mut World) {
     }
 }
 
+fn rings_aligned(world: &World, ship: Entity, direction: DVec3) -> bool {
+    let Ok(pose) = ship_pose(world, ship) else {
+        return false;
+    };
+    let rotation = bevy::math::DQuat::from_array(pose.rotation);
+    let aligned = |axis: DVec3| (rotation * axis).dot(direction) >= 1.0_f64.to_radians().cos();
+    world
+        .get::<crate::sim::vessel::ShipDesign>(ship)
+        .map_or_else(
+            || aligned(DVec3::NEG_Z),
+            |design| {
+                design
+                    .0
+                    .parts
+                    .iter()
+                    .filter(|part| {
+                        matches!(
+                            part.definition.equipment,
+                            osg_ships::Equipment::Utility {
+                                utility: osg_ships::utilities::UtilityDef::SlipDrive { .. }
+                            }
+                        )
+                    })
+                    .all(|part| aligned(part.rotation * DVec3::NEG_Z))
+            },
+        )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,8 +942,8 @@ mod tests {
         static CATALOGUE: OnceLock<osg_ships::Catalogue> = OnceLock::new();
         static DESIGN: OnceLock<Arc<osg_ships::CompiledShipDesign>> = OnceLock::new();
         let catalogue = CATALOGUE.get_or_init(osg_ships::Catalogue::builtin);
-        let design =
-            DESIGN.get_or_init(|| Arc::new(osg_ships::armed_starter().compile(catalogue).unwrap()));
+        let design = DESIGN
+            .get_or_init(|| Arc::new(osg_ships::expedition_patrol().compile(catalogue).unwrap()));
         let mut inventory = osg_ships::Inventory::empty(catalogue);
         let index = catalogue
             .resources
@@ -805,6 +961,7 @@ mod tests {
                 ShipDesign(design.clone()),
                 PreciseTransform {
                     translation_um: GalacticPosition::from_meters(DVec3::NEG_X * 1000.0),
+                    rotation: DQuat::from_rotation_arc(DVec3::NEG_Z, DVec3::X),
                     ..Default::default()
                 },
                 Velocity(DVec3::Y * 7.0),
@@ -876,13 +1033,36 @@ mod tests {
             consumed_fuel_g: 0.0,
             navigation_beacon: None,
             beacon_lost: false,
-            departure_error: [0.0; 2],
-            beacon_loss_error: None,
+            nominal_direction: DVec3::X.to_array(),
+            variance_m2: 0.0,
             intended_capture: target,
             risk_target: Some(GalacticPosition::ZERO),
             capture_radius_m: 100.0,
             planned_log_loss: 0.0,
         }
+    }
+
+    #[test]
+    fn charged_drive_waits_until_ring_is_within_one_degree() {
+        let (mut world, ship) = fixture(1000);
+        natural_body(&mut world, GalacticPosition::ZERO, 10.0);
+        let aligned = DQuat::from_rotation_arc(DVec3::NEG_Z, DVec3::X);
+        world.get_mut::<PreciseTransform>(ship).unwrap().rotation =
+            DQuat::from_rotation_y(1.1_f64.to_radians()) * aligned;
+        prepare_slip(&mut world, ship, GalacticPosition::ZERO, None).unwrap();
+        for tick in 0..=100 {
+            world.resource_mut::<SimulationCounters>().ticks = tick;
+            advance(&mut world);
+        }
+        assert!(world.get::<Transit>(ship).is_none());
+        assert!(world.get::<SlipDrive>(ship).unwrap().preparation.is_some());
+
+        world.get_mut::<PreciseTransform>(ship).unwrap().rotation =
+            DQuat::from_rotation_y(0.9_f64.to_radians()) * aligned;
+        world.resource_mut::<SimulationCounters>().ticks = 101;
+        advance(&mut world);
+        assert!(world.get::<Transit>(ship).is_some());
+        assert!(world.get::<SlipDrive>(ship).unwrap().preparation.is_none());
     }
 
     #[test]
@@ -893,7 +1073,6 @@ mod tests {
             &mut world,
             ship,
             origin.offset_by(DVec3::X * math::LY_M),
-            0.01,
             None,
         )
         .unwrap();
@@ -915,7 +1094,6 @@ mod tests {
             &mut world,
             ship,
             origin.offset_by(DVec3::X * 10.0 * math::LY_M),
-            0.01,
             None,
         )
         .unwrap();
@@ -931,17 +1109,10 @@ mod tests {
     }
 
     #[test]
-    fn charge_only_departure_captures_between_tick_endpoints_and_retains_velocity() {
+    fn short_slips_take_three_seconds_and_retain_velocity() {
         let (mut world, ship) = fixture(1000);
         natural_body(&mut world, GalacticPosition::ZERO, 10.0);
-        prepare_slip(
-            &mut world,
-            ship,
-            GalacticPosition::ZERO,
-            20_000.0 / math::LY_M,
-            None,
-        )
-        .unwrap();
+        prepare_slip(&mut world, ship, GalacticPosition::ZERO, None).unwrap();
         for tick in 0..100 {
             world.resource_mut::<SimulationCounters>().ticks = tick;
             advance(&mut world);
@@ -951,12 +1122,56 @@ mod tests {
         world.resource_mut::<SimulationCounters>().ticks = 100;
         advance(&mut world);
         assert!(world.get::<SlipDrive>(ship).unwrap().preparation.is_none());
+        for tick in 101..129 {
+            assert!(world.get::<Transit>(ship).is_some());
+            world.resource_mut::<SimulationCounters>().ticks = tick;
+            advance(&mut world);
+        }
+        assert!(world.get::<Transit>(ship).is_some());
+        world.resource_mut::<SimulationCounters>().ticks = 129;
+        advance(&mut world);
+        if world.get::<Transit>(ship).is_some() {
+            world.resource_mut::<SimulationCounters>().ticks = 130;
+            advance(&mut world);
+        }
         assert!(world.get::<Transit>(ship).is_none());
         assert_eq!(world.get::<PresenceState>(ship).unwrap().0, Presence::Space);
         assert_eq!(world.get::<Velocity>(ship).unwrap().0, DVec3::Y * 7.0);
-        assert!((world.get::<ArrivalOffset>(ship).unwrap().0 - 0.045).abs() < 1e-7);
+        let elapsed = (world.resource::<SimulationCounters>().ticks - 100) as f64
+            * osg_model::TICK_SECONDS
+            + world.get::<ArrivalOffset>(ship).unwrap().0;
+        assert!((elapsed - 3.0).abs() < 1e-6);
         let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
         assert!((position.to_meters_64().length() - 100.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn arrival_applies_slip_heat_only_until_capture() {
+        use crate::sim::hardware::{Hull, ShipThermal};
+        let (mut world, ship) = fixture(1000);
+        let target = natural_body(&mut world, GalacticPosition::ZERO, 10.0);
+        let design = world.get::<ShipDesign>(ship).unwrap().0.clone();
+        let model = design.as_ref().into();
+        let state = osg_ships::thermal::ThermalState::new(model);
+        world
+            .entity_mut(ship)
+            .insert((Hull(design.hull), ShipThermal(state)));
+        let start = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+        set_dormant(&mut world, ship, Presence::SlipTransit(Id::new()));
+        advance_transit(
+            &mut world,
+            ship,
+            transit(start, 18_000.0 / math::LY_M, Some(target)),
+        );
+        let elapsed = world.get::<ArrivalOffset>(ship).unwrap().0;
+        assert!((elapsed - 0.05).abs() < 1e-6);
+        let mut expected = state;
+        let mut hull = design.hull;
+        expected.advance_in_environment(&mut hull, model, elapsed, osg_ships::thermal::SLIPSPACE_K);
+        let actual = &world.get::<ShipThermal>(ship).unwrap().0;
+        assert!(actual.hull_energy_j > 0.0);
+        assert_eq!(actual.hull_energy_j, expected.hull_energy_j);
+        assert_eq!(world.get::<Hull>(ship).unwrap().0, hull);
     }
 
     #[test]
@@ -1023,7 +1238,80 @@ mod tests {
     }
 
     #[test]
-    fn beacon_loss_is_sampled_once_and_survives_serialization() {
+    fn random_walk_matches_swept_capture_odds_across_step_sizes() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(90210);
+        let distance = 1e12;
+        for assisted in [false, true] {
+            for steps in [8, 64] {
+                for expected_loss in [0.1_f64, 0.5] {
+                    let sigma = math::dispersion_rad(assisted) * distance;
+                    let radius = sigma * (-2.0 * expected_loss.ln()).sqrt();
+                    let mut misses = 0;
+                    let trials = 10_000;
+                    for _ in 0..trials {
+                        let mut flight = transit(
+                            GalacticPosition::from_meters(DVec3::NEG_X * distance),
+                            0.03,
+                            None,
+                        );
+                        flight.navigation_beacon = assisted.then(Id::new);
+                        let mut captured = false;
+                        for _ in 0..steps {
+                            let (direction, variance) = walk_direction(
+                                &flight,
+                                distance / steps as f64,
+                                gaussian_pair_with(&mut rng),
+                            );
+                            let delta = direction * (distance / steps as f64);
+                            captured |= sphere_entry(
+                                flight.position.relative_to(GalacticPosition::ZERO),
+                                delta,
+                                radius,
+                                1.0,
+                            )
+                            .is_some();
+                            flight.position = flight.position.offset_by(delta);
+                            flight.variance_m2 += variance;
+                        }
+                        misses += usize::from(!captured);
+                    }
+                    let actual = misses as f64 / trials as f64;
+                    assert!(
+                        (actual - expected_loss).abs() < 0.02,
+                        "assisted={assisted}, steps={steps}: {actual} != {expected_loss}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn conditional_risk_tracks_observed_drift_and_fresh_future_noise() {
+        let mut flight = transit(
+            GalacticPosition::from_meters(DVec3::NEG_X * 1e12),
+            0.03,
+            None,
+        );
+        flight.capture_radius_m = math::dispersion_rad(false) * 1e12;
+        let departure_risk = flight.failure_ppm();
+        flight.position = flight.origin.offset_by(DVec3::X * 5e11);
+        let centered_risk = flight.failure_ppm();
+        assert!(centered_risk < departure_risk && centered_risk > 0.0);
+        flight.position = flight
+            .position
+            .offset_by(DVec3::Y * flight.capture_radius_m);
+        assert!(flight.failure_ppm() > centered_risk && flight.failure_ppm() < 1e6);
+        let restored: Transit =
+            postcard::from_bytes(&postcard::to_stdvec(&flight).unwrap()).unwrap();
+        assert_eq!(restored.failure_ppm(), flight.failure_ppm());
+        let (left, _) = walk_direction(&restored, 1e9, [-1.0, 0.0]);
+        let (right, _) = walk_direction(&restored, 1e9, [1.0, 0.0]);
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn beacon_loss_changes_future_diffusion_once_and_survives_serialization() {
         let (mut world, ship) = fixture(1000);
         let mut flight = transit(
             GalacticPosition::from_meters(DVec3::NEG_X * math::LY_M),
@@ -1031,7 +1319,8 @@ mod tests {
             None,
         );
         flight.navigation_beacon = Some(Id::new());
-        flight.beacon_loss_error = Some([1e-6, -2e-6]);
+        flight.risk_target = Some(GalacticPosition::ZERO);
+        flight.capture_radius_m = 1e8;
         let before_loss = postcard::to_stdvec(&flight).unwrap();
         lose_beacon(&mut world, ship, &mut flight);
         let saved = postcard::to_stdvec(&flight).unwrap();
@@ -1040,8 +1329,9 @@ mod tests {
         lose_beacon(&mut world, ship, &mut restored);
         assert_eq!(postcard::to_stdvec(&restored).unwrap(), saved);
         assert!(restored.beacon_lost);
-        assert!(restored.beacon_loss_error.is_some());
-        assert_eq!(restored.speed_ly_s, 0.05);
+        assert_eq!(restored.direction, DVec3::X.to_array());
+        assert!(restored.planned_log_loss.is_finite() && restored.planned_log_loss > 0.0);
+        assert!((restored.speed_ly_s - 0.005).abs() < 1e-12);
     }
 
     #[test]
@@ -1137,7 +1427,6 @@ mod tests {
                     offset: GalacticPosition::ZERO,
                     axes: Axes::Galactic,
                 },
-                speed_ly_s: 1.0,
                 navigation_beacon: None,
             }
             .into(),
@@ -1162,7 +1451,9 @@ mod tests {
         // The controller aims away from its queued star, beyond its prediction horizon.
         // Neither the route's risk budget nor inadequate range prevents commitment.
         let commanded = origin.offset_by(DVec3::NEG_X * 1e10 * math::LY_M);
-        prepare_slip(&mut world, ship, commanded, 1.0, Some(beacon_id)).unwrap();
+        world.get_mut::<PreciseTransform>(ship).unwrap().rotation =
+            DQuat::from_rotation_arc(DVec3::NEG_Z, DVec3::NEG_X);
+        prepare_slip(&mut world, ship, commanded, Some(beacon_id)).unwrap();
         let preparation = world
             .get::<SlipDrive>(ship)
             .unwrap()

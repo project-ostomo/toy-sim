@@ -100,7 +100,6 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             .flat_map(|beacon| &beacon.systems)
             .all(|system| directory.systems.binary_search(system).is_ok())
     );
-    let group = *first.tracks.keys().next().unwrap();
     let action = Id::new();
     client
         .input
@@ -122,13 +121,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
                     Action::Subscribe(ViewSubscription {
                         id: 1,
                         revision: 1,
-                        group,
                         focused_ship: Some(own.ship),
-                        query: TrackQuery {
-                            limit: 64,
-                            work: 100_000,
-                            ..Default::default()
-                        },
                     }),
                 ),
             ],
@@ -172,7 +165,7 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
     assert_eq!(observed.views.len(), 1);
     assert_eq!(observed.screens.len(), 1);
     assert!(observed.screens[0].frame.as_ref().unwrap().draws.len() >= 5);
-    assert!(!observed.tracks[&group].is_empty());
+    assert!(!observed.contacts[&own.ship].is_empty());
     let own_optical = observed
         .optical
         .iter()
@@ -200,7 +193,6 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         .unwrap();
     let other_own = initial_patrol(&other_first, other_account);
     assert_ne!(other_own.ship, own.ship);
-    let join = Id::new();
     let view = Id::new();
     let forbidden = Id::new();
     other
@@ -209,19 +201,12 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             world: first.world,
             sequence: 1,
             actions: vec![
-                (join, Action::JoinGroup(own.info_group)),
                 (
                     view,
                     Action::Subscribe(ViewSubscription {
                         id: 1,
                         revision: 1,
-                        group,
-                        focused_ship: None,
-                        query: TrackQuery {
-                            limit: 64,
-                            work: 100_000,
-                            ..Default::default()
-                        },
+                        focused_ship: Some(own.ship),
                     }),
                 ),
                 (
@@ -250,19 +235,10 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
         shared
             .results
             .iter()
-            .find(|result| result.id == join)
-            .unwrap()
-            .error
-            .is_none()
-    );
-    assert!(
-        shared
-            .results
-            .iter()
             .find(|result| result.id == view)
             .unwrap()
             .error
-            .is_none()
+            .is_some()
     );
     assert!(
         shared
@@ -273,21 +249,12 @@ async fn authenticated_main_stream_carries_authorized_snapshots_and_results() {
             .error
             .is_some()
     );
-    assert!(
-        shared.tracks[&group]
-            .iter()
-            .any(|track| track.entity == Some(own.ship))
-    );
     assert_eq!(initial_patrol(&shared, other_account).ship, other_own.ship);
     assert!(
         shared.optical.is_empty(),
-        "a radio-only view has no optical vantage"
+        "an unauthorized focus has no optical observations"
     );
-    assert!(
-        shared.tracks[&group]
-            .iter()
-            .all(|track| track.appearance.is_none())
-    );
+    assert!(shared.contacts.is_empty());
     drop(other);
     let start_tick = observed.tick;
     tokio::time::timeout(Duration::from_secs(20), async {
@@ -363,17 +330,7 @@ async fn reset_discards_old_world_inputs_and_keeps_the_connection_usable() {
                     Action::Subscribe(ViewSubscription {
                         id: 1,
                         revision: 1,
-                        group: *reset
-                            .tracks
-                            .keys()
-                            .find(|group| **group != PUBLIC_GROUP)
-                            .unwrap(),
                         focused_ship: Some(reset.ships[0].ship),
-                        query: TrackQuery {
-                            limit: 64,
-                            work: 100_000,
-                            ..Default::default()
-                        },
                     }),
                 )],
             })
@@ -1034,7 +991,6 @@ async fn process_restart_restores_running_world_and_advances_real_calendar() {
         "restored pose must continue near the saved relocation: {displacement_m:?}"
     );
     assert_eq!(telemetry.iff, iff);
-    assert_eq!(telemetry.info_group, saved_ship.info_group);
     assert_eq!(telemetry.authority_revision, saved_ship.authority_revision);
     let instruments =
         submit_action(&mut client, world, 1, Action::InstrumentSubscribe { ship }).await;
@@ -1123,13 +1079,7 @@ async fn local_chat_delivers_to_focused_controlled_ships_without_identity_or_his
         Action::Subscribe(ViewSubscription {
             id: 1,
             revision,
-            group: PUBLIC_GROUP,
             focused_ship: Some(ship),
-            query: TrackQuery {
-                limit: 64,
-                work: 100_000,
-                ..Default::default()
-            },
         })
     };
     for (client, ship) in [(&mut a, own.ship), (&mut b, remote.ship)] {
@@ -1267,7 +1217,6 @@ impl ServerProcess {
 
     fn spawn(directory: &std::path::Path) -> Child {
         Command::new(env!("CARGO_BIN_EXE_osg-server"))
-            .env_remove("OPENROUTER_API_KEY")
             .arg(directory.join("server.toml"))
             .arg("--ready-file")
             .arg(directory.join("ready"))

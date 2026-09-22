@@ -3,7 +3,6 @@ use anyhow::{Context, Result, ensure};
 use glam::{DMat3, DVec3};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::Path};
-pub const SHIP_FORMAT_VERSION: u32 = 3;
 pub const AVIONICS_MASS_KG: f64 = 71.;
 pub const AVIONICS_POWER_W: f64 = 101.;
 pub const SENSOR_POWER_W: f64 = 1000.;
@@ -71,10 +70,7 @@ pub struct PlacedPart {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ShipBlueprint {
-    #[serde(default)]
-    pub format_version: u32,
     pub name: String,
-    pub catalogue_revision: u32,
     pub parts: Vec<PlacedPart>,
     #[serde(default)]
     pub firmware: Firmware,
@@ -85,8 +81,6 @@ impl Default for ShipBlueprint {
     fn default() -> Self {
         Self {
             name: "Untitled ship".into(),
-            format_version: SHIP_FORMAT_VERSION,
-            catalogue_revision: 4,
             parts: vec![],
             firmware: Firmware::Standard,
             avionics: Avionics::default(),
@@ -185,12 +179,6 @@ impl ShipBlueprint {
         let mut reader = std::io::Cursor::new(bytes);
         let s: Self = ciborium::from_reader(&mut reader)?;
         ensure!(
-            s.format_version == SHIP_FORMAT_VERSION,
-            "incompatible ship format {}; expected {} (rebuild the design with standard avionics)",
-            s.format_version,
-            SHIP_FORMAT_VERSION
-        );
-        ensure!(
             reader.position() as usize == bytes.len(),
             "trailing ship data"
         );
@@ -229,10 +217,6 @@ impl ShipBlueprint {
     pub fn compile(&self, cat: &Catalogue) -> Result<CompiledShipDesign> {
         cat.validate()?;
         ensure!(
-            self.format_version == SHIP_FORMAT_VERSION,
-            "incompatible ship format"
-        );
-        ensure!(
             self.avionics.control_orientation < 24,
             "invalid control orientation"
         );
@@ -241,10 +225,6 @@ impl ShipBlueprint {
             "too many actuator exclusions"
         );
         ensure!(self.name.len() <= 256, "ship name exceeds 256 bytes");
-        ensure!(
-            self.catalogue_revision == cat.revision,
-            "catalogue revision mismatch"
-        );
         ensure!(
             !self.parts.is_empty() && self.parts.len() <= 4096,
             "ship needs 1–4096 parts"

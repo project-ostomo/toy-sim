@@ -1,18 +1,17 @@
 # Authoritative server and network client
 
-The simulation runs only in `osg-server`. Every UI is a network client: the standalone `osg-client`, and `osg-debug`, which starts its own server process and connects to it over loopback TCP. This guide describes the server process, its configuration, the transport and application protocol, the intelligence model that decides what each account can see, presentation data, display instances, docking and travel, client playback, the client UI, and the benchmark.
+The simulation runs only in `osg-server`. Every UI is a network client: the standalone `osg-client`, and `osg-debug`, which starts its own server process and connects to it over loopback TCP. This guide describes the server process, its configuration, the transport and application protocol, the sensor and visual observations available to each ship, presentation data, display instances, docking and travel, client playback, the client UI, and the benchmark.
 
-The server restores durable world state from SQLite checkpoints, including ownership, information-group keys, ships and installed WASM programs. Sessions reconnect after a restart. A debug reset creates a new world ID; inputs carrying another world ID are discarded so existing connections can survive a reset. Checkpoints default to every 900 seconds, with initial and graceful-shutdown saves. Unsupported or corrupt newest checkpoints stop startup explicitly.
+The server restores durable world state from SQLite checkpoints, including ownership, ships and installed WASM programs. Sessions reconnect after a restart. A debug reset creates a new world ID; inputs carrying another world ID are discarded so existing connections can survive a reset. Checkpoints default to every 900 seconds, with initial and graceful-shutdown saves. Unsupported or corrupt newest checkpoints stop startup explicitly.
 
 ## Crates
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `osg-model` | [crates/osg-model](../crates/osg-model) | Shared serde types: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel orders and drawing lists; explicit conversions to the WASM C ABI records |
-| `osg-protocol` | [crates/osg-protocol](../crates/osg-protocol) | Application message framing, sections and validation limits |
+| `osg-model` | [crates/osg-model](../crates/osg-model) | Shared serde types: IDs, poses, sensor observations, queries, frames, actions, debug commands, presentation records, travel orders and drawing lists; explicit conversions to the WASM C ABI records |
+| `osg-protocol` | [crates/osg-protocol](../crates/osg-protocol) | Application message framing and validation of client requests |
 | `osg-net` | [crates/osg-net](../crates/osg-net) | TCP handshake, record encryption, Zstd compression and picomux multiplexing |
 | `osg-spatial` | [crates/osg-spatial](../crates/osg-spatial) | Shared spatial hash for brightness, radius, nearest-neighbour, segment and metered cursor queries |
-| `osg-intel` | [crates/osg-intel](../crates/osg-intel) | Measurements, immutable track snapshots and metered queries |
 | `osg-universe` | [crates/osg-universe](../crates/osg-universe) | Shared astronomical catalogue, lazy deterministic generation, Keplerian solver and initial population recipe |
 | `osg-server` | [crates/osg-server](../crates/osg-server) | The Bevy ECS simulation in private modules under [src/sim](../crates/osg-server/src/sim), the simulation loop, TCP listener, asset streams, configuration, key provisioning and the benchmark example |
 | `osg-client` | [crates/osg-client](../crates/osg-client) | `connect`, asset fetching, the `Playback` buffer, and the Bevy/egui UI behind the `ui` feature |
@@ -85,13 +84,13 @@ The ship editor's "Launch sim" runs `osg-debug --ship <snapshot>` ([ship-editor.
 [bootstrap.rs](../crates/osg-server/src/sim/bootstrap.rs) builds the world from the Bevy application in [sim/mod.rs](../crates/osg-server/src/sim/mod.rs):
 
 - **Universe.** The astronomical catalogue covers the full bundled sky, with enriched stellar records and authored overrides. Systems resolve through one deterministic generator when needed. The initial population recipe selects 3,000 systems for infrastructure; later public inhabitation follows actual operating directory equipment. The starting encounter is in Helion. See [Celestial generation](../crates/osg-universe/GENERATION.md).
-- **Explorer.** "Patrol ship" starts in a circular orbit 40,000 km above Helion I Neris, on the day side, with the tangential direction selected from seed 42 ([scenario.rs](../crates/osg-server/src/sim/scenario.rs)). Its design is the configured `ship` blueprint, or the bundled micropulse patrol ship. If the blueprint fails to load or compile, the server logs "Cannot load ship" and spawns no ships at all, so scenario setup fails.
-- **Hostile patrol.** "Hostile patrol 001" uses the bundled micropulse patrol design, starts 1 km from the player with the same initial velocity, and points at it. Its computer receives mark and start-firing requests after initial sensor publication and fires once booted.
+- **Explorer.** "Patrol ship" starts in a circular orbit 1,000 km outside Helion I Neris's slip exclusion radius, on the day side, with the tangential direction selected from seed 42 ([scenario.rs](../crates/osg-server/src/sim/scenario.rs)). Its design is the configured `ship` blueprint, or the bundled micropulse patrol ship. If the blueprint fails to load or compile, the server logs "Cannot load ship" and spawns no ships at all, so scenario setup fails.
+- **Hostile patrol.** "Hostile patrol 001" uses the bundled micropulse patrol design, starts 1 km from the player with the same initial velocity, and points at it. It remains passive until commanded; there is no autonomous NPC behavior.
 - **Players.** The first configured account controls the explorer. Account *n* (from 1) gets "Explorer *n+1*", with the explorer's design and velocity, offset by *n* × 1,000 m along galactic +Y. Every player ship gets a default slipdrive.
 - **Ownership and infrastructure.** The hostile patrol belongs to Terminus Privateers. Neris Anchorage and initial directory/navigation installations have real equipment and inventories. Their continued public presence depends on power, damage, position, and transponder settings.
 - Every ship gets a test loadout, and every flight computer boots for 5 s.
 
-After spawning, bootstrap runs identity, acquisition, coasting, fusion and publication once, so the first state frame already has tracks.
+After spawning, bootstrap rebuilds identity and spatial indexes and publishes current sensor observations for the first frame.
 
 ## Server loop
 
@@ -103,7 +102,7 @@ After spawning, bootstrap runs identity, acquisition, coasting, fusion and publi
 4. Applies queued debug requests ([Debug accounts](#debug-accounts)).
 5. Runs simulation ticks. It adds the positive rate to a tick credit and runs the whole number of ticks in the credit, so a rate of 10 runs 10 ticks in one loop iteration. Each tick is one `App::update`, and its wall-clock duration is recorded for diagnostics.
 6. Updates display instances once ([Display instances](#display-instances)).
-7. Builds and validates one `Frame` per session and queues the complete encoded frame in a FIFO. Each connection has a 64 MiB outbound byte budget, including the frame currently being written. Exhausting that budget disconnects the slow connection. Invalid server-generated frames panic and abort the server.
+7. Builds one `Frame` per session and queues the complete encoded frame in a FIFO. Each connection has a 64 MiB outbound byte budget, including the frame currently being written. Exhausting that budget disconnects the slow connection.
 8. Collects completed checkpoint writes and captures a requested or due checkpoint for the bounded background writer. Then it sleeps until the next 100 ms deadline. If it is already late, the next deadline starts from now.
 
 The loop exits when the listener side has closed and no sessions remain, or when the stop flag is set.
@@ -117,7 +116,7 @@ One tick runs these Bevy schedules ([sim/mod.rs](../crates/osg-server/src/sim/mo
 - **`FixedFirst`.** Travel advances: docked orders, slip intersections and slip preparation ([Docking and travel](#docking-and-travel)).
 - **`FixedUpdate`.** Star systems are activated for ships inside their influence radius. World-service indexes (beacons, celestial poses, the public snapshot, slip apertures) are published and each ship's world source is prepared. Then, in order: history, `PrepareBodies` (flight programs and typed hardware systems), `Forces` (gravity and drag).
 - **`FixedPostUpdate`.** Firmware world actions are applied in ship ID order. Then `Integrate` (rigid bodies and the collision solver) and `Celestials`.
-- **`FixedLast`.** The spatial index is rebuilt, sensor scans run, and the tick counter increments. Then intelligence runs: travel geometry refresh, celestial identities, index cleanup, acquisition, coasting, fusion, publication, and recording of travel events.
+- **`FixedLast`.** The spatial index is rebuilt, sensor scans run, and the tick counter increments. Then travel geometry and celestial identities are refreshed, sensor observations are published, and travel events are recorded.
 
 Ship hardware lives in ECS components ([hardware.rs](../crates/osg-server/src/sim/hardware.rs)): `ShipInventory`, `Hull`, `ShipThermal`, `Avionics`, `DeviceSettings`, `HardwareClock` and `SensorRange` on the ship, and one entity per installed part with `InstalledPart`, `Device`, typed device components such as generators, engines, RCS, torquers and shields ([devices.rs](../crates/osg-server/src/sim/hardware/devices.rs)), and `Weapon` where present. `osg_ships::ShipState` is used to build these components when a ship spawns, resets or is recovered, and `hardware::snapshot` assembles one from them for presentation and collision damage. The simulation does not step a `ShipState`.
 
@@ -135,13 +134,13 @@ TCP (TCP_NODELAY)
             └─ "assets" streams: 32-byte hash → asset bytes until EOF
 ```
 
-Integers in the fixed-layout transport and protocol fields below (handshake hello, record length, key epoch, nonce and associated data, picomux frame header and `MORE` body, application message and section headers) are little-endian. Section values are postcard-encoded, which uses its own variable-length integer encoding.
+Integers in the fixed-layout transport and protocol fields below (handshake hello, record length, key epoch, nonce and associated data, picomux frame header and `MORE` body, application message length) are little-endian. Message values are postcard-encoded, which uses its own variable-length integer encoding.
 
 ### Handshake
 
 The handshake is in [crypto.rs](../crates/osg-net/src/crypto.rs). Both `connect` and `accept` enforce a 10 s timeout.
 
-A hello is 66 bytes: a `u16` transport version (1), 32 random bytes, then a 32-byte X25519 ephemeral public key.
+A hello is 66 bytes: a `u16` shared `GAME_VERSION`, 32 random bytes, then a 32-byte X25519 ephemeral public key.
 
 1. The client sends its hello.
 2. The server checks the version and sends its own hello, followed by a 64-byte Ed25519 signature over the transcript hash:
@@ -179,7 +178,7 @@ A replayed, reordered, truncated or modified record fails authentication, and th
 - Each direction has one Zstd stream that lasts the whole connection. The encoder uses level 3 and window log 21 (2 MiB). The decoder sets `WindowLogMax(21)` and rejects streams that need a larger window. History carries across writes, so repeated frame content compresses against earlier frames.
 - Each `poll_write` takes up to 32,768 bytes. The pipe compresses the chunk, flushes the encoder so the peer can decode it immediately, and splits the output into records of at most 65,535 data bytes.
 - Decoding one record may produce at most 256 KiB of plaintext. More is a protocol error.
-- Compression and decompression run on blocking threads. A process-wide semaphore limits them to `available_parallelism()` jobs at a time.
+- Streaming compression and decompression run directly in the async reader and writer tasks, in bounded chunks. Network I/O and downstream backpressure provide the await points; there is no blocking task pool or compression semaphore.
 - Writes are pipelined. `poll_write` queues the chunk and returns before it is sent. A write error is reported on the next write, flush or shutdown. Decoded bytes pass through a 64 KiB in-memory pipe to the reader.
 
 ### Multiplexing (picomux)
@@ -229,87 +228,27 @@ facility capacity. Accepted jobs retain their full blueprint in world snapshots.
 
 The server and network tasks share a dynamic asset store. Its entries contain immutable bytes under their BLAKE3 hashes; newly published assets become available to existing connections immediately. A transfer holds a shared byte allocation after lookup and releases the store lock before awaiting network writes. Debug reset preserves the shared store and installs the new scenario's assets into it. The store holds:
 
-- **Ship appearances.** A TOML `ShipAppearance` containing the catalogue revision and visible part prototypes, IDs, positions and rotations. It contains no firmware, tank allocations or operational loadout. Its BLAKE3 hash is the `appearance` field of an optical observation or a `Destroyed` combat event. Radio tracks do not publish appearance hashes.
-- **The inhabited directory.** A Postcard tuple `(asset_version, InhabitedDirectory)`, version 4, referenced by `presentation.navigation.directory`. It contains sorted unique system IDs, system sovereignty IDs, and public sovereignty names and blocs. Ownership follows the organization with a strict majority of broadcasting installations. The decoder rejects assets above 64 MiB, unsupported versions, trailing bytes, invalid ownership references, and unsorted or duplicate IDs. The client validates identities against its own astronomical catalogue.
+- **Ship appearances.** A TOML `ShipAppearance` containing the catalogue revision and visible part prototypes, IDs, positions and rotations. It contains no firmware, tank allocations or operational loadout. Its BLAKE3 hash is the `appearance` field of an optical observation or a `Destroyed` combat event. Sensor observations do not publish appearance hashes.
+- **The inhabited directory.** A Postcard-encoded `InhabitedDirectory`, referenced by `presentation.navigation.directory`. It contains system IDs, sovereignty ownership, and public sovereignty names and blocs. Ownership follows the organization with a strict majority of broadcasting installations.
 
 ## Application messages
 
-Messages are defined in [osg-protocol](../crates/osg-protocol/src/lib.rs). The `main` stream carries a sequence of messages. Each message is a 12-byte header followed by a body:
+The `main` stream carries a four-byte little-endian body length followed by one
+Postcard-encoded `Message`: `State`, `Input`, or `Session`. There are no section
+headers or per-message versions. The initial authenticated handshake checks the
+shared `GAME_VERSION`, also used by firmware and saved worlds. Field and enum
+ordering are part of that game version's wire format.
 
-| Offset | Size | Field |
-| --- | --- | --- |
-| 0 | 4 | Magic `TSF1` |
-| 4 | 2 | Protocol version, which must be 40 (`VERSION`) |
-| 6 | 2 | Kind: 1 `State`, 2 `Input`, 3 `Session`. Any other kind is rejected. |
-| 8 | 4 | Body length: at most 8 MiB for `State`, 64 KiB for `Input`, 1 KiB for `Session` |
+Server states and assets are trusted after decoding. The client uses their
+sequence numbers, timestamps, geometry and identities directly. A `Session`
+describes the world, orbital epoch and simulation-time origin. A world reset
+sends a new descriptor before the new world's state.
 
-The body is a list of sections, with at most 32 per message:
-
-| Size | Field |
-| --- | --- |
-| 2 | Section ID |
-| 2 | Flags: `0` optional, `1` required. Values above 1 are rejected. |
-| 4 | Length |
-| Length | [postcard](https://docs.rs/postcard)-encoded value |
-
-A reader ignores unknown optional sections. It rejects unknown required sections, duplicate known sections, missing known sections, truncated sections and trailing bytes inside a section. The encoder marks every section it writes as required. Because the values are postcard-encoded, field order and enum variant order in `osg-model` are part of the wire format.
-
-| Kind | Section | Value |
-| --- | --- | --- |
-| `State` | 1 | Clock: `world`, `sequence`, `tick`, `sim_time_ns`, `rate` |
-| `State` | 2 | `Vec<ViewState>` |
-| `State` | 3 | `BTreeMap<GroupId, Vec<Track>>` |
-| `State` | 4 | `Vec<ShipTelemetry>` |
-| `State` | 5 | `Vec<ScreenUpdate>` |
-| `State` | 6 | `Vec<Event>` |
-| `State` | 7 | `Vec<CommandResult>` |
-| `State` | 8 | `PresentationFrame` |
-| `State` | 9 | `SocietySnapshot` |
-| `State` | 10 | `calendar_unix_ms` (`i64`, real UTC plus 400 Gregorian years) |
-| `State` | 11 | `Vec<OpticalObservation>` |
-| `State` | 12 | `Option<IndustrySnapshot>` |
-| `State` | 13 | `Option<ChatUpdate>` |
-| `Input` | 1 | `InputFrame` |
-| `Session` | 1 | World ID and `UniverseDescriptor` |
-
-All thirteen `State` sections are required. Other protocol versions and messages missing any required section are rejected. Encoding and decoding both validate the message. Protocol 27 moves construction blueprints into private upload streams. Protocol 26 adds local hangar subscriptions; protocol 25 adds unloading reactor products into cargo. Protocol 24 adds server route requests, polling and plan commits. Protocol 23 added local chat subscriptions and recipient mailboxes. Protocol 22 added subscribed industry updates and unified cargo stacks. Protocol 21 added authorized gas-account balances and distinguished suspended execution from waiting for account gas. Protocol 20 added sovereignty fields to navigation systems and moved the static map into an asset.
-
-Protocol 36 requires a `Session` descriptor before accepting state. It contains
-the shared universe fingerprint, orbital epoch in UTC MJD, and simulation-time
-origin. The client compares the fingerprint with its own catalogue, authored
-inputs, and generator revision. A mismatch ends the session explicitly. A world
-reset sends a new descriptor before the new world's state.
-
-`PresentationFrame.navigation` contains the inhabited-directory hash and a
-bounded list of relevant live infrastructure. Directory asset version 3 carries
-sorted unique system IDs and sovereignty ownership, capped at 64 MiB; a million owned systems fit this transport.
-Clients resolve names and positions from their own catalogue. Membership
-changes publish a new hash; orbital motion updates live poses independently.
-Obsolete directory downloads cannot overwrite a newer publication.
-
-**State frame limits.**
-
-- `rate` is finite, greater than zero and at most 100.
-- At most 8 views, 16 track groups, 64 ship telemetry records and 64 screen updates.
-- At most 8192 tracks in total, and at most 8192 track IDs per view. View IDs are unique.
-- At most 16,384 events and 4096 command results.
-- Every position component is at most 2^110 µm in magnitude. Velocities, rotations and angular velocities are finite, and rotations are unit quaternions to within 1e-5.
-- Track IDs are unique within a group. A track has at most 64 tags, and uncertainties are finite and non-negative.
-- `Kind`, `Advertised` and `Annotation` tag strings are 1 to 64 bytes with no control characters.
-- Ship resources are finite and non-negative. Travel states have at most 256 orders with a cursor within the queue, and a blocked reason is at most 1024 bytes.
-- Event kinds are at most 64 bytes. Command errors are at most 1024 bytes.
-- A screen update has a slot below 8 and a valid drawing list whose `screen_id` equals the slot. The whole update encodes to at most 65,536 bytes, and its error text is at most 1024 bytes.
-
-**Presentation limits** ([presentation.rs](../crates/osg-protocol/src/presentation.rs)):
-
-- At most 64 ship presentations, 16,384 combat events and 7 capabilities.
-- Every ship presentation needs a telemetry record for the same ship in the frame, with at most one presentation per ship. Ship visuals are nested in optical observations in section 11.
-- Hardware totals, device readings, health, environment and execution metrics are finite and non-negative where they are physical amounts. Fractions such as throttle, weapon progress, shield strength and shield coverage are within 0 to 1. At most 256 inventory entries, 4096 devices and 8 screen definitions per ship; screen definitions have a slot below 8, a size from 1 to 4096 and a title of at most 64 bytes.
-- Instruments have at most 4096 weapon rows, 64 paths with 16,384 vertices in total, and 256 markers. Timed paths have strictly increasing vertex times.
-- Combat events have valid positions and poses, and a projectile's end time is not before its start.
-- Navigation contains at most 1,024 relevant live beacons, with unique IDs, valid poses, and sorted unique containing-system identities.
-
-**Optical limits.** At most 8192 observations per frame, unique by `(view, id)`. Each names an existing view and carries a valid pose, positive finite radius, non-negative finite luminosity, and validated engine/turret/shield visual state. An optional contact reference must name a track in the same frame. An anonymous observation needs no radio track. The server additionally reserves at most 4 MiB of serialized observations, dividing both count and byte budgets equally among subscribed views. This leaves room within the 8 MiB state-message limit for other sections.
+`PresentationFrame.navigation` contains the inhabited-directory asset hash and
+relevant live infrastructure. Clients resolve names and positions from their
+catalogue. Membership changes publish a new hash; orbital motion updates live
+poses independently. Obsolete asynchronous downloads cannot overwrite a newer
+publication.
 
 **Input frame limits.**
 
@@ -325,7 +264,7 @@ Obsolete directory downloads cannot overwrite a newer publication.
 
 ## Sessions
 
-Each connection gets a `Session` entity ([session.rs](../crates/osg-server/src/sim/session.rs)). It starts as a member of the account's default information group and the public group.
+Each connection gets a `Session` entity ([session.rs](../crates/osg-server/src/sim/session.rs)). It receives observations from ships the account is authorized to inspect.
 
 ### Input frames
 
@@ -338,7 +277,7 @@ Actions are applied in order before the next simulation tick, and each result's 
 ### Results and events
 
 - Each command result is included once, in the next published frame. Its delivery uses the same reliable FIFO as the snapshot.
-- A frame includes new events whose `subject` is either an entity with a known ID in one of the frame's tracks, or a ship the account controls. Events with no subject are not sent. Each session advances a server-local publication cursor when building a frame. Event staging is pruned after sessions publish; its lifetime does not depend on client acknowledgements or network progress.
+- A frame includes new events whose `subject` is either an entity with a known ID in one of the frame's sensor observations, or a ship the account controls. Events with no subject are not sent. Each session advances a server-local publication cursor when building a frame. Event staging is pruned after sessions publish; its lifetime does not depend on client acknowledgements or network progress.
 - Event kinds with a subject: `docked`, `undocked`, `destroyed`, `slip-departed`, `slip-arrived` and `relocated`. Collision and weapon records use the kind `combat` with no subject; they reach clients only as presentation combat events.
 
 ### Actions
@@ -347,8 +286,7 @@ A session can request detailed data for at most eight distinct ships across focu
 
 | Action | Effect |
 | --- | --- |
-| `JoinGroup(key)` | Joins the information group for `key`, creating it if needed. Replies `JoinedGroup(group_id)`. At most 16 groups per session. |
-| `Subscribe(ViewSubscription)` | Adds or replaces view `id`. The session must belong to `group`. A replacement must have a higher `revision`. At most 8 views. A `focused_ship` must be controlled by this account. |
+| `Subscribe(ViewSubscription)` | Adds or replaces view `id`. A replacement must have a higher `revision`. At most 8 views. The account must have observe permission for the focused ship. |
 | `Unsubscribe(id)` | Removes a view |
 | `InstrumentSubscribe { ship }` / `InstrumentUnsubscribe` | Requests instrument presentation for a controlled ship. At most 8. |
 | `ScreenSubscribe { ship, slot, hz }` / `ScreenUnsubscribe` | Requests display frames for a controlled ship. At most 8 subscriptions. |
@@ -359,12 +297,12 @@ A session can request detailed data for at most eight distinct ships across focu
 
 Views with a focused ship, instrument subscriptions and screen subscriptions together may name at most 8 distinct ships ("detailed ship subscription limit").
 
-Player commands and NPC officer tools call the same `sim::commands::execute`
+Player commands call `sim::commands::execute`
 function. It validates command payloads, checks the account's current permission
 and authority revision, and queues ordinary ship-computer requests. Network
-sessions also enforce their joined information groups and display subscriptions.
-Target commands resolve a `TrackId` only in the controlled ship's actual sensor
-group; knowing a physical entity UUID does not authorize a target. Two-request
+sessions also enforce ship permissions and display subscriptions.
+Target commands resolve a `ContactRef` only in the commanded ship's current sensor
+snapshot; knowing a physical entity UUID does not authorize a target. Two-request
 autopilot changes reserve both queue slots before changing pending travel state.
 Accepted external navigation commands wake the flight computer and pause any
 standing freight assignment.
@@ -372,7 +310,7 @@ standing freight assignment.
 Director observation tools use the same owned-ship telemetry and hardware
 presentation as clients. Their `ScanSource` is rebuilt from the ship's current
 state, including its host-relative pose while docked, and exposes the existing
-fused sensor snapshot and public navigation queries. Each new observation and
+current sensor snapshot and public navigation queries. Each new observation and
 command checks the officer account's authority; no network session or global
 entity-lookup tool is required.
 
@@ -380,9 +318,8 @@ entity-lookup tool is required.
 | --- | --- |
 | `SetTransponderEnabled(bool)` | Switches the IFF transponder |
 | `SetIff(IffIdentity)` | `owner` must identify the requesting controller. Configure permission is required; `faction` must be an organization the account belongs to or administers. Range is at most 1e8 m. |
-| `SetGroup(key)` | Sends the ship's future reports to another information group, creating it if needed |
 | `Flight(FlightCommand)` | `HoldAttitude`, `StopGuidance`, `AimDirection`, `SelectTarget(ContactRef)` or `EngageNavigation { throttle_limit, stand_off_m }`, queued to the flight computer as requests. `SelectTarget` resolves its contact like `Aim`. |
-| `MarkTarget { group, track, maximum_flight_time_s }`, `Aim { group, track }` | `group` must be both the ship's reporting group and a group the session belongs to, and the track must exist in that group's snapshot. The track becomes a contact handle ([Contact handles](#contact-handles)) and is queued as a request. |
+| `MarkTarget { target, maximum_flight_time_s }`, `Aim { target }` | The contact must belong to the commanded ship and exist in its current sensor snapshot. |
 | `UnmarkTarget` | Clears the marked target and stops firing |
 | `StartFiring` | Enables weapons against the marked target; firmware rejects the request without a mark |
 | `StopFiring` | Stops firing while retaining the mark and aiming solutions |
@@ -438,9 +375,9 @@ the server checks both inventories' permissions and physical location.
 A session frame contains:
 
 - **Clock.** `world`, a per-session `sequence` starting at 1, `tick`, `sim_time_ns` (the fixed clock's elapsed time), and `rate`, the current debug clock rate (1 unless a debug account changed it).
-- **Views.** Each view runs its query against the current snapshot of its group ([Metered queries](#metered-queries)). The frame shares a total budget of 2,000,000 work units across views, in view ID order. If a view has a `focused_ship` and a sphere, the sphere is centred on that ship's current position. `ViewState` reports `origin`, the returned track IDs and `completion`. Views, instrument subscriptions and screen subscriptions on ships the account no longer controls are removed.
-- **Tracks.** The union of the tracks returned by all views, grouped by group ID. Every group the session belongs to has an entry, even when empty.
-- **Ships.** Private telemetry for up to 64 ships the account controls. Ships named by a view focus, a screen subscription or an instrument subscription come first, then the rest, each part in ship ID order. Each record holds the information-group key, IFF identity, authority revision, presence, exact pose (only while in space), battery energy, hull heat, shield temperature, coolant reserve and travel state.
+- **Views.** Each view names an authorized focused ship and reports its origin. Views and detail subscriptions are removed when observation permission is revoked.
+- **Contacts.** Current sensor detections for the authorized ships named by views and detail subscriptions, keyed by observing ship UUID.
+- **Ships.** Private telemetry for up to 64 ships the account controls. Ships named by a view focus, a screen subscription or an instrument subscription come first, then the rest, each part in ship ID order. Each record holds IFF identity, authority revision, presence, exact pose (only while in space), battery energy, hull heat, shield temperature, coolant reserve and travel state.
 - **Screens.** One update per subscribed slot: the latest display frame, or, if there is none, an update with no frame and the error "Display unavailable".
 - **Events and results**, as described above.
 - **Presentation** ([Presentation](#presentation)), plus per-view **optical observations** ([Optical replication](#optical-replication)).
@@ -479,145 +416,73 @@ saved worlds fail explicitly; see [Persistence](persistence.md#universe-definiti
 
 [osg-spatial](../crates/osg-spatial/src/lib.rs) supplies one spatial-index implementation to the server and supporting crates. Each entry contains an integer galactic position, a conservative radius and a luminosity coefficient. Occupied cells form a sparse hierarchy with compressed empty scales. Coordinates remain signed 128-bit micrometres until a query needs relative floating-point distances.
 
-The index maintains geometry cells and additional cells grouped by powers of two in luminosity. A brightness query uses each bucket's upper luminosity bound to choose a conservative search radius, then checks individual entries. Changing luminosity moves an entry between buckets as needed; zero-luminosity objects remain available for geometric queries. Radius, sphere-intersection, nearest-neighbour, segment and resumable range queries use the same implementation. Cursor work is explicit and charged by the intelligence query layer.
+The index maintains geometry cells and additional cells grouped by powers of two in luminosity. A brightness query uses each bucket's upper luminosity bound to choose a conservative search radius, then checks individual entries. Changing luminosity moves an entry between buckets as needed; zero-luminosity objects remain available for geometric queries. Radius, sphere-intersection, nearest-neighbour, segment and resumable range queries use the same implementation. Spatial queries have explicit work limits.
 
 Consumers keep separate instances for their data and lifetimes:
 
 - Server spatial observations index active ships and celestial bodies. Celestials block sensors but are excluded from ship sensor results. Projectiles and dormant ships are omitted from this observation index.
-- Immutable intelligence snapshots index fused track estimates alongside their tag indexes.
+- Immutable sensor snapshots hold at most 256 current detections per observing ship.
 - The star catalogue uses the hash for nearby-star and apparent-brightness queries.
 - Travel geometry queries physical extents and natural exclusion spheres for departure and swept capture.
 - Collision `SweptIndex` indexes conservative motion envelopes and filters candidate capsules before continuous contact prediction. Parry retains its shape queries and internal compound acceleration structures; see [collisions.md](collisions.md#broad-phase).
 
 Each instance has its own records and lifetime, and all use the same query implementation. The active observation index currently rebuilds at the simulation boundary; immutable readers may retain the preceding version. The hash itself supports incremental position and luminosity updates, which the collision adapter uses.
 
-## Observations and intelligence
+## Sensor and visual observations
 
-Clients receive private state for authorized ships, fused radio/sensor tracks from information groups, and separately filtered optical observations from each focused ship. Radio knowledge alone does not grant a ship mesh, its appearance asset or live visual state. The implementation is in [intelligence.rs](../crates/osg-server/src/sim/intelligence.rs), [identity.rs](../crates/osg-server/src/sim/identity.rs) and [osg-intel](../crates/osg-intel/src/lib.rs).
+Each ship publishes its own immutable snapshot of current sensor detections in
+[sensors.rs](../crates/osg-server/src/sim/sensors.rs). A powered sensor selects
+the nearest 256 candidates within range, then applies geometric occlusion.
+Blocked candidates are not replaced with farther objects. Position, velocity,
+rotation, angular velocity and radius are exact. Loss of detection removes the
+contact on the next publication.
 
-Celestials are always detectable through the shared deterministic universe.
-Their positions and properties require no sensor acquisition, brightness
-threshold, or visibility permission. The server retains their physical geometry
-for gravity, collisions, and occlusion. Stellar emission can illuminate ships,
-but celestial bodies never enter the server's detectability calculations.
+A `ContactRef { observer, contact }` contains the observing ship's UUID and an
+opaque nonzero `u64` handle. Handles are independent between ships and survive
+only continuous detection within the same spatial lifetimes. Reacquisition,
+relocation and restore produce fresh handles. Commands verify that the observer
+is the commanded ship and that the handle is currently detected.
 
-### Identities
+`IffIdentity` contains advertised owner, optional faction, labels and enabled
+state. A detection includes IFF and the target UUID while its transponder is
+enabled. Disabling IFF clears both immediately; geometry remains available while
+detected. IFF has no independent range. Actual ownership, control and permission
+checks remain authoritative even when advertised identity differs.
 
-Three kinds of identifier are kept apart:
+Frames contain `contacts` keyed by authorized observing ship. Focused views,
+instrument subscriptions and screen subscriptions determine which ships are
+included. There are no information groups, shared tracks, fusion, sensor noise,
+coasting, tags or query cursors.
 
-- **Physical UUIDs.** Ships, celestial bodies, accounts and groups have 16-byte UUIDs. A ship's UUID is its identity for control, commands, telemetry, beacons, docking and IFF. A track exposes it in `entity` only when the observing group has an authenticated measurement of that ship.
-- **Track IDs and contact references.** A `TrackId` is random per group, so the same ship has unrelated track IDs in different groups, and a sensor-only track carries no UUID. A `ContactRef { group, track }` names a track as seen by one group. Targeting, instruments and identified combat records use these references. Flight programs see opaque `u64` contact handles ([Contact handles](#contact-handles)).
-- **Optical IDs.** The server assigns random session-local IDs to visible physical objects. The same ID can appear in several views; client identity is `(view, id)`. It persists through brief visibility losses for 100 simulation ticks. `known_entity` is populated only when the UUID is already known through authenticated tracks, control or the focused ship itself. A separate spatial-lifetime token prevents interpolation across a relocation or slip transit.
+Optical visibility is evaluated independently from each focused ship using light
+and line of sight. Visible objects carry current IFF even outside sensor range.
+Optical IDs are session-local; `(view, id)` identifies client render objects.
+An optical observation has a sensor contact reference only when that same ship
+currently detects it. Optical-only labels do not permit targeting commands.
+Combat records use optical IDs and current visibility, with the existing brief
+destruction grace.
 
-### Information groups
-
-- An `InfoGroupKey` is a random 32-byte bearer secret. Anyone who presents it with `JoinGroup` can read the group's tracks. The server maps each key to a random `GroupId`. `Debug` output redacts the key.
-- Each account gets its own default key when the account is created. Each ship reports into the group of its own key, which starts as its owner's default key and can be changed with `SetGroup`. The key appears in the controlling account's ship telemetry, which is how a player can share it.
-- Membership only grants reading. It does not grant control of ships, and group-based targeting still requires controlling the firing ship.
-- Session membership ends when the connection ends. Groups themselves are not removed while the server runs.
-
-### Private observations
-
-After physics, every ship contributes measurements to its group:
-
-- **Itself.** One exact authenticated measurement with provenance `GroupMember`, including its IFF tags, radius and appearance hash.
-- **Other ships.** If its sensor range is positive, the ship takes the nearest 256 objects within range from the spatial index. Celestial occlusion is then applied to those 256, and hidden candidates are not replaced by more distant ones. Ships in the observer's own group are skipped. There is no light-speed delay: every measurement describes the target's state at the current tick.
-  - If the target's transponder is enabled and the target is within its own `iff.range_m`, the measurement is exact and authenticated. Its provenance is `Transponder`. It carries the UUID and the tags `Kind("ship")`, `IffOwner`, `IffFaction` if set, and `Advertised` labels.
-  - Otherwise it is a sensor measurement. It has no UUID, only the tag `Kind("ship")`, identity rotation and zero angular velocity. Position and velocity carry noise with σ = √(1 + (distance × 1e-5)²) metres. On each axis the error is σ × (√0.9 × bias + √0.1 × per-tick noise). The Gaussian samples come from BLAKE3 keyed with a per-world seed, the sensing platform, the target, the axis and the tick. The bias is the same on every tick, so repeating a query or a measurement does not average the noise away.
-  - Internal measurements carry the target's radius and appearance hash. Session publication removes appearance hashes from all transmitted tracks; optical observations supply geometry separately.
-
-Acquisition runs in parallel across groups.
-
-### Public observations
-
-The public group (`PUBLIC_GROUP`, ID `ff…ff`) is joined by every session. It receives:
-
-- every ship with a beacon emitter, as an exact measurement with provenance `Beacon`, the beacon's IFF tags and `Kind("beacon")`
-
-The public group includes objects with operating directory-transmitter equipment
-and lit transponders. The same predicate governs public infrastructure listings
-and inhabited membership. Dark objects remain subject to normal sensor and
-ownership visibility. Celestial positions and HUD labels come from independent
-client generation; celestial bodies still occlude sensors and support explicit
-queries without entering ship sensor tracks.
-
-### Fusion
-
-Once per tick:
-
-1. **Coasting.** Tracks not observed for more than 600 ticks (60 s) are removed. Other tracks are extrapolated by their velocity, their position uncertainty grows, and their provenance becomes `Extrapolated`.
-2. **Grouping.** Measurements are grouped by physical entity and sorted by σ, then platform. The best measurement is the lowest σ.
-3. **Association.** The best measurement keeps the entity's existing track ID if it is authenticated with the same UUID, or if it lies within 3 × (track σ + measurement σ) of the track. Otherwise the track gets a new random ID. A known UUID is kept. When the best measurement is an unauthenticated sensor measurement, IFF owner and faction tags from the continued track are kept, so a ship that switches off its transponder keeps its last identified owner.
-4. **Weighting.** When the best measurement is noisy, one measurement per platform is combined by inverse-variance weighting. The fused σ is at least max(1 m, best σ / 4), and the velocity σ equals the position σ.
-5. **Publication.** Each group gets an immutable `Snapshot` (`Arc`) indexed by tags and the shared `osg-spatial` hash. Queries and flight programs retain their snapshot while the next update proceeds.
-
-Grouping in step 2 uses the server's true entity identity. Clients never see that identity for sensor-only tracks.
-
-### IFF
-
-`IffIdentity` has `owner` (account), optional `faction`, up to 16 advertised `labels`, `enabled` and `range_m`. A new ship starts with its owner and current organization, with the transponder enabled and a range of 1e8 m. The transponder is the only way for an observer outside the ship's group to learn its UUID and owner.
-
-A ship's advertised IFF identity remains separate from actual ownership and control. Control is the `Control { account, revision }` component, and commands carry its current revision. The server capture operation changes ownership, controller, and information group, clears prior access grants, and preserves IFF. It does not expose a player-facing capture action. Organization ownership can retain an assigned controller. Configure permission is required to reprogram IFF or change the information group.
-
-## Metered queries
-
-`osg_intel::query::Queries` runs a `TrackQuery` against a snapshot and returns a `QueryPage`.
-
-A query has an optional direct `track`, an optional `sphere`, tag sets `all`, `any` and `exclude`, an optional `max_age_ticks`, a result `limit` of 1 to 256, and a `work` budget.
-
-**Candidate source.** The first rule that applies decides where candidates come from:
-
-1. The direct track ID.
-2. The smallest `all` tag index, when there is no sphere or that index holds at most 256 tracks.
-3. A resumable spatial-hash range cursor over the sphere.
-4. The union of the `any` tag indexes.
-5. All tracks.
-
-Every candidate is then filtered against all conditions.
-
-**Work charges.**
-
-| Charge | Amount |
-| --- | --- |
-| Page call | 100 |
-| Each index step | 8 (plus 8 per tag for an `any` union); spatial cursors charge occupied-cell visits and candidate checks |
-| Each candidate examined | 1000 |
-| Each returned track | 1 per 8 bytes of its ABI record and variable-field arena |
-
-**Completion.** `Complete` means the source is exhausted. `ResultLimit` means `limit` tracks were returned. `WorkLimit` means the budget ran out. `gas_used` reports the work spent, and an empty result can still spend the whole budget. An incomplete page returns a `continuation` cursor. The cursor reads the same snapshot, and `revision` reports the snapshot's tick. A cursor expires 10 ticks after the query started. One `Queries` holds at most 8 live cursors.
-
-**Who uses it.**
-
-| Caller | Budget | Cursors |
-| --- | --- | --- |
-| Network views | Shared 2,000,000 per frame | None; a fresh query every frame |
-| Flight programs (`intel_tracks` and `intel_continue`) | At most 1,000,000 per call, paid from the computer's gas | Kept per ship, with separate stores for `ship_tick` and `ship_display` |
-| `sensor_scan` | `n × 1200 + 100` per group snapshot | None |
-
-### Contact handles
-
-Flight programs see `u64` contact IDs instead of track IDs ([services.rs](../crates/osg-server/src/sim/services.rs)). Each ship keeps a table from `(group, track)` to a random non-zero handle. The table is replaced when the ship changes group. Entries unused for 600 ticks expire, and when the table holds 8192 entries the oldest is evicted. A handle therefore says nothing about the ship's UUID, and the same target has different handles on different ships.
-
-`sensor_scan(range, n)` runs a sphere query on the ship's own group snapshot and on the public snapshot, removes the ship itself and duplicate UUIDs, sorts by distance and returns at most `min(n, 256)` contacts. The query selects ship tracks only. Contacts have kind `CONTACT_SHIP` and are named by UUID when the track has one, or "Unknown contact". Position and velocity are relative to the ship.
-
-Instruments translate handles back into `ContactRef`s only for tracks that still exist in the ship's group or the public group.
-
+Public celestial navigation and infrastructure directories are separate world
+services. Directory entries do not create sensor contacts or targeting access.
+Firmware `sensor_scan` reads only its ship's bounded current snapshot; positions
+and velocities are relative to the ship. `contact_label` and `contact_iff`
+require a current handle. Sensors are required for contact guidance and weapons.
 ## Presentation
 
 Section 8 of a state frame is a `PresentationFrame` ([presentation.rs](../crates/osg-model/src/presentation.rs), built in [sim/presentation.rs](../crates/osg-server/src/sim/presentation.rs)). It carries what the shared client needs for the original rendering, flight instruments and windows, without exposing true state beyond what the session may already see.
 
 - **`ships`.** One `ShipPresentation` per controlled ship that a view focuses, a screen subscribes or an instrument subscription names. It holds the authority revision, flight environment (altitude, airspeed, density, pressure), health, execution timings, mass, inertia, control rotation, heat and battery capacities, power flow, inventory, per-device telemetry, computer status and screen definitions. `instruments` (attitude, navigation, weapons, trajectories and markers published by the firmware) is included only for instrument subscriptions. Targets in instruments are `ContactRef`s.
-- **`combat`.** Shots, projectiles, impacts and destruction since the session's preceding publication. Publication requires both a suitable identified track and optical visibility of its source or target. Destruction may use visibility from the preceding publication so removing a destroyed body does not erase its final effect. This grace is cleared when a view changes focus or spatial lifetime. The record names a `ContactRef`; radio reports alone cannot reveal remote firing or destruction geometry.
+- **`combat`.** Shots, projectiles, impacts and destruction since the session's preceding publication. Publication requires optical visibility of its source or target. Destruction may use visibility from the preceding publication so removing a destroyed body does not erase its final effect. This grace is cleared when a view changes focus or spatial lifetime. The record names an opaque optical ID.
 - **`navigation`.** The dynamic inhabited-directory hash and bounded live public infrastructure for relevant views and destinations. Each live record carries containing-system IDs, pose, and docking/navigation capabilities. Usable docking bays and guidance permissions are checked for the requesting ship.
 - **`capabilities`** and **`diagnostics`** for debug sessions ([Debug accounts](#debug-accounts)).
 
 ### Optical replication
 
-Section 11 contains `OpticalObservation` records built in [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs). A view needs an authorized focused ship. Visibility is evaluated at that ship's position, independently of its radio query and the client's orbit-camera position. The focused ship is included for its own presentation. A dormant focused ship has no surrounding space observations.
+Section 11 contains `OpticalObservation` records built in [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs). A view needs an authorized focused ship. Visibility is evaluated at that ship's position, independently of its sensor detections and the client's orbit-camera position. The focused ship is included for its own presentation. A dormant focused ship has no surrounding space observations.
 
 For other active ships, the server queries brightness buckets, computes the observer-dependent luminosity, and requires received flux of at least `1e-12 W/m²`. It rejects a body only when an intervening optical blocker covers its entire conservative angular disc; a body partly visible around a planetary limb remains eligible. Candidates are ordered by received flux. Each view receives an equal share of the frame's 8192-observation and 4 MiB optical budgets, with its focused ship first. Oversized records are skipped. Multiple views cannot let one dense scene consume every other view's allowance.
 
-Each record carries its view, anonymous optical ID, spatial-lifetime token, optional already-known UUID/contact, exact visual pose, conservative radius, equivalent optical luminosity, optional appearance hash, and `ShipVisual` engine/turret/shield state. Appearance and live geometry are absent from radio-only tracks. A visible ship can therefore appear without an IFF identity or sensor track, while a distant radio contact can remain in the Overview without acquiring a mesh.
+Each record carries its view, anonymous optical ID, spatial-lifetime token, optional current IFF, UUID and sensor contact, exact visual pose, conservative radius, equivalent optical luminosity, optional appearance hash, and `ShipVisual` engine/turret/shield state. Appearance and live geometry are absent from sensor-only contacts. A visible ship can therefore appear without an IFF identity or sensor detection, while a distant sensor contact can remain in the Overview without acquiring a mesh.
 
 #### Brightness model and approximations
 
@@ -672,49 +537,6 @@ Screens for network clients come from a separate WebAssembly instance of the shi
 
 The stock firmware's `ship_display` defines each requested slot as a 512 × 256 screen titled "Ship status" and draws five text lines: `SHIP STATUS`, simulation time, speed, mass and battery energy. It does not read screen events. Firmware without a `ship_display` export cannot be instantiated as a display, so its subscribed slots report "Display unavailable".
 
-## Missiles and shared computers
-
-[missiles.rs](../crates/osg-server/src/sim/missiles.rs) launches missiles as
-ordinary simulated ships. A powered launcher consumes one packaged missile from
-its magazine, creates the assembled body with its fuel and battery, and applies
-the corresponding parent mass, recoil and angular-momentum changes. Launch
-requires a current target contact in the parent's information group, range and
-cooldown checks, and a working computer with the optional ABI 28
-`missile_tick(u64)` callback. The launcher has no privileged target-position
-lookup. The existing marked-target and firing state controls launcher fire.
-
-Each missile has its own physical body, engine, steering devices, seeker and
-integer resource inventory. It inherits the parent's actual owner and information
-group, and launches with its IFF transponder disabled. Sensor contacts carry both
-`Kind("ship")` and `Kind("missile")`; clients can distinguish them while general
-ship queries still include them. Optical appearance remains subject to ordinary
-visibility admission.
-
-The missile's stable handle selects a callback in its parent's flight computer;
-it does not create another WASM instance. All such callbacks share the parent's
-memory, persistent store, owner gas account and physical CPU allowance. A pending
-callback retains its kind and handle when gas runs out. The scoped
-`missile_read` and `missile_control` imports expose its observation and steering
-command, as described in [Ship controller ABI](ship-abi.md#missile-callbacks).
-Targets are fused information-group contacts with uncertainty. An expired or
-unavailable contact is reported as unavailable. The stock guidance coasts when it
-cannot see its target or has no propellant, and uses proportional navigation to
-correct a visible interception.
-
-Guidance can continue while the parent is docked or in slip transit, provided its
-missiles still have working electronics and energy. Computer telemetry reports
-that shared execution, including paid boot, suspension and fault recovery. It does
-not mark the dormant parent's physical devices as powered.
-
-Destroying the parent hull retains the shared computer while guided missiles
-remain. The destroyed parent contributes no hull, collision body, sensor source,
-beacon or display. Its original ownership and information group still determine
-billing and observations. The retained computer is released when its last guided
-missile becomes inactive. Missile impacts use ordinary ship collision and hull
-damage rules. Checkpoints preserve bodies, guidance controls, stable handles,
-launcher state and the retained computer's committed data; suspended native
-execution cold boots after recovery.
-
 ## Docking and travel
 
 Docking and travel are implemented in [travel.rs](../crates/osg-server/src/sim/travel.rs).
@@ -723,7 +545,7 @@ Docking and travel are implemented in [travel.rs](../crates/osg-server/src/sim/t
 
 `Presence` is one of `Space`, `Docked { host, bay }`, `SlipTransit(id)`, `StoredInWreck(host)` or `Destroyed`. Private telemetry includes an appearance hash, radius and presentation pose in space, docking storage and slip transit. Docked poses follow the host bay; transit poses follow the declared slip segment. Only space presence participates in normal physics.
 
-Leaving space makes a ship dormant. Its hardware is shut down (default device settings, avionics unpowered, sensor range 0), and its velocity, rigid body, collision body and spatial body are removed and remembered. Dormant ships take no part in physics, sensing or displays. Ordinary flight callbacks and world actions stop. A destroyed parent can retain its shared computer to guide already launched missiles, using information-group observations without restoring the parent's sensor. Their hull and shield thermal state advances once per simulated second. Returning to space restores the remembered components.
+Leaving space makes a ship dormant. Its hardware is shut down (default device settings, avionics unpowered, sensor range 0), and its velocity, rigid body, collision body and spatial body are removed and remembered. Dormant ships take no part in physics, sensing or displays. Ordinary flight callbacks and world actions stop. Their hull and shield thermal state advances once per simulated second. Returning to space restores the remembered components.
 
 ### Bays and docking
 
@@ -744,19 +566,20 @@ A docked ship with an `Undock` or due `WaitUntil` order completes it without run
 
 ### Slipdrive
 
-A slipdrive commits the ship to a trajectory at a selected speed, up to 1 ly/s.
+A slipdrive commits the ship to a trajectory at 0.3 ly/s with navigation guidance
+or 0.03 ly/s without it. Short journeys are slowed to last at least three seconds.
 Its first natural exclusion intersection ends transit. The initial drive draws
 up to 500 MW. Preparation requires space presence, working equipment, available
 exotic fuel, and clearance from all natural exclusion spheres.
 
 Each physical celestial body contributes an exclusion radius of
-`0.008 AU × cbrt(mass / solar_mass)`. Barycentres add no sphere. Artificial objects
+`0.08 AU × cbrt(mass / solar_mass)`. Barycentres add no sphere. Artificial objects
 create no slip exclusions. Ordinary propulsion clears enclosing regions and
 moves around obstructions before the next slip.
 
 Charging requires 5 kJ/kg per light-year and at least ten seconds. Retargeting updates the energy requirement. The ship may coast while
 charging. Firmware updates its moving-target aim while preserving charge work
-and the original start time. Departure freezes speed, direction, departure mass,
+and the original start time. Departure requires every ring axis to align within one degree of the aim and freezes nominal aim, departure mass,
 and galactic velocity. There is no additional cooldown or manual disengagement.
 
 The controller's supplied aim is authoritative. The server applies physical
@@ -764,17 +587,29 @@ departure rules but does not correct that aim, require a predicted capture, or
 reject it for exceeding the itinerary's planning risk allowance. A faulty
 controller can commit to a trajectory that ends in fuel exhaustion.
 
-Angular dispersion is Gaussian on two perpendicular axes, with per-axis
-deviation `max(1.0743925808301219e-8, 0.00009549549877340154 × speed_ly_s²) / B`
-radians. `B` is 36 with authenticated navigation guidance and 1 blind. The floor
-gives a best blind solar capture probability of 50% at 10 ly; slowing further
-cannot improve it. Guided travel at 100 ppm over 10 ly takes approximately five
-minutes in transit, plus preparation and conventional manoeuvres.
+Transit draws independent Gaussian transverse displacements during flight.
+At forward progress `s`, a step `ds` adds per-axis variance
+`sigma² * ds * (2*s + ds)`, where `sigma = 1.0743925808301219e-7 / B`.
+`B` is 36 with authenticated navigation guidance and 1 blind. The total variance
+is `(sigma * distance)²`, preserving the planner's Gaussian arrival spread.
+Actual direction is normalized to retain the fixed cruise speed; the correction
+to the distribution is negligible at these angles. A blind solar capture at
+10 ly has 50% probability. There is no speed/dispersion tradeoff.
+The HUD estimates conditional capture failure from the observed transverse
+displacement and remaining variance at the predicted target plane. It integrates
+the displaced Gaussian over the capture disk; actual captures still sweep moving
+spheres, so this remains an estimate for moving or unexpected bodies.
 
 An operating navigation beacon requires `Navigate` permission. Guidance is
-checked throughout transit. Its first loss adds the missing blind angular
-variance at the current position, preserving speed. Returning guidance cannot
-correct that jump. Its sampled errors and loss state survive save/load.
+checked throughout transit. Its first loss switches future variance increments
+to blind dispersion and reduces speed by ten. Returning guidance does not
+restore assistance during that transit. Realized motion and loss state survive
+save/load; future noise is sampled only as the ship advances.
+
+Slipspace is a 2,500 K thermal environment. Radiative exchange heats operating
+shields, drives continuous ablation and reserve consumption, and heats exposed
+hulls. Radiators exchange heat with the same environment. Transit thermal
+integration uses the actual elapsed slip time, including partial arrival ticks.
 
 Exotic consumption is cumulative: `1e-5 × departure_mass_kg × distance_ly^1.2`
 kilograms. Inventory uses grams with fractional accounting across updates.
@@ -793,11 +628,11 @@ state and retain the itinerary's spent risk allowance.
 
 Player requests contain a complete order queue. Orders include
 `TravelTo(Destination)`, `Sublight(Destination)`,
-`Slip { destination, speed_ly_s, navigation_beacon }`, `Dock(station)`,
+`Slip { destination, navigation_beacon }`, `Dock(station)`,
 `Undock`, `WaitUntil(tick)` and guidance.
 Destinations may refer to public beacons, galactic positions, or offsets from
 beacons and celestial bodies. Guidance contact targets must belong to the
-ship's authorized fused picture. Celestial references carry their containing
+ship's current sensor detections. Celestial references carry their containing
 system and stable local body identity.
 
 The server owns the queue, its revision, active index and route search. The
@@ -812,7 +647,7 @@ its course without adding these manoeuvres to the server queue. The public
 `LocalSpace` observation query supplies nearby known volumes; it does not choose
 waypoints or steering directions for the program.
 
-Protocol 36 exposes route preview through
+Route preview uses
 `RouteRequest { ship, authority_revision, request }` and
 `RoutePoll { ship, authority_revision, id }`, with `RouteCancel` for abandoned
 previews. A request carries a nonzero caller
@@ -838,8 +673,7 @@ executing each strategic command, and the host checks physical admission when
 applying that command.
 
 The player sets maximum whole-itinerary ship-destruction risk in decimal ppm,
-defaulting to 100 ppm (1 in 10,000). The planner chooses hops and the fastest
-permitted speeds, rejecting edges below the dispersion floor. It accumulates
+defaulting to 100 ppm (1 in 10,000). The planner chooses capture stops and evaluates their fixed-speed edges, rejecting captures above the remaining risk allowance. It accumulates
 risk logarithmically and retains the remaining allowance through automatic
 replanning. Missed intended captures count conservatively as losses. Estimates
 cover slip travel and state their guidance assumptions.
@@ -859,14 +693,13 @@ motion after arrival. Budgets are advisory and require operating margin.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Travel` | Current order, revision, index, status, preferences, active arrival estimate, exact own pose and slip readiness. |
+| `Travel` | Current order, revision, index, status, preferences, active arrival estimate, exact own pose, slip readiness and the drive ring's axis in ship coordinates. |
 | `RouteRequest(request)`, `RoutePoll { id }` | The same scoped asynchronous preview service available to clients. Each call admits 8192 work gas plus its normal call and copy costs. |
-| `Contact(reference)` | Authorized fused pose, radius and opaque firmware handle. |
+| `Contact(reference)` | Current sensor pose, radius and opaque firmware handle. |
 | `Orrery { reference }` | Up to 1,024 local celestial obstacle/exclusion records, resolved through the shared universe. |
 | `Resolve { destination, after_seconds }` | Predicted public destination pose. |
 | `Beacon(id)`, `Beacons { after, limit }` | Public beacon facts and currently authorized docking bays. |
-| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, speed_ly_s, navigation_beacon }` | Current drive readiness, departure clearance, guidance availability, preparation time and flight duration. |
-| `Tracks(query)`, `Continue { cursor, work }` | Metered queries of the ship's fused information group. |
+| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, navigation_beacon }` | Current drive readiness, departure clearance, guidance availability, preparation time and flight duration. |
 
 Local-space observations spend 262144 work gas per query, plus normal call and
 copy costs, with a hard 2048-unit index/ephemeris work budget. Query range is
@@ -891,7 +724,7 @@ that command.
 | `Block { revision, order, reason }` | Blocks the matching command and cancels unfinished slip preparation. |
 | `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates only the matching active stage; future estimates remain server-owned. |
 | `CompleteOrder { revision, order }` | Advances the authoritative cursor after the current stage completes. |
-| `Slip { revision, order, destination, speed_ly_s, navigation_beacon }` | Updates the current slip command's charging aim without resetting work or start time. Departure commits its trajectory. |
+| `Slip { revision, order, destination, navigation_beacon }` | Updates the current slip command's charging aim without resetting work or start time. Departure commits its trajectory. |
 | `ReserveBay`, `Dock`, `Undock` | Executes the corresponding current command with the same revision and index checks. |
 
 The standard executor resolves the current destination each callback. Sublight
@@ -899,8 +732,7 @@ guidance uses relative position and velocity with the economical navigation
 law. Moving slip destinations are led through preparation and transit time,
 and their charging candidates are refreshed until departure. Bay requests use
 only bays reported as usable. Execution errors block the command for an explicit
-replan; the VM does not replace the queue itself. Server and firmware use ABI 32
-and must be rebuilt together.
+replan; the VM does not replace the queue itself. Server and firmware share `GAME_VERSION` and must be rebuilt together.
 
 ## Client playback
 
@@ -916,9 +748,8 @@ Asset requests start independent transfers as they leave the request channel. A 
 
 **Receiving frames.**
 
-- The protocol decoder validates every frame. Playback checks sequence and timestamp ordering.
+- The protocol decoder reads complete messages. Playback trusts server sequence numbers and timestamps.
 - A new `world` resets buffered snapshots and retained publications. At the next fixed update, one reset system removes entities marked `WorldMember`, resets session metadata and interpolation time, and triggers `SessionReset`. Observers clear UI resources, subscription bookkeeping, pending actions and celestial indexes. The UI then subscribes again.
-- `sequence` must increase and simulation time must not go backwards. A violation is reported to the UI as a status message.
 - Snapshots retain their events and command results until playback consumes them. Every queued snapshot is consumed in order; the client does not discard old snapshots to reduce backlog or impose a hard receive-buffer limit. Generic events are retained in session metadata for UI consumers.
 
 **Output.**
@@ -937,11 +768,16 @@ Publications are delivered when playback consumes their frame, including the int
 
 ## Client ECS presentation
 
-The client separates transport ingestion, replication and interpolation into the [state modules](../crates/osg-client/src/state). `SessionInfo` owns the world, generation, applied tick and sequence, capabilities, diagnostics and delivered command results. Network reception, buffered playback, outgoing commands and session metadata have separate resources. Only snapshot ingestion reads the buffered frames. It reconciles stable entities for contacts, controlled ships, optical observations, views and combat publications. Contact identity includes the information group, so observations from different groups remain distinct. ID-to-entity maps are derived lookup indexes.
+The client separates transport ingestion, replication and interpolation into the [state modules](../crates/osg-client/src/state). `SessionInfo` owns the world, generation, applied tick and sequence, capabilities, diagnostics and delivered command results. Network reception, buffered playback, outgoing commands and session metadata have separate resources. Only snapshot ingestion reads the buffered frames. It reconciles stable entities for contacts, controlled ships, optical observations, views and combat publications. Contact identity includes the observing ship, so each ship's detections remain distinct. ID-to-entity maps are derived lookup indexes.
 
 Ship, contact and optical entities hold pose samples and interpolated display components. Optical entities also interpolate luminosity. Radio contacts supply HUD/Overview entries; live ship geometry is sourced from the optical entities for that view, with private rendering for the focused ship in a hangar. Each view owns its camera, origin, exposure and sky state. `CameraOptions` holds the camera focus separately from the orbit data used to construct trajectories. Render instances relate to both their source observation and their view, allowing either lifetime to remove the associated visuals. Bevy asset handles own immutable downloaded assets; sky baking keeps its separate work budget. HUD overlays query presentation components, and scene alignment gestures enqueue navigation actions through the outgoing resource.
 
 Reception runs in `PreUpdate`, snapshot application in `FixedUpdate`, and input publication in `FixedPostUpdate`. `Update` then runs interpolation, celestial evaluation, view updates and rendering updates. World changes remove the old observations and reset selection. Missing observations remove their entities; a changed spatial lifetime creates fresh presentation samples. Docked ships retain private telemetry while their space pose is absent. MFD publications remain available in the wire protocol; the current UI does not subscribe to screens or replicate them into display entities.
+
+CPU skybox bakes start at most once per ten seconds of real time across all views.
+The first bake can start immediately. Only one bake runs at a time; later work
+uses the latest camera position rather than queuing intermediate slip positions.
+Completed work and texture sharing continue during the cooldown.
 
 The compact full-sky catalogue is bundled locally. View position, inspection, and
 queued celestial references select detailed definitions for local background
@@ -957,7 +793,7 @@ consumers permits cache eviction; later resolution reproduces the same result.
 
 The [asset source](../crates/osg-client/src/assets.rs) registers canonical
 `server://<hash>` paths for ship appearances and inhabited-directory downloads.
-It returns verified bytes through the existing Tokio transport and typed Bevy
+It returns bytes through the existing Tokio transport and typed Bevy
 loaders. Celestial generation uses the shared resolver directly.
 
 A public [ship appearance](../crates/osg-ships/src/appearance.rs) contains only the catalogue revision and each visible part's catalogue prototype, animation ID, position and rotation relative to the ship's physical origin. The server exports these final transforms from its compiled design, preserving the center of mass used by rendering without publishing tank allocations, resource types, starting fills, names, device groups, avionics settings or firmware. The client resolves public catalogue models and derives visual bounds directly from those transforms; it does not compile a gameplay blueprint to render a ship. Authorized ship telemetry and construction blueprints use their separate permission checks.
@@ -978,7 +814,7 @@ The toolbar opens Overview, Selected Item, Inventory, Industry, Local Chat, Navi
 
 The location indicator names the subscribed system and nearby gravitational reference, shows altitude, and displays the remaining autopilot orders with stage ETAs. Docked ships get a hangar view, a selector for controlled ships at that station, and an Undock button. Changing ships updates the focused view and instrument subscriptions.
 
-Overview combines sensor contacts, public beacons and orrery bodies. Planets come from celestial definitions, never sensor detections. Rows support sorting, text search and All/Ships/Celestials filters, and show distance and relative speed at the displayed simulation time. Contact and HUD colors use friendly, neutral, hostile or unknown standings derived from advertised IFF and the observer's relationship hierarchy. Personal standing overrides neither grant permissions nor change NPC orders.
+Overview combines sensor contacts, public beacons and orrery bodies. Planets come from celestial definitions, never sensor detections. Rows support sorting, text search and All/Ships/Celestials filters, and show distance and relative speed at the displayed simulation time. Contact and HUD colors use friendly, neutral, hostile or unknown standings derived from advertised IFF and the observer's relationship hierarchy. Personal standing overrides neither grant permissions nor confer command authority.
 
 Click a row or HUD marker to select it. Selected Item offers Align, Approach, Keep range and Stop guidance, plus beacon Jump/Dock actions where applicable. Mark/Unmark and Fire/Hold fire are separate weapon controls; selecting an object or issuing navigation does not start firing. Look at, including an Overview double-click, changes camera focus only when the object is eligible; remote ships require optical visibility and must be within 100 km. Right-drag orbits the camera with smoothing, scrolling zooms, and Escape returns to the controlled ship. With autopilot off, double-clicking unobstructed space aligns the ship along the camera ray while preserving throttle. This is disabled while docked or in slip transit. O toggles trajectories and +/− adjusts exposure.
 
@@ -1003,22 +839,21 @@ Initial focus uses the per-session `ShipTelemetry.can_control` permission flag a
 
 | Location | Covers |
 | --- | --- |
-| `osg-protocol` unit tests | Round trips, skipped optional sections, rejected required sections, truncation at every length, oversized headers, non-finite input, positive clock rates and debug capabilities, rejection of version 1 and of frames without the presentation section, invalid combat payloads, optical observations with missing views or contacts, duplicate optical IDs, anonymous optical observations and non-finite photometry, numeric limits of debug and flight commands |
+| `osg-protocol` unit tests | Whole-message round trips, framing, and validation of untrusted client commands |
 | `osg-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, epoch rekeying |
-| `osg-intel` unit tests | Measurements, noise stability, metered queries and cursors, snapshots |
 | `osg-spatial` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, updates/deletion, cursor budgets and invalidation |
-| [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs) tests | Focused-vantage visibility, anonymous objects, remote radio tracks, occlusion, per-view budgets and optical IDs |
-| [session.rs](../crates/osg-server/src/sim/session.rs) tests | A group key grants views without ship control, a control change rejects old-revision commands without rewriting IFF, a non-debug account cannot change the clock, repeated command IDs are idempotent and replayed frames are rejected |
+| [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs) tests | Focused-vantage visibility, anonymous objects, sensor-independent visibility, occlusion, per-view budgets and optical IDs |
+| [session.rs](../crates/osg-server/src/sim/session.rs) tests | Views require access to the focused ship, a control change rejects old-revision commands without rewriting IFF, a non-debug account cannot change the clock, repeated command IDs are idempotent and replayed frames are rejected |
 | [displays.rs](../crates/osg-server/src/sim/displays.rs) tests | Subscribers share one instance released 10 ticks after the last viewer, authority and power changes revoke frames and queued input, every ABI input kind is forwarded |
-| [services.rs](../crates/osg-server/src/sim/services.rs) tests | Scans exclude celestials and use stable opaque ship handles, handles differ between groups and after expiry and stay bounded, program and display cursors are separate, slip aperture checks, beacon pages hide inaccessible bays, celestial references resolve without active bodies |
+| [services.rs](../crates/osg-server/src/sim/services.rs) tests | Scans exclude celestials and use stable opaque ship handles, handles differ between observers and after reacquisition, slip aperture checks, beacon pages hide inaccessible bays, celestial references resolve without active bodies |
 | [travel.rs](../crates/osg-server/src/sim/travel.rs) tests | Docking and undocking motion, nested inventory surviving host destruction, capture not unlocking a private bay, blocked slip arrival and retry, slip energy and cancellation, inactive bodies blocking slip arrival, debug recovery rules, simultaneous arrivals |
 | [router_tests.rs](../crates/osg-server/src/sim/travel/router_tests.rs) | `travel_order_runs_in_stock_wasm_and_brakes_at_destination` and other travel orders flown by the stock firmware |
 | [routing](../crates/osg-server/src/sim/routing) tests | Public server route search and full queue expansion |
-| [tests/network.rs](../crates/osg-server/tests/network.rs) | Starts the real `osg-server` binary with a ready file. A wrong server key and a wrong account key fail to connect. One account receives telemetry, a view with tracks, a stock MFD frame with at least five primitives and an appearance asset. A second account joins the first ship's group, sees its track and cannot command it. Reset keeps the connection usable, discards delayed inputs for the previous world and accepts a new view subscription. The server shuts down cleanly when standard input closes. |
+| [tests/network.rs](../crates/osg-server/tests/network.rs) | Starts the real `osg-server` binary with a ready file. A wrong server key and a wrong account key fail to connect. One account receives telemetry, a view with sensor contacts, a stock MFD frame with at least five primitives and an appearance asset. A second account cannot inspect or command the first account's ship. Reset keeps the connection usable, discards delayed inputs for the previous world and accepts a new view subscription. The server shuts down cleanly when standard input closes. |
 | `osg-client` tests | Buffer ordering, reserve refill, positive rate changes and repeated timestamps, ordered publications during catch-up, command ordering and backpressure, concurrent asset transfers, shared Bevy asset handles, explicit retry and unloading; UI tests cover fixed scheduling, spatial lifetimes, celestial loading, orbital projection, effects and selection |
 
 ```sh
-cargo test -p osg-protocol -p osg-net -p osg-intel -p osg-server -p osg-client -p osg-example-controller
+cargo test -p osg-protocol -p osg-net -p osg-server -p osg-client -p osg-example-controller
 ```
 
 Enable `osg-client/ui` to run the client ECS, asset-pipeline and rendering-math tests. These tests do not launch a graphics window; visual verification uses `osg-debug`.
@@ -1031,7 +866,7 @@ cargo run --release -p osg-spatial --example benchmark
 
 The standalone benchmark builds 100,000 entries in each of two deterministic distributions: a sparse volume and 100 dense clusters. It measures brightness queries, a 500 AU radius query, nearby geometry, segment candidates, and 10,000 position/luminosity updates. Output includes build time, process RSS growth on Linux, occupied cells, brightness buckets, time per query, visited cells, tested candidates and returned hits. The 500 AU case measures the spatial primitive; it does not imply that local-chat routing is already implemented.
 
-These are CPU index measurements. They exclude simulation, illumination updates, per-session serialization, network traffic and client rendering. Full observer batches and collision workloads must be measured separately; build contention and the number of returned objects materially affect timings. Measured sprint results and their conditions are recorded in [DEVLOG.md](../DEVLOG.md).
+These are CPU index measurements. They exclude simulation, illumination updates, per-session serialization, network traffic and client rendering. Full observer batches and collision workloads must be measured separately; build contention and the number of returned objects materially affect timings.
 
 ## Benchmark
 
@@ -1058,7 +893,7 @@ The benchmark:
 
 1. Writes a server configuration in a private temporary directory with one account per ship, `listen = "127.0.0.1:0"` and the first account as `debug_account`. The scenario therefore spawns one player ship per account, plus initial traffic and infrastructure ([Scenario](#scenario)).
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 120 s for readiness.
-3. Connects `sessions` clients, one per account, through `osg_client::connect`. Each subscribes one view on its default group focused on its ship, with no sphere, a limit of 256 and a work budget of 1,000,000. The first client also enables debug inspection.
+3. Connects `sessions` clients, one per account, through `osg_client::connect`. Each subscribes one view focused on its ship. The first client also enables debug inspection.
 4. Acknowledges every frame until `warmup-ticks` ticks after its first frame, then waits for all clients.
 5. Samples the server's CPU time from `/proc/<pid>/stat`, then each client receives `frames` frames. For each frame it re-encodes the received frame as a `State` message and compresses it through its own Zstd encoder (level 3, window log 21) that keeps history across frames, and it records skipped ticks and the server's reported tick duration.
 6. Prints one CSV row after reading `/proc/<pid>/status`.
@@ -1066,7 +901,7 @@ The benchmark:
 | Column | Meaning |
 | --- | --- |
 | `ships`, `sessions`, `frames_per_session` | Options |
-| `tracks_per_frame` | Mean tracks per received frame |
+| `contacts_per_frame` | Mean contacts per received frame |
 | `frame_bytes` | Mean uncompressed `State` message size |
 | `recompressed_zstd_bytes` | Mean output of the benchmark's own Zstd encoder per frame |
 | `reencode_ms`, `recompress_ms` | Mean client-side time to re-encode and recompress one frame |
@@ -1081,7 +916,7 @@ Scope and interpretation:
 
 - The CPU and memory figures are for the server process only. The clients run in the benchmark process and are not included.
 - `server_tick_ms` is the simulation tick alone. Session frame building, display updates and network writes happen outside it, and are included only in `server_cpu_percent`.
-- `recompressed_zstd_bytes` and `recompress_ms` are isolated measurements of the benchmark's encoder. The real transport splits writes into 32,768-byte chunks, compresses on blocking threads behind a semaphore, and adds encryption, picomux and TCP framing, so these are not the wire size or the server's compression cost.
+- `recompressed_zstd_bytes` and `recompress_ms` are isolated measurements of the benchmark's encoder. The real transport splits writes into 32,768-byte chunks, compresses directly in its async transport tasks, and adds encryption, picomux and TCP framing, so these are not the wire size or the server's compression cost.
 - All clients and the server share one machine and loopback networking. There is no network latency, packet loss or bandwidth limit.
 - The ships are the scenario's ships in orbit near one planet. They fly no travel orders and fight no battles.
 - It reads `/proc` and `getconf CLK_TCK`, so it runs only on Linux.
@@ -1093,7 +928,7 @@ A local run on 2026-09-16 used an AMD Ryzen 9 5900XT, the optimized development 
 | Mean simulation tick | 1.989 ms |
 | Server CPU | 19.0% of one logical core |
 | Server RSS / peak RSS | 89.1 MiB / 89.1 MiB |
-| Mean tracks per frame | 4.8 |
+| Mean contacts per frame | 4.8 |
 | Mean uncompressed frame | 4187.5 bytes |
 | Mean recompressed frame | 455.4 bytes |
 | Re-encode / recompress time | 0.028 ms / 0.044 ms |
@@ -1104,9 +939,8 @@ This three-second sample checks the small idle scenario. Dense views, sustained 
 
 ## Firmware scan budgets
 
-Native fused scans cost 3000 gas per requested contact, covering both group and public queries. The standard firmware starts with 32 contacts, grows when its buffer fills and shrinks when results are sparse. It budgets scans and forecasts against remaining gas, preserving flight control, publication and the next callback. Dense-sensor regression tests exercise repeated callbacks under the existing runtime limits.
+Native sensor scans cost 3000 gas per requested contact. The standard firmware starts with 32 contacts, grows when its buffer fills and shrinks when results are sparse. It budgets scans and forecasts against remaining gas, preserving flight control, publication and the next callback. Dense-sensor regression tests exercise repeated callbacks under the existing runtime limits.
 
-Unused information groups are collected periodically. Account defaults, ship memberships, public information and active session subscriptions keep their groups alive.
 
 ## Station and navigation expansion
 
@@ -1118,31 +952,48 @@ ppm, route estimates, and guidance assumptions. Queue controls remove, reorder,
 pause, and resume commands. Offscreen destinations use edge markers; distances
 of at least 0.1 light-years use ly.
 
-Docked and transiting ships have private meshes independent of sensor contacts.
+Owned ships retain their meshes independently of sensor contacts.
 Docking opens a client-rendered hangar with orbit-camera controls; slip transit
-uses a procedural streak tunnel. A fixed 16 m slip ring surrounds the hull; its
-emissive channels brighten with the lesser of charging work and preparation time.
-Transit telemetry supplies the committed direction and speed, which drives the
-animation rate. Entry and exit take 1.25 seconds visually without delaying physics:
-filaments envelop the traveller and peel away again. Visible departures and
-arrivals send sequenced optical flash/trail events to observers. These effects
-retain the ship's ordinary inertial velocity so they remain beside observers
-sharing its orbital motion. Other ships do
-not receive the traveller's tunnel.
+adds long neutral-colored light streaks to the ordinary space view. Up to 192
+filaments are generated and projected once per view per frame, then rendered as
+thin strips with analytic glow and scene-depth occlusion. Their distant endpoints
+project to infinity along the slip direction. The background remains clear of
+diffuse tunnel glow. Entry eases in streak brightness and motion; there is no enclosing tunnel mesh. The camera
+follows the ship's actual galactic position throughout transit; no frozen departure
+view or private transit scene is used. The fixed 16 m slip ring brightens and pulses during preparation. Transit
+telemetry supplies the departure time, direction and destination. During transit,
+a green HUD circle marks the destination with remaining distance and ETA, including
+an edge marker when it is offscreen. Filaments have independent random birth
+positions and lifetimes, with thin tails extending toward infinity.
+Failure odds appear as “1 in X” using the planner's exact risk colors; they reflect
+the active transit's risk estimate, including increases after beacon loss.
+The last HUD line reads `[BEACON LOCKED]` in green or `[NO BEACON]` in red.
+Entry and exit envelop the hull over
+1.75 seconds without delaying physics; external transitions are directional,
+coloured ruptures with a two-second decay and depth-aware background distortion.
+The departing ship sees a local rupture flash. Its nearby wake is rendered in a
+stable frame at the interpolated ship position, avoiding jumps from clipped
+interstellar segments and new per-tick noise seeds. Other observers continue to
+see the recorded physical trail.
 
-Fresh scenarios include three Helion couriers within 2 km of the player. They
-wait 20, 45 and 70 seconds before following ordinary assisted routes to three
-distinct nearby systems, with the default 100 ppm risk and 50% fuel allowance.
-The ring requires catalogue revision 4 and world format 12; start a fresh world.
-See [stations-navigation.md](stations-navigation.md)
-for the controls and verification commands.
+Slipping ships deposit anonymous wakes along their actual swept trajectory,
+including passages completed within one tick. Each portion retains ordinary
+inertial drift and fades over 300 simulation seconds. Shared history survives
+source destruction and world checkpoints. Later observers can see remaining
+light without a sensor contact, IFF or destination disclosure.
 
-Protocol version 8 changes battery charge and capacity fields to `u64` joules, including ship telemetry, device readings, and weapon-instrument battery readings. Server-generated snapshots are validated during encoding; an invalid snapshot panics and aborts the server process. Network I/O failures remain connection errors.
+Presentation carries a per-view slip snapshot independently of combat-event
+retention. The server clips spans to 10 million km around each observer, applies
+brightness and optical occlusion, and publishes at most 128 visible spans and
+16 transitions per view. The renderer selects four nearby rupture volumes and
+projects wakes into screen-space ribbons using double-precision camera-relative
+clipping. Up to 96 ribbons retain perspective width, scene-depth occlusion and
+age-based fading; Gaussian profiles are integrated over pixel footprints so
+subpixel tails remain continuous. Transit streaks use the same pixel filtering.
+Wake rendering has no cylinder geometry or ray marching. Five-minute history uses
+coalesced straight spans rather than per-tick particles. The passage fades smoothly over the existing sky.
 
-Protocol version 9 removes input acknowledgements and the outgoing event watermark. Complete state frames use a bounded server FIFO and an unbounded client receive queue. TCP carries each queued event and result once; playback catches up by consuming two snapshots per fixed tick.
-
-Protocol 10 removes direct manual flight input and separates target marking from the firing latch. `WeaponsInstrument.firing` reports that latch independently of `target`. The client sends directional Align orders with a finite galactic direction and zero stand-off; the stock firmware clears thrust when aligning. Server and client must be upgraded together.
-
+See [stations-navigation.md](stations-navigation.md) for the controls.
 
 ## Diagnosing stalls
 
@@ -1162,15 +1013,13 @@ A dedicated egui ECS system draws the bottom console above the timing strip. Flo
 
 The thrust fill uses server-reported actuator force projected onto the ship control frame, divided by installed forward thrust capacity. Torque meters use installed capacity in each direction. Gravity and collision forces are excluded. The throttle marker comes from the flight computer; a separate pending marker shows requests awaiting confirmation. Click or drag the gauge, or hold Shift/Control to increase/decrease throttle by 25 percentage points per second. Text entry suppresses these shortcuts. Autopilot locks manual controls; navigation actions enable it, while queue edits preserve its state.
 
-Protocol 16 accompanies ABI 23 and adds planning preferences and propulsion fuel estimates to the shared travel order queue. That release used ten connected systems, a fitted slipdrive part and the Peregrine laser/micropulse patrol; the current inhabited map expands the catalogue to 3,000 systems. Server and client must be rebuilt together.
-
-Protocol 21 publishes per-tick computer gas usage and its configured positive tick limit. CPU percentage is the gas spent on guest execution and host services divided by that limit; usage cannot exceed the limit. A running computer reports `Ready`, `Suspended` or `WaitingForGas`. The console labels a suspended continuation `SUSPENDED` and an insufficient owner-account balance `NO GAS`; a positive balance can still be too small for the next indivisible operation. Booting, unpowered, paused and faulted computers remain distinct states. Gas suspension preserves the running callback and does not initiate a reboot.
+Computer telemetry publishes per-tick computer gas usage and its configured positive tick limit. CPU percentage is the gas spent on guest execution and host services divided by that limit; usage cannot exceed the limit. A running computer reports `Ready`, `Suspended` or `WaitingForGas`. The console labels a suspended continuation `SUSPENDED` and an insufficient owner-account balance `NO GAS`; a positive balance can still be too small for the next indivisible operation. Booting, unpowered, paused and faulted computers remain distinct states. Gas suspension preserves the running callback and does not initiate a reboot.
 
 `SocietySnapshot.gas_accounts` carries integer available, reserved and spent amounts, each keyed by its owning `Principal`. Only the caller's player account and organizations or sovereignties the caller administers are included. Ordinary membership does not disclose a group's balance. The Society window displays those authorized accounts; individual computer telemetry does not duplicate the shared balance. Billing follows actual asset ownership, independently of IFF or delegated control.
 
 A computer reset clears pending requests, instruments, marks, firing state and forecasts. The server also clears the autopilot toggle, orders, ETA, staged world actions, slip preparation and docking reservations, and advances the travel revision. Successful reboot starts with idle navigation. Commands explicitly submitted after the reset may be queued during startup. Fault messages remain visible until boot succeeds. The countdown pauses without computer power and follows simulation time on the client.
 
-Protocol 17 adds the society snapshot and ownership commands. Sovereignties,
+The society snapshot describes ownership and permissions. Sovereignties,
 organizations, player affiliations, private personal standings, and authorized
 asset permissions use stable UUIDs. The Society window exposes the hierarchy,
 organization membership and officer management, standing overrides, asset grants,
@@ -1179,12 +1028,10 @@ separate. Delegated flight control does not grant configuration or access
 management rights.
 
 Private docking uses the ship's current owning principal and Dock permission.
-Automatic station resupply requires ownership or a TransferCargo grant. Historical
-controller assignment does not preserve either right after a transfer. Known
-information-group secrets remain bearer credentials until the group changes;
-revoking an asset grant does not erase a secret somebody already learned.
+Automatic station resupply requires ownership or a TransferCargo grant. A previous
+controller assignment does not preserve either right after a transfer.
 
-Protocol 18 adds a signed millisecond calendar timestamp. It represents real UTC
+The signed millisecond calendar timestamp represents real UTC
 plus 146097 days, exactly 400 Gregorian years. The calendar advances independently
 of simulation speed. The client samples it at network reception, outside
 the presentation jitter buffer. The bottom strip displays UTC date and time; its
@@ -1196,8 +1043,7 @@ worlds, debug identities, checkpoint configuration and recovery behavior.
 
 Local chat reaches physical ships within an inclusive 500 AU sphere around the
 sender. The server resolves both positions; a docked ship uses its host's
-position, and a destroyed carrier retained only for missile computing has no
-transmitter. Delivery is instantaneous within the simulation publication cycle.
+position. Destroyed ships have no transmitter. Delivery is instantaneous within the simulation publication cycle.
 It uses the shared spatial hash's geometric range query, independently of light,
 occlusion, transponder range, or sensor power.
 

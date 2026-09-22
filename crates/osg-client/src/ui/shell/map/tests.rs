@@ -149,7 +149,6 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
     let mut ship = crate::ui::tests::ship(id(9000)).0;
     let mut leg: travel::QueuedOrder = travel::Order::Slip {
         destination: travel::Destination::Galactic(catalogue.systems[2].position),
-        speed_ly_s: 0.01,
         navigation_beacon: None,
     }
     .into();
@@ -189,7 +188,7 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
             expected
         );
         if !cleared {
-            assert_eq!(state.active.slips, [(0, 2, 0.01, Some(1_234.0))]);
+            assert_eq!(state.active.slips, [(0, 2, 0.003, Some(1_234.0))]);
         }
     }
 }
@@ -218,18 +217,17 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
         travel::Order::TravelToSystem(catalogue.systems[1].id).into(),
         travel::Order::Slip {
             destination: travel::Destination::Galactic(catalogue.systems[2999].position),
-            speed_ly_s: 0.01,
             navigation_beacon: None,
         }
         .into(),
     ];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(1, 2999, 0.01, None)]);
+    assert_eq!(active.slips, [(1, 2999, 0.003, None)]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
-    assert_eq!(active.slips, [(1, 2999, 0.01, None)]);
+    assert_eq!(active.slips, [(1, 2999, 0.003, None)]);
 }
 
 #[test]
@@ -260,12 +258,11 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
             Some(id(0)),
             &[travel::Order::Slip {
                 destination,
-                speed_ly_s: 0.01,
                 navigation_beacon: None,
             }
             .into()],
         );
-        assert_eq!(active.slips, [(0, 2999, 0.01, None)]);
+        assert_eq!(active.slips, [(0, 2999, 0.003, None)]);
         assert_eq!(active.systems, BTreeSet::from([0, 2999]));
     }
 }
@@ -285,13 +282,12 @@ fn celestial_slip_route_resolves_without_ephemeris_download() {
             offset: GalacticPosition::ZERO,
             axes: travel::Axes::Galactic,
         },
-        speed_ly_s: 0.01,
         navigation_beacon: None,
     }
     .into()];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 2999, 0.01, None)]);
+    assert_eq!(active.slips, [(0, 2999, 0.003, None)]);
 }
 
 #[test]
@@ -404,107 +400,4 @@ fn desktop_map_keeps_its_height_across_frames_and_search_results() {
             );
         }
     }
-}
-
-#[test]
-fn searching_last_system_can_select_and_issue_a_route_with_fuel_preference() {
-    let catalogue = catalogue();
-    let society = ownership::SocietySnapshot::default();
-    let ship = crate::ui::tests::ship(id(9000)).0;
-    let mut model = model(&catalogue, &society, Some(&ship));
-    let sovereign = id(5002);
-    model.inhabited = std::sync::Arc::new(osg_model::InhabitedDirectory {
-        systems: vec![id(2999)],
-        ownership: [(id(2999), sovereign)].into(),
-        sovereignties: [(
-            sovereign,
-            osg_model::PublicSovereignty {
-                id: sovereign,
-                name: "Public sovereignty".into(),
-                bloc: ownership::Bloc::Union,
-            },
-        )]
-        .into(),
-    });
-    let context = egui::Context::default();
-    osg_ui::theme::install(&context);
-    let mut state = State {
-        search: "System 2999".into(),
-        preference: Some(travel::PlanningPreferences {
-            fuel_fraction: 0.42,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let mut intents = Vec::new();
-    fn render(
-        context: &egui::Context,
-        state: &mut State,
-        model: &FrameModel,
-        events: Vec<egui::Event>,
-        intents: &mut Vec<Intent>,
-    ) -> Vec<(String, egui::Pos2)> {
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(1400., 900.),
-                )),
-                events,
-                ..Default::default()
-            },
-            |ui| draw(ui, state, model, intents),
-        );
-        output.textures_delta.clear();
-        fn labels(shape: &egui::Shape, values: &mut Vec<(String, egui::Pos2)>) {
-            match shape {
-                egui::Shape::Text(text) => values.push((
-                    text.galley.job.text.clone(),
-                    text.pos + text.galley.size() * 0.5,
-                )),
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| labels(shape, values)),
-                _ => {}
-            }
-        }
-        let mut values = Vec::new();
-        for shape in output.shapes {
-            labels(&shape.shape, &mut values);
-        }
-        values
-    }
-    for text in ["System 2999  ·  Public sovereignty", "Plan destination"] {
-        let mut values = Vec::new();
-        for _ in 0..3 {
-            values = render(&context, &mut state, &model, Vec::new(), &mut intents);
-        }
-        let position = values
-            .iter()
-            .find(|(value, _)| value == text)
-            .unwrap_or_else(|| panic!("missing {text}"))
-            .1;
-        for pressed in [true, false] {
-            render(
-                &context,
-                &mut state,
-                &model,
-                vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed,
-                        modifiers: egui::Modifiers::NONE,
-                    },
-                ],
-                &mut intents,
-            );
-        }
-    }
-    assert_eq!(state.selected, Some(id(2999)));
-    assert!(state.route.plan().is_none());
-    assert!(intents.iter().any(|intent| matches!(intent,
-        Intent::PlanRoute(orders, false, preference)
-            if preference.fuel_fraction == 0.42 && matches!(&orders[..],
-                [travel::Order::TravelToSystem(destination)]
-                    if *destination == catalogue.systems[2999].id))));
 }

@@ -1,21 +1,28 @@
 pub mod calendar;
 pub mod chat;
 pub mod drawing;
-pub mod firmware;
 pub mod industry;
-pub mod llm;
 pub mod local_space;
 pub mod optical;
 pub mod ownership;
 pub mod presentation;
 pub mod routing;
 pub mod serial;
+pub mod slip_visual;
 pub mod transfer;
 pub mod travel;
-pub mod wasm_intel;
+pub mod wasm_beacons;
 pub mod wasm_world;
 pub use local_space::{LocalObstacle, LocalSpace};
 pub use presentation::*;
+
+pub use osg_ship_api::GAME_VERSION;
+
+/// Duration of one authoritative simulation tick.
+pub const TICK_NS: u64 = 100_000_000;
+pub const TICK_DURATION: std::time::Duration = std::time::Duration::from_nanos(TICK_NS);
+pub const TICK_SECONDS: f64 = TICK_NS as f64 / 1_000_000_000.0;
+pub const TICK_RATE_HZ: f64 = 1.0 / TICK_SECONDS;
 
 pub use osg_space::GalacticPosition;
 use serde::{Deserialize, Serialize};
@@ -49,32 +56,6 @@ impl std::str::FromStr for Id {
 
 pub type EntityId = Id;
 pub type AccountId = Id;
-pub type TrackId = Id;
-pub type GroupId = Id;
-pub const PUBLIC_GROUP: GroupId = Id([255; 16]);
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub struct InfoGroupKey(pub [u8; 32]);
-
-impl InfoGroupKey {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new() -> Self {
-        Self(rand::random())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl Default for InfoGroupKey {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for InfoGroupKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("InfoGroupKey([redacted])")
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Pose {
@@ -95,95 +76,29 @@ impl Default for Pose {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum Tag {
-    Kind(String),
-    IffOwner(AccountId),
-    IffFaction(Id),
-    Advertised(String),
-    Annotation(String),
-}
-
-impl Tag {
-    pub fn valid(&self) -> bool {
-        match self {
-            Self::Kind(s) | Self::Advertised(s) | Self::Annotation(s) => {
-                !s.is_empty() && s.len() <= 64 && !s.chars().any(char::is_control)
-            }
-            _ => true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IffIdentity {
     pub owner: AccountId,
     pub faction: Option<Id>,
     pub labels: BTreeSet<String>,
     pub enabled: bool,
-    pub range_m: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Provenance {
-    Sensor,
-    Transponder,
-    GroupMember,
-    Beacon,
-    Extrapolated,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Track {
+pub struct SensorObservation {
     pub spatial_instance: Id,
-    pub id: TrackId,
+    pub id: u64,
     pub entity: Option<EntityId>,
     pub pose: Pose,
-    pub position_sigma_m: f64,
-    pub velocity_sigma_m_s: f64,
-    pub observed_tick: u64,
-    pub estimate_tick: u64,
-    pub tags: BTreeSet<Tag>,
-    pub provenance: Provenance,
-    pub radius_m: Option<f64>,
-    pub appearance: Option<[u8; 32]>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TrackQuery {
-    pub track: Option<TrackId>,
-    pub sphere: Option<(GalacticPosition, f64)>,
-    pub all: BTreeSet<Tag>,
-    pub any: BTreeSet<Tag>,
-    pub exclude: BTreeSet<Tag>,
-    pub max_age_ticks: Option<u64>,
-    pub limit: u16,
-    pub work: u64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Completion {
-    Complete,
-    ResultLimit,
-    WorkLimit,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct QueryPage {
-    pub revision: u64,
-    pub tracks: Vec<Track>,
-    pub completion: Completion,
-    pub continuation: Option<Id>,
-    pub gas_used: u64,
+    pub radius_m: f64,
+    pub iff: Option<IffIdentity>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewSubscription {
     pub id: u64,
     pub revision: u64,
-    pub group: GroupId,
     pub focused_ship: Option<EntityId>,
-    pub query: TrackQuery,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -192,9 +107,6 @@ pub struct ViewState {
     pub origin: GalacticPosition,
     pub id: u64,
     pub revision: u64,
-    pub group: GroupId,
-    pub tracks: Vec<TrackId>,
-    pub completion: Completion,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -210,7 +122,6 @@ pub struct ShipTelemetry {
     pub radius_m: f64,
     pub dock_services: DockServiceSettings,
     pub spatial_instance: Id,
-    pub info_group: InfoGroupKey,
     pub iff: IffIdentity,
     pub ship: EntityId,
     pub authority_revision: u64,
@@ -244,7 +155,6 @@ pub struct Event {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Reply {
-    JoinedGroup(GroupId),
     Route { id: u64, status: routing::Status },
 }
 
@@ -270,7 +180,7 @@ pub struct Frame {
     pub sim_time_ns: u64,
     pub rate: f64,
     pub views: Vec<ViewState>,
-    pub tracks: BTreeMap<GroupId, Vec<Track>>,
+    pub contacts: BTreeMap<EntityId, Vec<SensorObservation>>,
     pub ships: Vec<ShipTelemetry>,
     pub screens: Vec<ScreenUpdate>,
     pub events: Vec<Event>,
@@ -311,7 +221,6 @@ pub enum Action {
         ship: EntityId,
     },
     Debug(DebugCommand),
-    JoinGroup(InfoGroupKey),
     Subscribe(ViewSubscription),
     Unsubscribe(u64),
     ScreenSubscribe {
@@ -340,18 +249,15 @@ pub enum ShipCommand {
     Flight(FlightCommand),
     SetTransponderEnabled(bool),
     MarkTarget {
-        group: GroupId,
-        track: TrackId,
+        target: ContactRef,
         maximum_flight_time_s: f64,
     },
     StopFiring,
     UnmarkTarget,
     StartFiring,
     Aim {
-        group: GroupId,
-        track: TrackId,
+        target: ContactRef,
     },
-    SetGroup(InfoGroupKey),
     SetIff(IffIdentity),
     SetTravel {
         preferences: travel::PlanningPreferences,
@@ -402,7 +308,6 @@ pub enum ProgramQuery {
         destination: GalacticPosition,
         departure_after_seconds: f64,
         arrival_after_seconds: f64,
-        speed_ly_s: f64,
         navigation_beacon: Option<EntityId>,
     },
     Travel,
@@ -411,11 +316,6 @@ pub enum ProgramQuery {
     Resolve {
         destination: travel::Destination,
         after_seconds: f64,
-    },
-    Tracks(TrackQuery),
-    Continue {
-        cursor: Id,
-        work: u64,
     },
     Beacons {
         after: Option<EntityId>,
@@ -453,9 +353,9 @@ pub enum ProgramReply {
         state: travel::CurrentOrder,
         pose: Pose,
         slip_ready: bool,
+        slip_axis: [f64; 3],
     },
     Pose(Pose),
-    Tracks(QueryPage),
     Beacons(Vec<Beacon>),
 }
 
@@ -485,7 +385,6 @@ pub enum ProgramAction {
         revision: u64,
         order: usize,
         destination: GalacticPosition,
-        speed_ly_s: f64,
         navigation_beacon: Option<EntityId>,
     },
     ReserveBay {

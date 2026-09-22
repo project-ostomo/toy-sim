@@ -36,7 +36,7 @@ fn advance(world: &mut World) {
     world.resource_mut::<simulation::SimulationCounters>().ticks += 1;
     world
         .resource_mut::<Time<Fixed>>()
-        .advance_by(Duration::from_millis(100));
+        .advance_by(osg_model::TICK_DURATION);
     industry::advance(world);
     let mut initialize = Schedule::default();
     initialize.add_systems(hardware::initialize);

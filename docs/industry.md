@@ -72,9 +72,7 @@ kilograms of radioactive waste. Repeated recovery therefore has a finite fuel
 yield.
 
 Chemical propellant production pays for the energy stored in the propellant.
-Autocannon ammunition consumes this prepared propellant. A packaged Kite missile
-includes its dry assembly, avionics, propellant and a charged battery; its recipe
-pays for all of them.
+Autocannon ammunition consumes this prepared propellant.
 
 ## Ship construction
 

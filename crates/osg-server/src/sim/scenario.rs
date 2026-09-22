@@ -24,7 +24,7 @@ mod barrage {
 
     pub fn slug_arrival_tick(index: usize) -> usize {
         let fraction = (index / 2) as f64 / (INITIAL_SLUG_COUNT / 2 - 1) as f64;
-        ((10.0 + 20.0 * fraction) * crate::sim::simulation::TICK_RATE_HZ).round() as usize
+        ((10.0 + 20.0 * fraction) * osg_model::TICK_RATE_HZ).round() as usize
     }
 
     fn slug_speed(index: usize) -> f64 {
@@ -42,7 +42,7 @@ mod barrage {
         velocity: DVec3,
         outward: DVec3,
     ) -> Vec<(crate::sim::precision::GalacticPosition, DVec3)> {
-        let dt = 1.0 / crate::sim::simulation::TICK_RATE_HZ;
+        let dt = 1.0 / osg_model::TICK_RATE_HZ;
         let last_tick = (30.0 / dt).round() as usize;
         let sources: Vec<_> = universe
             .containing_segment(player, DVec3::ZERO)
@@ -117,7 +117,7 @@ mod barrage {
 
 pub const INITIAL_SCENARIO: InitialScenario = InitialScenario {
     body: "Helion I Neris",
-    altitude: 40_000_000.0, // High orbit, outside the five moons.
+    exclusion_clearance_m: 1_000_000.0, // Room for nearby stations and traffic.
     orbit_seed: 42,
     camera_distance: 100.0,
     camera_yaw: 0.0,
@@ -131,7 +131,7 @@ pub const INITIAL_SCENARIO: InitialScenario = InitialScenario {
 #[derive(Clone, Debug)]
 pub struct InitialScenario {
     pub body: &'static str,
-    pub altitude: f64,
+    pub exclusion_clearance_m: f64,
     pub orbit_seed: u64,
     pub camera_distance: f64,
     pub camera_yaw: f64,
@@ -163,7 +163,7 @@ impl InitialScenario {
         self.relative_state(body.radius, body.mass)?;
         let atmosphere_height = body.atmosphere.as_ref().map_or(0.0, |a| a.height);
         anyhow::ensure!(
-            self.altitude > atmosphere_height,
+            self.orbit_dimensions(body.radius, body.mass)?.0 > body.radius + atmosphere_height,
             "starting orbit must be above the atmosphere"
         );
         anyhow::ensure!(
@@ -239,9 +239,13 @@ impl InitialScenario {
     }
 
     fn orbit_dimensions(&self, radius: f64, mass: f64) -> anyhow::Result<(f64, f64)> {
-        let r = radius + self.altitude;
+        let r = osg_model::travel::slip::exclusion_radius_m(mass) + self.exclusion_clearance_m;
         anyhow::ensure!(
-            self.altitude > 0.0 && r.is_finite() && r > 0.0 && mass.is_finite() && mass > 0.0,
+            self.exclusion_clearance_m > 0.0
+                && r.is_finite()
+                && r > radius
+                && mass.is_finite()
+                && mass > 0.0,
             "invalid starting orbit"
         );
         Ok((
@@ -289,7 +293,8 @@ mod tests {
             let star = universe.solve_position(star_reference, epoch).unwrap();
             let ship = planet.offset_by(offset);
             let sunward = star.relative_to(planet).normalize();
-            let radius = body.radius + scenario.altitude;
+            let radius = osg_model::travel::slip::exclusion_radius_m(body.mass)
+                + scenario.exclusion_clearance_m;
             let expected_speed =
                 (crate::sim::physics::GRAVITATIONAL_CONSTANT * body.mass / radius).sqrt();
 

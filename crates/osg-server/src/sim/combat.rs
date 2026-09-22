@@ -8,10 +8,7 @@ use super::{
     session::Events,
 };
 use bevy::prelude::*;
-use osg_model::{
-    CombatEvent, CombatEventKind, ContactRef, Event, GalacticPosition, GroupId, Id, Pose, Track,
-    TrackId,
-};
+use osg_model::{CombatEvent, CombatEventKind, Event, GalacticPosition, Id, Pose};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Component, Clone, Copy)]
@@ -27,14 +24,6 @@ struct Recorded {
 }
 
 enum RecordedKind {
-    Slip {
-        ship: Id,
-        position: GalacticPosition,
-        velocity: [f64; 3],
-        direction: [f64; 3],
-        radius: f64,
-        arriving: bool,
-    },
     Beam {
         source: Id,
         start: GalacticPosition,
@@ -78,7 +67,6 @@ fn nanoseconds(seconds: f64) -> u64 {
 }
 
 pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
-    super::defense::record(world, report);
     let mut pending = Vec::new();
     for shot in &report.shots {
         let Some(source) = world.get::<Identity>(shot.owner).map(|id| id.0) else {
@@ -221,7 +209,7 @@ fn append(
             let sequence = events.0.back().map_or(1, |event| event.sequence + 1);
             events.0.push_back(Event {
                 sequence,
-                tick: time_ns.div_ceil(100_000_000),
+                tick: time_ns.div_ceil(osg_model::TICK_NS),
                 subject,
                 kind: event_kind.into(),
                 position: None,
@@ -258,42 +246,6 @@ pub fn flush_travel(world: &mut World) {
     }
 }
 
-pub fn record_slip(
-    world: &mut World,
-    entity: Entity,
-    position: GalacticPosition,
-    velocity: [f64; 3],
-    direction: [f64; 3],
-    arriving: bool,
-) {
-    let Some(ship) = world.get::<Identity>(entity).map(|id| id.0) else {
-        return;
-    };
-    let radius = world
-        .get::<super::vessel::ShipDesign>(entity)
-        .map_or(1.0, |d| d.0.radius);
-    let time_ns = world
-        .resource::<super::simulation::SimulationCounters>()
-        .ticks
-        * 100_000_000;
-    append(
-        world,
-        vec![(
-            time_ns,
-            RecordedKind::Slip {
-                ship,
-                position,
-                velocity,
-                direction,
-                radius,
-                arriving,
-            },
-        )],
-        "slip-transition",
-        Some(ship),
-    );
-}
-
 pub fn prune(world: &mut World, published: u64) {
     if let Some(mut history) = world.get_resource_mut::<CombatHistory>() {
         while history
@@ -308,7 +260,7 @@ pub fn prune(world: &mut World, published: u64) {
 
 pub fn for_session(
     world: &World,
-    tracks: &BTreeMap<GroupId, BTreeMap<TrackId, Track>>,
+    references: &BTreeMap<Id, Id>,
     optically_visible: &BTreeSet<Id>,
     previously_visible: &BTreeSet<Id>,
     after_sequence: u64,
@@ -316,51 +268,13 @@ pub fn for_session(
     let Some(history) = world.get_resource::<CombatHistory>() else {
         return Vec::new();
     };
-    let mut contacts: BTreeMap<Id, Vec<(ContactRef, &Track)>> = BTreeMap::new();
-    for (&group, tracks) in tracks {
-        for (&id, track) in tracks {
-            if let Some(entity) = track.entity {
-                contacts
-                    .entry(entity)
-                    .or_default()
-                    .push((ContactRef { group, track: id }, track));
-            }
-        }
-    }
     history
         .0
         .iter()
         .filter(|event| event.sequence > after_sequence)
         .filter_map(|event| {
-            let tick = event.time_ns.div_ceil(100_000_000);
-            let contact = |id| {
-                contacts.get(&id)?.iter().find_map(|(contact, track)| {
-                    (track.position_sigma_m == 0.0
-                        || (track.velocity_sigma_m_s == 0.0
-                            && track.observed_tick.saturating_add(1) >= tick))
-                        .then_some(*contact)
-                })
-            };
+            let contact = |id| references.get(&id).copied();
             let kind = match &event.kind {
-                RecordedKind::Slip {
-                    ship,
-                    position,
-                    velocity,
-                    direction,
-                    radius,
-                    arriving,
-                } => {
-                    if !optically_visible.contains(ship) && !previously_visible.contains(ship) {
-                        return None;
-                    }
-                    CombatEventKind::Slip {
-                        position: *position,
-                        velocity_m_s: *velocity,
-                        direction: *direction,
-                        radius_m: *radius,
-                        arriving: *arriving,
-                    }
-                }
                 RecordedKind::Beam {
                     source,
                     start,
@@ -463,75 +377,9 @@ pub fn for_session(
 mod tests {
     use super::*;
     use bevy::math::{DQuat, DVec3};
-    use osg_model::Provenance;
 
-    #[test]
-    fn slip_events_require_optical_visibility_and_survive_departure() {
-        let mut world = World::new();
-        world.init_resource::<super::super::simulation::SimulationCounters>();
-        let id = Id::new();
-        let ship = world.spawn(Identity(id)).id();
-        record_slip(
-            &mut world,
-            ship,
-            GalacticPosition::ZERO,
-            [30_000.0, 0.0, 0.0],
-            [0.0, 0.0, -1.0],
-            false,
-        );
-        world.despawn(ship);
-        let empty = BTreeSet::new();
-        assert!(for_session(&world, &observed(id, 0.0), &empty, &empty, 0).is_empty());
-        let visible = BTreeSet::from([id]);
-        let departed = for_session(&world, &BTreeMap::new(), &empty, &visible, 0);
-        assert_eq!(departed.len(), 1);
-        assert!(matches!(
-            departed[0].kind,
-            CombatEventKind::Slip {
-                arriving: false,
-                velocity_m_s: [30_000.0, 0.0, 0.0],
-                ..
-            }
-        ));
-        assert!(
-            for_session(
-                &world,
-                &BTreeMap::new(),
-                &empty,
-                &visible,
-                departed[0].sequence
-            )
-            .is_empty()
-        );
-        assert_eq!(
-            for_session(&world, &BTreeMap::new(), &visible, &empty, 0).len(),
-            1
-        );
-    }
-
-    fn observed(id: Id, sigma: f64) -> BTreeMap<GroupId, BTreeMap<TrackId, Track>> {
-        let group = Id::new();
-        let track = Id::new();
-        BTreeMap::from([(
-            group,
-            BTreeMap::from([(
-                track,
-                Track {
-                    spatial_instance: Id::new(),
-                    id: track,
-                    entity: Some(id),
-                    pose: Pose::default(),
-                    position_sigma_m: sigma,
-                    velocity_sigma_m_s: sigma,
-                    observed_tick: 100,
-                    estimate_tick: 101,
-                    tags: Default::default(),
-                    provenance: Provenance::Transponder,
-                    radius_m: Some(10.0),
-                    appearance: None,
-                },
-            )]),
-        )])
+    fn observed(id: Id, _unused: f64) -> BTreeMap<Id, Id> {
+        BTreeMap::from([(id, Id::new())])
     }
 
     #[test]
@@ -591,7 +439,7 @@ mod tests {
             for_session(
                 &world,
                 &observed(id, 10.0),
-                &BTreeSet::from([id]),
+                &BTreeSet::new(),
                 &BTreeSet::new(),
                 0
             )
@@ -643,7 +491,7 @@ mod tests {
         let id = Id::new();
         world.insert_resource(CombatHistory(VecDeque::from([Recorded {
             sequence: 1,
-            time_ns: 100_000_000,
+            time_ns: osg_model::TICK_NS,
             kind: RecordedKind::Fired {
                 source: id,
                 position: GalacticPosition::ZERO,

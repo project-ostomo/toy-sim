@@ -22,7 +22,7 @@ impl HardwareFixture {
         let mut app = App::new();
         app.insert_resource(vessel::ShipCatalogue(catalogue.clone()));
         app.init_resource::<vessel::WasmRuntime>();
-        app.insert_resource(Time::<Fixed>::from_hz(10.));
+        app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
         hardware::install(&mut app);
         let account = osg_model::Id([12; 16]);
         super::identity::initialize(app.world_mut(), &[account]);
@@ -45,7 +45,7 @@ impl HardwareFixture {
         self.app
             .world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(std::time::Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         self.app.world_mut().run_schedule(FixedUpdate);
     }
 
@@ -133,6 +133,7 @@ impl ScanSource for CountedSource {
         self.0.fetch_add(1, Ordering::Relaxed);
         assert_eq!(maximum, 32);
         vec![SensorContact {
+            iff: None,
             measured: abi::Contact {
                 id: 7,
                 position_m: [100., 0., 0.],
@@ -214,6 +215,7 @@ fn bundled_firmware_finishes_full_forecasts_with_retained_sources_under_fuel_lim
         fn scan(&self, _: f64, maximum: usize) -> Vec<SensorContact> {
             assert_eq!(maximum, 32);
             vec![SensorContact {
+                iff: None,
                 measured: abi::Contact {
                     id: 7,
                     kind: abi::CONTACT_SHIP,
@@ -241,7 +243,7 @@ fn bundled_firmware_finishes_full_forecasts_with_retained_sources_under_fuel_lim
     let mut found = false;
 
     for tick in 0..30 {
-        let now = tick as f64 * 0.1;
+        let now = tick as f64 * osg_model::TICK_SECONDS;
         computer.observer_origin = spatial::offset(galactic_origin, [1e6 * now, 0., 0.]).unwrap();
         let mut observation = input(now);
         observation.tick = tick;
@@ -345,6 +347,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
     impl ScanSource for Target {
         fn scan(&self, _: f64, _: usize) -> Vec<SensorContact> {
             vec![SensorContact {
+                iff: None,
                 measured: abi::Contact {
                     id: 7,
                     kind: abi::CONTACT_SHIP,
@@ -379,7 +382,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
     let mut fired = false;
 
     for tick in 0..60 {
-        let now = tick as f64 * 0.1;
+        let now = tick as f64 * osg_model::TICK_SECONDS;
         let (mass, inertia) = hardware.mass_properties(&design, &catalogue);
         let mut observation = input(now);
         observation.tick = tick;
@@ -544,6 +547,7 @@ fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
     impl ScanSource for Player {
         fn scan(&self, _: f64, _: usize) -> Vec<SensorContact> {
             vec![SensorContact {
+                iff: None,
                 measured: abi::Contact {
                     id: 7,
                     kind: abi::CONTACT_SHIP,
@@ -569,7 +573,7 @@ fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
     let mut thrust = false;
 
     for tick in 0..30 {
-        let now = tick as f64 * 0.1;
+        let now = tick as f64 * osg_model::TICK_SECONDS;
         let (mass, inertia) = hardware.mass_properties(&design, &catalogue);
         let mut observation = input(now);
         observation.tick = tick;
@@ -652,7 +656,7 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
     let mut computer = runtime.instantiate(osg_ships::EXAMPLE_CONTROLLER).unwrap();
     computer.configure_hardware(&design, &catalogue);
     for tick in 0..150 {
-        let mut observation = input(tick as f64 * 0.1);
+        let mut observation = input(tick as f64 * osg_model::TICK_SECONDS);
         let (mass, inertia) = hardware.mass_properties(&design, &catalogue);
         observation.observation.flight.mass_kg = mass;
         observation.observation.flight.inertia = inertia.to_cols_array();
@@ -694,6 +698,7 @@ fn dense_sensor_results_keep_stock_slices_within_physical_gas_budget() {
             assert!((1..=256).contains(&maximum));
             (0..maximum)
                 .map(|index| SensorContact {
+                    iff: None,
                     measured: abi::Contact {
                         id: index as u64 + 7,
                         kind: abi::CONTACT_SHIP,
@@ -718,7 +723,7 @@ fn dense_sensor_results_keep_stock_slices_within_physical_gas_budget() {
     for tick in 0..100 {
         let hardware = fixture.snapshot();
         let (mass, inertia) = hardware.mass_properties(&design, &catalogue);
-        let mut observation = input(tick as f64 * 0.1);
+        let mut observation = input(tick as f64 * osg_model::TICK_SECONDS);
         observation.tick = tick;
         observation.observation.flight.mass_kg = mass;
         observation.observation.flight.inertia = inertia.to_cols_array();

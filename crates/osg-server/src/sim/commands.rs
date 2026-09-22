@@ -4,8 +4,7 @@ use osg_model::*;
 use osg_ship_wasm::{Command, ScanSource};
 use std::sync::Arc;
 
-use super::identity::{self, Control, Identity, Membership, Transponder};
-use super::intelligence::Group;
+use super::identity::{self, Control, Identity, Transponder};
 use super::vessel::ShipSoftware;
 
 #[cfg(test)]
@@ -38,7 +37,6 @@ pub fn observe(world: &World, account: Id, ship: Id) -> Result<Entity> {
 #[derive(serde::Serialize)]
 pub struct ShipState {
     pub name: String,
-    pub group: GroupId,
     pub telemetry: ShipTelemetry,
     pub presentation: ShipPresentation,
 }
@@ -46,11 +44,6 @@ pub struct ShipState {
 pub fn telemetry(world: &World, account: AccountId, ship: EntityId) -> Result<ShipState> {
     let entity = observe(world, account, ship)?;
     Ok(ShipState {
-        group: world
-            .get::<Membership>(entity)
-            .and_then(|membership| world.get::<Group>(membership.0))
-            .ok_or_else(|| anyhow::anyhow!("ship group unavailable"))?
-            .id,
         name: world
             .get::<super::vessel::Vessel>(entity)
             .map_or_else(|| "Ship".into(), |vessel| vessel.vessel_name.to_string()),
@@ -74,7 +67,6 @@ pub fn source(
 pub(crate) fn permission(command: &ShipCommand) -> ownership::Permission {
     match command {
         ShipCommand::SetTransponderEnabled(_)
-        | ShipCommand::SetGroup(_)
         | ShipCommand::SetIff(_)
         | ShipCommand::SetDockServices { .. } => ownership::Permission::Configure,
         ShipCommand::UseRoute { .. }
@@ -93,27 +85,18 @@ pub(crate) fn permission(command: &ShipCommand) -> ownership::Permission {
     }
 }
 
-fn target_handle(world: &mut World, ship: Entity, group: Id, track: Id) -> Result<u64> {
-    let member = world
-        .get::<Membership>(ship)
-        .ok_or_else(|| anyhow::anyhow!("ship group unavailable"))?
-        .0;
+fn target_handle(world: &World, ship: Entity, target: ContactRef) -> Result<u64> {
     ensure!(
         world
-            .get::<Group>(member)
-            .is_some_and(|item| item.id == group),
-        "target group access denied"
+            .get::<Identity>(ship)
+            .is_some_and(|id| id.0 == target.observer),
+        "contact observer unavailable"
     );
     ensure!(
-        world
-            .get::<Group>(member)
-            .unwrap()
-            .snapshot
-            .tracks
-            .contains_key(&track),
-        "target track unavailable"
+        super::services::contact_ref(world, ship, target.contact).is_some(),
+        "target contact unavailable"
     );
-    super::services::contact_handle(world, ship, group, track)
+    Ok(target.contact)
 }
 
 fn enqueue(world: &mut World, ship: Entity, command: Command) -> Result<()> {
@@ -167,11 +150,8 @@ pub fn execute(
         );
     match command {
         ShipCommand::SetTransponderEnabled(enabled) => {
-            world.get_mut::<Transponder>(entity).unwrap().0.enabled = enabled
-        }
-        ShipCommand::SetGroup(key) => {
-            let group = super::intelligence::join(world, key);
-            world.entity_mut(entity).insert(Membership(group));
+            world.get_mut::<Transponder>(entity).unwrap().0.enabled = enabled;
+            super::sensors::refresh_iff(world, entity);
         }
         ShipCommand::SetIff(iff) => {
             ensure!(
@@ -185,8 +165,8 @@ pub fn execute(
                     .can_advertise(account, iff.faction),
                 "IFF faction access denied"
             );
-            ensure!(iff.range_m <= 1e8, "transponder range exceeds hardware");
             world.entity_mut(entity).insert(Transponder(iff));
+            super::sensors::refresh_iff(world, entity);
         }
         ShipCommand::UseRoute {
             id,
@@ -317,16 +297,15 @@ pub fn execute(
         ShipCommand::UnmarkTarget => enqueue(world, entity, Command::UnmarkTarget)?,
         ShipCommand::StartFiring => enqueue(world, entity, Command::StartFiring)?,
         ShipCommand::StopFiring => enqueue(world, entity, Command::StopFiring)?,
-        ShipCommand::Aim { group, track } => {
-            let handle = target_handle(world, entity, group, track)?;
+        ShipCommand::Aim { target } => {
+            let handle = target_handle(world, entity, target)?;
             enqueue(world, entity, Command::AimContact(handle))?;
         }
         ShipCommand::MarkTarget {
-            group,
-            track,
+            target,
             maximum_flight_time_s,
         } => {
-            let handle = target_handle(world, entity, group, track)?;
+            let handle = target_handle(world, entity, target)?;
             enqueue(
                 world,
                 entity,
@@ -343,7 +322,7 @@ pub fn execute(
                 FlightCommand::StopGuidance => Command::StopGuidance,
                 FlightCommand::AimDirection(direction) => Command::AimDirection(direction),
                 FlightCommand::SelectTarget(target) => {
-                    Command::SelectTarget(target_handle(world, entity, target.group, target.track)?)
+                    Command::SelectTarget(target_handle(world, entity, target)?)
                 }
                 FlightCommand::EngageNavigation {
                     throttle_limit,
@@ -370,9 +349,7 @@ pub fn execute(
         }
     }
 
-    if cancel_haul {
-        super::npc::logistics::cancel(world, entity);
-    }
+    if cancel_haul {}
     if wake && let Some(mut software) = world.get_mut::<ShipSoftware>(entity) {
         software.schedule.wake();
     }
@@ -415,7 +392,6 @@ pub(crate) fn use_route(
         )?;
         enqueue(world, ship, Command::HoldAttitude)?;
     }
-    super::npc::logistics::cancel(world, ship);
     Ok(())
 }
 
@@ -428,7 +404,6 @@ pub(crate) fn ship_telemetry(
     let thermal = &world.get::<super::hardware::ShipThermal>(entity)?.0;
     let design = &world.get::<super::vessel::ShipDesign>(entity)?.0;
     let authority = world.get::<Control>(entity)?;
-    let group = world.get::<Membership>(entity)?.0;
     Some(ShipTelemetry {
         can_control: super::ownership::can_access(
             world,
@@ -449,7 +424,6 @@ pub(crate) fn ship_telemetry(
                 }
             }),
         spatial_instance: world.get::<super::identity::SpatialInstance>(entity)?.0,
-        info_group: world.get::<Group>(group)?.key?,
         iff: world.get::<Transponder>(entity)?.0.clone(),
         ship: world.get::<Identity>(entity)?.0,
         authority_revision: authority.revision,

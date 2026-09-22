@@ -8,7 +8,6 @@ pub use design::*;
 pub use runtime::*;
 
 pub const EXAMPLE_CONTROLLER: &[u8] = include_bytes!("../data/example-controller.wasm");
-pub const CHATTER_CONTROLLER: &[u8] = include_bytes!("../data/chatter-controller.wasm");
 
 pub mod devices;
 pub use devices::*;
@@ -16,8 +15,6 @@ pub use devices::*;
 pub mod thermal;
 
 pub mod weapons;
-
-pub mod missiles;
 
 mod cargo;
 pub mod industry;

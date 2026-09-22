@@ -182,7 +182,7 @@ mod tests {
     use crate::state::ViewObservation;
     use bevy::ecs::system::RunSystemOnce;
     use bevy::math::DVec3;
-    use osg_model::{Completion, Pose, ViewState};
+    use osg_model::{Pose, ViewState};
 
     fn star(id: u8, position: DVec3, luminosity: f64) -> CelestialPresentation {
         CelestialPresentation {
@@ -272,11 +272,8 @@ mod tests {
                 ViewObservation(ViewState {
                     id: 1,
                     revision: 1,
-                    group: Id([4; 16]),
                     focused_ship: None,
                     origin: GalacticPosition::ZERO,
-                    tracks: Vec::new(),
-                    completion: Completion::Complete,
                 }),
                 ViewSystems(vec![system]),
             ))

@@ -151,8 +151,7 @@ pub(super) fn selected_item(
             let reference = contact.unwrap();
             intents.push(Intent::Command(
                 ShipCommand::MarkTarget {
-                    group: reference.group,
-                    track: reference.track,
+                    target: reference,
                     maximum_flight_time_s: 30.,
                 },
                 "Mark target",

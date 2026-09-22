@@ -266,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn cached_missile_tumble_preserves_momentum_across_knots() {
+    fn cached_compact_body_tumble_preserves_momentum_across_knots() {
         let inverse = DMat3::from_diagonal(DVec3::new(
             0.007909387700624201,
             0.00824696314249866,

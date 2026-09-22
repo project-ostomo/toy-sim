@@ -1,14 +1,13 @@
 use osg_ship_api::abi;
 use osg_ship_wasm::{
-    CallbackKind, CallbackSchedule, Command, ControllerRuntime, FUEL_PER_TICK, Input, Observation,
-    Request,
+    CallbackSchedule, Command, ControllerRuntime, FUEL_PER_TICK, Input, Observation, Request,
 };
 
 fn input(tick: u64) -> Input {
     Input {
         tick,
         observation: Observation {
-            time_s: tick as f64 * 0.1,
+            time_s: tick as f64 * osg_model::TICK_SECONDS,
             flight: abi::FlightState {
                 rotation: [0., 0., 0., 1.],
                 mass_kg: 1_000.,
@@ -23,7 +22,7 @@ fn input(tick: u64) -> Input {
 }
 
 #[test]
-fn stock_status_reports_commands_and_shared_missiles_stay_responsive_each_tick() {
+fn stock_status_reports_commands_and_stays_responsive_each_tick() {
     let mut computer = ControllerRuntime::new()
         .unwrap()
         .instantiate(osg_ships::EXAMPLE_CONTROLLER)
@@ -117,23 +116,6 @@ fn stock_status_reports_commands_and_shared_missiles_stay_responsive_each_tick()
     schedule.completed(slice.output.tick_interval_seconds);
     assert!(schedule.ready(false));
 
-    let slice = computer
-        .run_callback_slice(
-            CallbackKind::Missile(7),
-            input(tick + 2),
-            None,
-            Some(abi::MissileObservation {
-                handle: 7,
-                rotation: [0., 0., 0., 1.],
-                ..Default::default()
-            }),
-            FUEL_PER_TICK,
-            FUEL_PER_TICK,
-        )
-        .unwrap();
-    assert!(slice.callback_completed);
-    assert_eq!(slice.callback, Some(CallbackKind::Missile(7)));
-    assert_eq!(slice.output.missiles.len(), 1);
     assert!(schedule.ready(false));
     schedule.wake();
     assert!(schedule.ready(false));

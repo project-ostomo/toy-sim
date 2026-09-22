@@ -1,6 +1,9 @@
 use super::{ViewCamera, projection};
 use crate::{
-    state::{Celestial, DisplayPose, NavigationObject, OwnedShip, ViewObservation},
+    state::{
+        Celestial, DisplayPose, NavigationObject, OwnedShip, RenderTime, ShipDetails,
+        ViewObservation,
+    },
     ui::{SelectedTarget, Selection},
 };
 use bevy::{math::DQuat, prelude::*};
@@ -12,6 +15,30 @@ use osg_ui::{
 };
 
 const ROUTE_COLOR: egui::Color32 = egui::Color32::from_rgb(255, 202, 110);
+const SLIP_COLOR: egui::Color32 = egui::Color32::from_rgb(90, 240, 145);
+
+fn slip_destination(
+    ship: &osg_model::ShipTelemetry,
+    pose: &Pose,
+    details: &osg_model::presentation::ShipPresentation,
+    display_ns: u64,
+) -> Option<(GalacticPosition, f64, Option<f64>, f64)> {
+    if !matches!(ship.presence, travel::Presence::SlipTransit(_)) {
+        return None;
+    }
+    let transit = details.slip_transit.as_ref()?;
+    let remaining = transit.destination.relative_to(pose.position).length();
+    let speed = ship.pose.as_ref().map_or(0.0, |pose| {
+        bevy::math::DVec3::from_array(pose.velocity).length()
+    });
+    let eta = ship
+        .travel
+        .estimated_arrival_tick
+        .filter(|_| details.slip_navigation_lock != Some(false))
+        .map(|tick| (tick as f64 * osg_model::TICK_SECONDS - display_ns as f64 * 1e-9).max(0.0))
+        .or_else(|| (speed > 0.0).then(|| remaining / speed));
+    Some((transit.destination, remaining, eta, transit.failure_ppm))
+}
 
 pub(super) fn install(app: &mut App) {
     app.add_systems(
@@ -81,6 +108,8 @@ fn waypoint(
 fn draw(
     mut contexts: EguiContexts,
     mut selected: ResMut<Selection>,
+    clock: Res<RenderTime>,
+    details: Query<&ShipDetails>,
     beacons: Query<(&NavigationObject, &DisplayPose)>,
     celestials: Query<(&Celestial, &DisplayPose)>,
     cameras: Query<(
@@ -119,6 +148,12 @@ fn draw(
             .iter()
             .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship);
         let origin = ship.map_or(view.origin, |(_, pose)| pose.0.position);
+        let transit = ship.and_then(|(ship, pose)| {
+            let details = details
+                .iter()
+                .find(|details| details.0.ship == ship.0.ship)?;
+            slip_destination(&ship.0, &pose.0, &details.0, clock.display_ns)
+        });
         let queue: Vec<_> = ship
             .into_iter()
             .flat_map(|(ship, _)| {
@@ -186,6 +221,9 @@ fn draw(
             .into_iter()
             .filter_map(|(i, w, color)| w.map(|w| (i, w, color)))
         {
+            if transit.is_some() && ship.is_some_and(|(ship, _)| index == ship.0.travel.order) {
+                continue;
+            }
             let (point, offscreen) = projection.marker(waypoint.position.relative_to(view.origin));
             marker(&painter, point, color);
             let mut text_point = point;
@@ -216,6 +254,52 @@ fn draw(
                 color,
             );
             select(ctx, &mut selected, point, waypoint.target, view.view);
+        }
+        if let Some((destination, remaining, eta, failure_ppm)) = transit {
+            let (point, offscreen) = projection.marker(destination.relative_to(view.origin));
+            painter.circle_stroke(point, 10.0, egui::Stroke::new(1.5, SLIP_COLOR));
+            let eta = eta.map_or_else(|| "—".to_owned(), |seconds| format!("{seconds:.1} s"));
+            label(
+                &painter,
+                label_bounds,
+                point,
+                &format!(
+                    "{}Slip destination · {} · ETA {}",
+                    if offscreen { "Offscreen · " } else { "" },
+                    distance(remaining),
+                    eta
+                ),
+                SLIP_COLOR,
+            );
+            label(
+                &painter,
+                label_bounds,
+                point + egui::vec2(0.0, 17.0),
+                &format!(
+                    "Failure chance: {}",
+                    crate::ui::travel_risk::odds(failure_ppm)
+                ),
+                crate::ui::travel_risk::color(Some(failure_ppm)),
+            );
+            let locked = details
+                .iter()
+                .find(|details| Some(details.0.ship) == observation.0.focused_ship)
+                .is_some_and(|details| details.0.slip_navigation_lock == Some(true));
+            label(
+                &painter,
+                label_bounds,
+                point + egui::vec2(0.0, 34.0),
+                if locked {
+                    "[BEACON LOCKED]"
+                } else {
+                    "[NO BEACON]"
+                },
+                if locked {
+                    SLIP_COLOR
+                } else {
+                    egui::Color32::from_rgb(255, 75, 75)
+                },
+            );
         }
     }
     Ok(())
@@ -281,6 +365,63 @@ mod tests {
     use bevy::math::DVec3;
 
     #[test]
+    fn active_slip_destination_survives_missing_route_and_updates_eta_after_beacon_loss() {
+        let id = Id([1; 16]);
+        let mut pose = Pose::default();
+        pose.velocity = [1000.0, 0.0, 0.0];
+        let mut ship = osg_model::ShipTelemetry {
+            can_control: true,
+            appearance: None,
+            radius_m: 10.0,
+            dock_services: default(),
+            iff: osg_model::IffIdentity {
+                owner: id,
+                faction: None,
+                labels: default(),
+                enabled: true,
+            },
+            ship: id,
+            authority_revision: 1,
+            spatial_instance: id,
+            presence: travel::Presence::SlipTransit(id),
+            pose: Some(pose.clone()),
+            battery_j: 0,
+            hull_heat_j: 0.0,
+            shield_temperature_k: 0.0,
+            coolant_reserve_kg: 0.0,
+            travel: default(),
+        };
+        let destination = pose.position.offset_by(DVec3::X * 10000.0);
+        let mut details = crate::ui::console::tests::details();
+        details.slip_transit = Some(osg_model::presentation::SlipTransitTelemetry {
+            departed_ns: 0,
+            destination,
+            failure_ppm: 5000.0,
+            direction: [1.0, 0.0, 0.0],
+        });
+        assert_eq!(
+            slip_destination(&ship, &pose, &details, 0),
+            Some((destination, 10000.0, Some(10.0), 5000.0))
+        );
+
+        ship.travel.estimated_arrival_tick = Some(100);
+        pose.position = pose.position.offset_by(DVec3::X * 2000.0);
+        assert_eq!(
+            slip_destination(&ship, &pose, &details, 2_000_000_000),
+            Some((destination, 8000.0, Some(8.0), 5000.0))
+        );
+
+        details.slip_navigation_lock = Some(false);
+        ship.pose.as_mut().unwrap().velocity = [100.0, 0.0, 0.0];
+        assert_eq!(
+            slip_destination(&ship, &pose, &details, 2_000_000_000),
+            Some((destination, 8000.0, Some(80.0), 5000.0))
+        );
+        ship.presence = travel::Presence::Space;
+        assert!(slip_destination(&ship, &pose, &details, 2_000_000_000).is_none());
+    }
+
+    #[test]
     fn long_waypoint_labels_fit_the_viewport_without_covering_the_toolbar() {
         let context = egui::Context::default();
         osg_ui::theme::install(&context);
@@ -332,7 +473,6 @@ mod tests {
             }),
         ] {
             let action = travel::Order::Slip {
-                speed_ly_s: 0.01,
                 navigation_beacon: None,
                 destination: travel::Destination::Relative {
                     reference,
@@ -397,7 +537,6 @@ mod tests {
         let far = anchor.offset_by(DVec3::Z * 9_460_730_472_580_800.);
         for action in [
             travel::Order::Slip {
-                speed_ly_s: 0.01,
                 navigation_beacon: None,
                 destination: travel::Destination::Galactic(far),
             },

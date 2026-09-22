@@ -1,5 +1,5 @@
 use bevy::prelude::*;
-use osg_model::{AccountId, Id, IffIdentity, InfoGroupKey};
+use osg_model::{AccountId, Id, IffIdentity};
 use std::{
     collections::HashMap,
     sync::{Arc, RwLock},
@@ -12,12 +12,13 @@ pub struct Identity(pub Id);
 pub struct SpatialInstance(pub Id);
 
 pub fn renew_spatial_instance(world: &mut World, entity: Entity) {
+    super::sensors::invalidate(world, entity);
     world.entity_mut(entity).insert(SpatialInstance(Id::new()));
 }
 
-pub fn track_spatial_instance(track: Id, instance: Id) -> Id {
-    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame track spatial instance v1");
-    hash.update(&track.0);
+pub fn observation_spatial_instance(observation: Id, instance: Id) -> Id {
+    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame observation spatial instance v1");
+    hash.update(&observation.0);
     hash.update(&instance.0);
     Id(hash.finalize().as_bytes()[..16].try_into().unwrap())
 }
@@ -32,30 +33,15 @@ pub struct Control {
 pub struct Transponder(pub IffIdentity);
 
 #[derive(Component)]
-#[relationship(relationship_target = GroupShips)]
-pub struct Membership(pub Entity);
-
-#[derive(Component, Default)]
-#[relationship_target(relationship = Membership)]
-pub struct GroupShips(Vec<Entity>);
-
-#[derive(Component)]
 pub struct Account {
-    pub group: Entity,
     pub debug: bool,
 }
 
 #[derive(Resource, Default)]
 pub struct IdentityIndex(pub HashMap<Id, Entity>);
 
-#[derive(Resource, Default)]
-pub struct GroupIndex(pub HashMap<InfoGroupKey, Entity>);
-
 #[derive(Resource)]
 pub struct WorldEpoch(pub Id);
-
-#[derive(Resource)]
-pub struct SensorSeed(pub [u8; 32]);
 
 #[derive(Component)]
 pub struct DirectoryEmitter;
@@ -143,8 +129,6 @@ pub fn initialize(world: &mut World, accounts: &[AccountId]) {
     world.init_resource::<IdentityIndex>();
     world.init_resource::<AppearanceAssets>();
     world.insert_resource(WorldEpoch(Id::new()));
-    world.insert_resource(SensorSeed(rand::random()));
-    super::intelligence::initialize(world);
     super::ownership::initialize(world);
     for &id in accounts {
         add_account(world, id, false);
@@ -159,17 +143,13 @@ pub fn add_account(world: &mut World, id: Id, debug: bool) -> Entity {
         }
         return entity;
     }
-    let group = super::intelligence::join(world, InfoGroupKey(rand::random()));
-    let entity = world
-        .spawn((Account { group, debug }, OwnedShips::default()))
-        .id();
+    let entity = world.spawn((Account { debug }, OwnedShips::default())).id();
     register(world, entity, id);
     entity
 }
 
 pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result<()> {
     let account = add_account(world, owner, false);
-    let group = world.get::<Account>(account).unwrap().group;
     let design = &world.get::<super::vessel::ShipDesign>(ship).unwrap().0;
     let bytes = osg_ships::appearance::ShipAppearance::from(design.as_ref()).to_bytes()?;
     let appearance = *blake3::hash(&bytes).as_bytes();
@@ -189,13 +169,11 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
         ControlledBy(account),
         super::ownership::AssetOwner(osg_model::ownership::Principal::Player(owner)),
         super::ownership::AssetAccess::default(),
-        Membership(group),
         Transponder(IffIdentity {
             owner,
             faction,
             labels: name.into_iter().collect(),
             enabled: true,
-            range_m: 1e8,
         }),
         Appearance(appearance),
     ));
@@ -215,11 +193,19 @@ pub fn identify_celestials(
     }
 }
 
-pub fn clean_indexes(
-    mut identities: ResMut<IdentityIndex>,
-    mut groups: ResMut<GroupIndex>,
-    alive: Query<Entity>,
-) {
+pub fn clean_indexes(mut identities: ResMut<IdentityIndex>, alive: Query<Entity>) {
     identities.0.retain(|_, entity| alive.contains(*entity));
-    groups.0.retain(|_, entity| alive.contains(*entity));
+}
+
+pub fn pose(
+    transform: &super::precision::PreciseTransform,
+    velocity: Option<&super::physics::Velocity>,
+    angular: Option<&super::physics::AngularVelocity>,
+) -> osg_model::Pose {
+    osg_model::Pose {
+        position: transform.translation_um,
+        rotation: transform.rotation.to_array(),
+        velocity: velocity.map_or([0.; 3], |value| value.0.to_array()),
+        angular_velocity: angular.map_or([0.; 3], |value| value.0.to_array()),
+    }
 }

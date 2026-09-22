@@ -1,7 +1,7 @@
 use super::super::{ViewCamera, ViewMember};
 use crate::state::SessionInfo;
 use crate::state::{
-    CombatPublication, Contact, OwnedShip, RenderTime, SpatialInstance, ViewObservation,
+    CombatPublication, Optical, OwnedShip, RenderTime, SpatialInstance, ViewObservation,
 };
 use bevy::{
     asset::RenderAssetUsages,
@@ -84,7 +84,7 @@ fn render(
     fixed: Res<Time<Fixed>>,
     session: Res<SessionInfo>,
     publications: Query<&CombatPublication>,
-    contacts: Query<(&Contact, Option<&SpatialInstance>)>,
+    contacts: Query<(&Optical, Option<&SpatialInstance>)>,
     owned: Query<(&OwnedShip, Option<&SpatialInstance>)>,
     mut cameras: Query<(
         Entity,
@@ -123,8 +123,8 @@ fn render(
                     contacts
                         .iter()
                         .find(|(contact, _)| {
-                            contact.1.group == observation.0.group
-                                && (contact.0.id == focus || contact.0.entity == Some(focus))
+                            contact.0.view == observation.0.id
+                                && (contact.0.id == focus || contact.0.known_entity == Some(focus))
                         })
                         .and_then(|(_, instance)| instance.map(|instance| instance.0))
                 })
@@ -344,8 +344,8 @@ mod tests {
                     radius_m: 0.01,
                 },
             };
-            let first = make(0, 100_000_000);
-            let second = make(100_000_000, 200_000_000);
+            let first = make(0, osg_model::TICK_NS);
+            let second = make(osg_model::TICK_NS, 2 * osg_model::TICK_NS);
             let camera =
                 anchor.offset_by(DVec3::Z * 100. + (camera_velocity + boost) * (now as f64 * 1e-9));
             exposure(

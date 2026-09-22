@@ -53,8 +53,8 @@ record!(Pose {
     angular_velocity: [f64; 3],
 });
 record!(ContactRef {
-    group: [u8; 16],
-    track: [u8; 16]
+    observer: [u8; 16],
+    contact: u64
 });
 record!(Destination {
     kind: u64,
@@ -77,7 +77,6 @@ record!(Order {
     mode: u64,
     range_m: f64,
     tick: u64,
-    speed_ly_s: f64,
     navigation_beacon_present: u64,
     navigation_beacon: [u8; 16],
 });
@@ -117,7 +116,6 @@ record!(SlipEligibilityQuery {
     destination: Position,
     departure_after_seconds: f64,
     arrival_after_seconds: f64,
-    speed_ly_s: f64,
     navigation_beacon_present: u64,
     navigation_beacon: [u8; 16],
 });
@@ -133,7 +131,7 @@ record!(ResolveQuery {
 record!(TravelReply {
     autopilot_enabled: u64, preferences: Preferences, revision: u64, index: u64,
     order_present: u64, order: QueuedOrder, status: u64, reason: Text<256>,
-    arrival_present: u64, arrival_tick: u64, pose: Pose, slip_ready: u64,
+    arrival_present: u64, arrival_tick: u64, pose: Pose, slip_ready: u64, slip_axis: [f64; 3],
 });
 record!(RouteRequest {
     id: u64,
@@ -169,7 +167,6 @@ record!(Slip {
     revision: u64,
     order: u64,
     destination: Position,
-    speed_ly_s: f64,
     navigation_beacon_present: u64,
     navigation_beacon: [u8; 16],
 });
@@ -194,7 +191,7 @@ record!(Undock {
 pub mod raw {
     use super::*;
 
-    #[link(wasm_import_module = "ship_v32")]
+    #[link(wasm_import_module = "ship")]
     unsafe extern "C" {
         pub fn orrery_read(
             query: *const OrreryQuery,

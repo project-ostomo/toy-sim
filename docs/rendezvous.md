@@ -2,7 +2,7 @@
 
 The standard firmware can fly a ship toward another ship on its own. The host exposes this through two requests, `SelectTarget` and `EngageNavigation`, and a navigation instrument. This guide describes that contract, the hardware it needs, the states it reports, how the simulator uses it, and the tests that check it.
 
-The current guidance is a **braking rendezvous**. It flies to an aim point and slows down so that it arrives with near-zero relative velocity. The aim point is the target, or a point short of the target when a stand-off is requested. When the ship is within 2 m of the aim point and within 0.5 m/s of the target's velocity, guidance ends and returns to `Ready`. It does not keep station afterwards. [pursuit-trajectory-design.md](pursuit-trajectory-design.md) is an older design proposal written for the previous full-thrust pursuit law.
+The current guidance is a **braking rendezvous**. It flies to an aim point and slows down so that it arrives with near-zero relative velocity. The aim point is the target, or a point short of the target when a stand-off is requested. When the ship is within 2 m of the aim point and within 0.5 m/s of the target's velocity, guidance ends and returns to `Ready`. It does not keep station afterwards.
 
 The same guidance flies sublight legs of travel orders in the authoritative world. The current-command executor feeds it a synthetic contact instead of a sensor contact ([Travel legs](#travel-legs)).
 
@@ -85,7 +85,7 @@ strategic queue stored in host-owned ship state. The flight computer reads only
 the active order. Within that order, it generates local manoeuvre points,
 avoids known obstacles, escapes slip-exclusion volumes and corrects its course.
 These intermediate points are private execution state and do not become server
-queue entries. `LocalSpace` supplies bounded public and fused observations with
+queue entries. `LocalSpace` supplies bounded public navigation and current sensor observations with
 an explicit incomplete-result flag; it does not supply steering instructions.
 
 For a sublight manoeuvre, the executor builds a contact with ID `u64::MAX` from
@@ -144,7 +144,7 @@ It also publishes a contacts instrument that names the selected target, and a `M
 
 Select a contact in the Overview or scene HUD, then use Selected Item to Align, Approach or Keep range. Selection alone issues no guidance command, and Mark/Fire controls remain separate. Navigation displays guidance telemetry and queue controls; the upper-left autopilot panel and scene HUD show the route and stage ETAs. Gate Network requests strategic route previews from the public server service and commits them with **Engage route**; the flight computer generates the local maneuvers during flight. The bottom HUD shows thrust, torque, reserves, heat and computer state. Inventory, Industry, Local Chat and Society are available from the left toolbar. See [The client UI](server-client.md#the-client-ui) for the remaining controls.
 
-The startup scene includes an orbital traffic ship. Travel orders and target pursuit use the same session commands available to remote clients. Demo retaliation resolves targets through the ship's fused contact handles.
+The startup scene includes an orbital traffic ship. Travel orders and target pursuit use the same session commands available to remote clients. Demo retaliation resolves targets through the ship's current sensor handles.
 
 ## Checking designs
 

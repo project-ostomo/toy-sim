@@ -93,7 +93,7 @@ impl Drop for Server {
 #[derive(Default)]
 struct Measurements {
     frames: usize,
-    tracks: usize,
+    contacts: usize,
     bytes: usize,
     compressed: usize,
     encode_s: f64,
@@ -143,23 +143,11 @@ async fn measure(
 ) -> Result<Measurements> {
     let mut endpoint = osg_client::connect(&address, server_key, account, &key).await?;
     let first = receive(&mut endpoint).await?;
-    let group = first
-        .tracks
-        .keys()
-        .copied()
-        .find(|group| *group != PUBLIC_GROUP)
-        .context("missing account group")?;
     let mut sequence = 0;
     let mut actions = vec![Action::Subscribe(ViewSubscription {
         id: 1,
         revision: 1,
-        group,
         focused_ship: first.ships.first().map(|ship| ship.ship),
-        query: TrackQuery {
-            limit: 256,
-            work: 1_000_000,
-            ..Default::default()
-        },
     })];
     if debug {
         actions.push(Action::Debug(DebugCommand::Inspect(true)));
@@ -193,7 +181,7 @@ async fn measure(
         last_tick = Some(frame.tick);
         acknowledge(&endpoint, &frame, &mut sequence, Vec::new()).await?;
         result.frames += 1;
-        result.tracks += frame.tracks.values().map(Vec::len).sum::<usize>();
+        result.contacts += frame.contacts.values().map(Vec::len).sum::<usize>();
         if let Some(diagnostics) = &frame.presentation.diagnostics {
             result.tick_ms += diagnostics.tick_duration_ms;
             result.tick_samples += 1;
@@ -338,14 +326,14 @@ async fn main() -> Result<()> {
         .map(|result| result.tick_samples)
         .sum::<usize>();
     println!(
-        "ships,sessions,frames_per_session,tracks_per_frame,frame_bytes,recompressed_zstd_bytes,reencode_ms,recompress_ms,encoder_bytes_per_session,server_tick_ms,server_cpu_percent,server_rss_kib,server_peak_rss_kib,received_hz,skipped_ticks"
+        "ships,sessions,frames_per_session,contacts_per_frame,frame_bytes,recompressed_zstd_bytes,reencode_ms,recompress_ms,encoder_bytes_per_session,server_tick_ms,server_cpu_percent,server_rss_kib,server_peak_rss_kib,received_hz,skipped_ticks"
     );
     println!(
         "{},{},{},{:.1},{:.1},{:.1},{:.3},{:.3},{},{:.3},{:.1},{},{},{:.2},{}",
         options.ships,
         options.sessions,
         options.frames,
-        results.iter().map(|result| result.tracks).sum::<usize>() as f64 / frames,
+        results.iter().map(|result| result.contacts).sum::<usize>() as f64 / frames,
         results.iter().map(|result| result.bytes).sum::<usize>() as f64 / frames,
         results
             .iter()

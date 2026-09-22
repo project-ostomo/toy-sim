@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use super::commands::{authorize as ship_authority, observe};
 use super::identity::{self, Account, Control, Identity, WorldEpoch};
-use super::intelligence::Group;
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 
@@ -39,7 +38,6 @@ pub struct Events(pub VecDeque<osg_model::Event>);
 pub struct Session {
     pub account: AccountId,
     uploads: crate::blueprint_uploads::BlueprintUploads,
-    pub groups: BTreeSet<GroupId>,
     pub views: BTreeMap<u64, ViewSubscription>,
     pub screens: BTreeMap<(EntityId, u8), u8>,
     pub instruments: BTreeSet<EntityId>,
@@ -59,11 +57,7 @@ pub fn connect(
     uploads: crate::blueprint_uploads::BlueprintUploads,
 ) -> Result<Entity> {
     let owner = identity::lookup(world, account)?;
-    let group = world
-        .get::<Account>(owner)
-        .ok_or_else(|| anyhow::anyhow!("account unavailable"))?
-        .group;
-    let group = world.get::<Group>(group).unwrap().id;
+    ensure!(world.get::<Account>(owner).is_some(), "account unavailable");
     let sent_event = world
         .resource::<Events>()
         .0
@@ -73,7 +67,6 @@ pub fn connect(
         .spawn(Session {
             account,
             uploads,
-            groups: BTreeSet::from([group, PUBLIC_GROUP]),
             views: BTreeMap::new(),
             screens: BTreeMap::new(),
             instruments: BTreeSet::new(),
@@ -281,15 +274,7 @@ impl Session {
             Action::IndustrySubscribe(subscription) => self.industry.subscribe(subscription)?,
             Action::IndustryUnsubscribe => self.industry.unsubscribe(),
             Action::Society(command) => super::ownership::apply(world, self.account, command)?,
-            Action::JoinGroup(key) => {
-                ensure!(self.groups.len() < 16, "group subscription limit");
-                let entity = super::intelligence::join(world, key);
-                let group = world.get::<Group>(entity).unwrap().id;
-                self.groups.insert(group);
-                return Ok(Some(Reply::JoinedGroup(group)));
-            }
             Action::Subscribe(view) => {
-                ensure!(self.groups.contains(&view.group), "group access denied");
                 ensure!(
                     self.views.contains_key(&view.id) || self.views.len() < 8,
                     "view limit"
@@ -364,17 +349,6 @@ impl Session {
                     Some(authority_revision),
                     super::commands::permission(&command),
                 )?;
-                let target_group = match &command {
-                    ShipCommand::Aim { group, .. } | ShipCommand::MarkTarget { group, .. } => {
-                        Some(*group)
-                    }
-                    ShipCommand::Flight(FlightCommand::SelectTarget(target)) => Some(target.group),
-                    _ => None,
-                };
-                ensure!(
-                    target_group.is_none_or(|group| self.groups.contains(&group)),
-                    "target group access denied"
-                );
                 if let ShipCommand::ScreenInput { slot, .. } = &command {
                     ensure!(
                         self.screens.contains_key(&(ship, *slot)),
@@ -399,56 +373,42 @@ impl Session {
         self.instruments
             .retain(|ship| observe(world, self.account, *ship).is_ok());
         let tick = world.resource::<SimulationCounters>().ticks;
-        let mut tracks: BTreeMap<GroupId, BTreeMap<TrackId, Track>> = self
-            .groups
-            .iter()
-            .map(|group| (*group, BTreeMap::new()))
+        let focused: BTreeSet<_> = self
+            .views
+            .values()
+            .filter_map(|view| view.focused_ship)
+            .chain(self.instruments.iter().copied())
+            .chain(self.screens.keys().map(|(ship, _)| *ship))
             .collect();
-        let mut views = Vec::new();
-        let mut work = 2_000_000_u64;
-        for view in self.views.values() {
-            let mut query = view.query.clone();
-            query.work = query.work.min(work);
-            let focus_pose = view
-                .focused_ship
-                .and_then(|id| identity::lookup(world, id).ok())
-                .and_then(|entity| ship_pose(world, entity));
-            if let (Some(pose), Some((position, _))) = (&focus_pose, &mut query.sphere) {
-                *position = pose.position;
+        let mut contacts: BTreeMap<EntityId, BTreeMap<u64, SensorObservation>> = BTreeMap::new();
+        for id in &focused {
+            if let Ok(entity) = observe(world, self.account, *id) {
+                contacts.insert(
+                    *id,
+                    world
+                        .get::<super::sensors::Observations>(entity)
+                        .map(|value| value.0.contacts.clone())
+                        .unwrap_or_default(),
+                );
             }
-            let group = identity::lookup(world, view.group)?;
-            let snapshot = world
-                .get::<Group>(group)
-                .ok_or_else(|| anyhow::anyhow!("group unavailable"))?
-                .snapshot
-                .clone();
-            let page = osg_intel::query::Queries::default().start(
-                snapshot,
-                query,
-                tick,
-                osg_model::wasm_world::ReplyCapacity::UNLIMITED,
-            )?;
-            work = work.saturating_sub(page.gas_used);
-            views.push(ViewState {
-                focused_ship: view.focused_ship,
-                origin: focus_pose
-                    .map(|pose| pose.position)
-                    .or(view.query.sphere.map(|(position, _)| position))
-                    .unwrap_or(GalacticPosition::ZERO),
+        }
+        let views: Vec<_> = self
+            .views
+            .values()
+            .map(|view| ViewState {
                 id: view.id,
                 revision: view.revision,
-                group: view.group,
-                tracks: page.tracks.iter().map(|track| track.id).collect(),
-                completion: page.completion,
-            });
-            tracks
-                .get_mut(&view.group)
-                .unwrap()
-                .extend(page.tracks.into_iter().map(|track| (track.id, track)));
-        }
-        let visible: BTreeSet<_> = tracks
+                focused_ship: view.focused_ship,
+                origin: view
+                    .focused_ship
+                    .and_then(|id| identity::lookup(world, id).ok())
+                    .and_then(|entity| ship_pose(world, entity))
+                    .map_or(GalacticPosition::ZERO, |pose| pose.position),
+            })
+            .collect();
+        let visible: BTreeSet<_> = contacts
             .values()
-            .flat_map(|tracks| tracks.values().filter_map(|track| track.entity))
+            .flat_map(|contacts| contacts.values().filter_map(|contact| contact.entity))
             .collect();
         let history = &world.resource::<Events>().0;
         let events = history
@@ -478,6 +438,7 @@ impl Session {
             .filter_map(|(_, entity)| super::commands::ship_telemetry(world, *entity, self.account))
             .collect();
         let mut presentation = PresentationFrame::default();
+        presentation.slip = super::slip_effects::observe(world, self.account, &views);
         presentation.navigation = super::infrastructure::navigation_snapshot(
             world,
             &views,
@@ -491,20 +452,15 @@ impl Session {
             })
             .collect();
         let (optical, optically_visible) =
-            self.optical.observe(world, self.account, &views, &tracks);
+            self.optical.observe(world, self.account, &views, &contacts);
         presentation.combat = super::combat::for_session(
             world,
-            &tracks,
+            &self.optical.references(),
             &optically_visible,
             &self.optical.previous_entities,
             self.sent_event,
         );
         self.optical.previous_entities = optically_visible;
-        for group in tracks.values_mut() {
-            for track in group.values_mut() {
-                track.appearance = None;
-            }
-        }
         let owner = identity::lookup(world, self.account)?;
         if world
             .get::<Account>(owner)
@@ -607,9 +563,9 @@ impl Session {
                 .min(u64::MAX as u128) as u64,
             rate: world.resource::<Clock>().rate,
             views,
-            tracks: tracks
+            contacts: contacts
                 .into_iter()
-                .map(|(group, tracks)| (group, tracks.into_values().collect()))
+                .map(|(observer, contacts)| (observer, contacts.into_values().collect()))
                 .collect(),
             ships,
             screens,
@@ -637,7 +593,7 @@ pub fn ship_pose(world: &World, entity: Entity) -> Option<Pose> {
     if let Some(transit) = world.get::<super::travel::Transit>(entity) {
         return Some(transit.pose(pose.rotation.to_array()));
     }
-    Some(super::intelligence::pose(
+    Some(super::identity::pose(
         pose,
         world.get::<super::physics::Velocity>(entity),
         world.get::<super::physics::AngularVelocity>(entity),
@@ -706,7 +662,6 @@ mod tests {
                     faction: None,
                     labels: BTreeSet::new(),
                     enabled: true,
-                    range_m: 1e8,
                 }),
             ))
             .id();
@@ -1016,48 +971,31 @@ mod tests {
     }
 
     #[test]
-    fn group_secret_grants_views_without_granting_ship_control() {
+    fn views_require_access_to_the_focused_ship() {
         let (mut world, session, _, ship_id, ship) = fixture();
-        let other_owner = Id::new();
-        let other = identity::add_account(&mut world, other_owner, false);
-        let group_entity = world.get::<Account>(other).unwrap().group;
-        let group = world.get::<Group>(group_entity).unwrap();
-        let key = group.key.unwrap();
-        let group_id = group.id;
-        super::super::ownership::capture_control(&mut world, ship, other_owner).unwrap();
-        let view = ViewSubscription {
-            id: 1,
-            revision: 1,
-            group: group_id,
-            focused_ship: None,
-            query: TrackQuery {
-                limit: 16,
-                work: 10_000,
-                ..Default::default()
-            },
-        };
-        let command = batch(&world, 1, Id::new(), Action::Subscribe(view.clone()));
-        input(&mut world, session, command).unwrap();
-        assert!(world.get::<Session>(session).unwrap().views.is_empty());
-
-        let command = batch(&world, 2, Id::new(), Action::JoinGroup(key));
-        input(&mut world, session, command).unwrap();
-        let command = batch(&world, 3, Id::new(), Action::Subscribe(view));
-        input(&mut world, session, command).unwrap();
-        assert_eq!(world.get::<Session>(session).unwrap().views.len(), 1);
-
+        super::super::ownership::capture_control(&mut world, ship, Id::new()).unwrap();
         let command = batch(
             &world,
-            4,
+            1,
             Id::new(),
-            Action::Ship {
-                ship: ship_id,
-                authority_revision: 1,
-                command: ShipCommand::SetTransponderEnabled(false),
-            },
+            Action::Subscribe(ViewSubscription {
+                id: 1,
+                revision: 1,
+                focused_ship: Some(ship_id),
+            }),
         );
         input(&mut world, session, command).unwrap();
-        assert!(world.get::<Transponder>(ship).unwrap().0.enabled);
+        assert!(world.get::<Session>(session).unwrap().views.is_empty());
+        assert!(
+            world
+                .get::<Session>(session)
+                .unwrap()
+                .results
+                .back()
+                .unwrap()
+                .error
+                .is_some()
+        );
     }
 
     #[test]

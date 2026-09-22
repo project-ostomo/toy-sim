@@ -214,7 +214,7 @@ impl AssetLoader for ShipLoader {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).await?;
         let appearance = osg_ships::appearance::ShipAppearance::from_bytes(&bytes)?;
-        Ok(ShipAppearance(appearance.prepare(&Catalogue::builtin())?))
+        Ok(ShipAppearance(appearance.prepare(&Catalogue::builtin())))
     }
 }
 

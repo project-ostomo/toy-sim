@@ -60,6 +60,7 @@ pub fn run(
             &Hull,
             &mut ShipThermal,
             &mut ShipInventory,
+            Option<&super::super::travel::Transit>,
         ),
         Without<super::super::travel::SystemsSuspended>,
     >,
@@ -67,7 +68,7 @@ pub fn run(
 ) {
     let dt = time.delta_secs_f64();
     let water = cat.0.resources.iter().position(|r| r.id == "water");
-    for (design, installed, hull, mut thermal, mut inventory) in &mut ships {
+    for (design, installed, hull, mut thermal, mut inventory, transit) in &mut ships {
         for &entity in &installed.0 {
             let Ok((mut device, radiator, emergency)) = parts.get_mut(entity) else {
                 continue;
@@ -93,15 +94,29 @@ pub fn run(
                 } else {
                     design.0.hull_heat_capacity_j.max(1.0) / 1200.0
                 };
-                let cooled = thermal::cooled(
+                let cooled = thermal::exchanged(
                     temperature,
                     capacity,
                     radiator.area_m2 * radiator.emissivity / thermal::EMISSIVITY,
                     dt,
+                    if transit.is_some() {
+                        thermal::SLIPSPACE_K
+                    } else {
+                        thermal::BACKGROUND_K
+                    },
                 )
                 .max(300.0);
-                device.0.actual =
-                    remove_heat(state, (temperature - cooled) * capacity, shield) / dt;
+                let exchanged = (temperature - cooled) * capacity;
+                if exchanged >= 0.0 {
+                    device.0.actual = remove_heat(state, exchanged, shield) / dt;
+                } else {
+                    if shield {
+                        state.shield_energy_j -= exchanged;
+                    } else {
+                        state.hull_energy_j -= exchanged;
+                    }
+                    device.0.actual = exchanged / dt;
+                }
             }
             if let (Some(emergency), Some(water)) = (emergency, water) {
                 let fraction = state.hull_energy_j / design.0.hull_heat_capacity_j.max(1.0);
@@ -144,7 +159,6 @@ mod tests {
     #[test]
     fn emergency_cooling_spends_only_water_needed_and_respects_damage() {
         use bevy::ecs::system::RunSystemOnce;
-        use std::time::Duration;
         let mut fixture = super::super::fixtures::HardwareFixture::standard();
         let water = fixture
             .app
@@ -174,7 +188,7 @@ mod tests {
             .app
             .world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         let heat = fixture.design.hull_heat_capacity_j;
         fixture
             .app
@@ -208,7 +222,6 @@ mod tests {
     #[test]
     fn radiator_rejects_stored_hull_heat_without_consuming_resources() {
         use bevy::ecs::system::RunSystemOnce;
-        use std::time::Duration;
         let mut fixture = super::super::fixtures::HardwareFixture::standard();
         let part = fixture
             .app
@@ -224,7 +237,7 @@ mod tests {
             .app
             .world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         let heat = fixture.design.hull_heat_capacity_j * 0.5;
         fixture
             .app
@@ -239,7 +252,8 @@ mod tests {
         assert!(after.thermal.hull_energy_j < heat);
         assert!(after.thermal.hull_energy_j >= 0.0);
         assert_eq!(after.inventory.quantities, before);
-        let rejected = fixture.app.world().get::<Device>(part).unwrap().0.actual * 0.1;
+        let rejected =
+            fixture.app.world().get::<Device>(part).unwrap().0.actual * osg_model::TICK_SECONDS;
         assert!((heat - after.thermal.hull_energy_j - rejected).abs() < 1e-6);
     }
 }

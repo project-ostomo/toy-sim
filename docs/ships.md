@@ -81,9 +81,7 @@ A `ShipBlueprint` ([design.rs](../crates/osg-ships/src/design.rs)) contains:
 
 | Field | Type | Default |
 | --- | --- | --- |
-| `format_version` | u32 | Must equal `SHIP_FORMAT_VERSION` = 3. A missing value reads as 0 and is rejected. |
 | `name` | string | "Untitled ship" in a new design; at most 256 bytes |
-| `catalogue_revision` | u32 | 4 |
 | `parts` | list of `PlacedPart` | |
 | `firmware` | `Standard` or `Custom(bytes)` | `Standard` |
 | `avionics` | `Avionics` | sensor enabled, orientation 0, no exclusions |

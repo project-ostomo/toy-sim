@@ -69,9 +69,12 @@ fn animate(
         let Ok(ring) = rings.get(emitter.ring) else {
             continue;
         };
-        let power = 8.0 + 60_000.0 * ring.displayed.powi(2);
+        let phase = time.elapsed_secs() * 2.7;
+        let surge = 0.8 + 0.2 * (phase + (phase * 0.37).sin()).sin();
+        let power = 8.0 + 18_000.0 * ring.displayed.powi(2) * surge;
         if let Some(mut material) = materials.get_mut(&material.0) {
-            material.emissive = LinearRgba::rgb(power * 0.22, power * 0.65, power);
+            material.emissive =
+                LinearRgba::rgb(power * (0.22 + 0.1 * phase.sin()), power * 0.55, power);
         }
     }
 }

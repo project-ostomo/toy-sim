@@ -1,5 +1,5 @@
 use osg_model::industry::{CargoItem, IndustryCapability, ItemStack};
-use osg_ships::{Catalogue, Inventory, ShipState, aggregate_stacks, industry, missiles};
+use osg_ships::{Catalogue, Inventory, ShipState, aggregate_stacks, industry};
 
 fn resource(id: &str, quantity: u64) -> ItemStack {
     ItemStack {
@@ -161,22 +161,6 @@ fn catalogue_recipes_conserve_material_and_do_not_synthesize_fissiles_from_inert
             }));
         }
     }
-
-    let missile = recipes
-        .iter()
-        .find(|recipe| recipe.id == "interceptor_missile")
-        .unwrap();
-    assert_eq!(
-        industry::stack_mass_mg(&missile.inputs, &cat).unwrap(),
-        400_000_000
-    );
-    assert_eq!(missile.stored_energy_j, missiles::BATTERY_J);
-    assert!(
-        missile
-            .inputs
-            .contains(&resource(missiles::PROPELLANT, missiles::FUEL_KG))
-    );
-    assert_eq!(missile.outputs, vec![resource(missiles::AMMUNITION, 1)]);
 }
 
 #[test]
@@ -223,7 +207,7 @@ fn reservations_preserve_mass_and_block_resource_transfer_refill_and_part_transf
     let mut target = Inventory::empty(&cat);
     let water = cat.resources.iter().position(|r| r.id == "water").unwrap();
     let kit = ItemStack {
-        item: CargoItem::Part(missiles::BODY_PART.into()),
+        item: CargoItem::Part("battery_2m".into()),
         quantity: 2,
     };
     source.tank_capacities_m3[water] = 1.;
@@ -396,14 +380,14 @@ fn starter_stock_funds_a_complete_launch_and_fits_the_station_warehouse() {
 #[test]
 fn part_recipes_follow_equipment_family_for_new_catalogue_members() {
     let mut cat = Catalogue::builtin();
-    let mut part = cat.part(missiles::BODY_PART).unwrap().clone();
-    part.id = "new_interceptor_body".into();
+    let mut part = cat.part("battery_2m").unwrap().clone();
+    part.id = "new_battery".into();
     part.mass_kg = 123.456789;
     cat.parts.push(part);
     let recipes = industry::recipes(&cat).unwrap();
     let recipe = recipes
         .iter()
-        .find(|recipe| recipe.id == "part:new_interceptor_body")
+        .find(|recipe| recipe.id == "part:new_battery")
         .unwrap();
     assert_eq!(recipe.capability, IndustryCapability::Fabricator);
     assert_eq!(

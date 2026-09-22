@@ -3,10 +3,10 @@
 pub const AU_M: f64 = 149_597_870_700.0;
 pub const LY_M: f64 = 9.460_730_472_580_8e15;
 pub const SOLAR_MASS_KG: f64 = 1.988_47e30;
-pub const DISPERSION_FLOOR_RAD: f64 = 1.074_392_580_830_121_9e-8;
-pub const DISPERSION_SPEED_COEFFICIENT: f64 = 0.000_095_495_498_773_401_54;
+pub const DISPERSION_RAD: f64 = 1.074_392_580_830_121_9e-7;
 pub const BEACON_PRECISION: f64 = 36.0;
-pub const MAX_SPEED_LY_S: f64 = 1.0;
+pub const CRUISE_SPEED_LY_S: f64 = 0.3;
+pub const MIN_TRANSIT_SECONDS: f64 = 3.0;
 pub const CHARGE_J_PER_KG_LY: f64 = 5_000.0;
 pub const MIN_CHARGE_SECONDS: f64 = 10.0;
 pub const EXOTIC_RESOURCE: &str = "exotic_fuel";
@@ -16,68 +16,121 @@ pub fn charging_energy_j(mass_kg: f64, distance_ly: f64) -> f64 {
 }
 
 pub fn exclusion_radius_m(mass_kg: f64) -> f64 {
-    0.008 * AU_M * (mass_kg.max(0.0) / SOLAR_MASS_KG).cbrt()
+    0.08 * AU_M * (mass_kg.max(0.0) / SOLAR_MASS_KG).cbrt()
 }
 
-pub fn dispersion_rad(speed_ly_s: f64, assisted: bool) -> f64 {
-    (DISPERSION_SPEED_COEFFICIENT * speed_ly_s.powi(2)).max(DISPERSION_FLOOR_RAD)
-        / if assisted { BEACON_PRECISION } else { 1.0 }
+pub fn dispersion_rad(assisted: bool) -> f64 {
+    DISPERSION_RAD / if assisted { BEACON_PRECISION } else { 1.0 }
 }
 
-pub fn capture_probability(radius_m: f64, distance_m: f64, speed_ly_s: f64, assisted: bool) -> f64 {
+/// Independent transverse increments telescope to variance (sigma * distance)^2.
+pub fn walk_variance(progress_m: f64, step_m: f64, assisted: bool) -> f64 {
+    dispersion_rad(assisted).powi(2)
+        * step_m.max(0.0)
+        * (2.0 * progress_m.max(0.0) + step_m.max(0.0))
+}
+
+#[test]
+fn diffusion_and_conditional_capture_calibration() {
+    for assisted in [false, true] {
+        let whole = walk_variance(0.0, 100.0 * LY_M, assisted);
+        let split = walk_variance(0.0, 30.0 * LY_M, assisted)
+            + walk_variance(30.0 * LY_M, 70.0 * LY_M, assisted);
+        assert!((whole / split - 1.0).abs() < 1e-14);
+    }
+    // Noncentral chi-square survival probabilities (two degrees of freedom).
+    for (radius, offset, variance, expected) in [
+        (2.0, 0.5, 1.0, 0.16914063850946723),
+        (2.0, 2.0, 1.0, 0.6035009606119934),
+        (2.0, 3.0, 1.0, 0.8867207544023924),
+        (5.0, 1.0, 1.0, 0.00007436210694179456),
+        (1.0, 0.99, 0.0001, 0.15987427315134783),
+        (1.0, 1.01, 0.0001, 0.8425456155934448),
+    ] {
+        let actual = displaced_capture_loss(radius, offset, variance);
+        assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+    }
+}
+
+/// Probability that an isotropic Gaussian endpoint misses a circular capture area.
+/// Integrate radial Gaussian tails; avoid subtracting nearly equal probabilities
+/// for a well-centered, low-risk approach.
+pub fn displaced_capture_loss(radius: f64, offset: f64, variance: f64) -> f64 {
+    if radius <= 0.0 {
+        return 1.0;
+    }
+    if variance <= 0.0 {
+        return f64::from(offset > radius);
+    }
+    if offset == 0.0 {
+        return (-radius.powi(2) / (2.0 * variance)).exp();
+    }
+    let samples = 256;
+    let pi = std::f64::consts::PI;
+    let mut sum = 0.0;
+    if offset <= radius {
+        for i in 0..samples {
+            let angle = pi * (i as f64 + 0.5) / samples as f64;
+            let root = (radius.powi(2) - (offset * angle.sin()).powi(2))
+                .max(0.0)
+                .sqrt();
+            let along = offset * angle.cos();
+            let distance = if along > 0.0 {
+                (radius - offset) * (radius + offset) / (root + along)
+            } else {
+                root - along
+            };
+            sum += (-distance.powi(2) / (2.0 * variance)).exp();
+        }
+        sum / samples as f64
+    } else {
+        let limit = (radius / offset).asin();
+        for i in 0..samples {
+            let theta = 0.5 * pi * (i as f64 + 0.5) / samples as f64;
+            let angle = limit * theta.sin();
+            let root = (radius.powi(2) - (offset * angle.sin()).powi(2))
+                .max(0.0)
+                .sqrt();
+            let far = offset * angle.cos() + root;
+            let near = (offset - radius) * (offset + radius) / far;
+            sum += ((-near.powi(2) / (2.0 * variance)).exp()
+                - (-far.powi(2) / (2.0 * variance)).exp())
+                * limit
+                * theta.cos();
+        }
+        (1.0 - sum / (2.0 * samples as f64)).clamp(0.0, 1.0)
+    }
+}
+
+pub fn cruise_speed_ly_s(assisted: bool) -> f64 {
+    CRUISE_SPEED_LY_S / if assisted { 1.0 } else { 10.0 }
+}
+
+pub fn flight_seconds(distance_m: f64, assisted: bool) -> f64 {
+    (distance_m.max(0.0) / LY_M / cruise_speed_ly_s(assisted)).max(MIN_TRANSIT_SECONDS)
+}
+
+pub fn capture_probability(radius_m: f64, distance_m: f64, assisted: bool) -> f64 {
     if radius_m <= 0.0 {
         return 0.0;
     }
     if distance_m <= 0.0 {
         return 1.0;
     }
-    let ratio = radius_m / (distance_m * dispersion_rad(speed_ly_s, assisted));
+    let ratio = radius_m / (distance_m * dispersion_rad(assisted));
     -(-0.5 * ratio * ratio).exp_m1()
 }
 
 /// Compute loss directly so very small ppm budgets remain representable.
-pub fn capture_loss_ppm(radius_m: f64, distance_m: f64, speed_ly_s: f64, assisted: bool) -> f64 {
+pub fn capture_loss_ppm(radius_m: f64, distance_m: f64, assisted: bool) -> f64 {
     if radius_m <= 0.0 {
         return 1_000_000.0;
     }
     if distance_m <= 0.0 {
         return 0.0;
     }
-    let ratio = radius_m / (distance_m * dispersion_rad(speed_ly_s, assisted));
+    let ratio = radius_m / (distance_m * dispersion_rad(assisted));
     (-0.5 * ratio * ratio).exp() * 1e6
-}
-
-pub fn fastest_speed_ly_s(
-    radius_m: f64,
-    distance_m: f64,
-    max_loss_ppm: f64,
-    assisted: bool,
-) -> Option<f64> {
-    if !radius_m.is_finite()
-        || radius_m <= 0.0
-        || !distance_m.is_finite()
-        || distance_m < 0.0
-        || !max_loss_ppm.is_finite()
-        || !(0.0..=1_000_000.0).contains(&max_loss_ppm)
-    {
-        return None;
-    }
-    if max_loss_ppm == 1_000_000.0 || distance_m == 0.0 {
-        return Some(MAX_SPEED_LY_S);
-    }
-    if max_loss_ppm == 0.0 {
-        return None;
-    }
-    let sigma = radius_m / distance_m / (-2.0 * (max_loss_ppm / 1e6).ln()).sqrt();
-    let unassisted_sigma = sigma * if assisted { BEACON_PRECISION } else { 1.0 };
-    if unassisted_sigma < DISPERSION_FLOOR_RAD {
-        return None;
-    }
-    Some(
-        (unassisted_sigma / DISPERSION_SPEED_COEFFICIENT)
-            .sqrt()
-            .min(MAX_SPEED_LY_S),
-    )
 }
 
 pub fn exotic_fuel_kg(departure_mass_kg: f64, distance_ly: f64) -> f64 {
@@ -104,14 +157,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn floor_and_assisted_calibration_match_design() {
+    fn fixed_dispersion_preserves_capture_odds_with_tenfold_radii() {
         let radius = exclusion_radius_m(SOLAR_MASS_KG);
-        let distance = 10.0 * LY_M;
-        assert!((capture_probability(radius, distance, 0.0, false) - 0.5).abs() < 1e-12);
-        assert!(fastest_speed_ly_s(radius, distance, 100.0, false).is_none());
-        let speed = fastest_speed_ly_s(radius, distance, 100.0, true).unwrap();
-        assert!((10.0 / speed - 300.0).abs() < 1e-8);
-        assert!((capture_probability(radius, distance, speed, true) - 0.9999).abs() < 1e-12);
+        assert!((radius / AU_M - 0.08).abs() < 1e-12);
+        assert!((capture_probability(radius, 10.0 * LY_M, false) - 0.5).abs() < 1e-12);
+        assert!(capture_loss_ppm(radius, 100.0 * LY_M, true) < 130.0);
+        assert_eq!(flight_seconds(1000.0, false), 3.0);
+        assert!((flight_seconds(LY_M, false) / flight_seconds(LY_M, true) - 10.0).abs() < 1e-12);
+        assert!((flight_seconds(LY_M, true) - 1.0 / CRUISE_SPEED_LY_S).abs() < 1e-12);
     }
 
     #[test]

@@ -1,22 +1,12 @@
 use osg_model::{
-    Tag,
+    IffIdentity,
     ownership::{Principal, Standing},
 };
 use osg_ui::{desktop::THREAT, egui};
-use std::collections::BTreeSet;
 
-pub(super) fn advertised_principal(tags: &BTreeSet<Tag>) -> Option<Principal> {
-    tags.iter()
-        .find_map(|tag| match tag {
-            Tag::IffOwner(id) => Some(Principal::Player(*id)),
-            _ => None,
-        })
-        .or_else(|| {
-            tags.iter().find_map(|tag| match tag {
-                Tag::IffFaction(id) => Some(Principal::Organization(*id)),
-                _ => None,
-            })
-        })
+pub(super) fn advertised_principal(iff: Option<&IffIdentity>) -> Option<Principal> {
+    iff.filter(|iff| iff.enabled)
+        .map(|iff| Principal::Player(iff.owner))
 }
 
 pub(super) fn color(standing: Option<Standing>) -> egui::Color32 {
@@ -50,7 +40,7 @@ pub(super) fn symbol(standing: Option<Standing>) -> &'static str {
 mod tests {
     use super::*;
     use osg_model::{
-        Id, Tag,
+        Id,
         ownership::{OwnershipDirectory, Principal},
     };
     use std::collections::BTreeSet;
@@ -64,9 +54,17 @@ mod tests {
             (Principal::Player(observer), Principal::Player(advertised)),
             Standing::Hostile,
         );
-        let tags = BTreeSet::from([Tag::IffOwner(advertised)]);
-        assert_eq!(color(directory.track_standing(observer, &tags)), THREAT);
-        assert_eq!(directory.track_standing(observer, &BTreeSet::new()), None);
+        let iff = IffIdentity {
+            owner: advertised,
+            faction: None,
+            labels: BTreeSet::new(),
+            enabled: true,
+        };
+        assert_eq!(
+            color(directory.contact_standing(observer, Some(&iff))),
+            THREAT
+        );
+        assert_eq!(directory.contact_standing(observer, None), None);
         assert_eq!(color(None), color(Some(Standing::Neutral)));
     }
 }

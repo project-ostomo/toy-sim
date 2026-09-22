@@ -357,6 +357,59 @@ fn authored_surfaces_have_explicit_climates_and_biospheres() {
 }
 
 #[test]
+fn neris_moons_have_plausible_densities_and_separated_bound_orbits() {
+    let configs = crate::handcrafted_configs();
+    let system = &configs[0];
+    let planet = system
+        .bodies
+        .iter()
+        .find(|body| body.name == "Helion I Neris")
+        .unwrap();
+    let star = system
+        .bodies
+        .iter()
+        .find(|body| body.name == "Helion")
+        .unwrap();
+    let hill = planet.orbit.semi_major
+        * (1.0 - planet.orbit.eccentricity)
+        * (planet.mass / (3.0 * star.mass)).cbrt();
+    let mut moons: Vec<_> = system
+        .bodies
+        .iter()
+        .filter(|body| body.parent.as_deref() == Some(planet.name.as_str()))
+        .collect();
+    moons.sort_by(|a, b| a.orbit.semi_major.total_cmp(&b.orbit.semi_major));
+    assert_eq!(moons.len(), 5);
+
+    for moon in &moons {
+        let density = moon.mass / (4.0 / 3.0 * PI * moon.radius.powi(3));
+        assert!((2000.0..4000.0).contains(&density), "{} density", moon.name);
+        let roche = 2.44 * (3.0 * planet.mass / (4.0 * PI * density)).cbrt();
+        let periapsis = moon.orbit.semi_major * (1.0 - moon.orbit.eccentricity);
+        let apoapsis = moon.orbit.semi_major * (1.0 + moon.orbit.eccentricity);
+        assert!(periapsis > roche + moon.radius);
+        assert!(apoapsis < hill * 0.35);
+        assert!((moon.orbit.inclination - planet.orbit.inclination).abs() < 0.05);
+        let period = 2.0
+            * PI
+            * (moon.orbit.semi_major.powi(3)
+                / (crate::physics::GRAVITATIONAL_CONSTANT * (planet.mass + moon.mass)))
+                .sqrt();
+        assert!((moon.rotation.rotation_period / period - 1.0).abs() < 1e-8);
+    }
+
+    for pair in moons.windows(2) {
+        let [inner, outer] = [pair[0], pair[1]];
+        let mutual_hill = ((inner.mass + outer.mass) / (3.0 * planet.mass)).cbrt()
+            * (inner.orbit.semi_major + outer.orbit.semi_major)
+            * 0.5;
+        let gap = outer.orbit.semi_major * (1.0 - outer.orbit.eccentricity)
+            - inner.orbit.semi_major * (1.0 + inner.orbit.eccentricity);
+        assert!(gap > 10.0 * mutual_hill + inner.radius + outer.radius);
+    }
+}
+
+#[test]
 fn generated_weather_matches_atmosphere_and_does_not_imply_life() {
     let mut atmospheric = 0;
     let mut bare = 0;

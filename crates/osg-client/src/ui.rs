@@ -1,6 +1,5 @@
 pub(crate) mod celestials;
 mod console;
-mod contacts;
 mod input;
 mod scene;
 mod selection;
@@ -99,13 +98,11 @@ mod tests {
             appearance: None,
             radius_m: 10.,
             dock_services: Default::default(),
-            info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {
                 owner: Id([1; 16]),
                 faction: None,
                 labels: Default::default(),
                 enabled: true,
-                range_m: 1e8,
             },
             ship: id,
             authority_revision: 1,
@@ -137,15 +134,15 @@ mod tests {
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(first));
         assert!(
-            matches!(world.resource::<Outgoing>().pending(), [(_, Action::InstrumentSubscribe {ship})] if *ship == first)
+            matches!(world.resource::<Outgoing>().pending(), [(_, Action::InstrumentSubscribe {ship}), (_, Action::Subscribe(view))] if *ship == first && view.focused_ship == Some(first))
         );
         world.run_system_once(selection::synchronize).unwrap();
-        assert_eq!(world.resource::<Outgoing>().pending().len(), 1);
+        assert_eq!(world.resource::<Outgoing>().pending().len(), 2);
 
         world.despawn(removed);
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(second));
-        assert_eq!(world.resource::<Outgoing>().pending().len(), 3);
+        assert_eq!(world.resource::<Outgoing>().pending().len(), 5);
     }
 
     #[test]
@@ -172,7 +169,7 @@ mod tests {
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(patrol_id));
         assert!(matches!(world.resource::<Outgoing>().pending(),
-            [(_, Action::InstrumentSubscribe { ship })] if *ship == patrol_id));
+            [(_, Action::InstrumentSubscribe { ship }), (_, Action::Subscribe(view))] if *ship == patrol_id && view.focused_ship == Some(patrol_id)));
 
         world.resource_mut::<Selection>().ship = Some(station_id);
         world.run_system_once(selection::synchronize).unwrap();
@@ -192,9 +189,7 @@ mod tests {
         world.init_resource::<Outgoing>();
         let first = Id([1; 16]);
         let built = Id([2; 16]);
-        let group = Id([3; 16]);
         world.insert_resource(SessionInfo {
-            groups: vec![group],
             ..Default::default()
         });
         world.spawn(ship(first));
@@ -230,9 +225,6 @@ mod tests {
             origin: GalacticPosition::ZERO,
             id: 1,
             revision: 7,
-            group,
-            tracks: Vec::new(),
-            completion: Completion::Complete,
         }));
         world.run_system_once(selection::synchronize).unwrap();
         world.resource_mut::<Selection>().ship = Some(built);
@@ -273,8 +265,8 @@ mod tests {
         world.insert_resource(Selection {
             ship: Some(Id([2; 16])),
             target: Some(SelectedTarget::Contact(ContactRef {
-                group: Id([3; 16]),
-                track: Id([4; 16]),
+                observer: Id([3; 16]),
+                contact: (4) as u64,
             })),
             view: Some(7),
         });

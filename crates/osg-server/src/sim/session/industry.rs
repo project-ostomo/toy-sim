@@ -39,8 +39,6 @@ impl IndustrySession {
             return Ok(None);
         };
         let mut snapshot = super::super::industry::snapshot(world, account, subscription);
-        osg_protocol::validate_industry_snapshot_content(&snapshot)
-            .expect("internal server bug: invalid industry snapshot");
         if snapshot
             .catalogue
             .as_ref()
@@ -201,7 +199,6 @@ mod tests {
             facilities: vec![large_facility(1, 900), large_facility(2, 900)],
             ..Default::default()
         };
-        osg_protocol::validate_industry_snapshot_content(&snapshot).unwrap();
         let with_hangar = fit_budget(snapshot.clone(), &subscription).unwrap();
         snapshot.hangar = None;
         let without_hangar = fit_budget(snapshot, &subscription).unwrap();

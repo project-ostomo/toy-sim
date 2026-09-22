@@ -9,7 +9,7 @@ fn fixture() -> (Catalogue, CompiledShipDesign, ShipState) {
 }
 
 #[test]
-fn old_designs_are_rejected_and_control_configuration_roundtrips() {
+fn control_configuration_roundtrips() {
     let (cat, d, _) = fixture();
     let mut ship = d.blueprint;
     ship.avionics.control_orientation = 7;
@@ -25,13 +25,6 @@ fn old_designs_are_rejected_and_control_configuration_roundtrips() {
             .control_enabled
     );
     assert_eq!(loaded.avionics, ship.avionics);
-    ship.format_version = 1;
-    assert!(
-        ShipBlueprint::from_bytes(&ship.to_bytes().unwrap())
-            .unwrap_err()
-            .to_string()
-            .contains("incompatible ship format")
-    );
 }
 #[test]
 fn rotations_are_the_24_unique_proper_cube_rotations() {

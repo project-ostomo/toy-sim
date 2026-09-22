@@ -86,7 +86,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     if ship.travel.orders.is_empty() {
         ui.weak("No route queued.");
     }
-    let now = model.time_ns / 100_000_000;
+    let now = model.time_ns / osg_model::TICK_NS;
     let arrivals = ship.travel.stage_arrivals(now);
     egui::ScrollArea::vertical()
         .max_height(180.)

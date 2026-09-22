@@ -8,7 +8,7 @@ use bevy::{
     render::render_resource::AsBindGroup,
     shader::ShaderRef,
 };
-use osg_model::{ContactRef, optical::flux_w_m2};
+use osg_model::optical::flux_w_m2;
 use std::collections::{HashMap, HashSet};
 
 const MESH_PIXELS: f64 = 3.;
@@ -17,7 +17,7 @@ const ZERO_MAGNITUDE_FLUX_W_M2: f64 = 3.6e-8;
 const REFERENCE_MAGNITUDE: f64 = 6.;
 
 #[derive(Component)]
-pub(super) struct VisualContact(pub Option<ContactRef>);
+pub(super) struct VisualContact(pub Option<osg_model::Id>);
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct GlintMaterial {
@@ -231,9 +231,7 @@ mod tests {
 
     #[test]
     fn glints_keep_shared_assets_and_entities_across_view_and_mesh_changes() {
-        use osg_model::{
-            Completion, GalacticPosition, Id, Pose, ViewState, optical::OpticalObservation,
-        };
+        use osg_model::{GalacticPosition, Id, Pose, ViewState, optical::OpticalObservation};
 
         let mut app = App::new();
         app.init_resource::<Assets<Mesh>>()
@@ -247,9 +245,6 @@ mod tests {
                 origin: GalacticPosition::ZERO,
                 id: 1,
                 revision: 1,
-                group: Id([1; 16]),
-                tracks: Vec::new(),
-                completion: Completion::Complete,
             }))
             .id();
         let mut sources = Vec::new();
@@ -267,6 +262,7 @@ mod tests {
                             view: if id == 3 { 2 } else { 1 },
                             id: Id([id; 16]),
                             spatial_instance: Id([id; 16]),
+                            iff: None,
                             known_entity: None,
                             contact: None,
                             pose: pose.clone(),

@@ -24,12 +24,10 @@ Double-click empty scene space to align the controlled ship along the camera ray
 ## Risk and natural capture
 
 The selected risk is an allowance for estimated slip loss across the complete
-itinerary. The planner composes the individual leg probabilities, chooses speeds
-and intermediate captures, and preserves the remaining allowance through automatic
+itinerary. The planner composes the individual leg probabilities, chooses capture stops, and preserves the remaining allowance through automatic
 replanning. It reports the estimate separately from the requested maximum.
-The planner minimizes travel time within that allowance. A higher maximum can
-therefore produce a faster, less accurate slip; a direct hop can use the full
-allowance even when a slower version would be much safer.
+The planner minimizes travel time within that allowance. A higher maximum can allow a direct jump with greater capture risk, avoiding
+intermediate stops. Cruise speed and dispersion are fixed by guidance availability.
 
 | Maximum risk | Equivalent chance of loss |
 | --- | --- |
@@ -49,13 +47,14 @@ though a subsequent unplanned natural capture could rescue the ship.
 Every physical celestial body contributes an exclusion sphere:
 
 ```text
-R = 0.008 AU × (body mass / solar mass)^(1/3)
+R = 0.08 AU × (body mass / solar mass)^(1/3)
 ```
 
 The exclusion regions are the union of those spheres. Barycentres contribute no
 additional mass or sphere. Engagement requires clearing the regions with the
-whole ship. Once engaged, the ship follows its committed direction at the chosen
-speed. The first natural exclusion intersection ends slip. Bodies move during
+whole ship. Once engaged, the ship follows its committed direction at a fixed cruise speed: 0.3 ly/s with guidance and 0.03 ly/s without it.
+Short journeys are slowed to last at least three seconds. Every slip ring must
+align within one degree of the departure direction. The first natural exclusion intersection ends slip. Bodies move during
 flight, and dormant systems participate in capture queries. Physical collision
 destroys the ship; a body whose surface extends outside its exclusion sphere is
 an unsafe target.
@@ -69,11 +68,10 @@ before exhausting its exotic fuel is lost.
 
 ### Dispersion and beacon guidance
 
-Angular error has two independent Gaussian components. With speed `v` in
-light-years per second, each component's standard deviation is:
+Angular error has two independent Gaussian components. Each component's fixed standard deviation is:
 
 ```text
-sigma(v, B) = max(1.0743925808301219e-8, 0.00009549549877340154 × v²) / B
+sigma(B) = 1.0743925808301219e-7 / B
 B = 1 for blind travel; 36 with authenticated navigation guidance
 ```
 
@@ -85,17 +83,14 @@ P(capture) = 1 − exp(−R² / (2 × D² × sigma²))
 loss in ppm = (1 − P(capture)) × 1,000,000
 ```
 
-The hard floor means that sufficiently slow travel gains no further precision.
-A blind jump aimed at a solar exclusion sphere 10 light-years away has a maximum
+A blind jump aimed at a solar exclusion sphere 10 light-years away has a
 capture probability of 50%. At the default 100 ppm budget, the maximum solar
 single-leg ranges are approximately 2.74 light-years blind and 98.8 light-years
 with guidance. Several legs must divide the itinerary's total risk allowance.
 
-The speed coefficient calibrates a guided 10-light-year solar capture to about
-five minutes at 100 ppm, excluding charging and conventional burns. The maximum
-selected speed is 1 light-year per second. A blind 10-light-year trip cannot gain
-100 ppm reliability merely by taking longer; it needs suitable intermediate
-captures or a different risk allowance.
+A guided 10-light-year journey takes about 333 seconds in transit; an unguided
+one takes about 3,333 seconds. Speed cannot be selected to alter dispersion.
+Routes meet their risk allowance through suitable capture bodies and intermediate stops.
 
 The ppm allowance constrains route planning. The controller chooses the actual
 aim, and the server executes it without correcting it toward the planned target
@@ -165,7 +160,7 @@ The habitat ring speed is `sqrt(g / 94 m)` in opposite directions. GLB node extr
 
 ## Runtime contracts
 
-The host owns `TravelState`, strategic route planning, the remaining risk allowance and presence changes. Standard firmware executes local guidance, target tracking, slip preparation and docking approach. Revision checks reject stale queue edits. Contact guidance uses the fused information group. An unavailable target blocks and retries the command.
+The host owns `TravelState`, strategic route planning, the remaining risk allowance and presence changes. Standard firmware executes local guidance, target tracking, slip preparation and docking approach. Revision checks reject stale queue edits. Contact guidance uses the ship's current sensor detections. An unavailable target blocks and retries the command.
 
 Directory and navigation capabilities come from installed, functioning equipment. Any host with an operational directory transmitter and a lit transponder publicly inhabits every system whose gravitational influence contains it. A conventional ship transponder alone does not advertise a system. The same hardware rules apply when a player builds or moves an installation; no separate station category determines membership. The last qualifying broadcaster going dark, leaving or being destroyed removes public membership.
 

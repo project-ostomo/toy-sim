@@ -11,10 +11,10 @@ fn guest(imports: &str, data: &str, body: &str) -> Vec<u8> {
         r#"(module
         {imports}
         (memory (export "memory") 1)
-        (func (export "ship_api_version") (result i32) i32.const {version})
+        (func (export "game_version") (result i32) i32.const {version})
         {data}
         (func (export "ship_tick") {body}))"#,
-        version = abi::VERSION
+        version = osg_ship_api::GAME_VERSION as u32
     ))
     .unwrap()
 }
@@ -92,34 +92,37 @@ fn input(time: f64) -> Input {
 }
 
 #[test]
-fn old_versions_and_foreign_imports_are_rejected() {
+fn mismatched_game_versions_and_foreign_imports_are_rejected() {
     let mut runtime = ControllerRuntime::new().unwrap();
     runtime.validate_program(&guest("", "", "")).unwrap();
 
-    for version in [12, 29] {
+    for version in [
+        osg_ship_api::GAME_VERSION - 1,
+        osg_ship_api::GAME_VERSION + 1,
+    ] {
         let old = wat::parse_str(format!(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const {version})
+            (func (export "game_version") (result i32) i32.const {version})
             (func (export "ship_tick")))"#,
         ))
         .unwrap();
         let error = runtime.validate_program(&old).unwrap_err();
         assert!(
             error.to_string().contains(&format!(
-                "unsupported ship controller API {version}; expected {}",
-                abi::VERSION
+                "unsupported game version {version}; expected {}",
+                osg_ship_api::GAME_VERSION as u32
             )),
             "{error:#}"
         );
 
         let imports = format!(
-            r#"(import "ship_v{version}" "tick_read" (func (param i32 i32) (result i32)))"#
+            r#"(import "foreign_{version}" "tick_read" (func (param i32 i32) (result i32)))"#
         );
         let error = runtime.compile(&guest(&imports, "", "")).unwrap_err();
         assert!(
             error.to_string().contains(&format!(
-                "unsupported controller import ship_v{version}.tick_read"
+                "unsupported controller import foreign_{version}.tick_read"
             )),
             "{error:#}"
         );
@@ -127,7 +130,7 @@ fn old_versions_and_foreign_imports_are_rejected() {
 }
 
 #[test]
-fn c_and_no_std_rust_share_the_abi_with_persistent_isolated_memory() {
+fn no_std_firmware_has_persistent_isolated_memory() {
     for (bytes, destination) in [
         (
             include_bytes!("fixtures/controller.wasm").as_slice(),
@@ -216,7 +219,7 @@ fn runaway_callback_suspends_without_losing_its_stack_or_rebooting() {
 
 #[test]
 fn invalid_record_lengths_return_status_but_actual_memory_access_traps() {
-    let imports = r#"(import "ship_v32" "flight_read" (func $read (param i32 i32) (result i32)))"#;
+    let imports = r#"(import "ship" "flight_read" (func $read (param i32 i32) (result i32)))"#;
     let body = r#"
         i32.const 0 i32.const 123 i32.store
         i32.const 0 i32.const 169 call $read i32.const -2 i32.ne if unreachable end
@@ -236,10 +239,10 @@ fn invalid_record_lengths_return_status_but_actual_memory_access_traps() {
 }
 
 const PATH_IMPORTS: &str = r#"
-    (import "ship_v32" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
-    (import "ship_v32" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
-    (import "ship_v32" "snapshot_keep" (func $keep (param i64) (result i32)))
-    (import "ship_v32" "snapshot_drop" (func $drop (param i64) (result i32)))
+    (import "ship" "spatial_path_put" (func $path (param i32 i32 i32 i32) (result i32)))
+    (import "ship" "spatial_marker_put" (func $marker (param i32 i32) (result i32)))
+    (import "ship" "snapshot_keep" (func $keep (param i64) (result i32)))
+    (import "ship" "snapshot_drop" (func $drop (param i64) (result i32)))
 "#;
 
 fn path_data() -> String {
@@ -310,8 +313,8 @@ fn omissions_retain_leased_geometry_and_expiration_runs_when_callback_cannot() {
 fn trapped_callback_discards_spatial_instrument_and_hardware_publications() {
     let imports = format!(
         r#"{PATH_IMPORTS}
-        (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-        (import "ship_v32" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
+        (import "ship" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
     "#
     );
     let attitude = abi::AttitudeState {
@@ -336,11 +339,80 @@ fn trapped_callback_discards_spatial_instrument_and_hardware_publications() {
 
 struct CountedSource(Arc<AtomicUsize>);
 
+#[test]
+fn contact_iff_reads_current_identity_and_rejects_lost_handles() {
+    struct Source(Option<SensorContact>);
+    impl ScanSource for Source {
+        fn scan(&self, _: f64, _: usize) -> Vec<SensorContact> {
+            self.0.clone().into_iter().collect()
+        }
+    }
+
+    let imports = r#"(import "ship" "contact_iff" (func $iff (param i64 i32 i32) (result i32)))"#;
+    let size = std::mem::size_of::<abi::ContactIff>();
+    let mut runtime = ControllerRuntime::new().unwrap();
+    for (contact, expected, present) in [
+        (
+            Some(SensorContact {
+                measured: abi::Contact {
+                    id: 7,
+                    ..Default::default()
+                },
+                name: "Advertised".into(),
+                iff: Some((
+                    osg_model::Id([3; 16]),
+                    osg_model::IffIdentity {
+                        owner: osg_model::Id([4; 16]),
+                        faction: None,
+                        labels: ["Advertised".into()].into(),
+                        enabled: true,
+                    },
+                )),
+            }),
+            0,
+            1,
+        ),
+        (
+            Some(SensorContact {
+                measured: abi::Contact {
+                    id: 7,
+                    ..Default::default()
+                },
+                name: "Unknown contact".into(),
+                iff: None,
+            }),
+            0,
+            0,
+        ),
+        (None, abi::ERR_UNAVAILABLE, 0),
+    ] {
+        let check = if expected == 0 {
+            format!("i32.const 0 i64.load i64.const {present} i64.ne if unreachable end")
+        } else {
+            String::new()
+        };
+        let body = format!(
+            "i64.const 7 i32.const 0 i32.const {size} call $iff i32.const {expected} i32.ne if unreachable end {check}"
+        );
+        let mut controller = ready(&mut runtime, &guest(imports, "", &body));
+        let result = controller
+            .run_slice(
+                input(0.),
+                Some(Arc::new(Source(contact))),
+                FUEL_PER_TICK,
+                FUEL_PER_TICK,
+            )
+            .unwrap();
+        assert!(result.callback_completed);
+    }
+}
+
 impl ScanSource for CountedSource {
     fn scan(&self, _: f64, maximum: usize) -> Vec<SensorContact> {
         self.0.fetch_add(1, Ordering::Relaxed);
         assert_eq!(maximum, 256);
         vec![SensorContact {
+            iff: None,
             measured: abi::Contact {
                 id: 7,
                 position_m: [100., 0., 0.],
@@ -354,7 +426,7 @@ impl ScanSource for CountedSource {
 #[test]
 fn scan_reserves_full_cost_and_suspends_before_repeating_provider_work() {
     let imports =
-        r#"(import "ship_v32" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
+        r#"(import "ship" "sensor_scan" (func $scan (param i64 i32 i32 i32) (result i32)))"#;
     let body = r#"(local $status i32)
         (loop $again
             i32.const 8192 i32.const 123 i32.store
@@ -390,8 +462,8 @@ fn scan_reserves_full_cost_and_suspends_before_repeating_provider_work() {
 #[test]
 fn fresh_requests_submitted_during_boot_are_delivered_after_startup() {
     let imports = r#"
-        (import "ship_v32" "request_info" (func $info (param i32 i32 i32) (result i32)))
-        (import "ship_v32" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+        (import "ship" "request_info" (func $info (param i32 i32 i32) (result i32)))
+        (import "ship" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 0 i32.const 24 call $info i32.const 0 i32.ne if unreachable end
@@ -421,9 +493,9 @@ fn fresh_requests_submitted_during_boot_are_delivered_after_startup() {
 #[test]
 fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
     let imports = r#"
-        (import "ship_v32" "screen_define" (func $define (param i32 i32) (result i32)))
-        (import "ship_v32" "screen_begin" (func $begin (param i32 i32) (result i32)))
-        (import "ship_v32" "screen_end" (func $end (param i64) (result i32)))
+        (import "ship" "screen_define" (func $define (param i32 i32) (result i32)))
+        (import "ship" "screen_begin" (func $begin (param i32 i32) (result i32)))
+        (import "ship" "screen_end" (func $end (param i64) (result i32)))
     "#;
     let definition = abi::ScreenDefinition {
         id: 0,
@@ -456,9 +528,9 @@ fn unfinished_screen_frame_is_discarded_and_completed_frame_is_independent() {
 #[test]
 fn borrowed_snapshot_expires_and_retained_snapshot_quota_is_explicit() {
     let imports = r#"
-        (import "ship_v32" "tick_read" (func $tick (param i32 i32) (result i32)))
-        (import "ship_v32" "snapshot_keep" (func $keep (param i64) (result i32)))
-        (import "ship_v32" "snapshot_drop" (func $drop (param i64) (result i32)))
+        (import "ship" "tick_read" (func $tick (param i32 i32) (result i32)))
+        (import "ship" "snapshot_keep" (func $keep (param i64) (result i32)))
+        (import "ship" "snapshot_drop" (func $drop (param i64) (result i32)))
     "#;
     let body = r#"
         i32.const 0 i32.const 96 call $tick drop
@@ -497,11 +569,11 @@ fn borrowed_snapshot_expires_and_retained_snapshot_quota_is_explicit() {
 fn suspended_callback_discards_expired_fire_and_publications_without_faulting() {
     let imports = format!(
         r#"{PATH_IMPORTS}
-        (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-        (import "ship_v32" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
-        (import "ship_v32" "instrument_navigation_put" (func $navigation (param i32 i32) (result i32)))
-        (import "ship_v32" "instrument_weapons_put" (func $weapons (param i32 i32 i32 i32) (result i32)))
-        (import "ship_v32" "instrument_contacts_put" (func $contacts (param i32 i32) (result i32)))
+        (import "ship" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship" "instrument_attitude_put" (func $attitude (param i32 i32) (result i32)))
+        (import "ship" "instrument_navigation_put" (func $navigation (param i32 i32) (result i32)))
+        (import "ship" "instrument_weapons_put" (func $weapons (param i32 i32 i32 i32) (result i32)))
+        (import "ship" "instrument_contacts_put" (func $contacts (param i32 i32) (result i32)))
         "#
     );
     let data = [
@@ -710,7 +782,7 @@ fn weapon_syscalls_reject_invalid_records_and_discard_staged_fire_on_fault() {
         ),
     ] {
         let bytes = guest(
-            r#"(import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
+            r#"(import "ship" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))"#,
             &record_data(0, &setting),
             &format!(
                 "i64.const 1 i64.const {} i32.const 0 i32.const 72 call $write i32.const {status} i32.ne if unreachable end {}",
@@ -764,8 +836,8 @@ fn micropulse_engine_metadata_names_its_charge_resource_without_electrical_input
 fn durable_guest_data_survives_checkpoints_and_reboots() {
     let mut runtime = ControllerRuntime::new().unwrap();
     let bytes = guest(
-        r#"(import "ship_v32" "persistent_read" (func $read (param i32 i32) (result i32)))
-           (import "ship_v32" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
+        r#"(import "ship" "persistent_read" (func $read (param i32 i32) (result i32)))
+           (import "ship" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
         r#"(data (i32.const 64) "hello")"#,
         r#"i32.const 128 i32.const 5 call $read
            if
@@ -793,7 +865,7 @@ fn failed_or_out_of_bounds_callbacks_do_not_commit_durable_writes() {
     ] {
         let mut runtime = ControllerRuntime::new().unwrap();
         let bytes = guest(
-            r#"(import "ship_v32" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
+            r#"(import "ship" "persistent_write" (func $write (param i32 i32) (result i32)))"#,
             r#"(data (i32.const 64) "hello")"#,
             body,
         );
@@ -871,10 +943,10 @@ fn executable_version_negotiation_is_rejected_without_running_guest_code() {
     let bytes = wat::parse_str(format!(
         r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32)
+            (func (export "game_version") (result i32)
                 i32.const {} i32.const 0 i32.add)
             (func (export "ship_tick")))"#,
-        abi::VERSION,
+        osg_ship_api::GAME_VERSION as u32,
     ))
     .unwrap();
     let error = ControllerRuntime::new()
@@ -887,9 +959,9 @@ fn executable_version_negotiation_is_rejected_without_running_guest_code() {
 #[test]
 fn unfinished_screen_draft_survives_suspension_until_screen_end() {
     let imports = r#"
-        (import "ship_v32" "screen_define" (func $define (param i32 i32) (result i32)))
-        (import "ship_v32" "screen_begin" (func $begin (param i32 i32) (result i32)))
-        (import "ship_v32" "screen_end" (func $end (param i64) (result i32)))
+        (import "ship" "screen_define" (func $define (param i32 i32) (result i32)))
+        (import "ship" "screen_begin" (func $begin (param i32 i32) (result i32)))
+        (import "ship" "screen_end" (func $end (param i64) (result i32)))
     "#;
     let definition = abi::ScreenDefinition {
         id: 0,

@@ -236,11 +236,9 @@ pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) ->
         .revision
         .checked_add(1)
         .context("control revision exhausted")?;
-    let group = world.get::<identity::Account>(player).unwrap().group;
     world.entity_mut(entity).insert((
         Control { account, revision },
         identity::ControlledBy(player),
-        identity::Membership(group),
         AssetOwner(Principal::Player(account)),
         AssetAccess::default(),
     ));
@@ -581,7 +579,6 @@ mod tests {
                     faction: Some(organization_id("Unifleet Defense")),
                     labels: BTreeSet::new(),
                     enabled: true,
-                    range_m: 1e8,
                 }),
             ))
             .id();

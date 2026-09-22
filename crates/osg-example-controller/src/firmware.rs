@@ -58,7 +58,7 @@ impl Computer {
         self.scan_window.observed(scan_limit, count);
         let travel_contact = self
             .executor
-            .update(tick.tick, &sample, &self.hardware)
+            .update(tick.tick, &sample, &self.hardware, &contacts[..count])
             .ok()
             .flatten();
         if self.executor.reference_changed
@@ -108,6 +108,12 @@ impl Computer {
                 &sample,
                 &self.hardware,
             );
+        }
+        if let Some(rotation) = self.executor.aim_attitude {
+            let _ = self
+                .pilot
+                .request(abi::REQUEST_HOLD_ATTITUDE, &[], &sample, &self.hardware);
+            self.pilot.hold = Some(glam::DQuat::from_array(rotation));
         }
         self.weapons.observe(&sample, &contacts[..count]);
         self.pilot
@@ -403,8 +409,8 @@ impl Computer {
 
 #[cfg(feature = "firmware")]
 #[unsafe(no_mangle)]
-extern "C" fn ship_api_version() -> u32 {
-    abi::VERSION
+extern "C" fn game_version() -> u32 {
+    osg_ship_api::GAME_VERSION as u32
 }
 
 #[cfg(feature = "firmware")]
@@ -415,8 +421,6 @@ extern "C" fn ship_tick() {
     // The host enters one callback at a time and rejects shared Wasm memories.
     let computer = unsafe { &mut *core::ptr::addr_of_mut!(COMPUTER) };
     match computer.get_or_insert_with(Computer::default).run() {
-        // The parent hull can disappear while this callback is suspended.
-        // Missing hardware ends its work without rebooting surviving missiles.
         Ok(_) | Err(abi::ERR_UNAVAILABLE) => {}
         Err(error) => panic!("flight computer syscall failed: {error}"),
     }
@@ -448,7 +452,10 @@ pub fn draw_display() -> Result<(), i32> {
         })?;
         let lines = [
             "SHIP STATUS".to_string(),
-            format!("SIMULATION {:.1} S", tick.tick as f64 * 0.1),
+            format!(
+                "SIMULATION {:.1} S",
+                tick.tick as f64 * osg_model::TICK_SECONDS
+            ),
             format!(
                 "SPEED {:.2} M/S",
                 glam::DVec3::from_array(flight.velocity).length()

@@ -10,8 +10,6 @@ use std::f64::consts::{PI, TAU};
 
 pub use texture::{SurfaceTextures, peak_work_bytes, texture_bytes};
 
-pub const GENERATOR_VERSION: u32 = 1;
-
 #[derive(Clone, Debug, PartialEq)]
 pub struct SurfaceParameters {
     pub seed: [u8; 32],
@@ -128,7 +126,7 @@ impl SurfaceParameters {
 
     pub fn cache_key(&self) -> [u8; 32] {
         let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame CPU planetary surface recipe");
-        hash.update(&GENERATOR_VERSION.to_le_bytes());
+        hash.update(&osg_ship_api::GAME_VERSION.to_le_bytes());
         hash.update(&self.seed);
         hash.update(&[match self.kind {
             PlanetKind::Rocky => 0,

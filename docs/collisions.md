@@ -27,7 +27,7 @@ Ship geometry is cached per compiled design.
 3. **Weapons.** Copy each armed ship's weapon state and inventory into the solver workspace.
 4. **Simulate** the tick (below).
 5. **Write back.** For each body, write position, rotation, velocity, mass properties and end-of-tick angular velocity, and clear the accumulators. Rewrite the `AccelerometerState` as `force/mass − gravity + impulse Δv/dt` in body axes, plus the angular terms. Write hull, thermal, inventory and installed weapon components back to their ECS entities, and lifetime and hit points back to `Projectile`.
-6. **Effects and destruction.** Record motion segments, shots and impacts through `combat::ingest` for authorized client presentation. Despawn destroyed projectiles. Move destroyed ships into dormant destroyed state, retaining their stable identity and any computer still guiding missiles.
+6. **Effects and destruction.** Record motion segments, shots and impacts through `combat::ingest` for authorized client presentation. Despawn destroyed projectiles. Move destroyed ships into dormant destroyed state, retaining their stable identity.
 7. **Statistics.** Update `CollisionStats` and server tracing: collision step time, body count, index/query/solve times, candidate pairs, geometry queries, impulses, contact reviews, rotational-envelope fallbacks and total impact heat.
 
 ## Motion within a tick
@@ -122,9 +122,7 @@ When a member's hull reaches zero (from impact or heat), a `Destruction` record 
 The server records destruction through `combat::ingest` before changing the
 entity. Ordinary projectiles are despawned. Ships enter `Presence::Destroyed`,
 lose active physics and sensor participation, and retain their stable identity.
-Stored ships become inventory inside the wreck. A destroyed carrier's computer
-continues while guided missiles depend on it; that computer is retired when the
-last dependent stops needing guidance.
+Stored ships become inventory inside the wreck.
 
 Authorized clients receive the destruction event and render the breakup using
 shared billboard effects and debris. The focused hull mesh is removed while its
@@ -160,26 +158,11 @@ cargo test -p osg-server collision
 - spinning spheres keeping their cast normal
 - shared impact damage destroying fast slugs while slow glancing slugs survive
 - projectile expiry at 2 s
-- the captured three-body missile contact cascade and large common orbital motion
+- persistent three-body contact and large common orbital motion
 - bounded rotation caches and conservative extreme-spin envelopes
 
 [ecs.rs](../crates/osg-server/src/sim/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
 
-Two benchmarks are ignored by default. Run them in release mode:
-
-```sh
-# 10,000 and 100,000 bodies in sparse, dense, battles, mixed and slugs scenarios
-cargo test -p osg-server --release sim::physics::collision::solver_tests::scale_benchmark -- --ignored --exact --nocapture
-
-# Nearest-32 sensor queries with occlusion over 10,000 and 100,000 objects
-cargo test -p osg-server --release sim::physics::collision::solver_tests::sensor_scale_benchmark -- --ignored --exact --nocapture
-```
-
-`scale_benchmark` prints the thread count, cold, median and p95 milliseconds, the index, query and solve times, and pair, query and impact counts. On Linux it also prints peak RSS. The shared hash also has `cargo run --release -p osg-spatial --example benchmark`; it measures index construction, visibility/range/segment queries and updates independently of CCD. These CPU results do not measure client GPU performance. See [ship-step-profile.md](ship-step-profile.md) for other profiling commands, and [DEVLOG.md](../DEVLOG.md) for measured sprint workloads and limitations.
-
-## Limitations
-
-- Contacts use a fixed normal restitution coefficient and no friction.
-- Forces are applied as one kick per tick, so gravity and thrust do not curve paths within a tick.
-- Shields are spheres, and hulls are unions of part boxes. Part models do not affect collisions.
-- Projectiles are not in the sensor index.
+The shared hash has `cargo run --release -p osg-spatial --example benchmark`;
+it measures index construction, visibility/range/segment queries and updates
+independently of collision detection. These CPU results do not measure client GPU performance.

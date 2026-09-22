@@ -54,13 +54,13 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
     let interval = interval.unwrap_or(0.);
     wat::parse_str(format!(
         r#"(module
-      (import "ship_v32" "tick_read" (func $header (param i32 i32) (result i32)))
-      (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-      (import "ship_v32" "tick_set_interval" (func $interval (param f64) (result i32)))
-      (import "ship_v32" "request_info" (func $request (param i32 i32 i32) (result i32)))
-      (import "ship_v32" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
+      (import "ship" "tick_read" (func $header (param i32 i32) (result i32)))
+      (import "ship" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+      (import "ship" "tick_set_interval" (func $interval (param f64) (result i32)))
+      (import "ship" "request_info" (func $request (param i32 i32 i32) (result i32)))
+      (import "ship" "request_reply" (func $reply (param i64 i64 i32 i32) (result i32)))
       (memory (export "memory") 1)
-      (func (export "ship_api_version") (result i32) i32.const {})
+      (func (export "game_version") (result i32) i32.const {})
       (func (export "ship_tick")
         i32.const 1024 i32.const 96 call $header drop
         ;; A request triggers a transient fault before t=8. The retry acknowledges it.
@@ -75,14 +75,14 @@ fn test_controller(interval: Option<f64>) -> Vec<u8> {
         i32.const 16 f64.const 0.4 f64.store
         i64.const 6 i64.const 0 i32.const 16 i32.const 8 call $write drop
         f64.const {interval} call $interval drop))"#,
-        abi::VERSION
+        osg_ship_api::GAME_VERSION as u32
     ))
     .unwrap()
 }
 fn step(app: &mut App) {
     app.world_mut()
         .resource_mut::<Time<Fixed>>()
-        .advance_by(std::time::Duration::from_millis(100));
+        .advance_by(osg_model::TICK_DURATION);
     app.world_mut().run_schedule(FixedUpdate);
 }
 
@@ -107,7 +107,7 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
     let design = Arc::new(starter(wasm_bytes.clone()).compile(&cat).unwrap());
     app.insert_resource(ShipCatalogue(cat))
         .insert_resource(WasmRuntime(ControllerRuntime::new().unwrap()))
-        .insert_resource(Time::<Fixed>::from_hz(10.));
+        .insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
     let account = osg_model::Id([11; 16]);
     crate::sim::identity::initialize(app.world_mut(), &[account]);
     let mut entities = vec![];
@@ -162,10 +162,10 @@ fn slip_transit_keeps_computer_callbacks_running() {
         r#"(module
             (memory (export "memory") 1)
             (global $ticks (mut i32) (i32.const 0))
-            (func (export "ship_api_version") (result i32) i32.const {})
+            (func (export "game_version") (result i32) i32.const {})
             (func (export "ship_tick")
                 global.get $ticks i32.const 1 i32.add global.set $ticks))"#,
-        abi::VERSION
+        osg_ship_api::GAME_VERSION as u32
     ))
     .unwrap();
     let (mut app, ships) = fleet_with_program(1, program);
@@ -224,7 +224,7 @@ fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold()
     for i in 0..100 {
         // Exercise the real WASM and hardware throughout a tumble, including angular
         // rates that would inhibit thrust in the pursuit controller's attitude gate.
-        let q = bevy::math::DQuat::from_scaled_axis(spin * (i as f64 * 0.1));
+        let q = bevy::math::DQuat::from_scaled_axis(spin * (i as f64 * osg_model::TICK_SECONDS));
         app.world_mut()
             .get_mut::<PreciseTransform>(target)
             .unwrap()
@@ -322,7 +322,6 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
         travel::SlipDrive {
             preparation: Some(travel::Preparation {
                 destination: Default::default(),
-                speed_ly_s: 0.01,
                 navigation_beacon: None,
                 started: 0,
                 mass: 100.,
@@ -543,38 +542,6 @@ fn simultaneous_startups_are_limited_per_tick() {
 }
 
 #[test]
-#[ignore = "manual wall-clock benchmark"]
-fn profile_default_fleet() {
-    let (mut app, entities) = fleet_with_program(501, EXAMPLE_CONTROLLER.to_vec());
-    for _ in 0..100 {
-        step(&mut app);
-    }
-    let mut samples = Vec::new();
-    for _ in 0..200 {
-        let start = std::time::Instant::now();
-        step(&mut app);
-        samples.push(start.elapsed().as_secs_f64());
-        for &entity in &entities {
-            let software = app.world().get::<ShipSoftware>(entity).unwrap();
-            assert!(
-                software.controller.fault.is_none(),
-                "{:?}",
-                software.controller.fault
-            );
-        }
-    }
-    samples.sort_by(f64::total_cmp);
-    println!(
-        "{} ships; 200 ticks; mean {:.3} ms, p50 {:.3} ms, p95 {:.3} ms, max {:.3} ms",
-        entities.len(),
-        samples.iter().sum::<f64>() * 1000.0 / samples.len() as f64,
-        samples[samples.len() / 2] * 1000.0,
-        samples[samples.len() * 95 / 100] * 1000.0,
-        samples.last().unwrap() * 1000.0,
-    );
-}
-
-#[test]
 fn fault_reboot_budget_pauses_without_power() {
     let (mut app, ships) = fleet(1);
     let ship = ships[0];
@@ -674,9 +641,9 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
 fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
     let program = wat::parse_str(format!(
         r#"(module
-        (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
+        (import "ship" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
         (memory (export "memory") 1)
-        (func (export "ship_api_version") (result i32) i32.const {})
+        (func (export "game_version") (result i32) i32.const {})
         (func (export "ship_tick") (local $remaining i32)
             i32.const 600000 local.set $remaining
             (loop $work
@@ -684,7 +651,7 @@ fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
                 br_if $work)
             i32.const 16 f64.const 0.4 f64.store
             i64.const 6 i64.const 0 i32.const 16 i32.const 8 call $write drop))"#,
-        abi::VERSION
+        osg_ship_api::GAME_VERSION as u32
     ))
     .unwrap();
     let (mut app, ships) = fleet_with_program(1, program);
@@ -719,11 +686,11 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
     let program = wat::parse_str(format!(
         r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const {})
+            (func (export "game_version") (result i32) i32.const {})
             (func $initialize (loop $forever br $forever))
             (start $initialize)
             (func (export "ship_tick")))"#,
-        abi::VERSION
+        osg_ship_api::GAME_VERSION as u32
     ))
     .unwrap();
     let (mut app, pending) = fleet_with_program(osg_ship_wasm::MAX_BOOTS_PER_TICK, program);
@@ -755,84 +722,6 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
             .snapshot()
             .is_ok()
     );
-}
-
-#[test]
-fn shared_missile_callbacks_resume_and_rotate_within_the_parent_account_budget() {
-    let program = wat::parse_str(format!(
-        r#"(module
-            (import "ship_v32" "device_write" (func $write (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v32" "missile_control" (func $control (param i32 i32) (result i32)))
-            (memory (export "memory") 1)
-            (global $ship_calls (mut i32) (i32.const 0))
-            (func (export "ship_api_version") (result i32) i32.const {})
-            (func $work (local $count i32)
-                i32.const 40000 local.set $count
-                (loop $again
-                    local.get $count i32.const 1 i32.sub local.tee $count br_if $again))
-            (func (export "ship_tick")
-                call $work
-                global.get $ship_calls i32.const 1 i32.add global.set $ship_calls
-                i32.const 64 global.get $ship_calls f64.convert_i32_u f64.const 0.001 f64.mul f64.store
-                i64.const 6 i64.const 0 i32.const 64 i32.const 8 call $write drop)
-            (func (export "missile_tick") (param i64)
-                call $work
-                i32.const 16 f64.const -1 f64.store
-                i32.const 24 f64.const 0.2 f64.store
-                i32.const 0 i32.const 32 call $control drop))"#,
-        abi::VERSION
-    )).unwrap();
-    let (mut app, ships) = fleet_with_program(1, program);
-    let parent = ships[0];
-    boot(&mut app, parent);
-    let initial_throttle = throttle(app.world(), parent);
-    app.world_mut()
-        .entity_mut(parent)
-        .insert(super::super::missiles::Launchers::default());
-    app.insert_resource(super::super::missiles::Callbacks(BTreeMap::from([(
-        parent,
-        (1..=3)
-            .map(|handle| {
-                (
-                    handle,
-                    abi::MissileObservation {
-                        handle,
-                        rotation: [0., 0., 0., 1.],
-                        dt_s: 0.1,
-                        ..default()
-                    },
-                )
-            })
-            .collect(),
-    )])));
-    let owner = super::super::gas::payer(app.world(), parent).unwrap();
-    let ledger = super::super::gas::GasLedger::default();
-    ledger.ensure_account(owner, 0);
-    app.insert_resource(ledger.clone());
-    let mut seen = std::collections::BTreeSet::new();
-    let mut spent = 0;
-    let mut suspended = false;
-    for _ in 0..100 {
-        ledger.deposit(owner, 100_000).unwrap();
-        step(&mut app);
-        let mut software = app.world_mut().get_mut::<ShipSoftware>(parent).unwrap();
-        assert!(software.controller.fault.is_none());
-        assert!(software.last_gas_used <= osg_ship_wasm::FUEL_PER_TICK);
-        spent += software.last_gas_used;
-        suspended |= software.controller.is_suspended();
-        for (handle, control) in std::mem::take(&mut software.missile_controls) {
-            assert_eq!(control.throttle, 0.2);
-            seen.insert(handle);
-        }
-        let account = ledger.account(owner).unwrap();
-        assert_eq!(account.spent, spent);
-        assert_eq!(account.reserved, 0);
-        assert!(ledger.snapshot().is_ok());
-    }
-    assert!(suspended, "callbacks must span account-funded slices");
-    assert_eq!(seen, [1, 2, 3].into_iter().collect());
-    assert!(throttle(app.world(), parent) >= initial_throttle + 0.003);
-    assert_eq!(ledger.account(owner).unwrap().available + spent, 10_000_000);
 }
 
 #[test]

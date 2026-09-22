@@ -52,7 +52,6 @@ pub enum Order {
     Sublight(Destination),
     Slip {
         destination: Destination,
-        speed_ly_s: f64,
         navigation_beacon: Option<EntityId>,
     },
     Dock(EntityId),
@@ -165,7 +164,7 @@ impl QueuedOrder {
             estimated_propellant_kg: None,
             estimated_loss_ppm: None,
             estimated_duration_ticks: (seconds.is_finite() && seconds >= 0.)
-                .then(|| (seconds * 10.).ceil() as u64),
+                .then(|| (seconds * crate::TICK_RATE_HZ).ceil() as u64),
         }
     }
 }

@@ -5,7 +5,7 @@ use osg_model::travel::slip;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) struct Environment {
-    source: Arc<FusedScan>,
+    source: Arc<ShipScan>,
     cancel: Arc<AtomicBool>,
     navigation: BTreeMap<Id, Id>,
     assisted: osg_spatial::SpatialHash,
@@ -35,7 +35,7 @@ impl Environment {
         input: &crate::sim::routing::RouteRequest,
     ) -> Result<Self> {
         let mut source =
-            super::current_fused_source(world, ship).context("route observations unavailable")?;
+            super::current_ship_source(world, ship).context("route observations unavailable")?;
         let captured = Arc::get_mut(&mut source).expect("new route observation snapshot");
         captured.radius = input.performance.radius_m;
         captured.mass = input.performance.mass_kg;
@@ -127,6 +127,18 @@ impl Environment {
 }
 
 impl RouteEnvironment for Environment {
+    fn system_targets(&self, id: Id, after_s: f64) -> Result<Vec<CaptureTarget>> {
+        let universe = &self
+            .source
+            .universe
+            .as_ref()
+            .context("universe unavailable")?
+            .registry
+            .universe;
+        let index = universe.system_index(id.0).context("unknown system")?;
+        self.targets(index, after_s)
+    }
+
     fn system(&self, id: Id) -> Result<(Pose, f64)> {
         let universe = &self
             .source
@@ -249,6 +261,14 @@ impl RouteEnvironment for Environment {
             self.check_budget()?;
             ensure!(!self.cancelled(), "route computation cancelled");
             let summary = &universe.systems[index];
+            if slip::exclusion_radius_m(summary.stellar_mass)
+                <= summary.star_radius + self.source.radius
+            {
+                targets.extend(self.targets(index, 0.0)?.into_iter().filter(|target| {
+                    target.radius_m > target.surface_radius_m + self.source.radius
+                }));
+                continue;
+            }
             let reference = crate::sim::registry::model_reference(summary.primary);
             targets.push(CaptureTarget {
                 reference,
@@ -358,18 +378,17 @@ impl RouteEnvironment for Environment {
     }
 
     fn contact(&self, reference: ContactRef) -> Result<(Pose, f64)> {
-        let snapshot = if reference.group == self.source.group {
-            &self.source.snapshot
-        } else if reference.group == PUBLIC_GROUP {
-            &self.source.public
-        } else {
-            anyhow::bail!("contact group unavailable");
-        };
-        let track = snapshot
-            .tracks
-            .get(&reference.track)
+        ensure!(
+            reference.observer == self.source.own,
+            "contact observer unavailable"
+        );
+        let contact = self
+            .source
+            .snapshot
+            .contacts
+            .get(&reference.contact)
             .context("contact unavailable")?;
-        Ok((track.pose.clone(), track.radius_m.unwrap_or(1.0)))
+        Ok((contact.pose.clone(), contact.radius_m))
     }
 
     fn beacon(&self, id: Id) -> Result<Beacon> {
@@ -395,16 +414,12 @@ impl RouteEnvironment for Environment {
         destination: GalacticPosition,
         departure_after_s: f64,
         arrival_after_s: f64,
-        speed_ly_s: f64,
+        assisted: bool,
     ) -> Result<SlipEstimate> {
         let departure = self.source.prediction_epoch(departure_after_s)?;
         ensure!(
             arrival_after_s >= departure_after_s,
             "arrival precedes departure"
-        );
-        ensure!(
-            speed_ly_s > 0.0 && speed_ly_s <= slip::MAX_SPEED_LY_S,
-            "invalid slip speed"
         );
         let universe = &self
             .source
@@ -440,7 +455,7 @@ impl RouteEnvironment for Environment {
             preparation_s: (slip::charging_energy_j(self.source.mass, distance / slip::LY_M)
                 / self.source.slip_power_w)
                 .max(slip::MIN_CHARGE_SECONDS),
-            duration_s: destination.relative_to(origin).length() / slip::LY_M / speed_ly_s,
+            duration_s: slip::flight_seconds(destination.relative_to(origin).length(), assisted),
         })
     }
 

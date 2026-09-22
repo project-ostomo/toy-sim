@@ -7,6 +7,15 @@ struct Environment {
 }
 
 impl RouteEnvironment for Environment {
+    fn system_targets(&self, id: Id, _: f64) -> Result<Vec<CaptureTarget>> {
+        Ok(self
+            .targets
+            .iter()
+            .filter(|target| target.reference.system == id)
+            .cloned()
+            .collect())
+    }
+
     fn system(&self, id: Id) -> Result<(Pose, f64)> {
         let target = self
             .targets
@@ -60,12 +69,12 @@ impl RouteEnvironment for Environment {
         destination: GalacticPosition,
         _: f64,
         _: f64,
-        speed: f64,
+        assisted: bool,
     ) -> Result<SlipEstimate> {
         Ok(SlipEstimate {
             ready: true,
             preparation_s: 10.0,
-            duration_s: destination.relative_to(origin).length() / slip::LY_M / speed,
+            duration_s: slip::flight_seconds(destination.relative_to(origin).length(), assisted),
         })
     }
     fn cancelled(&self) -> bool {

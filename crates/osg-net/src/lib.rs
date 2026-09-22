@@ -140,6 +140,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_rejects_other_game_versions() {
+        let (mut client, mut server) = tokio::io::duplex(1024);
+        let mut hello = [0; 66];
+        hello[..2].copy_from_slice(&(osg_model::GAME_VERSION + 1).to_le_bytes());
+        client.write_all(&hello).await.unwrap();
+
+        let error = crypto::server(
+            &mut server,
+            &SigningKey::from_bytes(&[3; 32]),
+            &BTreeMap::new(),
+        )
+        .await
+        .err()
+        .expect("mismatched game version must fail before authentication");
+        assert!(error.to_string().contains("unsupported game version"));
+    }
+
+    #[tokio::test]
     async fn replayed_record_and_wrong_key_fail() {
         let (mut a, mut b) = tokio::io::duplex(1024);
         crypto::write_record(&mut a, &[1; 32], 0, b"payload", false)

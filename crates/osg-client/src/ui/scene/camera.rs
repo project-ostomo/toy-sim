@@ -120,7 +120,6 @@ pub(super) fn update_views(
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     windows: Query<&Window>,
     beacons: Query<(&crate::state::NavigationObject, &DisplayPose)>,
-    slips: Query<&super::slip::SlipView>,
 ) {
     let size = windows
         .iter()
@@ -156,16 +155,14 @@ pub(super) fn update_views(
         if own_ship.is_some_and(|(ship, _)| ship.0.presence != osg_model::travel::Presence::Space) {
             options.focus = None;
         }
-        let mut private =
-            own_ship.is_some_and(|(ship, _)| ship.0.presence != osg_model::travel::Presence::Space);
-        if let Ok(slip) = slips.get(entity) {
-            if slip.entering {
-                private = false;
-                if let Some(anchor) = &slip.anchor {
-                    origin = anchor.position;
-                }
-            }
-        }
+        let private = own_ship.is_some_and(|(ship, _)| {
+            matches!(
+                ship.0.presence,
+                osg_model::travel::Presence::Docked { .. }
+                    | osg_model::travel::Presence::StoredInWreck(_)
+                    | osg_model::travel::Presence::Destroyed
+            )
+        });
         if private
             && !state.private
             && own_ship.is_some_and(|(ship, _)| {
@@ -193,9 +190,7 @@ pub(super) fn update_views(
                             && object.0.view == view.id
                             && pose.0.position.relative_to(origin).length() <= LOOK_AT_RANGE_M
                     })
-                    .map(|(object, pose)| {
-                        (pose.0.position, reference.track, object.0.radius_m as f32)
-                    }),
+                    .map(|(object, pose)| (pose.0.position, object.0.id, object.0.radius_m as f32)),
                 SelectedTarget::Beacon(id) => beacons
                     .iter()
                     .find(|(beacon, pose)| {

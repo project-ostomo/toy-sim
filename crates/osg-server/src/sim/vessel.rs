@@ -51,7 +51,6 @@ pub struct ShipSoftware {
     pub(crate) last_weapon_request_id: u64,
     pub world_source: Option<Arc<dyn osg_ship_wasm::ScanSource>>,
     pub world_actions: Vec<osg_model::ProgramAction>,
-    pub missile_controls: Vec<(u64, abi::MissileControl)>,
     pub last_input: Option<Input>,
     pub last_gas_used: u64,
     pub last_gas_limit: u64,
@@ -80,7 +79,6 @@ impl ShipSoftware {
             last_weapon_request_id: 0,
             world_source: None,
             world_actions: Vec::new(),
-            missile_controls: Vec::new(),
             last_input: None,
             observed_restart,
             last_gas_used: 0,
@@ -300,11 +298,9 @@ fn flight_allowance(
 
 pub(crate) fn run(
     ledger: Res<super::gas::GasLedger>,
-    llm: Option<Res<super::llm::LlmService>>,
     chat: Option<Res<super::chat::ChatService>>,
     epoch: Res<super::identity::WorldEpoch>,
     time: Res<Time<Fixed>>,
-    callbacks: Option<Res<super::missiles::Callbacks>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     mut ships: Query<
         (
@@ -322,13 +318,10 @@ pub(crate) fn run(
             &super::identity::Identity,
             &super::ownership::AssetOwner,
             Has<super::travel::SystemsSuspended>,
-            Option<&mut super::missiles::Launchers>,
         ),
         Without<super::travel::ArrivalOffset>,
     >,
 ) {
-    use osg_ship_wasm::CallbackKind;
-
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (
@@ -346,27 +339,21 @@ pub(crate) fn run(
         identity,
         owner,
         dormant,
-        _,
     ) in &mut ships
     {
         software.begin_gas_tick(hardware.clock.0);
         software.callback_dt += time.delta_secs_f64();
         software.schedule.advance(time.delta_secs_f64());
-        let shared = callbacks
-            .as_ref()
-            .and_then(|c| c.0.get(&entity))
-            .is_some_and(|c| !c.is_empty());
         let parent_running = !dormant && hardware.computer_running(&design.0);
         let ready = software.controller.is_booting()
             || software.controller.is_suspended()
-            || shared
             || software
                 .schedule
                 .ready(!software.inbox.is_empty() || software.controller.has_pending_input());
         let display_minimum = active_display
             .filter(|_| parent_running)
             .and_then(|display| display.minimum_to_progress(hardware.clock.0));
-        if !(parent_running || shared) || (!ready && display_minimum.is_none()) {
+        if !parent_running || (!ready && display_minimum.is_none()) {
             continue;
         }
 
@@ -400,7 +387,7 @@ pub(crate) fn run(
         }
     }
     let mut starts = 0;
-    for (_, _, hardware, mut software, _, active_display, _, _, _, _, _, _, _, dormant, _) in
+    for (_, _, hardware, mut software, _, active_display, _, _, _, _, _, _, _, dormant) in
         &mut ships
     {
         let grant = software
@@ -427,7 +414,7 @@ pub(crate) fn run(
     }
     ships.par_iter_mut().for_each(
         |(
-            entity,
+            _,
             d,
             mut h,
             mut software,
@@ -441,13 +428,10 @@ pub(crate) fn run(
             identity,
             owner,
             dormant,
-            mut launchers,
         )| {
             let start = std::time::Instant::now();
             let mut timings = ShipStepTimings::default();
             let design = &d.0;
-            let frames = callbacks.as_ref().and_then(|c| c.0.get(&entity));
-            let shared = frames.is_some_and(|frames| !frames.is_empty());
             let parent_running = !dormant && h.computer_running(design);
             display.powered = parent_running;
             display.source = software.world_source.clone();
@@ -456,10 +440,9 @@ pub(crate) fn run(
                 pose.translation_um.y,
                 pose.translation_um.z,
             ];
-            let ready = (parent_running || shared)
+            let ready = parent_running
                 && (software.controller.is_booting()
                     || software.controller.is_suspended()
-                    || shared
                     || software.schedule.ready(
                         !software.inbox.is_empty() || software.controller.has_pending_input(),
                     ));
@@ -529,153 +512,68 @@ pub(crate) fn run(
                 if display_minimum.is_some_and(|display| reserved >= minimum.min(display)) {
                     software.display_priority = !software.display_priority;
                 }
-                let mut used = 0;
-                let mut ship_served = false;
-                let mut served = std::collections::BTreeSet::new();
                 let callback_start = std::time::Instant::now();
-                for _ in 0..super::missiles::MAX_GUIDED_PER_COMPUTER + 2 {
-                    let pending = software.controller.pending_callback();
-                    let booting = software.controller.is_booting();
-                    let ship_ready = parent_running
-                        && !ship_served
-                        && software.schedule.ready(
-                            !input.commands.is_empty() || software.controller.has_pending_input(),
-                        );
-                    let last = launchers.as_ref().map_or(0, |l| l.last_guided);
-                    let next_missile = frames.and_then(|frames| {
-                        frames
-                            .keys()
-                            .copied()
-                            .filter(|handle| !served.contains(handle))
-                            .find(|handle| *handle > last)
-                            .or_else(|| {
-                                frames
-                                    .keys()
-                                    .copied()
-                                    .find(|handle| !served.contains(handle))
-                            })
-                    });
-                    let kind = if let Some(pending) = pending {
-                        pending
-                    } else if booting {
-                        CallbackKind::Ship
-                    } else if let Some(handle) = next_missile.filter(|_| {
-                        !ship_ready || launchers.as_ref().is_some_and(|l| l.next_callback_missile)
-                    }) {
-                        CallbackKind::Missile(handle)
-                    } else if ship_ready {
-                        CallbackKind::Ship
-                    } else {
-                        break;
-                    };
-                    let observation = match kind {
-                        CallbackKind::Missile(handle) => {
-                            Some(frames.and_then(|f| f.get(&handle)).copied().unwrap_or(
-                                abi::MissileObservation {
-                                    handle,
-                                    rotation: [0., 0., 0., 1.],
-                                    dt_s: time.delta_secs_f64(),
-                                    time_s: input.observation.time_s,
-                                    ..Default::default()
-                                },
-                            ))
-                        }
-                        _ => None,
-                    };
-                    let remaining = grant - used;
-                    if !booting
-                        && pending.is_none()
-                        && kind == CallbackKind::Ship
-                        && remaining >= software.controller.minimum_to_progress()
-                    {
-                        input.dt = std::mem::take(&mut software.callback_dt);
-                    } else {
-                        input.dt = time.delta_secs_f64();
+                let booting = software.controller.is_booting();
+                if !booting
+                    && software.controller.pending_callback().is_none()
+                    && grant >= software.controller.minimum_to_progress()
+                {
+                    input.dt = std::mem::take(&mut software.callback_dt);
+                }
+                let source = software.world_source.clone();
+                let services = program_services::Services::new(
+                    chat.as_ref().map(|service| (**service).clone()),
+                    epoch.0,
+                    owner.0,
+                    identity.0,
+                    software.program_hash,
+                    false,
+                );
+                software.controller.set_services(Some(Arc::new(services)));
+                let limit = software.last_gas_limit;
+                let result = software
+                    .controller
+                    .run_slice(input.clone(), source, grant, limit);
+                let used = software.controller.last_gas_used;
+                software.last_gas_used += used;
+                timings.scan += software.controller.last_scan_seconds;
+                if let Some(reservation) = software.gas_reservation.as_mut() {
+                    reservation
+                        .record_used(used)
+                        .expect("computer gas within allowance");
+                } else {
+                    assert_eq!(used, 0, "unfunded computer execution");
+                }
+
+                if booting {
+                    h.reset_commands(design);
+                    if !software.controller.is_booting() {
+                        software.callback_dt = 0.;
+                        software.schedule = default();
+                        software.results.clear();
                     }
-                    let source = software.world_source.clone();
-                    let services = program_services::Services::new(
-                        ledger.clone(),
-                        llm.as_ref().map(|service| (**service).clone()),
-                        chat.as_ref().map(|service| (**service).clone()),
-                        epoch.0,
-                        owner.0,
-                        identity.0,
-                        software.program_hash,
-                        false,
-                    );
-                    software.controller.set_services(Some(Arc::new(services)));
-                    let limit = software.last_gas_limit;
-                    let result = software.controller.run_callback_slice(
-                        kind,
-                        input.clone(),
-                        source,
-                        observation,
-                        remaining,
-                        limit,
-                    );
-                    input.commands.clear();
-                    let consumed = software.controller.last_gas_used;
-                    used += consumed;
-                    software.last_gas_used += consumed;
-                    timings.scan += software.controller.last_scan_seconds;
-                    if let Some(reservation) = software.gas_reservation.as_mut() {
-                        reservation
-                            .record_used(used)
-                            .expect("shared computer gas within allowance");
-                    } else {
-                        assert_eq!(used, 0, "unfunded computer execution");
-                    }
-                    if booting {
-                        h.reset_commands(design);
-                        if !software.controller.is_booting() {
-                            software.callback_dt = 0.;
-                            software.schedule = default();
-                            software.results.clear();
-                        }
-                    }
-                    match result {
-                        Ok(slice) => {
-                            if let Err(error) = h.apply_commands(design, &slice.output.devices) {
-                                h.reset_commands(design);
-                                software.controller.fail(format!("{error:#}"));
-                                warn!("Invalid device commands: {error:#}");
-                                break;
-                            }
+                }
+                match result {
+                    Ok(slice) => {
+                        if let Err(error) = h.apply_commands(design, &slice.output.devices) {
+                            h.reset_commands(design);
+                            software.controller.fail(format!("{error:#}"));
+                            warn!("Invalid device commands: {error:#}");
+                        } else {
                             software.results.extend(slice.output.replies);
                             software.world_actions.extend(slice.output.world_actions);
-                            software.missile_controls.extend(slice.output.missiles);
                             if slice.callback_completed {
-                                match slice.callback {
-                                    Some(CallbackKind::Ship) => {
-                                        software.last_input = Some(input.clone());
-                                        software
-                                            .schedule
-                                            .completed(slice.output.tick_interval_seconds);
-                                        ship_served = true;
-                                        if let Some(launchers) = launchers.as_mut() {
-                                            launchers.next_callback_missile = true;
-                                        }
-                                    }
-                                    Some(CallbackKind::Missile(handle)) => {
-                                        served.insert(handle);
-                                        if let Some(launchers) = launchers.as_mut() {
-                                            launchers.last_guided = handle;
-                                            launchers.next_callback_missile = false;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            if booting || !slice.callback_completed || used == grant {
-                                break;
+                                input.commands.clear();
+                                software.last_input = Some(input);
+                                software
+                                    .schedule
+                                    .completed(slice.output.tick_interval_seconds);
                             }
                         }
-                        Err(error) => {
-                            h.reset_commands(design);
-                            software.missile_controls.clear();
-                            warn!("Ship controller fault: {error:#}");
-                            break;
-                        }
+                    }
+                    Err(error) => {
+                        h.reset_commands(design);
+                        warn!("Ship controller fault: {error:#}");
                     }
                 }
                 timings.callback = callback_start.elapsed().as_secs_f64();
@@ -714,7 +612,6 @@ fn clear_computer_resets(
         software.observed_restart = software.controller.restart_revision;
         software.inbox.clear();
         software.world_actions.clear();
-        software.missile_controls.clear();
         software.results.clear();
         software.last_input = None;
         if let Some(mut travel) = travel {

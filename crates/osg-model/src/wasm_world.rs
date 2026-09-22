@@ -76,8 +76,8 @@ impl From<&abi::Pose> for crate::Pose {
 impl From<&crate::ContactRef> for abi::ContactRef {
     fn from(value: &crate::ContactRef) -> Self {
         Self {
-            group: value.group.0,
-            track: value.track.0,
+            observer: value.observer.0,
+            contact: value.contact,
         }
     }
 }
@@ -85,8 +85,8 @@ impl From<&crate::ContactRef> for abi::ContactRef {
 impl From<&abi::ContactRef> for crate::ContactRef {
     fn from(value: &abi::ContactRef) -> Self {
         Self {
-            group: Id(value.group),
-            track: Id(value.track),
+            observer: Id(value.observer),
+            contact: value.contact,
         }
     }
 }
@@ -209,12 +209,10 @@ impl From<&travel::Order> for abi::Order {
             }
             travel::Order::Slip {
                 destination,
-                speed_ly_s,
                 navigation_beacon,
             } => {
                 output.kind = 4;
                 output.destination = destination.into();
-                output.speed_ly_s = *speed_ly_s;
                 output.navigation_beacon_present = navigation_beacon.is_some() as u64;
                 output.navigation_beacon = navigation_beacon.unwrap_or_default().0;
             }
@@ -251,7 +249,6 @@ impl TryFrom<&abi::Order> for travel::Order {
             3 => Self::Sublight((&value.destination).try_into()?),
             4 => Self::Slip {
                 destination: (&value.destination).try_into()?,
-                speed_ly_s: value.speed_ly_s,
                 navigation_beacon: optional(
                     value.navigation_beacon_present,
                     Id(value.navigation_beacon),
@@ -372,6 +369,7 @@ pub fn travel_record(
     state: &travel::CurrentOrder,
     pose: &crate::Pose,
     slip_ready: bool,
+    slip_axis: [f64; 3],
 ) -> abi::TravelReply {
     let (status, reason) = match &state.status {
         travel::Status::Idle => (0, ""),
@@ -394,6 +392,7 @@ pub fn travel_record(
         arrival_tick: state.estimated_arrival_tick.unwrap_or_default(),
         pose: pose.into(),
         slip_ready: slip_ready as u64,
+        slip_axis,
     }
 }
 
@@ -423,6 +422,7 @@ pub fn travel_reply(value: &abi::TravelReply) -> Result<ProgramReply, ()> {
         },
         pose: (&value.pose).into(),
         slip_ready: flag(value.slip_ready)?,
+        slip_axis: value.slip_axis,
     })
 }
 
@@ -565,7 +565,6 @@ impl TryFrom<&abi::SlipEligibilityQuery> for ProgramQuery {
             destination: position_value(&value.destination),
             departure_after_seconds: value.departure_after_seconds,
             arrival_after_seconds: value.arrival_after_seconds,
-            speed_ly_s: value.speed_ly_s,
             navigation_beacon: optional(
                 value.navigation_beacon_present,
                 Id(value.navigation_beacon),
@@ -657,7 +656,6 @@ action!(
         revision: value.revision,
         order: usize::try_from(value.order).map_err(|_| ())?,
         destination: position_value(&value.destination),
-        speed_ly_s: value.speed_ly_s,
         navigation_beacon: optional(value.navigation_beacon_present, Id(value.navigation_beacon))?,
     }
 );
@@ -705,7 +703,8 @@ impl TryFrom<&ProgramReply> for abi::TravelReply {
                 state,
                 pose,
                 slip_ready,
-            } => Ok(travel_record(state, pose, *slip_ready)),
+                slip_axis,
+            } => Ok(travel_record(state, pose, *slip_ready, *slip_axis)),
             _ => Err(()),
         }
     }
@@ -808,7 +807,6 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
             destination,
             departure_after_seconds,
             arrival_after_seconds,
-            speed_ly_s,
             navigation_beacon,
         } => {
             let input = abi::SlipEligibilityQuery {
@@ -816,7 +814,6 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
                 destination: position_record(destination),
                 departure_after_seconds: *departure_after_seconds,
                 arrival_after_seconds: *arrival_after_seconds,
-                speed_ly_s: *speed_ly_s,
                 navigation_beacon_present: navigation_beacon.is_some() as u64,
                 navigation_beacon: navigation_beacon.unwrap_or_default().0,
             };
@@ -884,7 +881,7 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
             syscall(status)?;
             route_reply(&output, &orders, &fuels).map_err(|_| ERR_ARGUMENT)
         }
-        _ => crate::wasm_intel::query(query),
+        _ => crate::wasm_beacons::query(query),
     }
 }
 
@@ -945,14 +942,12 @@ pub fn command(action: ProgramAction) -> Result<(), i32> {
             revision,
             order,
             destination,
-            speed_ly_s,
             navigation_beacon,
         } => unsafe {
             raw::travel_slip(&abi::Slip {
                 revision,
                 order: order as u64,
                 destination: position_record(&destination),
-                speed_ly_s,
                 navigation_beacon_present: navigation_beacon.is_some() as u64,
                 navigation_beacon: navigation_beacon.unwrap_or_default().0,
             })
@@ -1044,7 +1039,6 @@ mod tests {
                 },
                 travel::Order::Slip {
                     destination: travel::Destination::Galactic(position),
-                    speed_ly_s: 0.03,
                     navigation_beacon: Some(Id([14; 16])),
                 }
                 .into(),

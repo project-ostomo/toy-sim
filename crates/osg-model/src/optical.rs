@@ -10,6 +10,7 @@ pub struct OpticalObservation {
     pub id: Id,
     pub spatial_instance: Id,
     pub known_entity: Option<EntityId>,
+    pub iff: Option<crate::IffIdentity>,
     pub contact: Option<ContactRef>,
     pub pose: Pose,
     pub radius_m: f64,

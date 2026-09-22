@@ -119,7 +119,6 @@ fn computer_reads_only_the_current_order_and_cannot_complete_a_stale_queue() {
             revision: 7,
             order: 1,
             destination,
-            speed_ly_s: 0.01,
             navigation_beacon: None,
         },
     ] {

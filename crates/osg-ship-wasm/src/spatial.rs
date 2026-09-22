@@ -336,6 +336,7 @@ mod tests {
 
     fn contact(x: f64) -> SensorContact {
         SensorContact {
+            iff: None,
             measured: w::Contact {
                 id: 7,
                 position_m: [x, 0., 0.],

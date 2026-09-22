@@ -1,5 +1,17 @@
 use osg_ui::egui::Color32;
 
+pub(super) fn odds(loss_ppm: f64) -> String {
+    if loss_ppm <= 0.0 {
+        return "1 in ∞".into();
+    }
+    let denominator = (1_000_000.0 / loss_ppm).max(1.0);
+    if denominator >= 1e9 {
+        format!("1 in {denominator:.2e}")
+    } else {
+        format!("1 in {denominator:.0}")
+    }
+}
+
 pub(super) fn color(loss_ppm: Option<f64>) -> Color32 {
     // Match the displayed precision at color boundaries.
     match loss_ppm.map(|loss| (loss * 100.0).round() / 100.0) {

@@ -9,10 +9,7 @@ use glam::{DMat3, DQuat, DVec3};
 
 use navigation::{Phase, Pursuit};
 use osg_ship_api::abi::{self, Contact};
-#[cfg(target_arch = "wasm32")]
-pub mod chatter;
 pub mod hardware;
-pub mod missile;
 pub mod weapons;
 use hardware::{Actuation, Capability, Hardware, Sample};
 #[cfg(target_arch = "wasm32")]

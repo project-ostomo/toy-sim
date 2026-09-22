@@ -1,7 +1,6 @@
 use super::{ViewCamera, ViewLayer, ViewMember};
 use crate::state::{
-    CombatPublication, DisplayPose, OwnedShip, PresentationSet, RenderTime, ShipDetails,
-    ViewObservation,
+    DisplayPose, OwnedShip, PresentationSet, RenderTime, ShipDetails, SlipEffects, ViewObservation,
 };
 use bevy::{
     asset::embedded_asset,
@@ -14,24 +13,25 @@ use bevy::{
     },
     shader::ShaderRef,
 };
-use osg_model::{CombatEventKind, Id, Pose, travel::Presence};
-use std::collections::HashSet;
+use osg_model::{Id, slip_visual::*, travel::Presence};
+use std::collections::{HashMap, HashSet};
 
 #[cfg(test)]
 mod tests;
 
-const TRANSITION_S: f32 = 1.25;
+const TRANSITION_S: f32 = 1.75;
 
 #[derive(Component, Default)]
 pub(super) struct SlipView {
     ship: Option<Id>,
     transit: Option<Id>,
     previous_ns: u64,
+    progress: f32,
+    departure_ns: Option<u64>,
+    flash_age: Option<f32>,
     pub coverage: f32,
     pub entering: bool,
-    pub anchor: Option<Pose>,
     direction: Vec3,
-    speed: f64,
     flow: f64,
     flow_step: f32,
 }
@@ -48,7 +48,7 @@ pub(super) fn prepare(
             commands.entity(entity).insert(SlipView::default());
             continue;
         };
-        let Some((ship, pose, details)) = ships
+        let Some((ship, _pose, details)) = ships
             .iter()
             .find(|(ship, _, _)| Some(ship.0.ship) == view.0.focused_ship)
         else {
@@ -76,59 +76,77 @@ pub(super) fn prepare(
             _ => None,
         };
         if let Some(transit) = transit {
-            let mut initialized = false;
+            if state.transit != Some(transit) {
+                state.departure_ns = Some(
+                    details
+                        .and_then(|details| details.0.slip_transit.as_ref())
+                        .map_or(clock.display_ns, |telemetry| telemetry.departed_ns),
+                );
+                state.flow = 0.0;
+            }
             if let Some(telemetry) = details.and_then(|details| details.0.slip_transit.as_ref()) {
                 state.direction =
                     Vec3::from_array(telemetry.direction.map(|v| v as f32)).normalize_or_zero();
-                state.speed = telemetry.speed_ly_s;
-                if state.transit != Some(transit) {
-                    let age = clock.display_ns.saturating_sub(telemetry.departed_ns) as f32 * 1e-9;
-                    state.coverage = (age / TRANSITION_S).clamp(0.0, 1.0);
-                    initialized = true;
-                }
             }
             state.transit = Some(transit);
-            if !initialized {
-                state.coverage = (state.coverage + dt as f32 / TRANSITION_S).min(1.0);
-            }
-            state.entering = state.coverage < 1.0 && state.anchor.is_some();
+            let departure = state.departure_ns.unwrap_or(clock.display_ns);
+            let age = (i128::from(clock.display_ns) - i128::from(departure)) as f32 * 1e-9;
+            state.progress = (age / TRANSITION_S).clamp(0.0, 1.0);
+            state.flash_age = (0.0..TRANSITION_LIFETIME_S as f32)
+                .contains(&age)
+                .then_some(age);
+            state.entering = state.progress < 1.0;
         } else {
-            state.coverage = (state.coverage - dt as f32 / TRANSITION_S).max(0.0);
+            state.progress = (state.progress - dt as f32 / TRANSITION_S).max(0.0);
+            state.flash_age = None;
             state.entering = false;
-            if state.coverage == 0.0 {
-                state.anchor = Some(pose.0.clone());
+            if state.progress == 0.0 {
                 state.transit = None;
             }
         }
-        let flow_step = dt * state.speed / 0.01;
+        let previous_coverage = state.coverage;
+        state.coverage = state.progress * state.progress * (3.0 - 2.0 * state.progress);
+        let flow_step = dt * 3.0 * f64::from((previous_coverage + state.coverage) * 0.5);
         state.flow += flow_step;
         state.flow_step = flow_step as f32;
     }
 }
 
-#[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+mod distortion;
+mod streaks;
+mod wakes;
+
+#[derive(Asset, TypePath, AsBindGroup, Debug, Clone, Default)]
 struct SlipMaterial {
-    // Flow phase, coverage / event age, mode (tunnel, sheath, trail, flash), frame motion.
+    // Phase, coverage / oldest age, mode, frame motion / youngest age.
     #[uniform(0)]
     parameters: Vec4,
+    // Seed, length, longitudinal noise offset, physical radius.
+    #[uniform(0)]
+    detail: Vec4,
 }
 
 impl Material for SlipMaterial {
     fn vertex_shader() -> ShaderRef {
         "embedded://osg_client/ui/scene/slip.wgsl".into()
     }
+
     fn fragment_shader() -> ShaderRef {
         Self::vertex_shader()
     }
+
     fn alpha_mode(&self) -> AlphaMode {
         AlphaMode::Blend
     }
+
     fn enable_shadows() -> bool {
         false
     }
+
     fn enable_prepass() -> bool {
         false
     }
+
     fn specialize(
         _: &MaterialPipeline,
         descriptor: &mut RenderPipelineDescriptor,
@@ -143,182 +161,259 @@ impl Material for SlipMaterial {
 #[derive(Resource)]
 struct Assets {
     sphere: Handle<Mesh>,
-    trail: Handle<Mesh>,
 }
 
 #[derive(Component)]
 struct Effect {
     mode: u8,
-    event: Option<u64>,
+    event: Option<Id>,
+    piece: (u64, u16),
     material: Handle<SlipMaterial>,
 }
 
 #[derive(Component)]
 struct SlipLight(f32);
 
+#[derive(Component)]
+struct RuptureLight(f32);
+
 pub(super) fn install(app: &mut App) {
     embedded_asset!(app, "slip.wgsl");
-    app.add_plugins(MaterialPlugin::<SlipMaterial>::default())
+    app.init_resource::<SlipEffects>()
+        .add_plugins(MaterialPlugin::<SlipMaterial>::default())
         .add_systems(Startup, setup)
         .add_systems(Update, draw.in_set(PresentationSet::Render));
+    distortion::install(app);
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<bevy::asset::Assets<Mesh>>) {
     commands.insert_resource(Assets {
         sphere: meshes.add(Sphere::new(1.0).mesh().uv(48, 32)),
-        trail: meshes.add(
-            Cylinder::new(1.0, 2.0)
-                .mesh()
-                .resolution(24)
-                .build()
-                .rotated_by(Quat::from_rotation_x(std::f32::consts::FRAC_PI_2)),
-        ),
     });
+}
+
+struct Requested {
+    mode: u8,
+    event: Option<Id>,
+    piece: (u64, u16),
+    transform: Transform,
+    parameters: Vec4,
+    detail: Vec4,
 }
 
 fn draw(
     mut commands: Commands,
     clock: Res<RenderTime>,
     assets: Res<Assets>,
-    views: Query<(Entity, &ViewCamera, &ViewObservation, &SlipView)>,
+    views: Query<(Entity, &ViewCamera, &ViewObservation, &SlipView, &Transform), Without<Effect>>,
     ships: Query<(&OwnedShip, &DisplayPose)>,
-    events: Query<&CombatPublication>,
+    history: Res<SlipEffects>,
+    rings: Query<(Entity, &osg_ship_view::slip::SlipRing, &GlobalTransform)>,
+    parents: Query<&ChildOf>,
+    members: Query<&ViewMember>,
+    mut flashes: Query<(&ChildOf, &RuptureLight, &mut PointLight)>,
     mut effects: Query<(Entity, &ViewMember, &Effect, &mut Transform)>,
     mut materials: ResMut<bevy::asset::Assets<SlipMaterial>>,
     mut lights: Query<(&ChildOf, &SlipLight, &mut DirectionalLight)>,
 ) {
     let mut retained = HashSet::new();
-    for (view, camera, observation, state) in &views {
+    let existing: HashMap<_, _> = effects
+        .iter()
+        .map(|(entity, member, effect, _)| {
+            ((member.0, effect.mode, effect.event, effect.piece), entity)
+        })
+        .collect();
+    for (view, camera, observation, state, camera_transform) in &views {
         let mut requested = Vec::new();
+        for (entity, ring, transform) in &rings {
+            if ring.readiness <= 0.0
+                || !parents
+                    .iter_ancestors(entity)
+                    .any(|parent| members.get(parent).is_ok_and(|member| member.0 == view))
+            {
+                continue;
+            }
+            let mut key = [0u8; 16];
+            key[..8].copy_from_slice(&entity.to_bits().to_le_bytes());
+            requested.push(Requested {
+                mode: 4,
+                event: Some(Id(key)),
+                piece: (0, 0),
+                transform: Transform::from_translation(transform.translation())
+                    .with_rotation(transform.rotation())
+                    .with_scale(Vec3::new(8.8, 8.8, 5.0)),
+                parameters: Vec4::new(
+                    (clock.display_ns as f64 * 1e-9 % 4096.0) as f32,
+                    ring.readiness,
+                    4.0,
+                    0.0,
+                ),
+                detail: Vec4::ZERO,
+            });
+        }
         if state.coverage > 0.0 {
             if let Some((ship, pose)) = ships
                 .iter()
                 .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship)
             {
-                let pose = if state.entering {
-                    state.anchor.as_ref().unwrap_or(&pose.0)
-                } else {
-                    &pose.0
-                };
+                let pose = &pose.0;
                 let rotation = Quat::from_rotation_arc(
-                    Vec3::NEG_Z,
-                    state.direction.try_normalize().unwrap_or(Vec3::NEG_Z),
+                    Vec3::Z,
+                    state.direction.try_normalize().unwrap_or(Vec3::Z),
                 );
                 let center = pose.position.relative_to(camera.origin).as_vec3();
-                for (mode, scale) in [(0, 10_000.0), (1, ship.0.radius_m as f32 * 1.4)] {
-                    requested.push((
+                for (mode, scale) in [(1, ship.0.radius_m as f32 * 1.6)] {
+                    requested.push(Requested {
                         mode,
-                        None,
-                        Transform::from_translation(center)
+                        event: None,
+                        piece: (0, 0),
+                        transform: Transform::from_translation(center)
                             .with_rotation(rotation)
                             .with_scale(Vec3::splat(scale)),
-                        Vec4::new(
-                            state.flow as f32,
+                        parameters: Vec4::new(
+                            (state.flow % 4096.0) as f32,
                             state.coverage,
                             mode as f32,
                             state.flow_step,
                         ),
-                    ));
+                        detail: Vec4::new(19.0, 0.0, 0.0, ship.0.radius_m as f32),
+                    });
                 }
             }
         }
         if !camera.private {
-            for event in events
+            let own_ship = ships
                 .iter()
-                .filter(|event| {
-                    matches!(event.0.kind, CombatEventKind::Slip { .. })
-                        && clock.display_ns >= event.0.sim_time_ns
-                        && clock.display_ns - event.0.sim_time_ns <= 3_000_000_000
-                })
-                .take(64)
+                .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship);
+            if let (Some(age), Some((ship, pose))) = (state.flash_age, own_ship) {
+                let radius = ship.0.radius_m.max(8.0) as f32;
+                requested.push(Requested {
+                    mode: 3,
+                    event: Some(ship.0.ship),
+                    piece: (0, 0),
+                    transform: Transform::from_translation(
+                        pose.0.position.relative_to(camera.origin).as_vec3(),
+                    )
+                    .with_rotation(Quat::from_rotation_arc(
+                        Vec3::Z,
+                        state.direction.try_normalize().unwrap_or(Vec3::Z),
+                    ))
+                    .with_scale(Vec3::new(20.0, 16.0, 32.0) * radius),
+                    parameters: Vec4::new(age, age, 3.0, 1.0),
+                    detail: Vec4::new(451.0, 1.0, 0.0, radius),
+                });
+            }
+            for event in history
+                .0
+                .transitions
+                .iter()
+                .filter(|e| e.view == camera.view)
+                .take(4)
             {
-                let CombatEventKind::Slip {
-                    position,
-                    velocity_m_s,
-                    direction,
-                    radius_m,
-                    arriving,
-                } = event.0.kind
-                else {
-                    continue;
-                };
-                let age = clock.display_ns.saturating_sub(event.0.sim_time_ns) as f32 * 1e-9;
-                if clock.display_ns < event.0.sim_time_ns || age > 3.0 {
+                let age = (i128::from(clock.display_ns) - i128::from(event.time_ns)) as f64 * 1e-9;
+                if !(0.0..TRANSITION_LIFETIME_S).contains(&age) {
                     continue;
                 }
-                let axis = Vec3::from_array(direction.map(|v| v as f32)).normalize();
-                let elapsed = (clock.display_ns - event.0.sim_time_ns) as f64 * 1e-9;
-                let origin = position
-                    .offset_by(bevy::math::DVec3::from_array(velocity_m_s) * elapsed)
-                    .relative_to(camera.origin)
-                    .as_vec3();
-                let radius = (radius_m as f32).max(8.0);
-                let length = 512.0 * (age / 0.2).clamp(0.05, 1.0);
-                let center = origin + axis * length * if arriving { -0.5 } else { 0.5 };
-                requested.push((
-                    2,
-                    Some(event.0.sequence),
-                    Transform::from_translation(center)
-                        .with_rotation(Quat::from_rotation_arc(Vec3::Z, axis))
-                        .with_scale(Vec3::new(radius * 0.4, radius * 0.4, length * 0.5)),
-                    Vec4::new(age, age, 2.0, 1.0),
-                ));
-                if age < 0.35 {
-                    requested.push((
-                        3,
-                        Some(event.0.sequence),
-                        Transform::from_translation(origin)
-                            .with_scale(Vec3::splat(radius * (1.0 + age * 15.0))),
-                        Vec4::new(age, age, 3.0, 1.0),
-                    ));
-                }
+                let position = event
+                    .position
+                    .offset_by(bevy::math::DVec3::from_array(event.drift_m_s) * age);
+                let radius = event.radius_m.max(8.0) as f32;
+                let physical_radius = radius * 20.0;
+                let distance = (position.relative_to(camera.origin)
+                    - camera_transform.translation.as_dvec3())
+                .length() as f32;
+                let visual_radius = physical_radius.max(distance * 0.003);
+                let axis = Vec3::from_array(event.direction.map(|v| v as f32)).normalize_or_zero();
+                requested.push(Requested {
+                    mode: 3,
+                    event: Some(event.id),
+                    piece: (0, 0),
+                    transform: Transform::from_translation(
+                        position.relative_to(camera.origin).as_vec3(),
+                    )
+                    .with_rotation(Quat::from_rotation_arc(Vec3::Z, axis))
+                    .with_scale(Vec3::new(
+                        visual_radius,
+                        visual_radius * 0.8,
+                        visual_radius * 1.6,
+                    )),
+                    parameters: Vec4::new(
+                        age as f32,
+                        age as f32,
+                        3.0,
+                        if event.arriving { -1.0 } else { 1.0 },
+                    ),
+                    detail: Vec4::new(
+                        (event.seed % 65536) as f32,
+                        physical_radius / visual_radius,
+                        0.0,
+                        radius,
+                    ),
+                });
             }
         }
-        for (mode, event, transform, parameters) in requested {
-            if let Some((entity, _, effect, mut current)) =
-                effects.iter_mut().find(|(_, member, effect, _)| {
-                    member.0 == view && effect.mode == mode && effect.event == event
-                })
-            {
-                *current = transform;
+        for request in requested {
+            let key = (view, request.mode, request.event, request.piece);
+            if let Some(&entity) = existing.get(&key) {
+                let (_, _, effect, mut transform) = effects.get_mut(entity).unwrap();
+                *transform = request.transform;
                 if let Some(mut material) = materials.get_mut(&effect.material) {
-                    material.parameters = parameters;
+                    material.parameters = request.parameters;
+                    material.detail = request.detail;
                 }
                 retained.insert(entity);
             } else {
-                let material = materials.add(SlipMaterial { parameters });
+                let material = materials.add(SlipMaterial {
+                    parameters: request.parameters,
+                    detail: request.detail,
+                });
                 let entity = commands
                     .spawn((
                         Effect {
-                            mode,
-                            event,
+                            mode: request.mode,
+                            event: request.event,
+                            piece: request.piece,
                             material: material.clone(),
                         },
                         ViewMember(view),
                         ViewLayer(camera.layer),
                         RenderLayers::layer(camera.layer),
-                        Mesh3d(if mode == 2 {
-                            assets.trail.clone()
-                        } else {
-                            assets.sphere.clone()
-                        }),
+                        Mesh3d(assets.sphere.clone()),
                         MeshMaterial3d(material),
-                        transform,
+                        request.transform,
                         Visibility::default(),
+                        bevy::camera::visibility::NoFrustumCulling,
                     ))
                     .id();
-                if mode == 0 {
+                if request.mode == 3 {
+                    let radius = request.detail.w;
+                    commands.entity(entity).with_children(|parent| {
+                        parent.spawn((
+                            RuptureLight(radius * radius * 4e7),
+                            RenderLayers::layer(camera.layer),
+                            PointLight {
+                                color: Color::srgb(0.25, 0.6, 1.0),
+                                intensity: 0.0,
+                                range: radius * 20.0,
+                                shadow_maps_enabled: false,
+                                ..default()
+                            },
+                            Transform::default(),
+                        ));
+                    });
+                }
+                if request.mode == 1 {
                     commands.entity(entity).with_children(|parent| {
                         for (direction, strength) in [
-                            (Vec3::new(1.0, 2.0, 3.0), 1_200_000.0),
-                            (Vec3::new(-1.0, -1.0, -2.0), 450_000.0),
+                            (Vec3::new(1.0, 2.0, 3.0), 180_000.0),
+                            (Vec3::new(-1.0, -1.0, -2.0), 55_000.0),
                         ] {
                             parent.spawn((
                                 SlipLight(strength),
                                 RenderLayers::layer(camera.layer),
                                 bevy::light::SunDisk::OFF,
                                 DirectionalLight {
-                                    color: Color::srgb(0.4, 0.7, 1.0),
+                                    color: Color::srgb(0.82, 0.8, 0.74),
                                     illuminance: strength * state.coverage,
                                     shadow_maps_enabled: false,
                                     ..default()
@@ -333,10 +428,18 @@ fn draw(
             }
         }
     }
+    for (parent, light, mut point) in &mut flashes {
+        if let Ok((_, _, effect, _)) = effects.get(parent.parent()) {
+            if let Some(material) = materials.get(&effect.material) {
+                point.intensity = light.0 * (-material.parameters.y * 7.0).exp();
+            }
+        }
+    }
     for (parent, light, mut directional) in &mut lights {
         if let Ok((_, member, _, _)) = effects.get(parent.parent()) {
-            if let Ok((_, _, _, state)) = views.get(member.0) {
-                directional.illuminance = light.0 * state.coverage;
+            if let Ok((_, _, _, state, _)) = views.get(member.0) {
+                directional.illuminance =
+                    light.0 * state.coverage * (0.85 + 0.15 * (state.flow as f32 * 0.7).sin());
             }
         }
     }

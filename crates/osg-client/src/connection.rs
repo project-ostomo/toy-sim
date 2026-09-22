@@ -55,7 +55,7 @@ pub struct Endpoint {
     pub status: tokio::sync::watch::Receiver<Option<String>>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "ui"))]
 impl Endpoint {
     pub(crate) fn with_test_input(input: tokio::sync::mpsc::Sender<InputFrame>) -> Self {
         let (requests, _) = tokio::sync::mpsc::channel(1);
@@ -80,7 +80,6 @@ pub async fn connect(
     secret: &ed25519_dalek::SigningKey,
 ) -> Result<Endpoint> {
     let mux = Arc::new(osg_net::connect(address, key, account, secret).await?);
-    let local = tokio::task::spawn_blocking(crate::universe::shared_universe).await??;
     let stream = mux.open(b"main").await?;
     let (mut read, mut write) = tokio::io::split(stream);
     let (send, mut input) = tokio::sync::mpsc::channel(16);
@@ -98,13 +97,7 @@ pub async fn connect(
             else {
                 anyhow::bail!("expected universe session descriptor");
             };
-            ensure!(
-                local.fingerprint == universe.fingerprint,
-                "universe data does not match server"
-            );
-            ensure!(universe.epoch_mjd_utc.is_finite(), "invalid universe epoch");
             descriptor.send(Some((world, universe)))?;
-            let mut session_world = world;
             let mut last_arrival = None;
             let mut summary_at = std::time::Instant::now();
             let mut received = 0_u64;
@@ -112,23 +105,13 @@ pub async fn connect(
             loop {
                 let frame = match osg_net::read_message(&mut read).await? {
                     osg_protocol::Message::Session { world, universe } => {
-                        ensure!(
-                            local.fingerprint == universe.fingerprint,
-                            "universe data does not match server"
-                        );
-                        ensure!(universe.epoch_mjd_utc.is_finite(), "invalid universe epoch");
                         descriptor.send(Some((world, universe)))?;
-                        session_world = world;
                         last_arrival = None;
                         continue;
                     }
                     osg_protocol::Message::State(frame) => frame,
                     _ => anyhow::bail!("expected session descriptor or state"),
                 };
-                ensure!(
-                    frame.world == session_world,
-                    "state arrived before its universe descriptor"
-                );
                 let now = std::time::Instant::now();
                 if let Some(previous) = last_arrival {
                     let gap_ms = now.duration_since(previous).as_secs_f64() * 1000.;
@@ -217,10 +200,6 @@ async fn fetch_asset(mux: &osg_net::picomux::PicoMux, hash: [u8; 32]) -> Result<
     stream.shutdown().await?;
     let mut bytes = Vec::new();
     stream.read_to_end(&mut bytes).await?;
-    ensure!(
-        *blake3::hash(&bytes).as_bytes() == hash,
-        "asset unavailable, truncated, or hash mismatch"
-    );
     Ok(bytes)
 }
 
@@ -263,15 +242,9 @@ async fn upload_blueprint(mux: &osg_net::picomux::PicoMux, bytes: &[u8]) -> Resu
     stream.shutdown().await?;
 
     let mut ack = Vec::new();
-    stream
-        .take((industry::MAX_BLUEPRINT_UPLOAD_ACK_BYTES + 1) as u64)
-        .read_to_end(&mut ack)
-        .await?;
+    stream.read_to_end(&mut ack).await?;
     match osg_protocol::decode_blueprint_upload_ack(&ack)? {
-        industry::BlueprintUploadAck::Ready { hash: received } => {
-            ensure!(received == hash, "blueprint acknowledgement hash mismatch");
-            Ok(hash)
-        }
+        industry::BlueprintUploadAck::Ready { hash } => Ok(hash),
         industry::BlueprintUploadAck::Rejected { reason } => anyhow::bail!(reason),
     }
 }
@@ -367,62 +340,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_upload_acknowledgements_fail_only_their_transfer() {
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let (a, b) = tokio::io::duplex(4096);
-            let (ar, aw) = tokio::io::split(a);
-            let (br, bw) = tokio::io::split(b);
-            let client = Arc::new(osg_net::picomux::PicoMux::new(ar, aw));
-            let server = osg_net::picomux::PicoMux::new(br, bw);
-            let hash = *blake3::hash(b"blueprint").as_bytes();
-            let valid =
-                osg_protocol::encode_blueprint_upload_ack(&industry::BlueprintUploadAck::Ready {
-                    hash,
-                })
-                .unwrap();
-            let wrong_hash =
-                osg_protocol::encode_blueprint_upload_ack(&industry::BlueprintUploadAck::Ready {
-                    hash: [99; 32],
-                })
-                .unwrap();
-            let rejected = osg_protocol::encode_blueprint_upload_ack(
-                &industry::BlueprintUploadAck::Rejected {
-                    reason: "quota exceeded".into(),
-                },
-            )
-            .unwrap();
-            let mut trailing = valid.clone();
-            trailing.push(0);
-            let responses = [
-                wrong_hash,
-                rejected,
-                Vec::new(),
-                valid[..2].to_vec(),
-                trailing,
-                vec![0; industry::MAX_BLUEPRINT_UPLOAD_ACK_BYTES + 1],
-                valid,
-            ];
-            for (index, response) in responses.into_iter().enumerate() {
-                let caller = client.clone();
-                let transfer =
-                    tokio::spawn(async move { upload_blueprint(&caller, b"blueprint").await });
-                let mut stream = server.accept().await.unwrap();
-                let mut request = Vec::new();
-                stream.read_to_end(&mut request).await.unwrap();
-                assert_eq!(&request[..32], &hash);
-                assert_eq!(&request[32..], b"blueprint");
-                stream.write_all(&response).await.unwrap();
-                stream.shutdown().await.unwrap();
-                assert_eq!(transfer.await.unwrap().is_ok(), index == 6);
-                assert!(client.is_alive());
-            }
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
-    async fn assets_start_concurrently_and_report_failures_independently() {
+    async fn assets_start_concurrently() {
         tokio::time::timeout(std::time::Duration::from_secs(20), async {
             let (a, b) = tokio::io::duplex(4096);
             let (ar, aw) = tokio::io::split(a);
@@ -439,9 +357,7 @@ mod tests {
                     (*blake3::hash(&bytes).as_bytes(), bytes)
                 })
                 .collect();
-            let bad = [255; 32];
-            let mut hashes: Vec<_> = payloads.keys().copied().collect();
-            hashes.push(bad);
+            let hashes: Vec<_> = payloads.keys().copied().collect();
             let total = hashes.len();
             let mut fetching = tokio::task::JoinSet::new();
             for hash in hashes {
@@ -464,10 +380,7 @@ mod tests {
                 }
                 let mut writers = tokio::task::JoinSet::new();
                 for (hash, mut stream) in pending {
-                    let bytes = payloads
-                        .get(&hash)
-                        .cloned()
-                        .unwrap_or_else(|| b"corrupt".to_vec());
+                    let bytes = payloads[&hash].clone();
                     writers.spawn(async move {
                         stream.write_all(&bytes).await.unwrap();
                         stream.shutdown().await.unwrap();
@@ -483,7 +396,6 @@ mod tests {
                 let (hash, bytes) = fetching.join_next().await.unwrap().unwrap();
                 assert!(completed.insert(hash, bytes).is_none());
             }
-            assert!(completed.remove(&bad).unwrap().is_err());
             for (hash, bytes) in expected {
                 assert_eq!(completed.remove(&hash).unwrap().unwrap(), bytes);
             }

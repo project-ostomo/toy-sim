@@ -26,17 +26,17 @@ pub(super) struct Row {
 }
 
 impl Row {
-    pub fn key(&self) -> (u8, Id, Id) {
+    pub fn key(&self) -> (u8, Id, u64) {
         match self.target {
-            SelectedTarget::Contact(reference) => (0, reference.group, reference.track),
-            SelectedTarget::Celestial(id) => (1, id, id),
-            SelectedTarget::Beacon(id) => (2, id, id),
+            SelectedTarget::Contact(reference) => (0, reference.observer, reference.contact),
+            SelectedTarget::Celestial(id) => (1, id, 0),
+            SelectedTarget::Beacon(id) => (2, id, 0),
         }
     }
 
     pub fn icon(&self) -> Icon {
         match self.target {
-            SelectedTarget::Contact(_) => crate::ui::contacts::icon(&self.kind),
+            SelectedTarget::Contact(_) => Icon::Ship,
             SelectedTarget::Celestial(_) => Icon::Planet,
             SelectedTarget::Beacon(_) => Icon::Navigation,
         }
@@ -83,12 +83,9 @@ pub(super) fn row_visible(row: &Row, state: &Shell, selected: Option<SelectedTar
         return true;
     }
     let kind_matches = match state.filter {
-        Filter::General => {
-            !row.kind.eq_ignore_ascii_case("missile")
-                && !row.kind.eq_ignore_ascii_case("projectile")
-        }
+        Filter::General => !row.kind.eq_ignore_ascii_case("projectile"),
         Filter::All => true,
-        Filter::Ships => matches!(row.target, SelectedTarget::Contact(_)) && row.kind != "Missile",
+        Filter::Ships => matches!(row.target, SelectedTarget::Contact(_)),
         Filter::Celestials => matches!(row.target, SelectedTarget::Celestial(_)),
     };
     let search = state.search.to_lowercase();

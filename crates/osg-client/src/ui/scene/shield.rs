@@ -38,7 +38,7 @@ pub(super) fn update_flashes(
         };
         let boost = temperature_boost(event.sim_time_ns, clock.display_ns);
         if boost > 0. {
-            let current = boosts.entry((target.group, target.track)).or_default();
+            let current = boosts.entry(*target).or_default();
             *current = current.max(boost);
         }
     }
@@ -48,14 +48,12 @@ pub(super) fn update_flashes(
             .ok()
             .and_then(|source| contacts.get(source.0).ok())
             .and_then(|(contact, visual)| {
-                contact
-                    .and_then(|c| c.0.contact)
-                    .or_else(|| visual.and_then(|v| v.0))
+                contact.map(|c| c.0.id).or_else(|| visual.and_then(|v| v.0))
             })
         else {
             continue;
         };
-        if let Some(boost) = boosts.get(&(reference.group, reference.track)) {
+        if let Some(boost) = boosts.get(&reference) {
             shield.temperature_k += boost;
         }
     }

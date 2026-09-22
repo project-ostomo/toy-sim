@@ -5,7 +5,6 @@ use std::{
     sync::OnceLock,
 };
 
-pub const CATALOGUE_VERSION: u32 = 1;
 pub const REFERENCE_YEAR: u16 = 2426;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -107,7 +106,7 @@ fn bundled() -> &'static Catalogue {
             .enumerate()
             .map(|(index, profile)| (profile.id(), index))
             .collect();
-        let bytes = serde_json::to_vec(&(CATALOGUE_VERSION, REFERENCE_YEAR, &profiles))
+        let bytes = serde_json::to_vec(&(REFERENCE_YEAR, &profiles))
             .expect("public organization catalogue serializes");
         let fingerprint = *blake3::hash(&bytes).as_bytes();
         Catalogue {

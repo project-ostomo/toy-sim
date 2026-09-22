@@ -1,4 +1,3 @@
-use anyhow::{Result, ensure};
 use osg_model::*;
 use std::{collections::VecDeque, sync::Arc};
 
@@ -8,7 +7,6 @@ pub(crate) struct Playback {
     pub target_frames: usize,
     pub underruns: u64,
     pub(crate) world: Option<Id>,
-    last_sequence: u64,
     playing: bool,
     current: Option<Arc<Frame>>,
     catching_up: bool,
@@ -34,7 +32,6 @@ impl Playback {
             target_frames: initial_target,
             underruns: 0,
             world: None,
-            last_sequence: 0,
             playing: false,
             current: None,
             catching_up: false,
@@ -42,7 +39,7 @@ impl Playback {
         }
     }
 
-    pub fn receive(&mut self, frame: impl Into<Arc<Frame>>) -> Result<()> {
+    pub fn receive(&mut self, frame: impl Into<Arc<Frame>>) {
         let frame = frame.into();
         if self.world != Some(frame.world) {
             self.frames.clear();
@@ -50,25 +47,11 @@ impl Playback {
             self.playing = false;
             self.target_frames = self.initial_target;
             self.underruns = 0;
-            self.last_sequence = 0;
             self.catching_up = false;
             self.publications.clear();
             self.world = Some(frame.world);
         }
-        ensure!(
-            frame.sequence > self.last_sequence,
-            "out of order state sequence"
-        );
-        ensure!(
-            self.frames
-                .back()
-                .or(self.current.as_ref())
-                .is_none_or(|old| frame.sim_time_ns >= old.sim_time_ns),
-            "simulation time moved backwards"
-        );
-        self.last_sequence = frame.sequence;
         self.frames.push_back(frame);
-        Ok(())
     }
 
     fn publish(&mut self, frame: &Frame) {
@@ -187,10 +170,10 @@ mod tests {
             world: Id([1; 16]),
             sequence,
             tick: sequence,
-            sim_time_ns: sequence * 100_000_000,
+            sim_time_ns: sequence * osg_model::TICK_NS,
             rate: 1.,
             views: Vec::new(),
-            tracks: BTreeMap::new(),
+            contacts: BTreeMap::new(),
             ships: Vec::new(),
             screens: Vec::new(),
             events: Vec::new(),
@@ -202,15 +185,15 @@ mod tests {
     #[test]
     fn buffered_duration_uses_published_timestamps_at_fractional_rates() {
         let mut playback = Playback::new(true);
-        playback.receive(frame(1)).unwrap();
+        playback.receive(frame(1));
         playback.tick().unwrap();
         let mut next = frame(2);
         next.sim_time_ns = 450_000_000;
-        playback.receive(next).unwrap();
+        playback.receive(next);
         let mut same_tick = frame(3);
         same_tick.sim_time_ns = 450_000_000;
         same_tick.rate = 0.5;
-        playback.receive(same_tick).unwrap();
+        playback.receive(same_tick);
         assert_eq!(playback.queued_frames(), 2);
         assert!(!playback.catching_up());
         assert_eq!(playback.buffered_ns(), 350_000_000);
@@ -224,12 +207,12 @@ mod tests {
     #[test]
     fn reserves_then_consumes_one_received_snapshot_per_tick() {
         let mut playback = Playback::new(false);
-        playback.receive(frame(1)).unwrap();
+        playback.receive(frame(1));
         assert!(playback.tick().is_none());
-        playback.receive(frame(2)).unwrap();
+        playback.receive(frame(2));
         assert!(playback.tick().is_none());
         assert_eq!(playback.underruns, 0);
-        playback.receive(frame(3)).unwrap();
+        playback.receive(frame(3));
         for sequence in 1..=3 {
             assert_eq!(playback.tick().unwrap().sequence, sequence);
         }
@@ -242,17 +225,17 @@ mod tests {
     #[test]
     fn depletion_counts_once_and_refill_requires_the_new_reserve() {
         let mut playback = Playback::new(true);
-        playback.receive(frame(1)).unwrap();
+        playback.receive(frame(1));
         assert_eq!(playback.tick().unwrap().sequence, 1);
         for _ in 0..20 {
             assert!(playback.tick().is_none());
         }
         assert_eq!(playback.underruns, 1);
         assert_eq!(playback.target_frames, 2);
-        playback.receive(frame(2)).unwrap();
+        playback.receive(frame(2));
         assert!(playback.tick().is_none());
         assert_eq!(playback.frame().unwrap().sequence, 1);
-        playback.receive(frame(3)).unwrap();
+        playback.receive(frame(3));
         assert_eq!(playback.tick().unwrap().sequence, 2);
         assert_eq!(playback.tick().unwrap().sequence, 3);
         assert!(playback.tick().is_none());
@@ -267,7 +250,7 @@ mod tests {
             let reserve = playback.target_frames;
             for _ in 0..reserve {
                 sequence += 1;
-                playback.receive(frame(sequence)).unwrap();
+                playback.receive(frame(sequence));
             }
             for _ in 0..reserve {
                 assert!(playback.tick().is_some());
@@ -294,15 +277,12 @@ mod tests {
                 sequence,
                 sim_time_ns: snapshot.sim_time_ns,
                 kind: CombatEventKind::Fired {
-                    source: ContactRef {
-                        group: Id([2; 16]),
-                        track: Id([3; 16]),
-                    },
+                    source: Id([3; 16]),
                     position: GalacticPosition::ZERO,
                     energy_j: 1.,
                 },
             });
-            playback.receive(snapshot).unwrap();
+            playback.receive(snapshot);
         }
         assert_eq!(playback.frames.len(), 1000);
         for sequence in (2..=998).step_by(2) {
@@ -324,27 +304,27 @@ mod tests {
     #[test]
     fn actual_simulation_timestamps_survive_skips_and_positive_speed_changes() {
         let mut playback = Playback::new(true);
-        playback.receive(frame(1)).unwrap();
-        assert_eq!(playback.tick().unwrap().sim_time_ns, 100_000_000);
-        playback.receive(frame(4)).unwrap();
+        playback.receive(frame(1));
+        assert_eq!(playback.tick().unwrap().sim_time_ns, osg_model::TICK_NS);
+        playback.receive(frame(4));
         assert_eq!(playback.tick().unwrap().sim_time_ns, 400_000_000);
         let mut accelerated = frame(5);
         accelerated.sim_time_ns = 50_000_000_000;
         accelerated.tick = 500;
         accelerated.rate = 100.;
-        playback.receive(accelerated.clone()).unwrap();
+        playback.receive(accelerated.clone());
         assert_eq!(playback.tick(), Some(&accelerated));
         accelerated.sequence = 6;
         accelerated.tick = 501;
         accelerated.sim_time_ns = 50_100_000_000;
         accelerated.rate = 1.;
-        playback.receive(accelerated.clone()).unwrap();
+        playback.receive(accelerated.clone());
         assert_eq!(playback.tick(), Some(&accelerated));
         assert_eq!(playback.underruns, 0);
     }
 
     #[test]
-    fn invalid_order_is_rejected_and_new_world_clears_playback_state() {
+    fn new_world_clears_playback_state() {
         let mut playback = Playback::new(false);
         let command = Id([8; 16]);
         for sequence in 1..=3 {
@@ -362,13 +342,8 @@ mod tests {
                 error: None,
                 reply: None,
             });
-            playback.receive(snapshot).unwrap();
+            playback.receive(snapshot);
         }
-        assert!(playback.receive(frame(3)).is_err());
-        let mut backwards = frame(4);
-        backwards.sim_time_ns = 1;
-        assert!(playback.receive(backwards).is_err());
-        assert_eq!(playback.last_sequence, 3);
         for _ in 0..3 {
             playback.tick().unwrap();
         }
@@ -376,11 +351,10 @@ mod tests {
         assert_eq!(playback.target_frames, 4);
         let mut reset = frame(1);
         reset.world = Id([2; 16]);
-        playback.receive(reset).unwrap();
+        playback.receive(reset);
         assert!(playback.frame().is_none());
         assert_eq!(playback.target_frames, 3);
         assert_eq!(playback.underruns, 0);
-        assert_eq!(playback.last_sequence, 1);
         assert!(playback.take_publications(1).results.is_empty());
         assert!(playback.tick().is_none());
     }

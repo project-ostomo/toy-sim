@@ -142,7 +142,7 @@ mod tests {
     use crate::state::{CelestialSystem, ViewObservation, ViewSystems};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::math::DVec3;
-    use osg_model::{Completion, Pose, ViewState, presentation::CelestialPresentation};
+    use osg_model::{Pose, ViewState, presentation::CelestialPresentation};
     use osg_stars::{SOLAR_LUMENS, Star, StarId};
     use std::sync::Arc;
 
@@ -222,11 +222,8 @@ mod tests {
                 ViewObservation(ViewState {
                     id: 1,
                     revision: 1,
-                    group: Id([4; 16]),
                     focused_ship: None,
                     origin: GalacticPosition::ZERO,
-                    tracks: Vec::new(),
-                    completion: Completion::Complete,
                 }),
                 ViewSystems(vec![system]),
             ))

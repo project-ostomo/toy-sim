@@ -236,11 +236,12 @@ pub(super) fn draw(
                 ui.weak(total_ticks.map_or_else(
                     || format!("{} stages · duration partly unknown", plan.orders.len()),
                     |ticks| {
+                        let seconds = (ticks as f64 * osg_model::TICK_SECONDS) as u64;
                         format!(
                             "{} stages · estimated duration {}m {:02}s",
                             plan.orders.len(),
-                            ticks / 600,
-                            ticks / 10 % 60
+                            seconds / 60,
+                            seconds % 60
                         )
                     },
                 ));
@@ -502,7 +503,7 @@ mod tests {
             id: Id([90; 16]),
             effective_tick: 100,
             error: None,
-            reply: Some(Reply::JoinedGroup(Id([91; 16]))),
+            reply: None,
         };
         preview.update(Some(&ship), &[unrelated], &mut outgoing, Duration::ZERO);
         assert!(preview.pending.is_some());

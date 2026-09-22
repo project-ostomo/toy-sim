@@ -15,8 +15,8 @@ mod controller {
     }
 
     #[unsafe(no_mangle)]
-    extern "C" fn ship_api_version() -> u32 {
-        abi::VERSION
+    extern "C" fn game_version() -> u32 {
+        osg_ship_api::GAME_VERSION as u32
     }
 
     #[unsafe(no_mangle)]

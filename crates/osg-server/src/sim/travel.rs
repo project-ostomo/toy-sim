@@ -10,8 +10,8 @@ mod router_tests;
 mod undock_tests;
 
 use super::{
+    identity::pose,
     identity::{self, DirectoryEmitter, Identity, NavigationBeaconEmitter},
-    intelligence::pose,
     orrery::activity::CelestialState,
     physics::{AngularVelocity, MassProps, Velocity},
     precision::PreciseTransform,
@@ -778,7 +778,6 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
             revision,
             order,
             destination,
-            speed_ly_s,
             navigation_beacon,
         } => {
             ensure!(
@@ -788,7 +787,7 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
                 ),
                 "current order is not slip transit"
             );
-            prepare_slip(world, ship, destination, speed_ly_s, navigation_beacon)
+            prepare_slip(world, ship, destination, navigation_beacon)
         }
         ProgramAction::ReserveBay {
             revision,
@@ -1007,7 +1006,6 @@ pub fn destroy(world: &mut World, ship: Entity) {
     world
         .entity_mut(ship)
         .remove::<(DirectoryEmitter, NavigationBeaconEmitter)>();
-    super::missiles::destroyed(world, ship);
     emit(world, ship, "destroyed", None);
 }
 
@@ -1350,62 +1348,18 @@ mod tests {
 
     #[test]
     fn spatial_lifetime_changes_survive_an_unpublished_departure_and_return() {
-        use super::super::intelligence::{
-            AssociationIndex, Measurements, TrackEstimate, TrackGroup,
-        };
         let mut world = world();
-        world.init_resource::<AssociationIndex>();
-        let account = Id::new();
-        let ship = ship(&mut world, DVec3::ZERO, account);
-        let ship_id = id(&world, ship).unwrap();
-        let platform = Id::new();
-        let sample = osg_intel::Measurement::sensor(
-            &[7; 32],
-            platform,
-            ship_id,
-            GalacticPosition::ZERO.offset_by(DVec3::X * 1000.),
-            &ship_pose(&world, ship).unwrap(),
-            0,
-        );
-        let first_group = world.spawn(Measurements(vec![sample.clone()])).id();
-        let second_group = world.spawn(Measurements(vec![sample])).id();
-        let mut schedule = Schedule::default();
-        schedule.add_systems(super::super::intelligence::fuse);
-        schedule.run(&mut world);
-        let published = |world: &mut World, group| {
-            world
-                .query::<(&TrackEstimate, &TrackGroup)>()
-                .iter(world)
-                .find(|(_, owner)| owner.0 == group)
-                .unwrap()
-                .0
-                .0
-                .clone()
-        };
-        let first = published(&mut world, first_group);
-        let other_group = published(&mut world, second_group);
-        assert_ne!(first.spatial_instance, other_group.spatial_instance);
-        assert!(first.entity.is_none());
-        let owned_before = world.get::<identity::SpatialInstance>(ship).unwrap().0;
-
+        let ship = ship(&mut world, DVec3::ZERO, Id::new());
+        let original = world.get::<identity::SpatialInstance>(ship).unwrap().0;
         set_dormant(&mut world, ship, Presence::SlipTransit(Id::new()));
         set_active(&mut world, ship);
-        schedule.run(&mut world);
-        let returned = published(&mut world, first_group);
-        assert_eq!(id(&world, ship).unwrap(), ship_id);
-        assert_eq!(returned.id, first.id);
-        assert!(returned.entity.is_none());
-        assert_ne!(returned.spatial_instance, first.spatial_instance);
-        assert_ne!(returned.spatial_instance, ship_id);
-        let owned_after = world.get::<identity::SpatialInstance>(ship).unwrap().0;
-        assert_ne!(owned_after, owned_before);
-        assert_ne!(returned.spatial_instance, owned_after);
-
+        let returned = world.get::<identity::SpatialInstance>(ship).unwrap().0;
+        assert_ne!(original, returned);
         let pose = ship_pose(&world, ship).unwrap();
         write_pose(&mut world, ship, pose);
-        schedule.run(&mut world);
-        let transferred = published(&mut world, first_group);
-        assert_eq!(transferred.id, returned.id);
-        assert_ne!(transferred.spatial_instance, returned.spatial_instance);
+        assert_ne!(
+            world.get::<identity::SpatialInstance>(ship).unwrap().0,
+            returned
+        );
     }
 }

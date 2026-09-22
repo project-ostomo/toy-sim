@@ -42,7 +42,7 @@ Docked ships transfer accumulated heat to their host. Their reactors cease fissi
 
 ## Utilities
 
-Installed command modules provide the electrical requirement for the ship computer. Powered sensor modules extend the existing sensor picture and use its fusion and uncertainty rules. Active and passive arrays currently differ by catalogue characteristics; there is no separate active-emission detection model. IFF remains part of ship identity and host state.
+Installed command modules provide the electrical requirement for the ship computer. Powered sensor modules extend the existing sensor picture and report exact current detections. Active and passive arrays currently differ by catalogue characteristics; there is no separate active-emission detection model. IFF remains part of ship identity and host state.
 
 Powered beacon equipment enables navigation broadcasts. Docking ports and hangars create bays in the existing docking system, which removes docked ships from active flight physics. Bay occupancy survives hardware reconstruction.
 

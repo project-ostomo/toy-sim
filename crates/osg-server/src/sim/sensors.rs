@@ -4,6 +4,174 @@ use crate::sim::{
     spatial::{SensorSystems, SpatialIndex},
 };
 use bevy::prelude::*;
+use osg_model::{Id, SensorObservation};
+use std::{collections::BTreeMap, sync::Arc};
+
+#[derive(Clone, Default)]
+pub struct ObservationSnapshot {
+    pub tick: u64,
+    pub observer_instance: Id,
+    pub contacts: BTreeMap<u64, SensorObservation>,
+    pub targets: BTreeMap<Id, u64>,
+    instances: BTreeMap<Id, Id>,
+}
+
+#[derive(Component, Default)]
+pub struct Observations(pub Arc<ObservationSnapshot>);
+
+pub fn invalidate(world: &mut World, entity: Entity) {
+    let id = world
+        .get::<super::identity::Identity>(entity)
+        .map(|id| id.0);
+    for (observer, mut observations) in world.query::<(Entity, &mut Observations)>().iter_mut(world)
+    {
+        if observer == entity {
+            observations.0 = Arc::default();
+        } else if let Some(id) = id.filter(|id| observations.0.targets.contains_key(id)) {
+            let snapshot = Arc::make_mut(&mut observations.0);
+            if let Some(handle) = snapshot.targets.remove(&id) {
+                snapshot.contacts.remove(&handle);
+            }
+            snapshot.instances.remove(&id);
+        }
+    }
+}
+
+pub fn refresh_iff(world: &mut World, entity: Entity) {
+    let Some(id) = world
+        .get::<super::identity::Identity>(entity)
+        .map(|id| id.0)
+    else {
+        return;
+    };
+    let iff = world
+        .get::<super::identity::Transponder>(entity)
+        .filter(|value| value.0.enabled)
+        .map(|value| value.0.clone());
+    for mut observations in world.query::<&mut Observations>().iter_mut(world) {
+        if let Some(handle) = observations.0.targets.get(&id).copied() {
+            let snapshot = Arc::make_mut(&mut observations.0);
+            if let Some(contact) = snapshot.contacts.get_mut(&handle) {
+                contact.entity = iff.as_ref().map(|_| id);
+                contact.iff = iff.clone();
+            }
+        }
+    }
+}
+
+/// Publish only current measurements. Physical identities stay on the server.
+pub fn publish(world: &mut World) {
+    use super::{hardware, identity, physics, simulation, travel, vessel};
+
+    let tick = world.resource::<simulation::SimulationCounters>().ticks;
+    let observers: Vec<_> = world
+        .query_filtered::<Entity, With<identity::Identity>>()
+        .iter(world)
+        .filter(|entity| {
+            world.get::<hardware::SensorRange>(*entity).is_some()
+                || world.get::<Observations>(*entity).is_some()
+        })
+        .collect();
+
+    for observer in observers {
+        let instance = world
+            .get::<identity::SpatialInstance>(observer)
+            .map(|value| value.0);
+        let old = world
+            .get::<Observations>(observer)
+            .map(|value| value.0.clone())
+            .unwrap_or_default();
+        let mut snapshot = ObservationSnapshot {
+            tick,
+            observer_instance: instance.unwrap_or_default(),
+            ..Default::default()
+        };
+        let active = world.get::<travel::Dormant>(observer).is_none();
+        let origin = world
+            .get::<PreciseTransform>(observer)
+            .map(|pose| pose.translation_um);
+        let range = world
+            .get::<hardware::SensorRange>(observer)
+            .map_or(0., |range| range.0);
+        if active
+            && range > 0.
+            && let Some(origin) = origin
+        {
+            let sensor = Sensor {
+                range_m: range,
+                occlusion: world
+                    .get::<hardware::SensorOverride>(observer)
+                    .map_or(true, |value| value.occlusion),
+            };
+            let detections = detect_nearest(
+                world.resource::<SpatialIndex>(),
+                observer,
+                origin,
+                &sensor,
+                256,
+            );
+            for detection in detections.visible {
+                let target = detection.entity;
+                let (Some(id), Some(instance), Some(transform), Some(design)) = (
+                    world.get::<identity::Identity>(target),
+                    world.get::<identity::SpatialInstance>(target),
+                    world.get::<PreciseTransform>(target),
+                    world.get::<vessel::ShipDesign>(target),
+                ) else {
+                    continue;
+                };
+                let handle = old
+                    .targets
+                    .get(&id.0)
+                    .copied()
+                    .filter(|_| {
+                        old.observer_instance == snapshot.observer_instance
+                            && old.instances.get(&id.0) == Some(&instance.0)
+                    })
+                    .unwrap_or_else(|| {
+                        loop {
+                            let handle = rand::random::<u64>();
+                            if handle != 0
+                                && !snapshot.contacts.contains_key(&handle)
+                                && !old.contacts.contains_key(&handle)
+                            {
+                                break handle;
+                            }
+                        }
+                    });
+                let iff = world
+                    .get::<identity::Transponder>(target)
+                    .filter(|value| value.0.enabled)
+                    .map(|value| value.0.clone());
+                let mut opaque = [0; 16];
+                opaque[..8].copy_from_slice(&handle.to_le_bytes());
+                snapshot.contacts.insert(
+                    handle,
+                    SensorObservation {
+                        id: handle,
+                        spatial_instance: identity::observation_spatial_instance(
+                            Id(opaque),
+                            instance.0,
+                        ),
+                        entity: iff.as_ref().map(|_| id.0),
+                        iff,
+                        pose: identity::pose(
+                            transform,
+                            world.get::<physics::Velocity>(target),
+                            world.get::<physics::AngularVelocity>(target),
+                        ),
+                        radius_m: design.0.radius,
+                    },
+                );
+                snapshot.targets.insert(id.0, handle);
+                snapshot.instances.insert(id.0, instance.0);
+            }
+        }
+        world
+            .entity_mut(observer)
+            .insert(Observations(Arc::new(snapshot)));
+    }
+}
 
 #[derive(Component, Clone, Copy)]
 #[require(SensorContacts)]
@@ -169,6 +337,123 @@ mod tests {
     use bevy::math::DVec3;
     use bevy::{state::app::StatesPlugin, time::TimeUpdateStrategy};
     use std::time::Duration;
+
+    #[test]
+    fn observations_are_exact_private_and_disappear_with_detection() {
+        use crate::sim::{
+            hardware::SensorRange,
+            identity::{Identity, SpatialInstance, Transponder},
+            physics::Velocity,
+            vessel::ControlledVessel,
+        };
+
+        let mut app =
+            crate::sim::bootstrap::provision_combat_fixture(&[Id::new()], None, None).unwrap();
+        let world = app.world_mut();
+        let observer = world
+            .query_filtered::<Entity, With<ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let target = world
+            .query::<(Entity, &Transponder)>()
+            .iter(world)
+            .find(|(_, iff)| iff.0.labels.contains("Hostile patrol"))
+            .unwrap()
+            .0;
+        let target_id = world.get::<Identity>(target).unwrap().0;
+        let position = GalacticPosition::ZERO.offset_by(DVec3::X * 1000.);
+        world
+            .get_mut::<PreciseTransform>(observer)
+            .unwrap()
+            .translation_um = GalacticPosition::ZERO;
+        world
+            .get_mut::<PreciseTransform>(target)
+            .unwrap()
+            .translation_um = position;
+        world.get_mut::<Velocity>(target).unwrap().0 = DVec3::new(17., -3., 2.);
+        world.get_mut::<SensorRange>(observer).unwrap().0 = 2000.;
+        let other = world
+            .spawn((
+                Identity(Id::new()),
+                SpatialInstance(Id::new()),
+                PreciseTransform::default(),
+                SensorRange(2000.),
+            ))
+            .id();
+        let mut index = SpatialIndex::default();
+        index.insert(SpatialObject {
+            entity: target,
+            position,
+            radius_m: 10.,
+            occludes: false,
+            optical_occludes: false,
+            optical_luminosity_w: 0.,
+        });
+        world.insert_resource(index);
+
+        publish(world);
+        let handle = world.get::<Observations>(observer).unwrap().0.targets[&target_id];
+        let other_handle = world.get::<Observations>(other).unwrap().0.targets[&target_id];
+        assert_ne!(handle, other_handle);
+        let contact = &world.get::<Observations>(observer).unwrap().0.contacts[&handle];
+        assert_eq!(contact.pose.position, position);
+        assert_eq!(contact.pose.velocity, [17., -3., 2.]);
+        assert_eq!(contact.entity, Some(target_id));
+        assert!(contact.iff.is_some());
+
+        world.get_mut::<Transponder>(target).unwrap().0.enabled = false;
+        refresh_iff(world, target);
+        let contact = &world.get::<Observations>(observer).unwrap().0.contacts[&handle];
+        assert!(contact.iff.is_none());
+        assert!(contact.entity.is_none());
+        world.get_mut::<SensorRange>(observer).unwrap().0 = 0.;
+        publish(world);
+        assert!(
+            world
+                .get::<Observations>(observer)
+                .unwrap()
+                .0
+                .contacts
+                .is_empty()
+        );
+        assert!(
+            world
+                .get::<Observations>(other)
+                .unwrap()
+                .0
+                .contacts
+                .contains_key(&other_handle)
+        );
+
+        world.get_mut::<SensorRange>(observer).unwrap().0 = 2000.;
+        publish(world);
+        let reacquired = world.get::<Observations>(observer).unwrap().0.targets[&target_id];
+        assert_ne!(handle, reacquired);
+        world.get_mut::<SpatialInstance>(target).unwrap().0 = Id::new();
+        publish(world);
+        assert_ne!(
+            world.get::<Observations>(observer).unwrap().0.targets[&target_id],
+            reacquired
+        );
+        world.despawn(target);
+        publish(world);
+        assert!(
+            world
+                .get::<Observations>(observer)
+                .unwrap()
+                .0
+                .contacts
+                .is_empty()
+        );
+        assert!(
+            world
+                .get::<Observations>(other)
+                .unwrap()
+                .0
+                .contacts
+                .is_empty()
+        );
+    }
 
     #[test]
     fn nearest_limit_is_applied_before_occlusion_without_backfill() {

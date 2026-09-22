@@ -284,64 +284,6 @@ fn sparse_galactic_range_queries_prune_distant_population() {
 }
 
 #[test]
-#[ignore = "manual spatial scale and query benchmark"]
-fn scale_benchmark() {
-    let mut rng = ChaCha20Rng::seed_from_u64(99);
-    let mut index = SpatialHash::default();
-    let start = std::time::Instant::now();
-    for id in 0..1_000_000 {
-        index.insert(
-            id,
-            Entry {
-                position: GalacticPosition::from_meters(DVec3::new(
-                    rng.random_range(-1e18..1e18),
-                    rng.random_range(-1e18..1e18),
-                    rng.random_range(-1e18..1e18),
-                )),
-                radius_m: 10.0,
-                luminosity: 10.0_f64.powf(rng.random_range(10.0..28.0)),
-            },
-        );
-    }
-    eprintln!(
-        "1m entries build={:?} geometry_cells={} luminosity_buckets={}",
-        start.elapsed(),
-        index.occupied_cells(),
-        index.bucket_count()
-    );
-    let start = std::time::Instant::now();
-    let mut candidates = 0;
-    for i in 0..1000 {
-        let result = index.visible(index.get(i).unwrap().position, 1e-8);
-        candidates += result.stats.candidates;
-        std::hint::black_box(result);
-    }
-    eprintln!(
-        "1000 visibility queries={:?} average_candidates={}",
-        start.elapsed(),
-        candidates / 1000
-    );
-    let start = std::time::Instant::now();
-    for i in 0..1000 {
-        std::hint::black_box(
-            index.within_radius(index.get(i).unwrap().position, 500.0 * 149_597_870_700.0),
-        );
-    }
-    eprintln!("1000 local chat range queries={:?}", start.elapsed());
-    let start = std::time::Instant::now();
-    for id in 0..10_000 {
-        let mut entry = *index.get(id).unwrap();
-        entry.position = entry.position.offset_by(DVec3::X * 3000.0);
-        entry.luminosity *= 100.0;
-        index.insert(id, entry);
-    }
-    eprintln!(
-        "10000 position and brightness updates={:?}",
-        start.elapsed()
-    );
-}
-
-#[test]
 fn neighborhood_visibility_is_conservative_for_every_observer_in_sphere() {
     let mut rng = ChaCha20Rng::seed_from_u64(100);
     let origin = GalacticPosition::splat(1_i128 << 95);

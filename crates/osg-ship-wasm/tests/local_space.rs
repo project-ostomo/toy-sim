@@ -3,10 +3,7 @@ use osg_model::{
     local_space::{MAX_LOCAL_OBSTACLES, QUERY_GAS},
     travel::Target,
 };
-use osg_ship_api::{
-    abi::{self, Record},
-    world,
-};
+use osg_ship_api::{abi::Record, world};
 use osg_ship_wasm::{ControllerRuntime, FUEL_PER_TICK, Input, ScanSource, SensorContact};
 use std::sync::{
     Arc,
@@ -51,8 +48,8 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
             obstacles: (0..256.min(MAX_LOCAL_OBSTACLES))
                 .map(|index| LocalObstacle {
                     reference: Target::Contact(ContactRef {
-                        group: Id([2; 16]),
-                        track: Id([index as u8; 16]),
+                        observer: Id([2; 16]),
+                        contact: index as u64 + 1,
                     }),
                     pose: Pose::default(),
                     radius_m: 10.,
@@ -71,15 +68,15 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     let program = wat::parse_str(format!(
         r#"(module
-            (import "ship_v32" "orrery_read" (func $query (param i32 i32 i32 i32) (result i32)))
+            (import "ship" "orrery_read" (func $query (param i32 i32 i32 i32) (result i32)))
             (memory (export "memory") 4)
             (data (i32.const 0) "{data}")
-            (func (export "ship_api_version") (result i32) i32.const {version})
+            (func (export "game_version") (result i32) i32.const {version})
             (func (export "ship_tick")
                 i32.const 0 i32.const 4096 i32.const {capacity} i32.const 1024 call $query
                 i32.const 0 i32.ne if unreachable end
                 i32.const 1024 i64.load i64.const {count} i64.ne if unreachable end))"#,
-        version = abi::VERSION,
+        version = osg_ship_api::GAME_VERSION as u32,
         count = 256,
     ))
     .unwrap();

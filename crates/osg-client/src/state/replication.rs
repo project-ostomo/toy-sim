@@ -61,8 +61,10 @@ pub(super) fn apply(
     mut replication: ResMut<Replication>,
     mut clock: ResMut<RenderTime>,
     mut info: ResMut<SessionInfo>,
+    mut slip: ResMut<SlipEffects>,
     old_samples: Query<(&SpatialInstance, &PoseSamples, Option<&VisualSamples>)>,
     old_optical: Query<&Optical>,
+    old_owned: Query<&OwnedShip>,
 ) {
     let playback = &mut playback.0;
     let advanced = playback.tick().is_some();
@@ -80,6 +82,7 @@ pub(super) fn apply(
         clock.current_ns
     };
     clock.current_ns = frame.sim_time_ns;
+    slip.0 = frame.presentation.slip.clone();
     info.tick = frame.tick;
     info.sequence = frame.sequence;
     replication.events.retain(|_, (entity, timestamp)| {
@@ -91,7 +94,6 @@ pub(super) fn apply(
         }
     });
     info.capabilities = frame.presentation.capabilities.clone();
-    info.groups = frame.tracks.keys().copied().collect();
     info.diagnostics = frame.presentation.diagnostics.clone();
     let catalogue = frame.presentation.navigation.directory;
     if info.navigation.beacons != frame.presentation.navigation.beacons {
@@ -165,7 +167,7 @@ pub(super) fn apply(
     retain(&mut commands, &mut replication.beacons, &seen_beacons);
 
     let mut seen = BTreeSet::new();
-    for (group, tracks) in &frame.tracks {
+    for (group, tracks) in &frame.contacts {
         for track in tracks {
             let key = (*group, track.id);
             seen.insert(key);
@@ -181,8 +183,8 @@ pub(super) fn apply(
             let entity = indexed(&mut commands, &mut replication.contacts, key);
             let old = old_samples.get(entity).ok();
             let reference = ContactRef {
-                group: *group,
-                track: track.id,
+                observer: *group,
+                contact: track.id,
             };
             commands.entity(entity).insert((
                 Contact(track.clone(), reference),
@@ -247,10 +249,23 @@ pub(super) fn apply(
         let entity = indexed(&mut commands, &mut replication.ships, ship.ship);
         commands.entity(entity).insert(OwnedShip(ship.clone()));
         if let Some(pose) = ship.pose.as_ref() {
+            // Slip changes optical identity, but the owned ship's path is continuous.
+            let continuous_slip = old_owned.get(entity).is_ok_and(|previous| {
+                matches!(
+                    (&previous.0.presence, &ship.presence),
+                    (
+                        osg_model::travel::Presence::Space,
+                        osg_model::travel::Presence::SlipTransit(_)
+                    ) | (
+                        osg_model::travel::Presence::SlipTransit(_),
+                        osg_model::travel::Presence::Space
+                    )
+                )
+            });
             let old = old_samples
                 .get(entity)
                 .ok()
-                .filter(|(instance, _, _)| instance.0 == ship.spatial_instance)
+                .filter(|(instance, _, _)| instance.0 == ship.spatial_instance || continuous_slip)
                 .map(|(_, poses, _)| &poses.current);
             commands
                 .entity(entity)
@@ -305,16 +320,13 @@ mod tests {
     fn replication_preserves_locally_selected_systems() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         let mut first = snapshot(1, group, track, 0.);
         first.views.push(ViewState {
             id: 41,
             revision: 1,
-            group,
             focused_ship: None,
             origin: GalacticPosition::ZERO,
-            tracks: vec![track],
-            completion: Completion::Complete,
         });
         step(&mut app, 0.1, Some(first.clone()));
         let mut views = app
@@ -337,7 +349,7 @@ mod tests {
     fn live_beacons_replicate_independently_and_catalogue_change_clears_old_asset() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         let beacon = NavigationBeacon {
             id: Id([4; 16]),
             systems: vec![Id([5; 16])],
@@ -403,7 +415,7 @@ mod tests {
         );
     }
 
-    fn snapshot(sequence: u64, group: Id, track: Id, position: f64) -> Frame {
+    fn snapshot(sequence: u64, group: Id, track: u64, position: f64) -> Frame {
         let mut frame = Frame {
             industry: None,
             chat: None,
@@ -414,18 +426,18 @@ mod tests {
             world: Id([1; 16]),
             sequence,
             tick: sequence,
-            sim_time_ns: sequence * 100_000_000,
+            sim_time_ns: sequence * osg_model::TICK_NS,
             rate: 1.,
             views: Vec::new(),
-            tracks: BTreeMap::new(),
+            contacts: BTreeMap::new(),
             ships: Vec::new(),
             screens: Vec::new(),
             events: Vec::new(),
             results: Vec::new(),
         };
-        frame.tracks.insert(
+        frame.contacts.insert(
             group,
-            vec![Track {
+            vec![SensorObservation {
                 id: track,
                 entity: None,
                 spatial_instance: Id([5; 16]),
@@ -433,14 +445,8 @@ mod tests {
                     position: GalacticPosition::ZERO.offset_by(glam::DVec3::X * position),
                     ..default()
                 },
-                position_sigma_m: 1.,
-                velocity_sigma_m_s: 1.,
-                observed_tick: sequence,
-                estimate_tick: sequence,
-                tags: default(),
-                provenance: Provenance::Sensor,
-                radius_m: Some(1.),
-                appearance: None,
+                iff: None,
+                radius_m: 1.,
             }],
         );
         frame
@@ -449,10 +455,11 @@ mod tests {
     fn app() -> App {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(Time::<Fixed>::from_hz(10.))
+            .insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO))
             .init_resource::<Replication>()
             .init_resource::<RenderTime>()
+            .init_resource::<SlipEffects>()
             .init_resource::<SessionInfo>()
             .insert_resource(BufferedPlayback(Playback::new(true)))
             .add_systems(FixedUpdate, (reset, apply).chain())
@@ -469,8 +476,7 @@ mod tests {
             app.world_mut()
                 .resource_mut::<BufferedPlayback>()
                 .0
-                .receive(frame)
-                .unwrap();
+                .receive(frame);
         }
         app.update();
     }
@@ -479,7 +485,7 @@ mod tests {
     fn catchup_delivers_every_chat_page_in_sequence() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         let mut outgoing = Outgoing::default();
         app.world_mut()
@@ -521,8 +527,7 @@ mod tests {
             app.world_mut()
                 .resource_mut::<BufferedPlayback>()
                 .0
-                .receive(frame)
-                .unwrap();
+                .receive(frame);
         }
         step(&mut app, 0.2, None);
         let session = app.world().resource::<SessionInfo>();
@@ -542,7 +547,7 @@ mod tests {
     fn catchup_preserves_industry_catalogue_and_following_permission_updates() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         let mut outgoing = Outgoing::default();
         app.world_mut()
@@ -573,8 +578,7 @@ mod tests {
             app.world_mut()
                 .resource_mut::<BufferedPlayback>()
                 .0
-                .receive(frame)
-                .unwrap();
+                .receive(frame);
         }
         step(&mut app, 0.2, None);
         let session = app.world().resource::<SessionInfo>();
@@ -604,13 +608,13 @@ mod tests {
     }
 
     #[test]
-    fn contacts_are_stable_group_scoped_entities_with_interpolated_components() {
+    fn contacts_are_stable_observer_scoped_entities_with_interpolated_components() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         let mut first = snapshot(1, group, track, 0.);
-        first.tracks.get_mut(&group).unwrap()[0].pose.velocity[0] = 10.;
-        first.tracks.get_mut(&group).unwrap()[0]
+        first.contacts.get_mut(&group).unwrap()[0].pose.velocity[0] = 10.;
+        first.contacts.get_mut(&group).unwrap()[0]
             .pose
             .angular_velocity[0] = 0.2;
         step(&mut app, 0.1, Some(first));
@@ -620,14 +624,14 @@ mod tests {
             .single(app.world())
             .unwrap();
         let mut second = snapshot(2, group, track, 100.);
-        second.tracks.get_mut(&group).unwrap()[0].pose.velocity[0] = 30.;
-        second.tracks.get_mut(&group).unwrap()[0]
+        second.contacts.get_mut(&group).unwrap()[0].pose.velocity[0] = 30.;
+        second.contacts.get_mut(&group).unwrap()[0]
             .pose
             .angular_velocity[0] = 0.6;
         let other_group = Id([4; 16]);
         second
-            .tracks
-            .insert(other_group, second.tracks[&group].clone());
+            .contacts
+            .insert(other_group, second.contacts[&group].clone());
         step(&mut app, 0.2, Some(second));
         step(&mut app, 0.25, None);
         assert_eq!(
@@ -637,7 +641,10 @@ mod tests {
                 .count(),
             2
         );
-        assert_eq!(app.world().get::<Contact>(entity).unwrap().1.group, group);
+        assert_eq!(
+            app.world().get::<Contact>(entity).unwrap().1.observer,
+            group
+        );
         let position = app.world().get::<DisplayPose>(entity).unwrap().0.position;
         assert!((position.relative_to(GalacticPosition::ZERO).x - 50.).abs() < 1e-5);
         let pose = &app.world().get::<DisplayPose>(entity).unwrap().0;
@@ -649,7 +656,7 @@ mod tests {
     fn new_spatial_instances_replace_observations_and_world_reset_removes_old_entities() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         let entity = app
             .world_mut()
@@ -657,7 +664,7 @@ mod tests {
             .single(app.world())
             .unwrap();
         let mut next = snapshot(2, group, track, 1000.);
-        next.tracks.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
+        next.contacts.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
         step(&mut app, 0.2, Some(next));
         step(&mut app, 0.25, None);
         assert!(app.world().get_entity(entity).is_err());
@@ -700,10 +707,10 @@ mod tests {
     fn empty_snapshot_removes_observations_without_recreating_them_on_display_frames() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         let mut next = snapshot(2, group, track, 100.);
-        next.tracks.clear();
+        next.contacts.clear();
         step(&mut app, 0.2, Some(next));
         step(&mut app, 0.25, None);
         assert_eq!(
@@ -714,23 +721,17 @@ mod tests {
             0
         );
     }
-    #[test]
-    fn docking_removes_space_pose_and_capture_removes_private_telemetry() {
-        let mut app = app();
-        let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
-        let ship = Id([4; 16]);
-        first.ships.push(ShipTelemetry {
+    fn owned_ship(ship: Id) -> ShipTelemetry {
+        ShipTelemetry {
             can_control: true,
             appearance: None,
             radius_m: 10.,
             dock_services: Default::default(),
-            info_group: InfoGroupKey([1; 32]),
             iff: IffIdentity {
                 owner: Id([1; 16]),
                 faction: None,
                 labels: default(),
                 enabled: true,
-                range_m: 1e8,
             },
             ship,
             authority_revision: 1,
@@ -742,7 +743,53 @@ mod tests {
             shield_temperature_k: 0.,
             coolant_reserve_kg: 0.,
             travel: default(),
-        });
+        }
+    }
+
+    #[test]
+    fn owned_slip_boundaries_interpolate_without_bridging_teleports() {
+        let mut app = app();
+        let id = Id([4; 16]);
+        for (sequence, presence, x, expected) in [
+            (1, travel::Presence::Space, 0.0, 0.0),
+            (2, travel::Presence::SlipTransit(Id([9; 16])), 100.0, 50.0),
+            (3, travel::Presence::Space, 200.0, 150.0),
+            (4, travel::Presence::Space, 10000.0, 10000.0),
+        ] {
+            let mut frame = snapshot(sequence, Id([2; 16]), 3, 0.0);
+            let mut ship = owned_ship(id);
+            ship.presence = presence;
+            ship.spatial_instance = Id([sequence as u8; 16]);
+            ship.pose.as_mut().unwrap().position =
+                GalacticPosition::ZERO.offset_by(glam::DVec3::X * x);
+            frame.ships.push(ship);
+            step(
+                &mut app,
+                sequence as f64 * osg_model::TICK_SECONDS,
+                Some(frame),
+            );
+            step(
+                &mut app,
+                sequence as f64 * osg_model::TICK_SECONDS + 0.05,
+                None,
+            );
+            let world = app.world_mut();
+            let pose = world
+                .query_filtered::<&DisplayPose, With<OwnedShip>>()
+                .single(world)
+                .unwrap();
+            assert!(
+                (pose.0.position.relative_to(GalacticPosition::ZERO).x - expected).abs() < 1e-6
+            );
+        }
+    }
+
+    #[test]
+    fn docking_removes_space_pose_and_capture_removes_private_telemetry() {
+        let mut app = app();
+        let mut first = snapshot(1, Id([2; 16]), 3, 0.);
+        let ship = Id([4; 16]);
+        first.ships.push(owned_ship(ship));
         step(&mut app, 0.1, Some(first.clone()));
         let entity = app
             .world_mut()
@@ -790,7 +837,7 @@ mod tests {
     fn underruns_replay_the_previous_interval_until_the_reserve_is_rebuilt() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         step(&mut app, 0.2, Some(snapshot(2, group, track, 100.)));
         let entity = app
@@ -821,11 +868,14 @@ mod tests {
     fn fixed_schedule_consumes_once_per_tick_and_uses_authoritative_timestamps() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.05, Some(snapshot(1, group, track, 0.)));
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 0);
         step(&mut app, 0.1, None);
-        assert_eq!(app.world().resource::<RenderTime>().display_ns, 100_000_000);
+        assert_eq!(
+            app.world().resource::<RenderTime>().display_ns,
+            osg_model::TICK_NS
+        );
 
         let mut accelerated = snapshot(2, group, track, 100.);
         accelerated.sim_time_ns = 1_100_000_000;
@@ -852,16 +902,14 @@ mod tests {
         app.world_mut()
             .resource_mut::<BufferedPlayback>()
             .0
-            .receive(normal.clone())
-            .unwrap();
+            .receive(normal.clone());
         normal.sequence = 5;
         normal.tick = 14;
         normal.sim_time_ns = 1_400_000_000;
         app.world_mut()
             .resource_mut::<BufferedPlayback>()
             .0
-            .receive(normal)
-            .unwrap();
+            .receive(normal);
         step(&mut app, 0.55, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 5);
     }
@@ -870,7 +918,7 @@ mod tests {
     fn catchup_preserves_both_publications_and_interpolates_to_the_final_sample() {
         let mut app = app();
         let group = Id([2; 16]);
-        let track = Id([3; 16]);
+        let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         for sequence in 2..=14 {
             let mut frame = snapshot(sequence, group, track, (sequence - 1) as f64 * 100.);
@@ -892,7 +940,7 @@ mod tests {
                     sequence,
                     sim_time_ns: frame.sim_time_ns,
                     kind: CombatEventKind::Destroyed {
-                        target: ContactRef { group, track },
+                        target: Id([3; 16]),
                         pose: Pose::default(),
                         appearance: None,
                         energy_j: 1.,
@@ -900,13 +948,12 @@ mod tests {
                         radius_m: 1.,
                     },
                 });
-                frame.tracks.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
+                frame.contacts.get_mut(&group).unwrap()[0].spatial_instance = Id([6; 16]);
             }
             app.world_mut()
                 .resource_mut::<BufferedPlayback>()
                 .0
-                .receive(frame)
-                .unwrap();
+                .receive(frame);
         }
         step(&mut app, 0.2, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 3);
@@ -954,6 +1001,7 @@ mod tests {
             view,
             id: Id([9; 16]),
             spatial_instance: Id([10; 16]),
+            iff: None,
             known_entity: None,
             contact: None,
             pose: Pose {
@@ -975,7 +1023,7 @@ mod tests {
     #[test]
     fn optical_entities_are_view_scoped_independent_of_radio_tracks_and_interpolate_light() {
         let mut app = app();
-        let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
+        let mut first = snapshot(1, Id([2; 16]), 3, 0.);
         first.optical = vec![optical(1, 0., 10.), optical(2, 1000., 20.)];
         step(&mut app, 0.1, Some(first));
         assert_eq!(
@@ -1000,8 +1048,8 @@ mod tests {
             .unwrap()
             .0;
 
-        let mut second = snapshot(2, Id([2; 16]), Id([3; 16]), 0.);
-        second.tracks.clear();
+        let mut second = snapshot(2, Id([2; 16]), 3, 0.);
+        second.contacts.clear();
         second.optical = vec![optical(1, 100., 30.), optical(2, 2000., 40.)];
         step(&mut app, 0.2, Some(second));
         step(&mut app, 0.25, None);
@@ -1016,7 +1064,7 @@ mod tests {
             0
         );
 
-        let mut third = snapshot(3, Id([2; 16]), Id([3; 16]), 0.);
+        let mut third = snapshot(3, Id([2; 16]), 3, 0.);
         third.optical = vec![optical(2, 2000., 40.)];
         step(&mut app, 0.3, Some(third));
         assert!(app.world().get_entity(source).is_err());
@@ -1032,7 +1080,7 @@ mod tests {
     #[test]
     fn optical_transit_instance_replaces_pose_and_light_samples() {
         let mut app = app();
-        let mut first = snapshot(1, Id([2; 16]), Id([3; 16]), 0.);
+        let mut first = snapshot(1, Id([2; 16]), 3, 0.);
         first.optical = vec![optical(1, 0., 10.)];
         step(&mut app, 0.1, Some(first));
         let old = app
@@ -1040,7 +1088,7 @@ mod tests {
             .query_filtered::<Entity, With<Optical>>()
             .single(app.world())
             .unwrap();
-        let mut second = snapshot(2, Id([2; 16]), Id([3; 16]), 0.);
+        let mut second = snapshot(2, Id([2; 16]), 3, 0.);
         let mut arrived = optical(1, 1e9, 1000.);
         arrived.spatial_instance = Id([12; 16]);
         second.optical.push(arrived);

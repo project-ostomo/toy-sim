@@ -1,6 +1,6 @@
 use super::*;
 
-impl FusedScan {
+impl ShipScan {
     pub(super) fn orrery(&self, reference: GalacticPosition) -> Result<Vec<LocalObstacle>> {
         let Some(universe) = &self.universe else {
             return Ok(Vec::new());

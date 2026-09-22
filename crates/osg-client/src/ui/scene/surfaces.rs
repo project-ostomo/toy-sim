@@ -662,7 +662,7 @@ mod tests {
     fn view_demand_shares_appearances_and_ignores_private_inactive_or_unsubscribed_views() {
         use crate::state::ViewObservation;
         use osg_model::{
-            Completion, GalacticPosition, Id, Pose, ViewState, presentation::CelestialPresentation,
+            GalacticPosition, Id, Pose, ViewState, presentation::CelestialPresentation,
         };
 
         let mut world = World::new();
@@ -678,11 +678,8 @@ mod tests {
                         ViewObservation(ViewState {
                             id,
                             revision: 1,
-                            group: Id([4; 16]),
                             focused_ship: None,
                             origin: GalacticPosition::ZERO,
-                            tracks: Vec::new(),
-                            completion: Completion::Complete,
                         }),
                         ViewSystems(vec![system]),
                     ))

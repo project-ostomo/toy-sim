@@ -1,4 +1,4 @@
-use crate::{AccountId, Id, IffIdentity, Tag};
+use crate::{AccountId, Id, IffIdentity};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -114,16 +114,13 @@ impl OwnershipDirectory {
         })
     }
 
-    pub fn track_standing(&self, observer: AccountId, tags: &BTreeSet<Tag>) -> Option<Standing> {
-        let owner = tags.iter().find_map(|tag| match tag {
-            Tag::IffOwner(owner) => Some(*owner),
-            _ => None,
-        });
-        let organization = tags.iter().find_map(|tag| match tag {
-            Tag::IffFaction(organization) => Some(*organization),
-            _ => None,
-        });
-        self.advertised_standing(observer, owner, organization)
+    pub fn contact_standing(
+        &self,
+        observer: AccountId,
+        iff: Option<&IffIdentity>,
+    ) -> Option<Standing> {
+        let iff = iff.filter(|iff| iff.enabled)?;
+        self.advertised_standing(observer, Some(iff.owner), iff.faction)
     }
 
     pub fn advertised_standing(
@@ -433,15 +430,17 @@ mod tests {
             ),
             Standing::Neutral
         );
-        let tags = BTreeSet::from([Tag::IffOwner(Id([3; 16]))]);
+        let iff = IffIdentity {
+            owner: Id([3; 16]),
+            faction: None,
+            labels: BTreeSet::new(),
+            enabled: true,
+        };
         assert_eq!(
-            directory.track_standing(Id([6; 16]), &tags),
+            directory.contact_standing(Id([6; 16]), Some(&iff)),
             Some(Standing::Neutral)
         );
-        assert_eq!(
-            directory.track_standing(Id([6; 16]), &BTreeSet::new()),
-            None
-        );
+        assert_eq!(directory.contact_standing(Id([6; 16]), None), None);
     }
 
     #[test]

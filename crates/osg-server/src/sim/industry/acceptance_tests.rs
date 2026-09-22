@@ -10,7 +10,7 @@ use osg_model::{
     travel::Presence,
 };
 use osg_ships::ShipBlueprint;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 struct Fixture {
     world: World,
@@ -25,7 +25,7 @@ impl Fixture {
         identity::initialize(&mut world, &[account]);
         world.init_resource::<SimulationCounters>();
         world.init_resource::<vessel::WasmRuntime>();
-        world.insert_resource(Time::<Fixed>::from_hz(10.0));
+        world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
         world.insert_resource(vessel::ShipCatalogue(Catalogue::builtin()));
         let blueprint = ShipBlueprint::from_bytes(include_bytes!(
             "../../../../../assets/ships/neris-anchorage.ship"
@@ -267,9 +267,9 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
 fn large_custom_program() -> Vec<u8> {
     let mut program = wat::parse_str(format!(
         "(module (memory (export \"memory\") 1) \
-         (func (export \"ship_api_version\") (result i32) i32.const {}) \
+         (func (export \"game_version\") (result i32) i32.const {}) \
          (func (export \"ship_tick\")))",
-        osg_ship_api::abi::VERSION,
+        osg_ship_api::GAME_VERSION as u32,
     ))
     .unwrap();
     let payload_len = 1024 * 1024 - 1024;
@@ -484,7 +484,7 @@ fn reserved_fuel_cannot_escape_through_transfer_refill_or_dock_services() {
     fixture
         .world
         .resource_mut::<Time<Fixed>>()
-        .advance_by(Duration::from_millis(100));
+        .advance_by(osg_model::TICK_DURATION);
     fixture
         .world
         .run_system_once(hardware::utilities::service_docked)

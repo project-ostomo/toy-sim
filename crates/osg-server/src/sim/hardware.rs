@@ -214,6 +214,20 @@ pub(crate) fn initialize(
         if slip_power > 0. {
             commands.entity(ship).insert(super::travel::SlipDrive {
                 power_w: slip_power,
+                axis: d
+                    .0
+                    .parts
+                    .iter()
+                    .find_map(|part| {
+                        matches!(
+                            part.definition.equipment,
+                            Equipment::Utility {
+                                utility: osg_ships::utilities::UtilityDef::SlipDrive { .. }
+                            }
+                        )
+                        .then_some((part.rotation * bevy::math::DVec3::NEG_Z).to_array())
+                    })
+                    .unwrap(),
                 ..Default::default()
             });
         } else {
@@ -951,7 +965,7 @@ fn power_totals(
     ships.par_iter_mut().for_each(
         |(design, installed, avionics, sensor, mut flow, electrical, display)| {
             *flow = PowerFlow::default();
-            flow.requested_w = electrical.requested_weapon_j * super::simulation::TICK_RATE_HZ;
+            flow.requested_w = electrical.requested_weapon_j * osg_model::TICK_RATE_HZ;
             if let Some(mut display) = display {
                 display.powered = avionics.0.operational && avionics.0.powered;
             }
@@ -1043,6 +1057,7 @@ fn transit_thermal(
         (
             With<super::travel::Dormant>,
             Without<super::travel::SystemsSuspended>,
+            Without<super::travel::Transit>,
         ),
     >,
 ) {

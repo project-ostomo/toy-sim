@@ -431,7 +431,7 @@ mod tests {
             .id();
         app.world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         app.update();
         let x = app
             .world()
@@ -447,7 +447,7 @@ mod tests {
         );
         app.world_mut()
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         app.update();
         let x = app
             .world()
@@ -479,7 +479,7 @@ mod tests {
             app.world_mut().get_mut::<AccumulatedForce>(ship).unwrap().0 = DVec3::X * force;
             app.world_mut()
                 .resource_mut::<Time<Fixed>>()
-                .advance_by(Duration::from_millis(100));
+                .advance_by(osg_model::TICK_DURATION);
             app.update();
             assert_eq!(
                 app.world().get::<Velocity>(ship).unwrap().0,
@@ -533,10 +533,10 @@ mod tests {
         let energy_initial = -mu / (2.0 * radius);
         let mut max_energy_error: f64 = 0.0;
         let mut max_radial_error: f64 = 0.0;
-        for _ in 0..(2.0 * period / 0.1).ceil() as usize {
+        for _ in 0..(2.0 * period / osg_model::TICK_SECONDS).ceil() as usize {
             app.world_mut()
                 .resource_mut::<Time<Fixed>>()
-                .advance_by(Duration::from_millis(100));
+                .advance_by(osg_model::TICK_DURATION);
             app.update();
             let position = app
                 .world()

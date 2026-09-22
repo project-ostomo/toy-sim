@@ -5,8 +5,6 @@ use std::collections::{BTreeMap, BinaryHeap};
 #[derive(Clone)]
 pub(super) struct Leg {
     pub target: CaptureTarget,
-    pub speed_ly_s: f64,
-    pub max_loss_ppm: f64,
 }
 
 impl Leg {
@@ -35,7 +33,6 @@ struct Edge {
     priority: f64,
     parent: usize,
     target: CaptureTarget,
-    loss: f64,
     departure: Option<(Pose, (f64, f64))>,
 }
 
@@ -66,28 +63,10 @@ fn itinerary(states: &[State], mut index: usize) -> Vec<Leg> {
     legs
 }
 
-// A goal-directed estimate, not an optimality bound: capture radii, different
-// risk allocations and intermediate assisted systems can change the best speed.
-fn remaining_seconds(
-    position: GalacticPosition,
-    goal: &Pose,
-    target: Option<&CaptureTarget>,
-    ppm: f64,
-) -> f64 {
-    let distance = goal.position.relative_to(position).length();
-    let speed = target
-        .and_then(|target| {
-            slip::fastest_speed_ly_s(
-                target.radius_m,
-                distance,
-                ppm,
-                target.navigation_beacon.is_some(),
-            )
-        })
-        .unwrap_or_else(|| {
-            (slip::DISPERSION_FLOOR_RAD / slip::DISPERSION_SPEED_COEFFICIENT).sqrt()
-        });
-    distance / slip::LY_M / speed
+// Goal-directed estimate: the final capture's guidance determines its cruise speed.
+// Assisted intermediate stops can still improve on this estimate.
+fn remaining_seconds(position: GalacticPosition, goal: &Pose, assisted: bool) -> f64 {
+    slip::flight_seconds(goal.position.relative_to(position).length(), assisted)
 }
 
 pub(super) fn search(
@@ -120,8 +99,24 @@ pub(super) fn search(
         return Ok(best);
     }
 
-    let remaining_log_loss = remaining_log_loss.min(1e100);
-    let target = environment.capture_target(destination, start_s)?;
+    let unlimited_risk = remaining_log_loss.is_infinite();
+    let mut goal_targets = if let Some(system) = arrival_system {
+        environment.system_targets(system, start_s)?
+    } else {
+        environment
+            .capture_target(destination, start_s)?
+            .into_iter()
+            .collect()
+    };
+    goal_targets.retain(|target| target.radius_m > target.surface_radius_m + performance.radius_m);
+    ensure!(
+        arrival_system.is_none() || !goal_targets.is_empty(),
+        "destination system has no safe slip capture body outside its surface"
+    );
+    let target = goal_targets
+        .iter()
+        .max_by(|a, b| a.radius_m.total_cmp(&b.radius_m))
+        .cloned();
     let goal_reference = target.as_ref().map(|target| target.reference);
     let charge_seconds = |distance_m: f64| {
         (slip::charging_energy_j(performance.mass_kg, distance_m / slip::LY_M)
@@ -159,12 +154,12 @@ pub(super) fn search(
         }
         if let Some(parent) = expand.take() {
             let state = &states[parent];
-            if state.depth < 32 && state.loss < remaining_log_loss {
+            if state.depth < 32 && (unlimited_risk || state.loss < remaining_log_loss) {
                 let key = state.parent.as_ref().map(|(_, leg)| leg.target.reference);
                 if !candidates.contains_key(&key) {
                     let mut neighbors =
                         environment.candidates(state.pose.position, goal.position, 96)?;
-                    if let Some(target) = &target {
+                    for target in &goal_targets {
                         neighbors.retain(|neighbor| neighbor.reference != target.reference);
                         neighbors.push(target.clone());
                     }
@@ -183,40 +178,32 @@ pub(super) fn search(
                         continue;
                     }
                     let distance = next.pose.position.relative_to(state.pose.position).length();
-                    // Alternative risk allocations share the frontier and discovery.
-                    for divisor in [1., 2., 4., 8., 32.] {
-                        let loss = (remaining_log_loss - state.loss) / divisor;
-                        let ppm = slip::ppm_from_log_loss(loss);
-                        let Some(speed) = slip::fastest_speed_ly_s(
-                            next.radius_m,
-                            distance,
-                            ppm,
-                            next.navigation_beacon.is_some(),
-                        ) else {
-                            continue;
-                        };
-                        let flight = distance / slip::LY_M / speed;
-                        let priority = state.seconds
-                            + weights.seconds_per_kg * state.fuel
-                            + charge_seconds(distance)
-                            + flight
-                            + 2.0
-                                * (remaining_seconds(
-                                    next.pose.position,
-                                    goal,
-                                    target.as_ref(),
-                                    ppm,
-                                ) + charge_seconds(
-                                    goal.position.relative_to(next.pose.position).length(),
-                                ));
-                        queue.push(Edge {
-                            priority,
-                            parent,
-                            target: next.clone(),
-                            loss,
-                            departure: None,
-                        });
+                    let loss = slip::log_loss_from_ppm(slip::capture_loss_ppm(
+                        next.radius_m,
+                        distance,
+                        next.navigation_beacon.is_some(),
+                    ));
+                    if state.loss + loss > remaining_log_loss {
+                        continue;
                     }
+                    let priority = state.seconds
+                        + weights.seconds_per_kg * state.fuel
+                        + charge_seconds(distance)
+                        + slip::flight_seconds(distance, next.navigation_beacon.is_some())
+                        + remaining_seconds(
+                            next.pose.position,
+                            goal,
+                            target
+                                .as_ref()
+                                .is_some_and(|target| target.navigation_beacon.is_some()),
+                        )
+                        + charge_seconds(goal.position.relative_to(next.pose.position).length());
+                    queue.push(Edge {
+                        priority,
+                        parent,
+                        target: next.clone(),
+                        departure: None,
+                    });
                 }
             }
         }
@@ -295,16 +282,15 @@ pub(super) fn search(
             .position
             .relative_to(departure.position)
             .length();
-        let ppm = slip::ppm_from_log_loss(edge.loss);
-        let Some(speed) = slip::fastest_speed_ly_s(
+        let loss = slip::log_loss_from_ppm(slip::capture_loss_ppm(
             target.radius_m,
             distance,
-            ppm,
             target.navigation_beacon.is_some(),
-        ) else {
+        ));
+        if state.loss + loss > remaining_log_loss {
             continue;
-        };
-        let flight = distance / slip::LY_M / speed;
+        }
+        let flight = slip::flight_seconds(distance, target.navigation_beacon.is_some());
         let exotic =
             state.exotic + slip::exotic_fuel_kg(performance.mass_kg, distance / slip::LY_M);
         if exotic > performance.exotic_available_kg * request.preferences.fuel_fraction {
@@ -322,7 +308,7 @@ pub(super) fn search(
             target.pose.position,
             departure_after,
             departure_after + flight,
-            speed,
+            target.navigation_beacon.is_some(),
         ) {
             Ok(estimate) if estimate.ready => {}
             _ => continue,
@@ -348,19 +334,12 @@ pub(super) fn search(
             });
         let next = State {
             pose,
-            parent: Some((
-                edge.parent,
-                Leg {
-                    target,
-                    speed_ly_s: speed,
-                    max_loss_ppm: ppm,
-                },
-            )),
+            parent: Some((edge.parent, Leg { target })),
             depth: state.depth + 1,
             seconds,
             fuel,
             exotic,
-            loss: state.loss + edge.loss,
+            loss: state.loss + loss,
         };
         // Only compare identical physical arrival states. A cheaper arrival at
         // another time can face different moving obstacles and is not dominant.

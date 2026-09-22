@@ -23,6 +23,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 #[derive(Resource)]
@@ -40,6 +41,7 @@ impl Default for Settings {
 }
 
 const MAX_SELECTED_STARS: usize = 150_000;
+const MIN_BAKE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Component, Default)]
 pub(super) struct ViewSky {
@@ -68,6 +70,7 @@ struct Skies {
     failed: bool,
     job: Option<Job>,
     generation: u64,
+    last_bake_started: Option<Instant>,
 }
 
 #[derive(Clone)]
@@ -288,7 +291,15 @@ fn update(
         }
     }
 
-    if skies.job.is_some() || !uploads.0.is_empty() {
+    // Keep consuming completed work and sharing textures above, but limit CPU
+    // bake starts globally in real time, independently of simulation speed.
+    // There is no request queue: select the latest camera position below.
+    if skies.job.is_some()
+        || !uploads.0.is_empty()
+        || skies
+            .last_bake_started
+            .is_some_and(|started| started.elapsed() < MIN_BAKE_INTERVAL)
+    {
         return;
     }
     let Some(catalogue) = skies.catalogue.clone() else {
@@ -355,6 +366,7 @@ fn update(
     skies.generation += 1;
     let generation = skies.generation;
     cameras.get_mut(camera).unwrap().3.last_job = generation;
+    skies.last_bake_started = Some(Instant::now());
     skies.job = Some(Job {
         camera,
         revision,

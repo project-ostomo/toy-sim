@@ -85,7 +85,6 @@ fn main() -> anyhow::Result<()> {
     }
 
     let json = serde_json::json!({
-        "generation_version": map.generation_version,
         "systems": systems,
     });
     let mut file = std::io::BufWriter::new(std::fs::File::create(

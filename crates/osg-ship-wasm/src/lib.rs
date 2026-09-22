@@ -37,6 +37,12 @@ pub const MAX_BOOTS_PER_TICK: usize = 64;
 /// Shared immutable scene access, called only after a successful scan admission.
 pub trait ScanSource: Send + Sync {
     fn scan(&self, range_m: f64, n: usize) -> Vec<SensorContact>;
+    fn contact(&self, handle: u64) -> Option<SensorContact> {
+        self.scan(f64::MAX, 256)
+            .into_iter()
+            .find(|contact| contact.id == handle)
+    }
+
     fn query_work(&self, query: &osg_model::ProgramQuery) -> Result<u64> {
         Ok(query_work(query))
     }
@@ -65,7 +71,6 @@ struct Host {
     persistent_data: Vec<u8>,
     display_only: bool,
     callback: Option<CallbackKind>,
-    missile: Option<w::MissileObservation>,
     working: Session,
     current: spatial::Snapshot,
     sequence: u64,
@@ -100,7 +105,6 @@ struct Host {
 struct Machine {
     store: Store<Host>,
     tick: TypedFunc<(), ()>,
-    missile_tick: Option<TypedFunc<u64, ()>>,
     remaining: Global,
 }
 
@@ -161,10 +165,6 @@ impl Controller {
 
     pub fn pending_callback(&self) -> Option<CallbackKind> {
         self.callback
-    }
-
-    pub fn supports_missiles(&self) -> bool {
-        !self.display_only && self.module.get_export("missile_tick").is_some()
     }
 
     pub fn needs_instance_start(&self) -> bool {
@@ -236,7 +236,7 @@ impl Controller {
 
     pub fn run_slice(
         &mut self,
-        input: Input,
+        mut input: Input,
         source: Option<Arc<dyn ScanSource>>,
         grant: u64,
         gas_per_tick: u64,
@@ -246,48 +246,12 @@ impl Controller {
         } else {
             CallbackKind::Ship
         };
-        self.run_callback_slice(kind, input, source, None, grant, gas_per_tick)
-    }
-
-    pub fn run_callback_slice(
-        &mut self,
-        kind: CallbackKind,
-        mut input: Input,
-        source: Option<Arc<dyn ScanSource>>,
-        missile: Option<w::MissileObservation>,
-        grant: u64,
-        gas_per_tick: u64,
-    ) -> Result<SliceOutput> {
         self.last_gas_used = 0;
         self.last_scan_seconds = 0.;
         ensure!(
             self.callback.is_none_or(|pending| pending == kind),
             "callback kind does not match suspended execution"
         );
-        match kind {
-            CallbackKind::Missile(handle) => {
-                ensure!(
-                    self.supports_missiles(),
-                    "program has no missile_tick callback"
-                );
-                ensure!(
-                    handle != 0 && missile.is_some_and(|value| value.handle == handle),
-                    "missile observation handle does not match callback"
-                );
-            }
-            CallbackKind::Ship => {
-                ensure!(
-                    !self.display_only && missile.is_none(),
-                    "invalid ship callback context"
-                );
-            }
-            CallbackKind::Display => {
-                ensure!(
-                    self.display_only && missile.is_none(),
-                    "invalid display callback context"
-                );
-            }
-        }
         ensure!(
             gas_per_tick > 0 && grant <= gas_per_tick,
             "invalid computer gas grant"
@@ -345,7 +309,6 @@ impl Controller {
             grant: available,
             gas_per_tick,
             state: self.state.clone(),
-            missile,
         };
         {
             let mut exchange = self.exchange.lock().unwrap();
@@ -488,7 +451,7 @@ impl ControllerRuntime {
             original.exports().any(|export| export.name() == "memory"),
             "controller must export memory"
         );
-        for (name, params, results) in [("ship_tick", 0, 0), ("ship_api_version", 0, 1)] {
+        for (name, params, results) in [("ship_tick", 0, 0), ("game_version", 0, 1)] {
             let ty = original
                 .exports()
                 .find(|export| export.name() == name)
@@ -499,15 +462,7 @@ impl ControllerRuntime {
                 "unsupported {name} signature"
             );
         }
-        if let Some(export) = original.get_export("missile_tick") {
-            let ty = export.func().context("missile_tick must be a function")?;
-            ensure!(
-                ty.params().len() == 1
-                    && matches!(ty.params().next(), Some(wasmtime::ValType::I64))
-                    && ty.results().len() == 0,
-                "missile_tick must accept one i64 handle and return nothing"
-            );
-        }
+
         for export in original.exports() {
             if let Some(memory) = export.ty().memory() {
                 ensure!(
@@ -599,7 +554,7 @@ fn validate_version(bytes: &[u8]) -> Result<()> {
             Payload::ExportSection(section) => {
                 for export in section {
                     let export = export?;
-                    if export.name == "ship_api_version" && export.kind == ExternalKind::Func {
+                    if export.name == "game_version" && export.kind == ExternalKind::Func {
                         version_function = Some(export.index);
                     }
                 }
@@ -608,20 +563,20 @@ fn validate_version(bytes: &[u8]) -> Result<()> {
                 if version_function == Some(imported_functions + body_index) {
                     ensure!(
                         body.get_locals_reader()?.get_count() == 0,
-                        "ship_api_version must be a literal i32 constant"
+                        "game_version must be a literal i32 constant"
                     );
                     let mut operators = body.get_operators_reader()?;
                     let Operator::I32Const { value } = operators.read()? else {
-                        anyhow::bail!("ship_api_version must be a literal i32 constant");
+                        anyhow::bail!("game_version must be a literal i32 constant");
                     };
                     ensure!(
                         matches!(operators.read()?, Operator::End) && operators.eof(),
-                        "ship_api_version must be a literal i32 constant"
+                        "game_version must be a literal i32 constant"
                     );
                     ensure!(
-                        value == w::VERSION as i32,
-                        "unsupported ship controller API {value}; expected {}",
-                        w::VERSION
+                        value == osg_ship_api::GAME_VERSION as i32,
+                        "unsupported game version {value}; expected {}",
+                        osg_ship_api::GAME_VERSION as u32
                     );
                     return Ok(());
                 }
@@ -630,7 +585,7 @@ fn validate_version(bytes: &[u8]) -> Result<()> {
             _ => {}
         }
     }
-    anyhow::bail!("missing literal ship_api_version function")
+    anyhow::bail!("missing literal game_version function")
 }
 
 fn range(c: &Caller<'_, Host>, ptr: u32, len: u32) -> Option<std::ops::Range<usize>> {

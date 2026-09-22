@@ -5,12 +5,12 @@ fn row(id: u8, x: f64) -> Row {
         slip_order: None,
         celestial: None,
         target: SelectedTarget::Contact(ContactRef {
-            group: Id([7; 16]),
-            track: Id([id; 16]),
+            observer: Id([7; 16]),
+            contact: (id) as u64,
         }),
         contact: Some(ContactRef {
-            group: Id([7; 16]),
-            track: Id([id; 16]),
+            observer: Id([7; 16]),
+            contact: (id) as u64,
         }),
         name: "Same name".into(),
         kind: "Ship".into(),
@@ -214,7 +214,6 @@ fn itinerary_draws_producer_labels_without_a_navigation_catalogue() {
             travel::Order::Dock(exit),
             travel::Order::Sublight(travel::Destination::Galactic(origin)),
             travel::Order::Slip {
-                speed_ly_s: 0.01,
                 navigation_beacon: Some(entry),
                 destination: travel::Destination::Relative {
                     reference: travel::Reference::Beacon(entry),

@@ -74,7 +74,6 @@ pub(in crate::ui) fn details() -> ShipPresentation {
         }],
         cargo_capacity_m3: 50.,
         cargo_used_m3: 50.,
-        devices: vec![],
         computer: ComputerStatus::Running {
             gas_used: 100,
             gas_limit: 1000,
@@ -108,7 +107,7 @@ fn console_headless_layout_and_manual_lockout() {
     world.init_resource::<Console>();
     world.init_resource::<EguiUserTextures>();
     world.init_resource::<RenderTime>();
-    world.insert_resource(Time::<Fixed>::from_hz(10.));
+    world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
     world.insert_resource(SessionInfo {
         world: Some(Id([9; 16])),
         ..Default::default()

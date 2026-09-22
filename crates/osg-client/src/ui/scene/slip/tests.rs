@@ -1,94 +1,195 @@
 use super::*;
-use bevy::{
-    asset::RenderAssetUsages,
-    camera::{Hdr, RenderTarget},
-    ecs::system::RunSystemOnce,
-    render::{
-        RenderPlugin,
-        render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages},
-        view::screenshot::{Screenshot, save_to_disk},
-    },
-    window::ExitCondition,
-    winit::WinitPlugin,
-};
+use osg_model::Pose;
 
-#[derive(Resource)]
-struct CaptureScene {
-    camera: Entity,
-    ship: Entity,
-    target: Handle<Image>,
-    effects: Vec<(Entity, Handle<SlipMaterial>)>,
+fn ship_telemetry(id: Id, radius: f64) -> osg_model::ShipTelemetry {
+    osg_model::ShipTelemetry {
+        ship: id,
+        spatial_instance: id,
+        can_control: true,
+        appearance: None,
+        radius_m: radius,
+        dock_services: default(),
+        iff: osg_model::IffIdentity {
+            owner: id,
+            faction: None,
+            labels: default(),
+            enabled: true,
+        },
+        authority_revision: 0,
+        presence: Presence::Space,
+        pose: Some(Pose::default()),
+        battery_j: 0,
+        hull_heat_j: 0.0,
+        shield_temperature_k: 300.0,
+        coolant_reserve_kg: 0.0,
+        travel: default(),
+    }
+}
+
+pub(super) fn wake(age_s: f64) -> SlipWake {
+    SlipWake {
+        view: 1,
+        id: Id([1; 16]),
+        start: osg_model::GalacticPosition::ZERO.offset_by(bevy::math::DVec3::NEG_Z * 1e10),
+        end: osg_model::GalacticPosition::ZERO.offset_by(bevy::math::DVec3::NEG_Z * 1000.0),
+        start_ns: 390_000_000_000 - (age_s * 1e9) as u64,
+        end_ns: 400_000_000_000 - (age_s * 1e9) as u64,
+        drift_m_s: [0.0; 3],
+        radius_m: 100.0,
+        seed: 0,
+        offset_m: 0.0,
+    }
 }
 
 #[test]
-fn observer_departure_effects_follow_shared_orbital_motion() {
-    use bevy::math::DVec3;
-    use osg_model::{CombatEvent, Completion, GalacticPosition, ViewState};
-
+fn slip_effects_only_render_in_the_view_that_observed_them() {
     let mut app = App::new();
     app.init_resource::<RenderTime>()
+        .init_resource::<SlipEffects>()
         .init_resource::<bevy::asset::Assets<Mesh>>()
         .init_resource::<bevy::asset::Assets<SlipMaterial>>()
         .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (super::super::camera::setup_views, prepare, draw).chain(),
-        );
-    let origin = GalacticPosition::splat(1_000_000_000_000_000_000_000);
-    let velocity = DVec3::new(30_000.0, 20_000.0, -40_000.0);
-    let offset = Vec3::new(-200.0, 100.0, -600.0);
-    app.world_mut().spawn(ViewObservation(ViewState {
-        id: 1,
-        revision: 1,
-        group: Id([1; 16]),
-        focused_ship: None,
-        origin: origin.offset_by(velocity * 0.2),
-        tracks: vec![],
-        completion: Completion::Complete,
-    }));
-    app.world_mut().spawn(CombatPublication(CombatEvent {
-        sequence: 1,
-        sim_time_ns: 1_000_000_000,
-        kind: CombatEventKind::Slip {
-            position: origin.offset_by(offset.as_dvec3()),
-            velocity_m_s: velocity.to_array(),
-            direction: [0.0, 0.0, -1.0],
-            radius_m: 15.0,
-            arriving: false,
-        },
-    }));
-    app.world_mut().resource_mut::<RenderTime>().display_ns = 1_200_000_000;
+        .add_systems(Update, (super::super::camera::setup_views, draw).chain())
+        .add_systems(PostUpdate, distortion::prepare);
+    let views: Vec<_> = (1..=2)
+        .map(|id| {
+            app.world_mut()
+                .spawn((
+                    ViewObservation(osg_model::ViewState {
+                        id,
+                        revision: 1,
+                        focused_ship: None,
+                        origin: osg_model::GalacticPosition::ZERO,
+                    }),
+                    SlipView::default(),
+                ))
+                .id()
+        })
+        .collect();
+    app.world_mut().resource_mut::<RenderTime>().display_ns = 400_000_000_000;
+    app.world_mut()
+        .resource_mut::<SlipEffects>()
+        .0
+        .wakes
+        .push(wake(60.0));
     app.update();
-    let mut effects = app.world_mut().query::<(&Effect, &Transform)>();
-    let flash = effects
-        .iter(app.world())
-        .find(|(effect, _)| effect.mode == 3)
-        .unwrap()
-        .1;
-    assert!(flash.translation.distance(offset) < 0.001);
-    let trail = effects
-        .iter(app.world())
-        .find(|(effect, _)| effect.mode == 2)
-        .unwrap()
-        .1;
-    assert!(trail.translation.distance(offset + Vec3::NEG_Z * 256.0) < 0.001);
+    let world = app.world_mut();
+    assert!(
+        world
+            .get::<distortion::Distortion>(views[0])
+            .unwrap()
+            .screen
+            .w
+            > 0.0
+    );
+    assert_eq!(
+        world
+            .get::<distortion::Distortion>(views[1])
+            .unwrap()
+            .screen
+            .w,
+        0.0
+    );
+    world.resource_mut::<SlipEffects>().0 = SlipPresentation::default();
+    app.update();
+    let world = app.world_mut();
+    assert!(
+        world
+            .query::<&distortion::Distortion>()
+            .iter(world)
+            .all(|settings| settings.screen.w == 0.0)
+    );
 }
 
 #[test]
-fn transitions_keep_departure_anchor_and_use_actual_speed() {
+fn own_wake_geometry_survives_snapshot_replacement_and_galactic_translation() {
+    let mut app = App::new();
+    app.init_resource::<RenderTime>()
+        .init_resource::<SlipEffects>()
+        .init_resource::<bevy::asset::Assets<Mesh>>()
+        .init_resource::<bevy::asset::Assets<SlipMaterial>>()
+        .add_systems(Startup, setup)
+        .add_systems(Update, (super::super::camera::setup_views, draw).chain())
+        .add_systems(PostUpdate, distortion::prepare);
+    let id = Id([12; 16]);
+    let view = app
+        .world_mut()
+        .spawn((
+            ViewObservation(osg_model::ViewState {
+                id: 1,
+                revision: 1,
+                focused_ship: Some(id),
+                origin: default(),
+            }),
+            SlipView {
+                coverage: 1.0,
+                direction: Vec3::NEG_Z,
+                departure_ns: Some(395_000_000_000),
+                ..default()
+            },
+        ))
+        .id();
+    let mut telemetry = ship_telemetry(id, 14.0);
+    telemetry.presence = Presence::SlipTransit(Id([13; 16]));
+    let ship = app
+        .world_mut()
+        .spawn((
+            OwnedShip(telemetry),
+            DisplayPose(Pose {
+                velocity: [0.0, 0.0, -1e14],
+                ..default()
+            }),
+        ))
+        .id();
+    app.world_mut().resource_mut::<RenderTime>().display_ns = 400_000_000_000;
+    app.update();
+    *app.world_mut().get_mut::<Transform>(view).unwrap() =
+        Transform::from_xyz(150.0, 80.0, -180.0).looking_at(Vec3::Z * 200.0, Vec3::Y);
+    app.update();
+    let snapshot = |world: &mut World| {
+        let settings = world.get::<distortion::Distortion>(view).unwrap();
+        settings.wakes[..settings.screen.w as usize].to_vec()
+    };
+    let before = snapshot(app.world_mut());
+    assert!(!before.is_empty());
+    let moved =
+        osg_model::GalacticPosition::ZERO.offset_by(bevy::math::DVec3::new(1e17, -2e17, 3e17));
+    app.world_mut()
+        .get_mut::<DisplayPose>(ship)
+        .unwrap()
+        .0
+        .position = moved;
+    app.world_mut().get_mut::<ViewCamera>(view).unwrap().origin = moved;
+    let mut replacement = wake(0.0);
+    replacement.id = Id::new();
+    replacement.seed = 782;
+    app.world_mut().resource_mut::<SlipEffects>().0.wakes = vec![replacement];
+    app.update();
+    assert_eq!(snapshot(app.world_mut()), before);
+}
+
+#[test]
+fn transitions_follow_the_same_ship_and_fade_continuously() {
     use osg_model::{
-        Completion, GalacticPosition, IffIdentity, InfoGroupKey, ShipTelemetry,
-        SlipTransitTelemetry, ViewState,
+        GalacticPosition, IffIdentity, ShipTelemetry, SlipTransitTelemetry, ViewState,
     };
 
     let mut app = App::new();
-    app.init_resource::<RenderTime>()
-        .add_systems(Update, prepare);
+    app.init_resource::<RenderTime>().add_systems(
+        Update,
+        (
+            super::super::camera::setup_views,
+            prepare,
+            super::super::camera::update_views,
+        )
+            .chain(),
+    );
     let id = Id([1; 16]);
     let mut details = crate::ui::console::tests::details();
     details.slip_transit = Some(SlipTransitTelemetry {
         departed_ns: 1_000_000_000,
-        speed_ly_s: 0.02,
+        destination: osg_model::GalacticPosition::ZERO,
+        failure_ppm: 5000.0,
         direction: [0.0, 0.0, -1.0],
     });
     let ship = app
@@ -99,13 +200,11 @@ fn transitions_keep_departure_anchor_and_use_actual_speed() {
                 appearance: None,
                 radius_m: 10.0,
                 dock_services: default(),
-                info_group: InfoGroupKey([1; 32]),
                 iff: IffIdentity {
                     owner: id,
                     faction: None,
                     labels: default(),
                     enabled: true,
-                    range_m: 1e8,
                 },
                 ship: id,
                 authority_revision: 1,
@@ -128,11 +227,8 @@ fn transitions_keep_departure_anchor_and_use_actual_speed() {
             ViewObservation(ViewState {
                 id: 1,
                 revision: 1,
-                group: id,
                 focused_ship: Some(id),
                 origin: GalacticPosition::ZERO,
-                tracks: vec![],
-                completion: Completion::Complete,
             }),
             SlipView::default(),
         ))
@@ -153,25 +249,24 @@ fn transitions_keep_departure_anchor_and_use_actual_speed() {
     app.update();
     let state = app.world().get::<SlipView>(view).unwrap();
     assert!(state.entering && state.coverage > 0.0 && state.coverage < 1.0);
+
+    assert!(state.flow > 0.0 && state.flow < 0.75);
+    assert_eq!(state.flash_age, Some(0.25));
+    let initial_flow = state.flow;
+    let camera = app.world().get::<ViewCamera>(view).unwrap();
+    assert!(!camera.private);
     assert_eq!(
-        state.anchor.as_ref().unwrap().position,
-        GalacticPosition::ZERO
+        camera.origin,
+        app.world().get::<DisplayPose>(ship).unwrap().0.position
     );
-    assert!((state.flow - 0.5).abs() < 1e-6);
-    app.world_mut()
-        .get_mut::<ShipDetails>(ship)
-        .unwrap()
-        .0
-        .slip_transit
-        .as_mut()
-        .unwrap()
-        .speed_ly_s = 0.04;
     app.world_mut().resource_mut::<RenderTime>().display_ns = 1_500_000_000;
     app.update();
-    assert!((app.world().get::<SlipView>(view).unwrap().flow - 1.5).abs() < 1e-6);
+    let flow = app.world().get::<SlipView>(view).unwrap().flow;
+    assert!(flow > initial_flow && flow < 1.5);
     app.world_mut().resource_mut::<RenderTime>().display_ns = 3_000_000_000;
     app.update();
     assert_eq!(app.world().get::<SlipView>(view).unwrap().coverage, 1.0);
+    assert_eq!(app.world().get::<SlipView>(view).unwrap().flash_age, None);
     app.world_mut()
         .get_mut::<OwnedShip>(ship)
         .unwrap()
@@ -200,193 +295,4 @@ fn transitions_keep_departure_anchor_and_use_actual_speed() {
         .presence = Presence::Destroyed;
     app.update();
     assert_eq!(app.world().get::<SlipView>(view).unwrap().coverage, 0.0);
-}
-
-fn scene(
-    mut commands: Commands,
-    assets: Res<Assets>,
-    mut images: ResMut<bevy::asset::Assets<Image>>,
-    mut materials: ResMut<bevy::asset::Assets<SlipMaterial>>,
-    parts: Res<osg_ship_view::PartVisualAssets>,
-    loader: Res<AssetServer>,
-) {
-    let mut image = Image::new_uninit(
-        Extent3d {
-            width: 960,
-            height: 720,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
-    image.texture_descriptor.usage |= TextureUsages::RENDER_ATTACHMENT | TextureUsages::COPY_SRC;
-    let target = images.add(image);
-    let camera = commands
-        .spawn((
-            Camera3d::default(),
-            RenderTarget::Image(target.clone().into()),
-            bevy::camera::Exposure::SUNLIGHT,
-            Hdr,
-            bevy::post_process::bloom::Bloom::NATURAL,
-            Transform::from_xyz(24.0, 15.0, 36.0).looking_at(Vec3::ZERO, Vec3::Y),
-        ))
-        .id();
-    commands.spawn((
-        DirectionalLight {
-            illuminance: 100_000.0,
-            ..default()
-        },
-        Transform::from_xyz(1.0, 2.0, 3.0).looking_at(Vec3::ZERO, Vec3::Y),
-    ));
-    let catalogue = osg_ships::Catalogue::builtin();
-    let design = osg_ships::expedition_patrol().compile(&catalogue).unwrap();
-    let appearance = osg_ships::appearance::ShipAppearance::from(&design)
-        .prepare(&catalogue)
-        .unwrap();
-    let ship = commands
-        .spawn((Transform::default(), Visibility::default()))
-        .id();
-    osg_ship_view::spawn_parts(&mut commands, ship, &appearance, &parts, &loader);
-    let mut effects = Vec::new();
-    for mode in 0..4 {
-        let material = materials.add(SlipMaterial {
-            parameters: Vec4::new(0.0, 0.0, mode as f32, 1.0),
-        });
-        let transform = match mode {
-            0 => Transform::from_scale(Vec3::splat(10_000.0)),
-            1 => Transform::from_scale(Vec3::splat(design.radius as f32 * 1.4)),
-            2 => Transform::from_xyz(0.0, 0.0, -256.0).with_scale(Vec3::new(5.0, 5.0, 256.0)),
-            _ => Transform::from_scale(Vec3::splat(20.0)),
-        };
-        let entity = commands
-            .spawn((
-                Mesh3d(if mode == 2 {
-                    assets.trail.clone()
-                } else {
-                    assets.sphere.clone()
-                }),
-                MeshMaterial3d(material.clone()),
-                transform,
-                Visibility::Hidden,
-            ))
-            .id();
-        effects.push((entity, material));
-    }
-    commands.insert_resource(CaptureScene {
-        camera,
-        ship,
-        target,
-        effects,
-    });
-}
-
-#[test]
-#[ignore = "software-rendered slipdrive visual inspection"]
-fn capture_slip_sequence() {
-    let output =
-        std::env::var("OSG_SLIP_CAPTURE_DIR").unwrap_or_else(|_| "/tmp/osg-slip-captures".into());
-    std::fs::create_dir_all(&output).unwrap();
-    let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins
-            .set(AssetPlugin {
-                file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(),
-                ..default()
-            })
-            .set(WindowPlugin {
-                primary_window: None,
-                exit_condition: ExitCondition::DontExit,
-                ..default()
-            })
-            .set(RenderPlugin {
-                synchronous_pipeline_compilation: true,
-                ..default()
-            })
-            .disable::<WinitPlugin>()
-            .disable::<bevy::audio::AudioPlugin>(),
-    )
-    .add_plugins((
-        osg_ship_view::plume::PlumePlugin,
-        osg_ship_view::slip::SlipRingPlugin,
-    ))
-    .init_resource::<RenderTime>()
-    .add_systems(Startup, osg_ship_view::prepare_visuals);
-    install(&mut app);
-    app.finish();
-    app.cleanup();
-    app.update();
-    app.world_mut().run_system_once(scene).unwrap();
-    for _ in 0..90 {
-        app.update();
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let mut emitters = app.world_mut().query::<&Name>();
-    assert!(
-        emitters
-            .iter(app.world())
-            .any(|name| name.as_str().starts_with("slip_emitter")),
-        "ring GLB did not load"
-    );
-    for (index, (name, charge, coverage)) in [
-        ("idle", 0.0, 0.0),
-        ("charging", 0.5, 0.0),
-        ("charged", 1.0, 0.0),
-        ("entry", 1.0, 0.25),
-        ("enveloping", 1.0, 0.65),
-        ("transit", 1.0, 1.0),
-        ("exit", 0.7, 0.5),
-        ("observer", 0.0, 0.0),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let capture = app.world().resource::<CaptureScene>();
-        let effects = capture.effects.clone();
-        let target = capture.target.clone();
-        let camera = capture.camera;
-        let ship = capture.ship;
-        for mut ring in app
-            .world_mut()
-            .query::<&mut osg_ship_view::slip::SlipRing>()
-            .iter_mut(app.world_mut())
-        {
-            ring.readiness = charge;
-        }
-        for (mode, (entity, material)) in effects.into_iter().enumerate() {
-            *app.world_mut().get_mut::<Visibility>(entity).unwrap() =
-                if (index == 7 && mode >= 2) || (index != 7 && coverage > 0.0 && mode < 2) {
-                    Visibility::Visible
-                } else {
-                    Visibility::Hidden
-                };
-            app.world_mut()
-                .resource_mut::<bevy::asset::Assets<SlipMaterial>>()
-                .get_mut(&material)
-                .unwrap()
-                .parameters = Vec4::new(
-                index as f32 * 0.17,
-                if mode < 2 { coverage } else { 0.1 },
-                mode as f32,
-                0.02,
-            );
-        }
-        if index == 7 {
-            *app.world_mut().get_mut::<Visibility>(ship).unwrap() = Visibility::Hidden;
-            *app.world_mut().get_mut::<Transform>(camera).unwrap() =
-                Transform::from_xyz(180.0, 100.0, 180.0)
-                    .looking_at(Vec3::new(0.0, 0.0, -180.0), Vec3::Y);
-        }
-        for _ in 0..30 {
-            app.update();
-        }
-        let path = format!("{output}/{index}-{name}.png");
-        app.world_mut()
-            .spawn(Screenshot::image(target))
-            .observe(save_to_disk(path.clone()));
-        for _ in 0..12 {
-            app.update();
-        }
-        assert!(std::fs::metadata(path).unwrap().len() > 1000);
-    }
 }

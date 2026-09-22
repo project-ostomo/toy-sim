@@ -81,7 +81,7 @@ pub fn publish_navigation(world: &mut World) {
                         .next()
                         .cloned()
                         .unwrap_or_else(|| "Public installation".into()),
-                    pose: crate::sim::intelligence::pose(pose, velocity, angular),
+                    pose: crate::sim::identity::pose(pose, velocity, angular),
                     radius_m: body.radius_m,
                     docking,
                     navigation,
@@ -277,7 +277,6 @@ mod tests {
                         faction: None,
                         labels: ["Installation".into()].into(),
                         enabled: true,
-                        range_m: 1e12,
                     }),
                     precision::PreciseTransform {
                         translation_um: origin,

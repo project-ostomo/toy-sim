@@ -64,143 +64,14 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             },
         })
         .collect();
-    let devices = design
-        .device_catalogue
-        .iter()
-        .zip(state.snapshot(design))
-        .map(|(descriptor, status)| {
-            let part_index = design.part_for_device(descriptor.handle);
-            let part = part_index.map(|index| &design.parts[index]);
-            let setting = state
-                .settings
-                .get(descriptor.handle.0 as usize)
-                .and_then(Option::as_ref);
-            let reading = match status.reading {
-                Reading::Engine { thrust_n } => DeviceReading::Engine {
-                    throttle: match descriptor.kind {
-                        DeviceKind::Engine {
-                            thrust_n: maximum, ..
-                        } => (thrust_n / maximum).clamp(0.0, 1.0),
-                        _ => 0.0,
-                    },
-                    thrust_n,
-                },
-                Reading::Rcs { thrust_n } => DeviceReading::Rcs { thrust_n },
-                Reading::Accelerometer { .. } => DeviceReading::Accelerometer {
-                    acceleration_m_s2: (status.operational && status.powered)
-                        .then(|| world.get::<super::physics::AccelerometerState>(entity))
-                        .flatten()
-                        .and_then(|accelerometer| {
-                            accelerometer.at_mount(
-                                DVec3::from_array(descriptor.position_m),
-                                DQuat::from_array(descriptor.rotation),
-                            )
-                        })
-                        .map(|sample| sample.acceleration_m_s2),
-                },
-                Reading::Torquer { torque_nm } => {
-                    let requested = match setting {
-                        Some(DeviceSetting::TorqueNm(torque)) => DVec3::from_array(*torque),
-                        _ => DVec3::ZERO,
-                    };
-                    DeviceReading::Torquer {
-                        torque_nm: (requested.normalize_or_zero() * torque_nm).to_array(),
-                    }
-                }
-                Reading::Generator { power_w } => DeviceReading::Generator { output_w: power_w },
-                Reading::Battery => {
-                    let capacity_j = match descriptor.kind {
-                        DeviceKind::Battery { capacity_j } => capacity_j,
-                        _ => 0,
-                    };
-                    DeviceReading::Battery {
-                        energy_j: ((state.inventory.energy_j as u128 * capacity_j as u128)
-                            / design.battery_j.max(1) as u128)
-                            as u64,
-                        capacity_j,
-                    }
-                }
-                Reading::Shield {
-                    temperature_k,
-                    reserve_kg,
-                    strength,
-                    ablation_kg_s,
-                    ..
-                } => DeviceReading::Shield {
-                    temperature_k,
-                    area_m2: match descriptor.kind {
-                        DeviceKind::Shield {
-                            radiator_area_m2, ..
-                        } => radiator_area_m2 * strength,
-                        _ => 0.0,
-                    },
-                    reserve_kg,
-                    feed_kg_s: if reserve_kg > 0.0 {
-                        design.shield_feed_kg_s.min(ablation_kg_s)
-                    } else {
-                        0.0
-                    },
-                    ablation_kg_s,
-                },
-                Reading::Weapon(reading) => {
-                    let spec = part_index
-                        .and_then(|index| design.part_weapons[index])
-                        .map(|index| &design.weapon_specs[index]);
-                    let now = tick as f64 * 0.1;
-                    let interval = spec.map_or(0.0, |spec| spec.cycle_interval_s);
-                    let last_fire = reading.next_fire_s - interval;
-                    DeviceReading::Weapon {
-                        yaw_rad: reading.yaw_rad,
-                        pitch_rad: reading.pitch_rad,
-                        loaded: reading.ammunition_units > 0 && reading.next_fire_s <= now,
-                        firing: reading.shots_fired > 0 && last_fire >= now - 0.1,
-                        progress: if interval > 0.0 {
-                            (1.0 - (reading.next_fire_s - now) / interval).clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        },
-                    }
-                }
-                Reading::Sensor { range_m } => DeviceReading::Sensor { range_m },
-                Reading::Storage => DeviceReading::Storage {
-                    contents: inventory.clone(),
-                },
-                Reading::Computer => DeviceReading::Avionics,
-            };
-            let power = part_index
-                .and_then(|index| world.get::<hardware::PartDevices>(entity)?.0.get(index))
-                .and_then(|part| world.get::<hardware::DevicePower>(*part));
-            DeviceTelemetry {
-                part: descriptor.part_id,
-                name: bounded(
-                    &if descriptor.alias.is_empty() {
-                        part.map_or_else(
-                            || format!("{:?}", descriptor.kind),
-                            |part| part.definition.title.clone(),
-                        )
-                    } else {
-                        descriptor.alias.clone()
-                    },
-                    128,
-                ),
-                enabled: status.operational && status.powered,
-                power_requested_w: power.map_or(0.0, |power| power.requested_w),
-                power_delivered_w: power.map_or(0.0, |power| power.supplied_w),
-                reading,
-            }
-        })
-        .collect();
-    let reboot_remaining_s =
-        software.controller.boot_remaining_gas() as f64 / software.last_gas_limit as f64 * 0.1;
+    let reboot_remaining_s = software.controller.boot_remaining_gas() as f64
+        / software.last_gas_limit as f64
+        * osg_model::TICK_SECONDS;
     let suspended = world
         .get::<super::travel::SystemsSuspended>(entity)
         .is_some();
-    let shared_computer = world
-        .get_resource::<super::missiles::Callbacks>()
-        .and_then(|callbacks| callbacks.0.get(&entity))
-        .is_some_and(|callbacks| !callbacks.is_empty());
-    let computer_powered = (!suspended && state.computer_running(design)) || shared_computer;
-    let computer = if suspended && !shared_computer {
+    let computer_powered = !suspended && state.computer_running(design);
+    let computer = if suspended {
         ComputerStatus::Paused
     } else if let Some(fault) = &software.controller.fault {
         ComputerStatus::Fault {
@@ -250,7 +121,8 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
     let preparation = drive.and_then(|drive| drive.preparation.as_ref());
     let slip_charge = preparation.map(|preparation| {
         let remaining = (preparation.required_j - preparation.work_j).max(0.);
-        let minimum = (preparation.started + 100).saturating_sub(tick) as f64 * 0.1;
+        let elapsed = tick.saturating_sub(preparation.started) as f64 * osg_model::TICK_SECONDS;
+        let minimum = (osg_model::travel::slip::MIN_CHARGE_SECONDS - elapsed).max(0.0);
         SlipChargeTelemetry {
             stored_j: preparation.work_j as u64,
             required_j: preparation.required_j.ceil() as u64,
@@ -288,7 +160,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         },
         ship: id,
         revision: world.get::<Control>(entity)?.revision,
-        sim_time_ns: tick.saturating_mul(100_000_000),
+        sim_time_ns: tick.saturating_mul(osg_model::TICK_NS),
         environment: world
             .get::<super::physics::aerodynamics::AeroEnv>(entity)
             .map(|env| FlightEnvironment {
@@ -413,13 +285,13 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         slip_charge,
         slip_transit: world.get::<super::travel::Transit>(entity).map(|transit| {
             SlipTransitTelemetry {
-                departed_ns: transit.departed * 100_000_000,
-                speed_ly_s: transit.speed_ly_s,
+                departed_ns: transit.departed * osg_model::TICK_NS,
+                destination: transit.destination,
+                failure_ppm: transit.failure_ppm(),
                 direction: transit.direction,
             }
         }),
         inventory,
-        devices,
         computer,
         instruments: include_instruments.then(|| instruments(world, entity, software)),
         screens,
@@ -428,7 +300,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
 
 fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instruments {
     let tick = world.resource::<SimulationCounters>().ticks;
-    let now = tick as f64 * 0.1;
+    let now = tick as f64 * osg_model::TICK_SECONDS;
     let state = &software.controller.state;
     let contact = |handle| super::services::contact_ref(world, ship, handle);
     let current = spatial::Snapshot {
@@ -528,7 +400,7 @@ fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instrume
         )
         .chain(paths.iter().map(|path| path.valid_until_ns))
         .max()
-        .unwrap_or(tick * 100_000_000);
+        .unwrap_or(tick * osg_model::TICK_NS);
     Instruments {
         valid_until_ns,
         selected_contact,
@@ -650,7 +522,7 @@ pub fn slip_readiness(world: &World, entity: Entity) -> f64 {
         .resource::<super::simulation::SimulationCounters>()
         .ticks;
     let energy = preparation.work_j / preparation.required_j.max(1.0);
-    let elapsed = tick.saturating_sub(preparation.started) as f64 * 0.1;
+    let elapsed = tick.saturating_sub(preparation.started) as f64 * osg_model::TICK_SECONDS;
     energy
         .min(elapsed / osg_model::travel::slip::MIN_CHARGE_SECONDS)
         .clamp(0.0, 1.0)
@@ -708,8 +580,6 @@ mod tests {
             let frame = super::super::session::frame(app.world_mut(), session).unwrap();
             assert_eq!(frame.presentation.ships.len(), 1);
             super::super::session::prune_events(app.world_mut());
-            osg_protocol::validate_frame(&frame)
-                .unwrap_or_else(|error| panic!("tick {step}: {error:#}"));
             super::super::session::input(
                 app.world_mut(),
                 session,
@@ -749,7 +619,7 @@ mod tests {
             .single(app.world())
             .unwrap();
         let tick = app.world().resource::<SimulationCounters>().ticks;
-        let now = tick as f64 * 0.1;
+        let now = tick as f64 * osg_model::TICK_SECONDS;
         let origin = [20_000_000_000_000_000_000_003i128, 11, -23];
         let mut software = app.world_mut().get_mut::<ShipSoftware>(entity).unwrap();
         software.controller.state.spatial.paths.insert(

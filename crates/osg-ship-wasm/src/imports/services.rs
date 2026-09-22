@@ -1,6 +1,5 @@
 use super::*;
 use osg_model::chat::{MAX_MESSAGE_BYTES, MAX_PAGE_MESSAGES};
-use osg_model::llm::{LlmRequest, LlmStatus, LlmSubmission, MAX_PROMPT_BYTES, MAX_RESULT_BYTES};
 use osg_ship_api::services as s;
 
 const SERVICE_GAS: u64 = 8192;
@@ -11,107 +10,7 @@ fn services(host: &Host) -> CallResult<Arc<dyn ProgramServices>> {
         .ok_or_else(|| w::ERR_UNAVAILABLE.into())
 }
 
-fn copy_reply(
-    caller: &mut Caller<'_, Host>,
-    pointer: u32,
-    capacity: u32,
-    bytes: &[u8],
-) -> CallResult<i32> {
-    if bytes.len() > capacity as usize {
-        return Err(w::ERR_BUFFER.into());
-    }
-    emit_bytes(caller, pointer, bytes.len() as u32, bytes)?;
-    Ok(bytes.len() as i32)
-}
-
 pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
-    metered!(
-        linker,
-        "llm_submit",
-        |mut caller: Caller<'_, Host>, id: u64, pointer: u32, bytes: u32, max_tokens: u32| {
-            Ok(CallPlan::bytes(&caller, pointer, bytes, MAX_PROMPT_BYTES)?.work(SERVICE_GAS))
-        },
-        {
-            finish((|| {
-                let prompt = std::str::from_utf8(payload(&caller, pointer, bytes)?)
-                    .map_err(|_| w::ERR_ARGUMENT)?
-                    .to_owned();
-                let request = LlmRequest {
-                    id,
-                    prompt,
-                    max_tokens,
-                };
-                if !request.valid() {
-                    return Err(w::ERR_ARGUMENT.into());
-                }
-                let reply = services(caller.data())?.llm_submit(request);
-                Ok(match reply {
-                    LlmSubmission::Accepted => s::LLM_ACCEPTED,
-                    LlmSubmission::AlreadyKnown => s::LLM_ALREADY_KNOWN,
-                    LlmSubmission::Unavailable => s::LLM_UNAVAILABLE,
-                    LlmSubmission::Busy => s::LLM_BUSY,
-                    LlmSubmission::InsufficientGas => s::LLM_INSUFFICIENT_GAS,
-                    LlmSubmission::InvalidRequest => s::LLM_INVALID_REQUEST,
-                })
-            })())
-        },
-    )?;
-
-    metered!(
-        linker,
-        "llm_poll",
-        |mut caller: Caller<'_, Host>, id: u64, output: u32, capacity: u32, metadata: u32| {
-            if id == 0 {
-                return Err(w::ERR_ARGUMENT.into());
-            }
-            memory_range(&caller, output, capacity)?;
-            Ok(
-                CallPlan::record::<s::LlmPoll>(&caller, metadata, size_of::<s::LlmPoll>() as u32)?
-                    .work(SERVICE_GAS + words(MAX_RESULT_BYTES)),
-            )
-        },
-        {
-            finish((|| {
-                let reply = services(caller.data())?.llm_poll(id);
-                let (state, text) = match &reply {
-                    LlmStatus::Unknown => (s::LLM_UNKNOWN, ""),
-                    LlmStatus::Pending => (s::LLM_PENDING, ""),
-                    LlmStatus::Ready { text } => (s::LLM_READY, text.as_str()),
-                    LlmStatus::Failed { reason } => (s::LLM_FAILED, reason.as_str()),
-                    LlmStatus::Cancelled => (s::LLM_CANCELLED, ""),
-                    LlmStatus::Indeterminate => (s::LLM_INDETERMINATE, ""),
-                };
-                if text.len() > MAX_RESULT_BYTES {
-                    return Err(w::ERR_LIMIT.into());
-                }
-                caller.data_mut().native_credit = words(MAX_RESULT_BYTES) - words(text.len());
-                copy_reply(&mut caller, output, capacity, text.as_bytes())?;
-                emit(
-                    &mut caller,
-                    metadata,
-                    size_of::<s::LlmPoll>() as u32,
-                    &s::LlmPoll {
-                        state,
-                        bytes: text.len() as u32,
-                    },
-                )?;
-                Ok(0)
-            })())
-        },
-    )?;
-
-    metered!(
-        linker,
-        "llm_cancel",
-        |mut caller: Caller<'_, Host>, id: u64| {
-            if id == 0 {
-                return Err(w::ERR_ARGUMENT.into());
-            }
-            Ok(CallPlan::fixed()?.work(SERVICE_GAS))
-        },
-        { finish(services(caller.data()).map(|service| i32::from(service.llm_cancel(id)))) },
-    )?;
-
     metered!(
         linker,
         "chat_send",

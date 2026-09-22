@@ -70,7 +70,7 @@ fn fixture(design: &CompiledShipDesign, catalogue: &Catalogue) -> HardwareFixtur
     app.add_plugins(bevy::app::TaskPoolPlugin::default());
     app.insert_resource(ShipCatalogue(catalogue.clone()))
         .insert_resource(WasmRuntime::default())
-        .insert_resource(Time::<Fixed>::from_hz(10.));
+        .insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
     let design = Arc::new(design.clone());
     let ship = spawn_ship(
         app.world_mut(),
@@ -254,7 +254,7 @@ impl Flight {
         let sample = Sample {
             tick: abi::TickContext {
                 time_s: self.time,
-                dt_s: 0.1,
+                dt_s: osg_model::TICK_SECONDS,
                 snapshot: self.origins.len() as u64,
                 interest: if self.display { abi::INTEREST_PATHS } else { 0 },
                 ..Default::default()
@@ -319,8 +319,8 @@ impl Flight {
             }
         };
         let old_relative = self.target - self.p;
-        self.v += (thrust + g(self.p)) * 0.1;
-        self.p += self.v * 0.1;
+        self.v += (thrust + g(self.p)) * osg_model::TICK_SECONDS;
+        self.p += self.v * osg_model::TICK_SECONDS;
         let target_thrust = if let Some(hardware) = &mut self.target_hardware {
             let e = advance(hardware);
             let thrust = self.target_q * e.force / e.mass;
@@ -330,14 +330,15 @@ impl Flight {
                 self.target_q * e.torque,
                 e.inertia,
                 e.inertia.inverse(),
-                0.1,
+                osg_model::TICK_SECONDS,
             );
             thrust
         } else {
             DVec3::ZERO
         };
-        self.target_v += (g(self.target) + self.target_acceleration + target_thrust) * 0.1;
-        self.target += self.target_v * 0.1;
+        self.target_v +=
+            (g(self.target) + self.target_acceleration + target_thrust) * osg_model::TICK_SECONDS;
+        self.target += self.target_v * osg_model::TICK_SECONDS;
         let delta = self.target - self.p - old_relative;
         let f = (-old_relative.dot(delta) / delta.length_squared().max(1e-20)).clamp(0., 1.);
         self.min_separation = self.min_separation.min((old_relative + delta * f).length());
@@ -347,9 +348,9 @@ impl Flight {
             self.q * engine.torque,
             engine.inertia,
             engine.inertia.inverse(),
-            0.1,
+            osg_model::TICK_SECONDS,
         );
-        self.time += 0.1;
+        self.time += osg_model::TICK_SECONDS;
         self.imu = AccelerometerState {
             specific_force_body: self.q.inverse() * thrust,
             angular_acceleration_body: self.q.inverse() * alpha,
@@ -580,7 +581,7 @@ fn unavoidable_overshoot_recovers_and_no_intercept_keeps_pursuing() {
     );
 }
 #[test]
-fn contact_grace_reacquisition_timeout_and_manual_takeover() {
+fn contact_loss_pauses_until_reengagement_and_allows_manual_takeover() {
     let mut f = Flight::new(
         DVec3::ZERO,
         DVec3::X * 50_000.,
@@ -592,29 +593,17 @@ fn contact_grace_reacquisition_timeout_and_manual_takeover() {
     for _ in 0..50 {
         f.tick(vec![]);
     }
+
     f.visible = false;
-    for _ in 0..10 {
-        f.tick(vec![]);
-        assert!(f.pilot.navigation.phase.active());
-        assert!(!f.pilot.navigation.visible);
-        assert!(f.pilot.navigation.throttle <= 1.);
-        assert!(f.pilot.navigation.r.distance(f.target - f.p) < 100.);
-    }
-    f.visible = true;
-    f.tick(vec![]);
-    assert!(f.pilot.navigation.phase.active());
-    assert!(f.pilot.navigation.reason.is_empty());
-    f.visible = false;
-    for _ in 0..22 {
-        f.tick(vec![]);
-    }
-    assert_eq!(f.pilot.navigation.phase, Phase::Paused);
     let out = f.tick(vec![]);
+    assert_eq!(f.pilot.navigation.phase, Phase::Paused);
+    assert!(!f.pilot.navigation.visible);
     assert!(
         out.devices
             .iter()
-            .any(|d| matches!(d.setting, DeviceSetting::Throttle(0.)))
+            .any(|device| matches!(device.setting, DeviceSetting::Throttle(0.)))
     );
+
     f.visible = true;
     f.tick(vec![]);
     assert_eq!(f.pilot.navigation.phase, Phase::Paused);
@@ -736,11 +725,11 @@ fn stock_firmware_flies_multiple_engines_and_rotated_torquers_without_aliases() 
 #[test]
 fn physics_accelerometer_subtracts_gravity_but_keeps_other_forces() {
     let mut app = App::new();
-    app.insert_resource(Time::<Fixed>::from_hz(10.))
+    app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
         .add_systems(Update, apply_forces);
     app.world_mut()
         .resource_mut::<Time<Fixed>>()
-        .advance_by(std::time::Duration::from_millis(100));
+        .advance_by(osg_model::TICK_DURATION);
     let ship = app
         .world_mut()
         .spawn((

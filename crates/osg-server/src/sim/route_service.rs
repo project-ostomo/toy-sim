@@ -141,7 +141,7 @@ fn failed(reason: impl ToString) -> Status {
 }
 
 fn fits(id: u64, status: &Status, capacity: ReplyCapacity) -> Result<()> {
-    if !osg_model::wasm_intel::reply_fits(
+    if !osg_model::wasm_beacons::reply_fits(
         &ProgramReply::Route {
             id,
             status: status.clone(),

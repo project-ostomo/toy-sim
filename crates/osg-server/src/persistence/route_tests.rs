@@ -49,7 +49,6 @@ fn paused_server_route_survives_computer_restart_with_its_full_fuel_budget() {
             QueuedOrder::estimated(
                 Order::Slip {
                     destination: Destination::Galactic(destination),
-                    speed_ly_s: 0.001,
                     navigation_beacon: None,
                 },
                 60.,

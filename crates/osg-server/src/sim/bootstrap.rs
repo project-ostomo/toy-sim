@@ -1,4 +1,4 @@
-use super::{identity, intelligence, physics, precision, session, travel, vessel};
+use super::{identity, physics, precision, sensors, session, travel, vessel};
 use anyhow::Result;
 use bevy::{math::DVec3, prelude::*};
 use osg_model::{AccountId, DebugCommand, Id};
@@ -114,10 +114,7 @@ fn provision_inner(
             super::hardware::utilities::run,
             super::spatial::rebuild,
             identity::identify_celestials,
-            intelligence::acquire,
-            intelligence::coast,
-            intelligence::fuse,
-            intelligence::publish,
+            sensors::publish,
         )
             .chain(),
     );

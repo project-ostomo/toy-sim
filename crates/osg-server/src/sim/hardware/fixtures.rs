@@ -1,6 +1,6 @@
 use super::*;
 use bevy::ecs::system::RunSystemOnce;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 pub(crate) struct HardwareFixture {
     pub app: App,
@@ -21,7 +21,7 @@ impl HardwareFixture {
         let design = Arc::new(blueprint.compile(&catalogue).unwrap());
         app.insert_resource(ShipCatalogue(catalogue))
             .insert_resource(super::super::vessel::WasmRuntime::default())
-            .insert_resource(Time::<Fixed>::from_hz(10.0));
+            .insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
         let ship = super::super::vessel::spawn_ship(
             app.world_mut(),
             design.clone(),
@@ -97,7 +97,7 @@ impl HardwareFixture {
         world.get_mut::<AccumulatedTorque>(self.ship).unwrap().0 = DVec3::ZERO;
         world
             .resource_mut::<Time<Fixed>>()
-            .advance_by(Duration::from_millis(100));
+            .advance_by(osg_model::TICK_DURATION);
         world.run_schedule(FixedUpdate);
         Wrench {
             force: world.get::<AccumulatedForce>(self.ship).unwrap().0,
@@ -184,9 +184,9 @@ fn last_fraction_of_propellant_scales_thrust_and_energy_together() {
         .get_mut::<devices::Engine>(part)
         .unwrap()
         .propellant_kg_s = propellant_kg_s * 20.0;
-    let fraction = 1.0 / (propellant_kg_s * 20.0 * 0.1);
+    let fraction = 1.0 / (propellant_kg_s * 20.0 * osg_model::TICK_SECONDS);
     let expected_thrust = thrust_n * fraction;
-    let expected_energy = power_w * fraction * 0.1;
+    let expected_energy = power_w * fraction * osg_model::TICK_SECONDS;
     fixture.set_inventory(|inventory| inventory.quantities[0] = 1);
     let energy = fixture.state().inventory.energy_j;
     fixture

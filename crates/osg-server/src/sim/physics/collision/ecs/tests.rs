@@ -10,7 +10,7 @@ fn world() -> World {
     world.init_resource::<GeometryCache>();
     world.init_resource::<SolverWorkspace>();
     world.init_resource::<CollisionStats>();
-    world.insert_resource(Time::<Fixed>::from_hz(10.0));
+    world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
     world.insert_resource(ShipCatalogue(Catalogue::builtin()));
     world
 }
@@ -33,7 +33,7 @@ fn hardware_schedule() -> Schedule {
 fn advance(world: &mut World) {
     world
         .resource_mut::<Time<Fixed>>()
-        .advance_by(std::time::Duration::from_millis(100));
+        .advance_by(osg_model::TICK_DURATION);
 }
 
 #[test]
@@ -213,7 +213,7 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
     let mut consumed_reserve = false;
     let definition = universe.resolve(planet_reference.system).unwrap();
     for tick in 0..300 {
-        let time = epoch + hifitime::Duration::from_seconds(tick as f64 * 0.1);
+        let time = epoch + hifitime::Duration::from_seconds(tick as f64 * osg_model::TICK_SECONDS);
         let sources: Vec<_> = definition
             .solver
             .iter()

@@ -5,7 +5,7 @@ use osg_model::*;
 #[derive(Resource, Default)]
 pub(super) struct Subscriptions {
     focused: Option<Id>,
-    view: Option<(u64, Id, GroupId)>,
+    view: Option<(u64, Id)>,
     revision: u64,
 }
 
@@ -104,18 +104,8 @@ pub(super) fn synchronize(
     }
     let view_id = selection.view.unwrap_or(1);
     let current_view = views.iter().find(|view| view.0.id == view_id);
-    let group = current_view
-        .map(|view| view.0.group)
-        .filter(|group| *group != PUBLIC_GROUP && session.groups.contains(group))
-        .or_else(|| {
-            session
-                .groups
-                .iter()
-                .copied()
-                .find(|group| *group != PUBLIC_GROUP)
-        });
-    if let (Some(group), Some(ship)) = (group, selection.ship) {
-        let requested = (view_id, ship, group);
+    if let Some(ship) = selection.ship {
+        let requested = (view_id, ship);
         if subscriptions.view != Some(requested) {
             subscriptions.revision = subscriptions
                 .revision
@@ -125,14 +115,7 @@ pub(super) fn synchronize(
             outgoing.push(Action::Subscribe(ViewSubscription {
                 id: view_id,
                 revision: subscriptions.revision,
-                group,
                 focused_ship: Some(ship),
-                query: TrackQuery {
-                    sphere: Some((GalacticPosition::ZERO, 1e8)),
-                    limit: 256,
-                    work: 300_000,
-                    ..Default::default()
-                },
             }));
             subscriptions.view = Some(requested);
         }

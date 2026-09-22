@@ -1,9 +1,10 @@
 # Persistence and the game calendar
 
-The server saves versioned world records to SQLite. Tables hold checkpoint
-metadata and named binary sections. A transaction publishes one complete
-generation, using WAL mode and FULL synchronization. Three generations are
-retained, with checksums for each section and the complete manifest.
+The server saves one world payload per SQLite checkpoint. A transaction publishes
+one complete generation, using WAL mode and FULL synchronization. Three
+generations are retained. One checksum covers each checkpoint's tick, timestamp
+and world payload. SQLite `PRAGMA user_version` stores the shared `GAME_VERSION`,
+which also controls connection and firmware compatibility.
 
 The default configuration is:
 
@@ -41,7 +42,7 @@ operation.
 ## Saved state
 
 The world record includes stable identities, political affiliations and standing
-overrides, asset owners and access grants, information groups and sensor tracks,
+overrides, asset owners and access grants,
 ship designs and resources, physical poses and motion, damage and thermal state,
 docking relationships, committed slip transit, and the simulation clock. Ship programs
 are stored once per content hash, alongside each computer's explicit persistent
@@ -49,8 +50,9 @@ data. Runtime execution stacks restart on recovery, including computers suspende
 inside a callback. Only explicitly committed durable guest data survives. The
 host navigation queue, current stage, autopilot toggle, per-stage estimates, route
 fuel budget, original and spent itinerary risk, and slip charging work survive.
-Slip direction, speed, retained velocity, distance travelled, fuel accounting,
-and both departure and beacon-loss error samples survive without resampling.
+Slip direction, nominal aim, accumulated variance, speed, retained velocity,
+distance travelled, fuel accounting, and beacon-loss state survive. Future
+disturbances are drawn during flight; saves contain only realized motion.
 The active arrival estimate is cleared
 until guidance reports a fresh value. Actuator commands restart from their boot
 defaults while the computer comes online. A trapped program still
@@ -75,25 +77,11 @@ Queued slip orders preserve their typed destination references. An active charge
 also retains its concrete candidate, start tick and accumulated energy. A ship
 already in transit restores the galactic endpoint frozen at departure.
 
-Missiles save their ordinary ship hardware and integer fuel, physical pose,
-lifetime clock, steering command, guidance flag, target contact reference, parent
-UUID and per-parent handle. Launcher cooldowns, callback rotation and the next
-unused handle are saved with the parent. Handles are never reassigned after a
-restart. A target contact may have expired; recovery does not require it to remain
-visible or turn it into a privileged position lookup.
-
-A destroyed parent with guided missiles retains its shared computer on the same
-stable identity. Its owner, information group, program, committed durable bytes
-and paid gas balance survive recovery. The parent restores as destroyed and
-inactive in physics; only its retained missile computer remains available. Each
-missile body restores without a second WASM instance. As with ordinary computers,
-a suspended native continuation cold boots after recovery.
-
-Before capture or restore, the server rejects missing parents, missile parents
-that are themselves missiles, duplicate or reused handles, and guided missiles
-without a retained parent computer where one is required. Restore also checks
-that a guided parent's saved program exports `missile_tick`. Invalid launcher
-clocks, handle counters and steering values stop recovery before world mutation.
+Slip history saves coalesced swept spans and short transition impulses, including
+passage timestamps, inertial drift, visual seeds and opaque effect identities.
+Each deposited portion expires after 300 simulation seconds. Restoring preserves
+its remaining lifetime; the source ship does not need to survive. Invalid timing
+or non-finite geometry is rejected before changing the world.
 
 Industry state is saved with each facility. Jobs retain their UUID, creator and
 output owner, capability, exact input and output specifications, total processing
@@ -126,44 +114,20 @@ simulation ticks; restarting does not produce material for the downtime. The
 facility's starter-grant flag is durable, preventing recovery from repeating the
 initial stock grant.
 
-NPC organization directors are ordinary ECS entities with stable organization
-IDs. Their checkpoints retain the officer, home system, primary facility, asset
-assignments, planning cadence, decision and action counters, bounded tool results,
-and the exact pending LLM request. The saved director-program digest remains part
-of that request's billing scope. Unsupported director versions stop recovery
-before world mutation.
-
-The separate [LLM spending ledger](llm.md) retains provider request identities
-across world recovery. A restored pending plan polls or resubmits the same scoped
-ID and payload; a request already dispatched is never billed again merely
-because the server restarted. A completed decision and its game actions are
-applied together within one exclusive simulation step, so checkpoints preserve
-their action counters alongside the resulting orders, inventories and jobs.
-
-Physical defense assignments and freight duties are saved with their ships.
-Defense threat observations are transient and must be acquired again after
-recovery. Freight stages, endpoints, item quantities, pause reasons and next-check
-times survive recovery. Captured ships and revoked officer permissions do not
-make the saved world invalid: each behavior checks current authority before
-acting. Historical asset and endpoint IDs may remain after destruction or
-despawning; ordinary lookups then report that the object is unavailable. Invalid
-account or organization references, scalar bounds and oversized planning context
-are rejected before replacing world entities.
-
-Saved programs must implement the current ABI 32. Restore validates each
-program's content hash, imports and API-version export before replacing world
+Saved programs must implement the current game version. Restore validates each
+program's content hash, imports and `game_version` export before replacing world
 entities. An unsupported saved program stops startup with an error.
 
 Authentication configuration stays outside the database. Back it up together with
 the world; restoring a world without the matching account credentials does not
 grant access to its assets.
 
+Sensor snapshots and contact handles are transient and rebuilt from restored geometry. Saved contact-dependent orders are blocked with autopilot disabled because their handles cannot survive a restart. Public beacon and celestial references remain durable.
+
 ## Universe definition changes
 
-The current named `world` section has version 12. SQLite’s table schema and the
-outer checkpoint container retain their existing format. Earlier world sections
-are rejected before ECS state is replaced; there is no automatic migration or
-creation of a replacement database.
+An incompatible `GAME_VERSION` stops startup. There are no separate database,
+checkpoint, or world-section versions and no automatic migration.
 
 A world record stores a BLAKE3 fingerprint over organization lore and the shared
 universe fingerprint. The universe fingerprint covers astronomical inputs,
@@ -171,16 +135,14 @@ authored definitions, and generator revision without generating system bodies.
 Restore compares it against the loaded universe before mutating the world.
 The ship-resource catalogue and persistent references are validated separately.
 
-The lazy universe and natural-capture travel format require a new saved world.
-Startup reports an incompatible world section or a changed catalogue and asks
-for an explicit new database. Preserve the previous state and
+An incompatible game version or changed catalogue requires an explicit new database. Preserve the previous state and
 choose a new `--state-dir` for the debug launcher, or another `[persistence].path`
 for a dedicated server. A normal restart with unchanged definitions restores the
 same world. Moving or deleting the original ship blueprint file remains safe
 because the ship design itself is stored in the checkpoint.
 
 Snapshots retain actual equipment, transponder settings, inventories, charging
-progress, committed slip trajectories, sampled errors, and itinerary risk.
+progress, committed slip trajectories, realized drift, and itinerary risk.
 Directory emitter markers, public inhabited membership, and active celestial
 entities are rebuilt from restored objects. A restart never runs the initial
 infrastructure placement recipe or replenishes destroyed installations.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::sim::physics::Velocity;
 use bevy::ecs::system::RunSystemOnce;
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 fn ship() -> (World, Entity, Arc<CompiledShipDesign>) {
     ship_with_catalogue(Catalogue::builtin())
@@ -27,8 +27,8 @@ fn ship_with_catalogue(catalogue: Catalogue) -> (World, Entity, Arc<CompiledShip
     let mut world = World::new();
     world.insert_resource(ShipCatalogue(catalogue));
     world.insert_resource(super::super::vessel::WasmRuntime::default());
-    let mut time = Time::<Fixed>::from_hz(10.0);
-    time.advance_by(Duration::from_millis(100));
+    let mut time = Time::<Fixed>::from_duration(osg_model::TICK_DURATION);
+    time.advance_by(osg_model::TICK_DURATION);
     world.insert_resource(time);
     let design = Arc::new(
         osg_ships::armed_starter()

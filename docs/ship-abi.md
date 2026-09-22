@@ -1,91 +1,18 @@
-# Ship controller ABI (version 34)
+# Ship controller ABI
 
-A flight computer runs a WebAssembly module whose callbacks are scheduled by the host. The program talks to the host through module `ship_v32`. Imports exchange fixed little-endian C records, scalar arguments, and caller-owned arrays or byte buffers. World, chat, and LLM syscalls do not serialize Postcard values.
+A flight computer runs a WebAssembly module whose callbacks are scheduled by the host.
+Imports use the `ship` module and fixed little-endian `#[repr(C)]` Rust records,
+scalar arguments, and caller-owned arrays or byte buffers. The shared
+`GAME_VERSION` controls firmware, network and save compatibility.
 
-ABI 32 adds slip speed and optional navigation-beacon identity to slip orders,
-actions, and eligibility queries. Celestial destinations carry both their system
-and local body identities. Planning preferences specify the maximum complete
-itinerary loss in decimal ppm, defaulting to 100. Gate orders and the gate
-navigation query have been removed. Route replies include estimated loss and
-exotic fuel requirements; navigation-beacon assumptions follow the slip orders.
+The standard flight program executes the server's current travel command.
+Persistent guest data survives checkpoints; execution stacks and linear memory
+restart. The runtime meters guest execution and native host work.
 
-ABI 31 replaces `world_query` and `world_command` with typed service imports.
-Programs allocate their output storage and specify element or byte capacities.
-There is no generic 64 KiB response ceiling, size-probing call, automatic retry,
-or host-owned response slot. Query work, pagination, per-service limits and the
-VM memory allowance remain bounded. Rebuild firmware and bindings together.
-
-ABI 30 moves route search and the full order queue to the server. `Travel` now
-returns `CurrentOrder`, containing the current order, its revision and index,
-autopilot status, preferences and active arrival estimate. Programs can request a
-server route preview and poll its asynchronous job, then commit it with
-`UseRoute`. Physical actions carry both the revision and order index, so a
-suspended callback cannot act on a later command. ABI 31 carries these values
-in C records rather than serialized enums.
-
-ABI 28 adds an optional `missile_tick(handle: u64)` export and the
-`missile_read` and `missile_control` imports. Missile callbacks run in their
-parent's flight instance, sharing its linear memory, durable store and gas
-allowance. A suspended callback resumes before another callback begins.
-
-ABI 27 replaces the accumulating local reserve and separate instruction budget
-with one gas slice. `BudgetInfo` is now a 24-byte record containing
-`gas_remaining`, `gas_limit` and `gas_per_tick`, in that order. Guest execution and
-host calls spend the same allowance. Older import namespaces, API versions and
-record layouts are rejected; rebuild programs and bindings together.
-
-ABI 26 retains a typed `Destination` in each queued slip order and adds future
-epochs to destination resolution and aperture queries. `Resolve` takes
-`destination` and `after_seconds`. `SlipEligibility` takes separate departure and
-arrival offsets and returns remaining preparation time separately from flight
-duration. Programs using older ABI exports or import namespaces are rejected;
-rebuild them and their language bindings together.
-
-The standard flight program executes one strategic command at a time and does not
-load the navigation graph or search it. It generates local waypoints, collision
-avoidance and slip-exclusion escape manoeuvres within that command's execution. The runtime permits 8 MiB of guest linear
-memory while metering both guest execution and native host work.
-
-ABI 24 adds a persistent byte store for each computer. `persistent_read(out, capacity)`
-returns its length and copies the current data, or returns `ERR_BUFFER` if the
-buffer is too small. `persistent_write(data, length)` replaces the whole store;
-an empty write clears it. The maximum length is 65536 bytes. Copies are metered,
-out-of-bounds memory accesses trap, and display callbacks cannot write. A write
-is committed when an execution slice successfully yields or completes. The committed data survives a
-computer reboot and is included with the program in server checkpoints.
-
-Server recovery creates a fresh VM from the saved program and restores this byte
-store. Native execution stacks and guest linear memory are not checkpointed.
-Programs must use the persistent store for state that must survive a restart.
-
-Travel preferences and propulsion fuel estimates are shared model values.
-`QueuedOrder` contains a producer-supplied `label` (at most 256 UTF-8 bytes), an `action`, optional `estimated_duration_ticks` and
-optional `estimated_propellant_kg`, plus an optional `estimated_loss_ppm` for each slip leg. The server computes the full `FuelBudget`;
-the flight program reports only the active command's remaining time and
-propellant. `CompleteOrder` advances the server's cursor.
-
-`TravelToSystem(system_id)` requests arrival in a system and expands into a route
-ending at natural capture. `TravelTo(destination)` requests a particular location
-and retains its final approach. The planner assigns waypoint labels when creating
-the queue; clients display these strings without resolving destination names.
-ABI order kind 8 is `ORDER_TRAVEL_SYSTEM`, with the system ID in `entity`.
-
-ABI 19 adds request code 11, `REQUEST_THROTTLE`, with an eight-byte `ThrottleRequest { throttle: f64 }` payload. It changes manual throttle without replacing the direction target. Direction alignment preserves manual throttle.
-
-ABI 18 separates target marking from firing: request codes 7–10 are Mark target, Stop firing, Unmark target and Start firing. The weapons instrument mode is hold or firing, independently of its marked contact. World guidance also accepts a galactic direction target. Rebuild firmware and generated bindings.
-
-ABI 17 stores `ShipResources.energy_j`, `WeaponReading.battery_energy_j`, and `BatterySpec.capacity_j` as `u64` joules. Their offsets and record sizes are unchanged; their integer bit representation is different. Rebuild firmware and regenerate bindings. Shot-energy estimates and physical rates remain floating-point.
-
-ABI 16 removed the explicit `ProgramAction::Gate` action: aperture crossings now belong to the physics solver. This changes the Postcard world-action enum discriminants; rebuild firmware.
-
-ABI 15 introduced resource quantities as `u64` and appended `chemical: u64` to `WeaponSpec` at byte 168. A nonzero value describes cartridge-powered propulsion with no electrical shot cost or separate counterpropellant. The world-service enums now include queued guidance and exact authorized contact lookup. Rebuild firmware against the current ABI and `osg-model`.
-
-ABI 12 also adds an optional second entry point, `ship_display`. The authoritative server runs it in a separate instance to draw screens for network clients ([Display entry point](#display-entry-point)).
+The Rust definitions are the ABI source. C and TypeScript bindings are not maintained.
 
 - Record definitions and constants: [crates/osg-ship-api/src/abi.rs](../crates/osg-ship-api/src/abi.rs)
 - Rust helpers: [crates/osg-ship-api/src/sdk.rs](../crates/osg-ship-api/src/sdk.rs)
-- Generated C header: [crates/osg-ship-api/include/ship.h](../crates/osg-ship-api/include/ship.h)
-- Generated AssemblyScript bindings: [crates/osg-ship-api/bindings/ship.ts](../crates/osg-ship-api/bindings/ship.ts)
 - Host implementation: [crates/osg-ship-wasm](../crates/osg-ship-wasm)
 
 For the hardware that devices represent, see [ships.md](ships.md). Screen drawing is covered in [mfds.md](mfds.md), and weapons in [weapons.md](weapons.md).
@@ -95,15 +22,12 @@ For the hardware that devices represent, see [ships.md](ships.md). Screen drawin
 `ControllerRuntime::compile` accepts a module when all of the following hold:
 
 - It is at most 1 MiB.
-- Every import comes from module `ship_v32` and is one of the names in `abi::IMPORTS`.
+- Every import comes from module `ship` and is one of the names in `abi::IMPORTS`.
 - It exports `memory`: 32-bit, not shared, with an initial size of at most 128 pages.
 - It exports `ship_tick` with no parameters and no results.
-- It exports `ship_api_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const 34; end`, allowing the host to verify the ABI without running guest code.
+- It exports `game_version` as a defined function with no parameters, one `i32` result and no locals. Its body is exactly `i32.const GAME_VERSION; end`, allowing the host to verify the ABI without running guest code.
 
 `ship_display` is optional and not checked at compile time. A display instance requires it to exist, with no parameters and no results.
-
-`missile_tick` is optional. When present, it must accept one `i64` handle and return
-nothing. It belongs to the flight instance, so it cannot run as a display callback.
 
 `validate_program` performs structural validation, including the literal version export, without executing guest code. Normal funded initialization runs the module's start function and version export under slice accounting and may suspend. Store limits: one instance, one memory up to 8 MiB, 4096 table elements, and a 128 KiB WebAssembly stack. Compiled modules are cached by their bytes, so identical programs share one compiled module.
 
@@ -250,60 +174,29 @@ Device handles, record sizes, finite values, and aim constraints are still
 validated. A future weapon lease cannot exceed one physics tick beyond the
 current time.
 
-## Sensors and tracks
+## Sensor observations
 
 `sensor_scan(sensor, maximum, contacts, bytes)` fills up to `maximum` (at most 256) `Contact` records (72 bytes each), and `bytes` must equal `maximum × 72`. It returns the number written. The sensor device must be operational and powered with a non-zero range, otherwise the call returns `ERR_UNAVAILABLE`. It charges `maximum × 3000` gas (`SCAN_GAS_PER_OBJECT`) before querying.
 
-The server answers from the ship's fused information-group snapshot and the public beacon snapshot, selecting ship tracks only. It returns the nearest available tracks within range, excluding the observing ship and duplicate UUIDs. Measurements are acquired once per simulation tick; repeating a query cannot reroll sensor noise. The range is limited by the powered sensor. Debug accounts can override its range and occlusion setting.
+The server answers from the ship's current sensor snapshot, selecting the nearest detected ships within the requested range. Measurements are exact and published once per simulation tick. The range is limited by the powered sensor. Debug accounts can override range and occlusion.
 
-`Contact` fields are `id` (an opaque per-ship handle for a group track), `kind` (`CONTACT_SHIP` 0), `radius_m`, and position and velocity relative to the ship. Celestial bodies are excluded from sensor contacts; use explicit celestial world queries for navigation. A previously authenticated ship may retain its IFF identity while its estimate coasts. See [server-client.md](server-client.md#contact-handles) for handle lifetime and query accounting.
+`Contact` fields are `id` (an opaque per-ship handle for a current detection), `kind` (`CONTACT_SHIP` 0), `radius_m`, and position and velocity relative to the ship. Celestial bodies are excluded from sensor contacts; use explicit celestial world queries for navigation. Contact loss immediately invalidates live access. Reacquisition creates a fresh handle.
 
 The standard firmware starts with a 32-contact scan buffer, grows it when full and reduces it for sparse results. It leaves room for flight control and publication before admitting optional scans, forecasts or catalogue pages.
 
-Every successful scan is admitted into host-side tracks, up to 512. Each track keeps its latest and previous estimates. Tracks expire 2 s after their latest measurement. `contact_label(id, out, bytes)` returns the contact's name as `Text64` while its track is current.
+Every successful scan is admitted into host-side tracks, up to 512. Each track keeps its latest and previous estimates. Tracks expire 2 s after their latest measurement. Historical samples support trajectory prediction only. `contact_label(id, out, bytes)` requires a current detection and returns its current advertised label or an anonymous label as `Text64`.
 
-## Missile callbacks
-
-The optional `missile_tick(handle: u64)` export executes in the parent's flight
-instance. The handle identifies one launched missile within that parent and
-remains stable across saved-world recovery. Missile and ship callbacks share
-globals, linear memory, committed persistent bytes and the owner's paid gas.
-They run serially; a suspended callback retains its kind and handle until it
-finishes. The missile body does not receive a separate WASM instance.
-
-| Import | Record | Cost and scope |
-| --- | --- | --- |
-| `missile_read(out, bytes)` | `MissileObservation` (192 bytes) | 124 gas; reads the current missile callback's observation |
-| `missile_control(input, bytes)` | `MissileControl` (32 bytes) | 104 gas; stages steering for that same missile |
-
-Both calls use the implicitly active handle. Outside a missile callback they
-return `ERR_UNAVAILABLE`; a caller cannot pass another missile's handle to either
-import. The full call cost is admitted before reading or staging its effect.
-
-`MissileObservation` contains the handle, `target_visible`, target offset and
-relative velocity, the missile's orientation and angular velocity, inertial
-velocity, maximum acceleration, turn rate, integer fuel units, tick duration,
-simulation time and target uncertainty. Vectors use metres, seconds and radians.
-The target offset and steering direction use galactic axes. An unavailable target
-does not become an exact server-side position merely because the missile was
-launched at it.
-
-`MissileControl` contains `direction: [f64; 3]` and `throttle: f64`. Throttle must
-be finite and within zero to one. Direction must be a unit vector within a squared
-length tolerance of `1e-6`; a zero direction is also accepted when throttle is
-zero. The last control written in a slice replaces earlier writes for its active
-missile. It becomes effective at a successful slice commit. Rust programs use
-`sdk::missile()` and `sdk::control_missile()`.
+`contact_iff(id, out, bytes)` returns the fixed `ContactIff` record: presence, target UUID, advertised owner, optional faction and up to 16 `Text64` labels. A detected target with IFF disabled has presence zero and cleared identity fields. A lost contact returns `ERR_UNAVAILABLE`. IFF has no separate range.
 
 ## World services
 
-Typed imports connect firmware to the authoritative travel, beacon and intelligence services. Records live in `ship-api/src/world.rs` and `world_intel.rs`; generated C and AssemblyScript bindings include their layouts and constants. UUIDs use 16 bytes, galactic positions use six `u64` words, and enum choices use explicit integer tags.
+Typed imports connect firmware to the authoritative travel, beacon and sensor services. Records live in `ship-api/src/world.rs` and `beacons.rs`; these Rust C-ABI definitions specify their layouts and constants. UUIDs use 16 bytes, galactic positions use six `u64` words, and enum choices use explicit integer tags.
 
 | Import | Notes |
 | --- | --- |
 | `travel_read`, `contact_get`, `destination_resolve`, `slip_eligibility` | Read fixed output records. |
 | `orrery_read` | Fills caller-owned local-obstacle records and a page header. |
-| `intel_tracks`, `intel_continue`, `beacon_read`, `beacons_read` | Fill record arrays, page metadata, and a separate byte arena for variable-length fields. |
+| `beacon_read`, `beacons_read` | Fill record arrays, page metadata, and a separate byte arena for variable-length fields. |
 | `route_request`, `route_poll` | Fill route metadata plus separate order and fuel-requirement arrays. |
 | `travel_use_route`, `travel_block`, `travel_estimate`, `travel_complete`, `travel_slip`, `travel_reserve_bay`, `travel_dock`, `travel_undock` | Accept a typed input record and stage the corresponding action. |
 
@@ -315,7 +208,7 @@ Typed imports connect firmware to the authoritative travel, beacon and intellige
 
 1. The call cost (100) plus one gas per 8 input bytes.
 2. Admission for bounded query work and the output-copy allowance. `Tracks` and `Continue` work is capped by the physical tick ceiling after allowing for the call and input/output copies. The remaining query prices are `100 + 1008 × min(limit, 256)` for `Beacons`, 131,072 for `SlipEligibility`, and 1000 for other queries. A call that fits the physical ceiling can suspend until its slice can pay; a call exceeding that ceiling returns `ERR_LIMIT`.
-3. The actual bounded native work, with track pages reporting their measured `gas_used`.
+3. The actual bounded native work.
 4. One gas per 8 reply bytes.
 
 `Beacon` and `Beacons` also admit 100 gas per inspected docking bay. One call may
@@ -326,15 +219,14 @@ without silently truncating its bay lists.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Travel` | `Travel { state, pose, slip_ready }`: `CurrentOrder` with the active stage only, the ship's exact galactic pose, and whether its slipdrive is ready |
+| `Travel` | `Travel { state, pose, slip_ready, slip_axis }`: `CurrentOrder` with the active stage only, the ship's exact galactic pose, slipdrive readiness, and the drive ring's axis in ship coordinates |
 | `RouteRequest(Request)` | Enqueues an idempotent server planning job and returns `Route { id, status }`. The request contains a nonzero ID, the complete requested order list and planning preferences. |
 | `RoutePoll { id }` | Returns the scoped job's `Unknown`, `Pending { progress }`, `Ready { plan }` or `Failed { reason }` status. |
 | `LocalSpace { destination, range_m, after_seconds }` | `LocalSpace { obstacles, truncated }`: bounded known obstacle and slip-exclusion observations around the ship and destination. |
-| `Tracks(TrackQuery)` | `Tracks(QueryPage)` from the ship's information group snapshot. Work is bounded by the physical tick ceiling after its call/copy envelope; other fields use the network limits. |
 | `Continue { cursor, work }` | The next page of a retained cursor |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
-| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, speed_ly_s, navigation_beacon }` | `SlipEligibility { ready, preparation_s, duration_s }`: departure clearance, guidance availability, remaining preparation time, and flight duration at the selected speed. |
+| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, navigation_beacon }` | `SlipEligibility { ready, preparation_s, duration_s }`: departure clearance, guidance availability, remaining preparation time, and flight duration at the fixed guided or unguided speed. |
 | `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials use locally resolved ephemerides; other objects extrapolate current linear and angular motion. |
 
 `LocalSpace` admits 262144 work gas plus the normal call and copy envelope. It
@@ -343,7 +235,7 @@ obstacles. Range is finite and between zero and 10¹² metres; prediction time i
 between zero and one Julian year. Volumes containing either query position are
 included even when their centres lie beyond the range. A result carries an
 observed or public reference, predicted pose, physical radius and slip-exclusion
-radius. Observed contacts use the ship's fused information; public bodies use
+radius. Observed contacts use the ship's current sensor observations; public bodies use
 catalogue ephemerides. Undetected private objects are not exposed.
 
 The `truncated` flag reports either work exhaustion or result overflow. A program
@@ -384,7 +276,7 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 | `Block { revision, order, reason }` | Blocks only the matching active command, cancels unfinished slip preparation and clears its ETA. |
 | `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates the matching active stage. The server combines its remaining fuel estimate with later stages. |
 | `CompleteOrder { revision, order }` | Completes the matching active stage and advances the server's cursor. |
-| `Slip { revision, order, destination, speed_ly_s, navigation_beacon }` | Starts or updates the matching slip command's charging aim, preserving work and start time; departure commits the trajectory and speed. |
+| `Slip { revision, order, destination, navigation_beacon }` | Starts or updates the matching slip command's charging aim, preserving work and start time; departure commits the trajectory and speed. |
 | `ReserveBay { revision, order, station, bay }`, `Dock { revision, order, station, bay }`, `Undock { revision, order }` | Performs the bay operation only for the matching active command. |
 
 The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
@@ -399,25 +291,7 @@ Candidate changes and cancellation do not refund energy already spent.
 
 ### Availability
 
-Every production flight computer uses the server's fused scan and world-service provider, including ships viewed through `osg-debug`. Travel action imports stage validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
-
-### Chat and LLM services
-
-`services.rs` defines the service records and Rust helpers. `llm_submit(id,
-prompt, bytes, max_tokens)` returns a submission status directly, so accepting
-a paid request does not depend on an output buffer. `llm_poll(id, text,
-capacity, status)` fills caller-owned UTF-8 bytes and an eight-byte `LlmPoll`
-record containing the state and byte count. It never allocates guest memory or
-retries. `llm_cancel(id)` returns whether cancellation succeeded.
-
-`chat_send(id, text, bytes)` sends UTF-8. `chat_read(after, messages, capacity,
-page)` fills up to 32 fixed `ChatMessage` records and a `ChatPage` header. The
-header reports count, next sequence and missed messages. Each message contains
-explicit lengths, up to 128 sender bytes and 1024 text bytes, identity flags,
-timestamps and UUIDs. Further messages are read with the returned sequence.
-Oversized fields are rejected rather than truncated. The 64 KiB LLM result
-policy and 64 KiB persistent store are separate service/storage limits; neither
-is a general ABI output-buffer limit.
+Every production flight computer uses the server's per-ship sensor scan and world-service provider, including ships viewed through `osg-debug`. Travel action imports stage validated actions for dispatch on the server. A standalone runtime invocation without a provider returns `ERR_UNAVAILABLE` for world queries.
 
 ## Display entry point
 
@@ -539,7 +413,7 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 Depend on `osg-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/osg-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [osg-example-controller](../crates/osg-example-controller) uses `std` collections and exports `ship_api_version` and `ship_tick` from [firmware.rs](../crates/osg-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/osg-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
+The minimal `no_std` example is [examples/embedded.rs](../crates/osg-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [osg-example-controller](../crates/osg-example-controller) uses `std` collections and exports `game_version` and `ship_tick` from [firmware.rs](../crates/osg-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/osg-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
 
 [examples/custom_screen.rs](../crates/osg-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 
@@ -558,24 +432,6 @@ cargo build -p osg-example-controller --release --target wasm32-unknown-unknown 
 
 The simulator embeds the standard firmware from `crates/osg-ships/data/example-controller.wasm`. After changing the firmware source, copy the new build over that file and rebuild. The test fixtures in `crates/osg-ship-wasm/tests/fixtures/` are also prebuilt binaries.
 
-### C
-
-Include [ship.h](../crates/osg-ship-api/include/ship.h). It declares `ship_<name>` imports with the correct import module and names, `ship_*_record` structs with layout assertions, and `SHIP_*` constants. [tests/fixtures/controller.c](../crates/osg-ship-wasm/tests/fixtures/controller.c) is a freestanding example with no libc: it provides its own `memset`, exports `ship_api_version` and `ship_tick`, writes a throttle, and publishes an attitude record and a timed path. Run `tools/build_ship_firmware.sh` to rebuild the standard controller and all C/Rust firmware fixtures with the current ABI.
-
-### AssemblyScript
-
-[ship.ts](../crates/osg-ship-api/bindings/ship.ts) declares the imports with `@external("ship_v32", …)` and exports constants plus `<RECORD>_<FIELD>` byte offsets and `<RECORD>_SIZE` values for working with raw buffers.
-
-### Regenerating bindings
-
-After changing ABI records or imports, regenerate both binding files:
-
-```sh
-python3 tools/generate_ship_bindings.py
-```
-
-The script reads `abi.rs`, `world.rs`, `world_intel.rs` and `services.rs`, including macro-defined records and typed pointers. It computes field sizes and alignments, rejects implicit padding, and writes `include/ship.h` and `bindings/ship.ts` with layout assertions and offsets.
-
 ## Host API
 
 For isolated ABI tests or tools that embed the runtime:
@@ -584,7 +440,6 @@ For isolated ABI tests or tools that embed the runtime:
 - `Controller::configure_hardware(design, catalogue)` installs the device and resource directories.
 - `is_booting()`, `boot_progress()`, `boot_remaining_gas()`, `execution_status()`, `is_suspended()`, `minimum_to_progress()` and `memory_bytes()` expose state without replenishing any gas.
 - `run_slice(input, source, grant, gas_per_tick)` advances paid boot, starts a callback or resumes its continuation. It returns `SliceOutput { output, callback_completed }`. `last_gas_used` records actual consumption even if execution traps.
-- `run_callback_slice(kind, input, source, missile, grant, gas_per_tick)` selects `CallbackKind::Ship`, `Display` or `Missile(handle)`. A missile callback requires the matching `MissileObservation`; `pending_callback()` identifies a suspended callback. `SliceOutput.callback` identifies the callback producing its committed output.
 - `ScanSource` has `scan(range_m, n)`, `query_work(&ProgramQuery)` and `query(ProgramQuery, display, reply_capacity)`. The provider supplies a bounded admission price before executing a query.
 - `reboot()`, `revoke_authority()` (drops pending requests and screen events, then reboots), `fail(message)`, `enqueue_screen_event(event)`, `has_pending_input()`
 - State fields: `state` (the committed `Session`), `fault`, `contacts`, `scan_time`, `telemetry`, `screens`, `trajectory_revision`, `instrument_interest`, `observer_origin`

@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+glam.workspace = true
 serde = { workspace = true, features = ["rc"] }
 uuid = "1.26"
 osg-space = { path = "../osg-space" }

@@ -173,7 +173,6 @@ fn sync_ships(
     assets: Res<PartVisualAssets>,
     loader: Res<AssetServer>,
     thermal: Res<osg_ship_view::thermal::ThermalAssets>,
-    slips: Query<&slip::SlipView>,
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
@@ -181,15 +180,6 @@ fn sync_ships(
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, observation, camera, render_camera, projection, camera_transform) in &views {
-        if slips.get(view_entity).is_ok_and(|state| state.entering) {
-            visible.extend(
-                objects
-                    .iter()
-                    .filter(|(_, member, ..)| member.0 == view_entity)
-                    .map(|(entity, ..)| entity),
-            );
-            continue;
-        }
         let view = &observation.0;
         let height = render_camera
             .physical_viewport_size()
@@ -359,7 +349,6 @@ fn sync_celestials(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut surfaces: ResMut<surfaces::SurfaceCache>,
-    slips: Query<&slip::SlipView>,
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
@@ -367,15 +356,6 @@ fn sync_celestials(
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, camera, systems) in &views {
-        if slips.get(view_entity).is_ok_and(|state| state.entering) {
-            visible.extend(
-                objects
-                    .iter()
-                    .filter(|(_, member, ..)| member.0 == view_entity)
-                    .map(|(entity, ..)| entity),
-            );
-            continue;
-        }
         if camera.private {
             continue;
         }
@@ -465,12 +445,9 @@ fn cleanup_orphans(
         (Entity, &ViewMember),
         (Without<RenderSource>, Or<(With<ShipMesh>, With<BodyMesh>)>),
     >,
-    slips: Query<&slip::SlipView>,
 ) {
-    for (entity, member) in &objects {
-        if !slips.get(member.0).is_ok_and(|state| state.entering) {
-            commands.entity(entity).despawn();
-        }
+    for (entity, _) in &objects {
+        commands.entity(entity).despawn();
     }
 }
 
@@ -621,9 +598,6 @@ mod tests {
         world.get_mut::<slip::SlipView>(view).unwrap().entering = true;
         world.despawn(source);
         world.run_system_once(cleanup_orphans).unwrap();
-        assert!(world.get_entity(mesh).is_ok());
-        world.get_mut::<slip::SlipView>(view).unwrap().entering = false;
-        world.run_system_once(cleanup_orphans).unwrap();
         assert!(world.get_entity(mesh).is_err());
         assert!(world.get_entity(view).is_ok());
 
@@ -666,7 +640,7 @@ fn own_visuals(
         }) {
             commands.entity(entity).insert((
                 DisplayVisual(visual.0.clone()),
-                glints::VisualContact(observation.0.contact),
+                glints::VisualContact(Some(observation.0.id)),
             ));
         } else {
             commands

@@ -2,20 +2,22 @@ use crate::crypto::{self, Keys};
 use anyhow::{Result, ensure};
 use std::{
     future::Future,
-    io,
+    io::{self, Write},
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
     task::{Context, Poll, ready},
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
-    sync::{Semaphore, mpsc, oneshot},
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 use zstd::stream::raw::{DParameter, Operation};
 
 type Reply = oneshot::Receiver<Result<(), String>>;
 type Work = (Option<Vec<u8>>, oneshot::Sender<Result<(), String>>);
+
+const WRITE_CHUNK: usize = 32 * 1024;
 
 pub struct Pipe {
     reader: DuplexStream,
@@ -53,32 +55,26 @@ impl Pipe {
                     sequence = sequence
                         .checked_add(1)
                         .ok_or_else(|| anyhow::anyhow!("record counter exhausted"))?;
-                    let permit = workers().acquire_owned().await?;
-                    let (next, output) = tokio::task::spawn_blocking(move || {
-                        let _permit = permit;
-                        let mut output = Vec::new();
-                        let mut offset = 0;
-                        loop {
-                            let mut buffer = [0; 32768];
-                            let status = decoder.run_on_buffers(&data[offset..], &mut buffer)?;
-                            offset += status.bytes_read;
-                            ensure!(
-                                output.len() + status.bytes_written <= 256 * 1024,
-                                "decoded record limit"
-                            );
-                            output.extend_from_slice(&buffer[..status.bytes_written]);
-                            if offset == data.len() && status.bytes_written < buffer.len() {
-                                break;
-                            }
-                            ensure!(
-                                status.bytes_read > 0 || status.bytes_written > 0,
-                                "stalled decompressor"
-                            );
+                    let mut offset = 0;
+                    let mut output = Vec::new();
+                    loop {
+                        let mut buffer = [0; 32768];
+                        let status = decoder.run_on_buffers(&data[offset..], &mut buffer)?;
+                        offset += status.bytes_read;
+                        ensure!(
+                            output.len() + status.bytes_written <= 256 * 1024,
+                            "decoded record limit"
+                        );
+                        output.extend_from_slice(&buffer[..status.bytes_written]);
+
+                        if offset == data.len() && status.bytes_written < buffer.len() {
+                            break;
                         }
-                        Ok::<_, anyhow::Error>((decoder, output))
-                    })
-                    .await??;
-                    decoder = next;
+                        ensure!(
+                            status.bytes_read > 0 || status.bytes_written > 0,
+                            "stalled decompressor"
+                        );
+                    }
                     delivered.write_all(&output).await?;
                 }
             }
@@ -93,35 +89,25 @@ impl Pipe {
                 let close = data.is_none();
                 let result: Result<_> = async {
                     if let Some(data) = data {
-                        let permit = workers().acquire_owned().await?;
-                        let (next, bytes) = tokio::task::spawn_blocking(move || {
-                            use std::io::Write;
-                            let _permit = permit;
-                            encoder.write_all(&data)?;
-                            encoder.flush()?;
-                            let bytes = encoder.get_ref().clone();
-                            encoder.get_mut().clear();
-                            Ok::<_, anyhow::Error>((encoder, bytes))
-                        })
-                        .await??;
-                        encoder = next;
-                        for chunk in bytes.chunks(crypto::MAX_RECORD - 1) {
+                        encoder.write_all(&data)?;
+                        encoder.flush()?;
+                        for chunk in encoder.get_ref().chunks(crypto::MAX_RECORD - 1) {
                             crypto::write_record(&mut write, &keys.write, sequence, chunk, false)
                                 .await?;
                             sequence = sequence
                                 .checked_add(1)
                                 .ok_or_else(|| anyhow::anyhow!("record counter exhausted"))?;
                         }
+                        encoder.get_mut().clear();
                     } else {
                         crypto::write_record(&mut write, &keys.write, sequence, &[], true).await?;
                         write.shutdown().await?;
                     }
-                    Ok(encoder)
+                    Ok(())
                 }
                 .await;
                 match result {
-                    Ok(next) => {
-                        encoder = next;
+                    Ok(()) => {
                         let _ = reply.send(Ok(()));
                     }
                     Err(err) => {
@@ -161,17 +147,6 @@ impl Pipe {
     }
 }
 
-fn workers() -> Arc<Semaphore> {
-    static WORKERS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    WORKERS
-        .get_or_init(|| {
-            Arc::new(Semaphore::new(
-                std::thread::available_parallelism().map_or(1, usize::from),
-            ))
-        })
-        .clone()
-}
-
 impl AsyncRead for Pipe {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -202,7 +177,7 @@ impl AsyncWrite for Pipe {
                 "transport closed",
             )));
         }
-        let n = bytes.len().min(32768);
+        let n = bytes.len().min(WRITE_CHUNK);
         if n == 0 {
             return Poll::Ready(Ok(0));
         }
@@ -236,5 +211,54 @@ impl Drop for Pipe {
     fn drop(&mut self) {
         self.read_task.abort();
         self.write_task.abort();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{RngCore, SeedableRng, rngs::StdRng};
+    use tokio::io::AsyncReadExt;
+
+    fn keys() -> Keys {
+        Keys {
+            read: [1; 32],
+            write: [1; 32],
+            account: osg_model::Id([0; 16]),
+        }
+    }
+
+    #[tokio::test]
+    async fn streams_large_mixed_input_with_backpressure() {
+        let mut expected = vec![0; 1024 * 1024];
+        StdRng::seed_from_u64(4).fill_bytes(&mut expected[..512 * 1024]);
+        let input = expected.clone();
+        let (a, b) = tokio::io::duplex(1024);
+        let mut writer = Pipe::new(a, keys()).unwrap();
+        let mut reader = Pipe::new(b, keys()).unwrap();
+
+        let sending = tokio::spawn(async move {
+            writer.write_all(&input).await.unwrap();
+            writer.shutdown().await.unwrap();
+        });
+        let mut received = Vec::new();
+        reader.read_to_end(&mut received).await.unwrap();
+        sending.await.unwrap();
+        assert_eq!(received, expected);
+    }
+
+    #[tokio::test]
+    async fn rejects_excessive_decompression() {
+        let compressed = zstd::encode_all(&vec![0; 1024 * 1024][..], 3).unwrap();
+        let (mut sender, receiver) = tokio::io::duplex(1024);
+        let mut reader = Pipe::new(receiver, keys()).unwrap();
+        crypto::write_record(&mut sender, &[1; 32], 1, &compressed, false)
+            .await
+            .unwrap();
+
+        let mut received = Vec::new();
+        let error = reader.read_to_end(&mut received).await.unwrap_err();
+        assert!(error.to_string().contains("decoded record limit"));
+        assert!(received.len() <= 256 * 1024);
     }
 }

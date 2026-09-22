@@ -106,7 +106,12 @@ impl WeaponsController {
     pub fn update(&mut self, sample: &Sample, hardware: &Hardware) -> WeaponOutput {
         let now = sample.tick.time_s;
         let dt = sample.tick.physics_dt_s;
-        if self.target != 0 && now - self.last_seen > 2.0 {
+        if self.target != 0
+            && !self
+                .contacts
+                .iter()
+                .any(|contact| contact.id == self.target)
+        {
             self.unmark_target();
             self.reason = "Target lost".into();
         }
@@ -263,7 +268,7 @@ mod tests {
         let mut controller = WeaponsController::default();
         let sample = Sample {
             tick: abi::TickContext {
-                physics_dt_s: 0.1,
+                physics_dt_s: osg_model::TICK_SECONDS,
                 ..Default::default()
             },
             flight: abi::FlightState {

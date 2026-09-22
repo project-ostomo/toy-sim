@@ -2,6 +2,7 @@ use crate::{CompiledShipDesign, ShipState, StochasticBalance, StochasticRound};
 use osg_ship_api::abi;
 
 pub const BACKGROUND_K: f64 = 3.0;
+pub const SLIPSPACE_K: f64 = 2500.0;
 pub const INITIAL_K: f64 = 300.0;
 pub const SPECIFIC_HEAT: f64 = 500.0;
 pub const HEAT_STORAGE_J_KG: f64 = 250_000.0;
@@ -36,15 +37,20 @@ pub fn radiation(temperature: f64, area: f64) -> f64 {
 /// Backward Euler with safeguarded Newton iteration. The root is monotone and
 /// bracketed between the background and the previous temperature.
 pub fn cooled(temperature: f64, capacity: f64, area: f64, dt: f64) -> f64 {
-    if capacity <= 0.0 || dt <= 0.0 || temperature <= BACKGROUND_K {
+    exchanged(temperature, capacity, area, dt, BACKGROUND_K)
+}
+
+/// Implicit radiative exchange with an isotropic thermal environment.
+pub fn exchanged(temperature: f64, capacity: f64, area: f64, dt: f64, ambient: f64) -> f64 {
+    if capacity <= 0.0 || dt <= 0.0 || temperature == ambient {
         return temperature;
     }
     let a = EMISSIVITY * SIGMA * area * dt / capacity;
-    let mut lo = BACKGROUND_K;
-    let mut hi = temperature;
+    let mut lo = ambient.min(temperature);
+    let mut hi = ambient.max(temperature);
     let mut t = temperature;
     loop {
-        let f = t - temperature + a * (t.powi(4) - BACKGROUND_K.powi(4));
+        let f = t - temperature + a * (t.powi(4) - ambient.powi(4));
         if f > 0.0 {
             hi = t;
         } else {
@@ -199,6 +205,16 @@ impl ThermalState {
     }
 
     pub fn advance(&mut self, hull: &mut f64, m: ThermalModel, dt: f64) {
+        self.advance_in_environment(hull, m, dt, BACKGROUND_K);
+    }
+
+    pub fn advance_in_environment(
+        &mut self,
+        hull: &mut f64,
+        m: ThermalModel,
+        dt: f64,
+        ambient: f64,
+    ) {
         if dt <= 0.0 {
             return;
         }
@@ -226,7 +242,8 @@ impl ThermalState {
             let capacity = self.shield_deployed_kg * SPECIFIC_HEAT;
             if capacity > 0.0 {
                 let area = self.radiator_area(m);
-                let t = cooled(self.shield_temperature(m), capacity, area, h).max(INITIAL_K);
+                let t = exchanged(self.shield_temperature(m), capacity, area, h, ambient)
+                    .max(INITIAL_K);
                 self.shield_energy_j = (t - INITIAL_K) * capacity;
                 let flux = 0.001
                     * (4500.0 / t).sqrt()
@@ -252,8 +269,15 @@ impl ThermalState {
             }
             self.check_depleted();
 
-            let cooling = 2000.0 * m.hull_area * h;
-            self.hull_energy_j = (self.hull_energy_j - cooling).max(0.0);
+            if ambient > INITIAL_K && (!operating || self.shield_deployed_kg <= 0.0) {
+                let capacity = m.hull_heat_capacity_j.max(1.0) / 1200.0;
+                let temperature = INITIAL_K + self.hull_energy_j / capacity;
+                let end = exchanged(temperature, capacity, m.hull_area, h, ambient);
+                self.hull_energy_j = ((end - INITIAL_K) * capacity).max(0.0);
+            } else {
+                let cooling = 2000.0 * m.hull_area * h;
+                self.hull_energy_j = (self.hull_energy_j - cooling).max(0.0);
+            }
             let excess = (self.hull_energy_j / m.hull_heat_capacity_j.max(1.0) - 1.0).max(0.0);
             *hull = (*hull - m.hull_hp * 0.1 * excess * excess * h).max(0.0);
         }
@@ -333,6 +357,32 @@ mod tests {
             shield_feed_kg_s: 50.0,
             shield_area: 100.0,
         }
+    }
+
+    #[test]
+    fn slipspace_heats_shields_and_continually_consumes_reserves() {
+        let m = model();
+        let mut s = ThermalState::new(m);
+        s.shield_enabled = true;
+        s.shield_powered = true;
+        s.shield_state = abi::SHIELD_ACTIVE;
+        let mut hp = m.hull_hp;
+        s.advance_in_environment(&mut hp, m, 10.0, SLIPSPACE_K);
+        assert!(s.shield_temperature(m) > SLIPSPACE_K - 100.0);
+        assert!(s.shield_temperature(m) < SLIPSPACE_K);
+        let reserve = s.shield_reserve_kg();
+        s.advance_in_environment(&mut hp, m, 10.0, SLIPSPACE_K);
+        assert!(s.shield_reserve_kg() < reserve);
+        assert!(s.ablation_kg_s > 0.0);
+        assert_eq!(hp, m.hull_hp);
+        let temperature = s.shield_temperature(m);
+        s.advance(&mut hp, m, 1.0);
+        assert!(s.shield_temperature(m) < temperature);
+
+        let mut bare = ThermalState::new(m);
+        bare.advance_in_environment(&mut hp, m, 60.0, SLIPSPACE_K);
+        assert!(bare.hull_energy_j > 0.0);
+        assert!(hp < m.hull_hp);
     }
 
     #[test]

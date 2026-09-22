@@ -8,13 +8,6 @@ pub fn check(status: i32) -> Result<(), i32> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub fn llm_cancel(id: u64) -> Result<bool, i32> {
-    let cancelled = unsafe { abi::raw::llm_cancel(id) };
-    check(cancelled)?;
-    Ok(cancelled != 0)
-}
-
-#[cfg(target_arch = "wasm32")]
 pub fn chat_send(id: u64, text: &str) -> Result<(), i32> {
     check(unsafe { abi::raw::chat_send(id, text.as_ptr(), text.len() as u32) })
 }
@@ -103,6 +96,11 @@ pub fn resource_info(index: u32) -> Result<abi::ResourceInfo, i32> {
 #[cfg(target_arch = "wasm32")]
 pub fn resource(id: u64) -> Result<abi::ResourceAmount, i32> {
     read(|p, n| unsafe { abi::raw::resource_read(id, p, n) })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn contact_iff(id: u64) -> Result<abi::ContactIff, i32> {
+    read(|p, n| unsafe { abi::raw::contact_iff(id, p as *mut abi::ContactIff, n) })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -293,18 +291,6 @@ pub fn persistent_write(bytes: &[u8]) -> Result<(), i32> {
         return Err(abi::ERR_LIMIT);
     }
     check(unsafe { abi::raw::persistent_write(bytes.as_ptr(), bytes.len() as u32) })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn missile() -> Result<abi::MissileObservation, i32> {
-    read(|pointer, bytes| unsafe { abi::raw::missile_read(pointer, bytes) })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub fn control_missile(control: &abi::MissileControl) -> Result<(), i32> {
-    write(control, |pointer, bytes| unsafe {
-        abi::raw::missile_control(pointer, bytes)
-    })
 }
 
 #[cfg(target_arch = "wasm32")]

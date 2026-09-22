@@ -112,20 +112,11 @@ doctrines, goals and relationships. Their profiles live in the
 [independent](../crates/osg-universe/data/organizations-independent.json)
 rosters. Organization membership sits below sovereignty and above individual
 accounts. Friendly, neutral and hostile standings affect client identification
-and NPC decisions.
+in the HUD and contact lists.
 
-Organizations receive physical facilities and vessels suited to their roles:
-freighters, patrols, research ships or broadcasters. Their inventories, losses,
-orders and ownership survive checkpoints. Logistics uses ordinary production,
-cargo-transfer and navigation APIs. Defense uses sensors and weapons. Facility
-access and navigation guidance permissions apply independently of territorial
-claims.
-
-When explicitly enabled, asynchronous LLM directors receive their organization's
-lore, objectives and permitted observations, and issue high-level orders through
-a bounded tool interface. Radio-capable ships run chatter firmware through the
-same metered LLM service available to other ship programs. See
-[language-model calls](llm.md) for provider setup and the shared spending cap.
+Organizations own physical facilities and vessels. Ownership, inventories and losses
+survive checkpoints. Facility access and navigation guidance permissions apply
+independently of territorial claims. There is currently no NPC controller system.
 
 ## Data and verification
 

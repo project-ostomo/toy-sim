@@ -1,7 +1,7 @@
-use super::identity::{Identity, Membership};
-use super::intelligence::Group;
+use super::identity::Identity;
 use super::physics::{AngularVelocity, Velocity};
 use super::precision::PreciseTransform;
+use super::sensors::{ObservationSnapshot, Observations};
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 use anyhow::{Result, ensure};
@@ -10,122 +10,17 @@ use bevy::prelude::*;
 use osg_model::wasm_world::ReplyCapacity;
 use osg_model::{travel::*, *};
 use osg_ship_api::abi;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 mod local_volumes;
 pub(crate) mod route_environment;
-
-#[derive(Default)]
-pub struct ContactHandles {
-    entries: HashMap<(GroupId, TrackId), (u64, u64)>,
-    reverse: HashMap<u64, (GroupId, TrackId)>,
-    expiry: BTreeSet<(u64, u64)>,
-}
-
-impl ContactHandles {
-    fn remove(&mut self, handle: u64, seen: u64) {
-        if let Some(key) = self.reverse.remove(&handle) {
-            self.entries.remove(&key);
-        }
-        self.expiry.remove(&(seen, handle));
-    }
-
-    fn expire(&mut self, tick: u64) {
-        while let Some(&(seen, handle)) = self.expiry.first() {
-            if seen.saturating_add(600) >= tick {
-                break;
-            }
-            self.remove(handle, seen);
-        }
-    }
-
-    pub fn get(&mut self, group: GroupId, track: TrackId, tick: u64) -> u64 {
-        if let Some(&(handle, seen)) = self.entries.get(&(group, track))
-            && seen.saturating_add(600) < tick
-        {
-            self.remove(handle, seen);
-        }
-        if let Some((handle, seen)) = self.entries.get_mut(&(group, track)) {
-            self.expiry.remove(&(*seen, *handle));
-            *seen = tick;
-            self.expiry.insert((tick, *handle));
-            return *handle;
-        }
-        if self.entries.len() >= 8192 {
-            let &(seen, handle) = self.expiry.first().unwrap();
-            self.remove(handle, seen);
-        }
-        let handle = loop {
-            let candidate = rand::random::<u64>();
-            if candidate != 0 && !self.reverse.contains_key(&candidate) {
-                break candidate;
-            }
-        };
-        self.entries.insert((group, track), (handle, tick));
-        self.reverse.insert(handle, (group, track));
-        self.expiry.insert((tick, handle));
-        handle
-    }
-}
-
-#[derive(Component, Default)]
-pub struct ServiceState {
-    group: Option<GroupId>,
-    handles: Arc<Mutex<ContactHandles>>,
-    queries: Arc<Mutex<osg_intel::query::Queries>>,
-    display_queries: Arc<Mutex<osg_intel::query::Queries>>,
-}
-
-pub fn contact_handle(
-    world: &mut World,
-    ship: Entity,
-    group: GroupId,
-    track: TrackId,
-) -> Result<u64> {
-    let tick = world.resource::<SimulationCounters>().ticks;
-    let group_entity = super::identity::lookup(world, group)?;
-    ensure!(
-        group == PUBLIC_GROUP
-            || world
-                .get::<Membership>(ship)
-                .is_some_and(|membership| membership.0 == group_entity),
-        "contact group unavailable"
-    );
-    ensure!(
-        world
-            .get::<Group>(group_entity)
-            .is_some_and(|group| group.snapshot.tracks.contains_key(&track)),
-        "contact unavailable"
-    );
-    let membership_group = world
-        .get::<Membership>(ship)
-        .and_then(|membership| world.get::<Group>(membership.0))
-        .map(|group| group.id);
-    if world
-        .get::<ServiceState>(ship)
-        .is_none_or(|state| state.group != membership_group)
-    {
-        world.entity_mut(ship).insert(ServiceState {
-            group: membership_group,
-            ..Default::default()
-        });
-    }
-    Ok(world
-        .get::<ServiceState>(ship)
-        .unwrap()
-        .handles
-        .lock()
-        .unwrap()
-        .get(group, track, tick))
-}
 
 #[derive(Resource, Default)]
 pub struct PublishedWorld {
     tick: u64,
     navigation_revision: u64,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
-    public: Arc<osg_intel::Snapshot>,
     apertures: Arc<ApertureIndex>,
     public_apertures: Arc<ApertureIndex>,
     universe: Option<Arc<UniverseApertures>>,
@@ -148,12 +43,11 @@ fn beacon_page<T>(beacons: &BTreeMap<Id, T>, after: Option<Id>, limit: usize) ->
     beacons.range(bounds).take(limit).collect()
 }
 
-struct FusedScan {
+struct ShipScan {
     routing: Option<(
         super::route_service::RouteService,
         super::route_service::Caller,
     )>,
-    navigation_revision: u64,
     universe: Option<Arc<UniverseApertures>>,
     epoch: hifitime::Epoch,
     publication_tick: u64,
@@ -163,20 +57,16 @@ struct FusedScan {
     mass: f64,
     physical: Entity,
     apertures: Arc<ApertureIndex>,
-    public: Arc<osg_intel::Snapshot>,
     own: EntityId,
-    group: GroupId,
-    handles: Arc<Mutex<ContactHandles>>,
     pose: Pose,
     travel: CurrentOrder,
     slip_ready: bool,
+    slip_axis: [f64; 3],
     slip_power_w: f64,
     slip_preparation: Option<super::travel::Preparation>,
     tick: u64,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
-    queries: Arc<Mutex<osg_intel::query::Queries>>,
-    display_queries: Arc<Mutex<osg_intel::query::Queries>>,
-    snapshot: Arc<osg_intel::Snapshot>,
+    snapshot: Arc<ObservationSnapshot>,
     origin: GalacticPosition,
     velocity: [f64; 3],
 }
@@ -184,56 +74,37 @@ struct FusedScan {
 const MAX_QUERY_BEACON_BAYS: usize = 4096;
 const QUERY_BAY_GAS: u64 = 100;
 
-fn query_buffer_error(error: anyhow::Error) -> anyhow::Error {
-    if error.is::<osg_intel::query::ReplyBufferTooSmall>() {
-        osg_ship_wasm::WorldQueryError::BufferTooSmall.into()
-    } else {
-        error
-    }
-}
-
 fn check_reply_capacity(reply: &ProgramReply, capacity: ReplyCapacity) -> Result<()> {
-    if !wasm_intel::reply_fits(reply, capacity) {
+    if !wasm_beacons::reply_fits(reply, capacity) {
         return Err(osg_ship_wasm::WorldQueryError::BufferTooSmall.into());
     }
     Ok(())
 }
 
-impl osg_ship_wasm::ScanSource for FusedScan {
+impl osg_ship_wasm::ScanSource for ShipScan {
     fn query_output_bytes(
         &self,
         query: &ProgramQuery,
-        display: bool,
-        capacity: ReplyCapacity,
+        _display: bool,
+        _capacity: ReplyCapacity,
         maximum: usize,
     ) -> Result<usize> {
-        use osg_ship_api::world_intel;
+        use osg_ship_api::beacons;
         let bytes = match query {
-            ProgramQuery::Tracks(query) => {
-                osg_intel::query::output_bytes(&self.snapshot, query.limit as usize, capacity)
-            }
-            ProgramQuery::Continue { cursor, .. } => {
-                let queries = if display {
-                    &self.display_queries
-                } else {
-                    &self.queries
-                };
-                queries.lock().unwrap().output_bytes(*cursor, capacity)?
-            }
             ProgramQuery::Beacon(id) => {
-                std::mem::size_of::<world_intel::BeaconPage>()
+                std::mem::size_of::<beacons::BeaconPage>()
                     + self.beacons.get(id).map_or(0, |beacon| {
-                        std::mem::size_of::<world_intel::Beacon>()
-                            + wasm_intel::beacon_arena_bytes(&beacon.beacon)
+                        std::mem::size_of::<beacons::Beacon>()
+                            + wasm_beacons::beacon_arena_bytes(&beacon.beacon)
                     })
             }
             ProgramQuery::Beacons { after, limit } => {
-                std::mem::size_of::<world_intel::BeaconPage>()
+                std::mem::size_of::<beacons::BeaconPage>()
                     + beacon_page(&self.beacons, *after, *limit as usize)
                         .iter()
                         .map(|(_, beacon)| {
-                            std::mem::size_of::<world_intel::Beacon>()
-                                + wasm_intel::beacon_arena_bytes(&beacon.beacon)
+                            std::mem::size_of::<beacons::Beacon>()
+                                + wasm_beacons::beacon_arena_bytes(&beacon.beacon)
                         })
                         .sum::<usize>()
             }
@@ -265,15 +136,10 @@ impl osg_ship_wasm::ScanSource for FusedScan {
     fn query(
         &self,
         query: ProgramQuery,
-        display: bool,
+        _display: bool,
         reply_capacity: ReplyCapacity,
     ) -> Result<ProgramReply> {
         self.query_work(&query)?;
-        let queries = if display {
-            &self.display_queries
-        } else {
-            &self.queries
-        };
         let reply = match query {
             ProgramQuery::Orrery { reference } => ProgramReply::Orrery(self.orrery(reference)?),
             ProgramQuery::RouteRequest(request) => {
@@ -302,18 +168,11 @@ impl osg_ship_wasm::ScanSource for FusedScan {
                 destination,
                 departure_after_seconds,
                 arrival_after_seconds,
-                speed_ly_s,
                 navigation_beacon,
             } => {
                 let departure = self.prediction_epoch(departure_after_seconds)?;
                 let arrival = self.prediction_epoch(arrival_after_seconds)?;
                 ensure!(arrival >= departure, "arrival precedes departure");
-                ensure!(
-                    speed_ly_s.is_finite()
-                        && speed_ly_s > 0.0
-                        && speed_ly_s <= slip::MAX_SPEED_LY_S,
-                    "invalid slip speed"
-                );
                 let preparation_s = self.slip_preparation.as_ref().map_or_else(
                     || {
                         (slip::charging_energy_j(
@@ -329,10 +188,18 @@ impl osg_ship_wasm::ScanSource for FusedScan {
                         ) - preparation.work_j)
                             .max(0.0)
                             / self.slip_power_w)
-                            .max((preparation.started + 100).saturating_sub(self.tick) as f64 * 0.1)
+                            .max(
+                                (slip::MIN_CHARGE_SECONDS
+                                    - self.tick.saturating_sub(preparation.started) as f64
+                                        * osg_model::TICK_SECONDS)
+                                    .max(0.0),
+                            )
                     },
                 );
-                let duration_s = destination.relative_to(origin).length() / slip::LY_M / speed_ly_s;
+                let duration_s = slip::flight_seconds(
+                    destination.relative_to(origin).length(),
+                    navigation_beacon.is_some(),
+                );
                 let authorized = navigation_beacon.is_none_or(|id| {
                     self.beacons.get(&id).is_some_and(|beacon| {
                         beacon.navigation
@@ -352,66 +219,27 @@ impl osg_ship_wasm::ScanSource for FusedScan {
                 }
             }
             ProgramQuery::Contact(reference) => {
-                let snapshot = if reference.group == self.group {
-                    &self.snapshot
-                } else if reference.group == PUBLIC_GROUP {
-                    &self.public
-                } else {
-                    anyhow::bail!("contact group unavailable");
-                };
-                let track = snapshot
-                    .tracks
-                    .get(&reference.track)
-                    .ok_or_else(|| anyhow::anyhow!("contact unavailable"))?;
-                let mut reply = ProgramReply::Contact {
-                    pose: track.pose.clone(),
-                    radius_m: track.radius_m.unwrap_or(1.),
-                    handle: u64::MAX,
-                };
-                check_reply_capacity(&reply, reply_capacity)?;
-                let ProgramReply::Contact { handle, .. } = &mut reply else {
-                    unreachable!()
-                };
-                *handle = self.handles.lock().unwrap().get(
-                    reference.group,
-                    reference.track,
-                    self.snapshot.tick,
+                ensure!(
+                    reference.observer == self.own,
+                    "contact observer unavailable"
                 );
-                reply
+                let contact = self
+                    .snapshot
+                    .contacts
+                    .get(&reference.contact)
+                    .ok_or_else(|| anyhow::anyhow!("contact unavailable"))?;
+                ProgramReply::Contact {
+                    pose: contact.pose.clone(),
+                    radius_m: contact.radius_m,
+                    handle: contact.id,
+                }
             }
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: self.travel.clone(),
                 pose: self.pose.clone(),
                 slip_ready: self.slip_ready,
+                slip_axis: self.slip_axis,
             },
-            ProgramQuery::Tracks(mut query) => {
-                query.work = query.work.min(1_000_000);
-                osg_protocol::validate_query(&query)?;
-                ProgramReply::Tracks(
-                    queries
-                        .lock()
-                        .unwrap()
-                        .start(
-                            self.snapshot.clone(),
-                            query,
-                            self.snapshot.tick,
-                            reply_capacity,
-                        )
-                        .map_err(query_buffer_error)?,
-                )
-            }
-            ProgramQuery::Continue { cursor, work } => ProgramReply::Tracks(
-                queries
-                    .lock()
-                    .unwrap()
-                    .next(
-                        cursor,
-                        work.min(1_000_000),
-                        self.snapshot.tick,
-                        reply_capacity,
-                    )
-                    .map_err(query_buffer_error)?,
-            ),
             ProgramQuery::Beacon(id) => ProgramReply::Beacons(
                 self.beacons
                     .get(&id)
@@ -443,64 +271,56 @@ impl osg_ship_wasm::ScanSource for FusedScan {
     }
 
     fn scan(&self, range_m: f64, n: usize) -> Vec<osg_ship_wasm::SensorContact> {
-        let count = n.min(256);
-        if count == 0 || !range_m.is_finite() || range_m < 0.0 {
+        if !range_m.is_finite() || range_m <= 0. {
             return Vec::new();
         }
-        let mut candidates = Vec::new();
-        for (group, snapshot) in [(self.group, &self.snapshot), (PUBLIC_GROUP, &self.public)] {
-            let query = TrackQuery {
-                sphere: Some((self.origin, range_m)),
-                all: BTreeSet::from([Tag::Kind("ship".into())]),
-                limit: count as u16,
-                work: count as u64 * 1200 + 100,
-                ..Default::default()
-            };
-            if let Ok(page) = osg_intel::query::Queries::default().start(
-                snapshot.clone(),
-                query,
-                snapshot.tick,
-                ReplyCapacity {
-                    records: count,
-                    bytes: usize::MAX,
-                    auxiliary: 0,
-                },
-            ) {
-                candidates.extend(page.tracks.into_iter().map(|track| (group, track)));
-            }
-        }
-        candidates.retain(|(_, track)| track.entity != Some(self.own));
-        candidates.sort_by(|(_, a), (_, b)| {
+
+        let mut contacts: Vec<_> = self
+            .snapshot
+            .contacts
+            .values()
+            .filter(|contact| contact.pose.position.relative_to(self.origin).length() <= range_m)
+            .collect();
+        contacts.sort_by(|a, b| {
             a.pose
                 .position
                 .relative_to(self.origin)
                 .length_squared()
                 .total_cmp(&b.pose.position.relative_to(self.origin).length_squared())
+                .then_with(|| a.id.cmp(&b.id))
         });
-        let mut seen = std::collections::HashSet::new();
-        let mut handles = self.handles.lock().unwrap();
-        candidates
+        contacts
             .into_iter()
-            .filter(|(_, track)| track.entity.is_none_or(|id| seen.insert(id)))
-            .take(count)
-            .map(|(group, track)| {
-                let name = track
-                    .entity
-                    .map_or_else(|| "Unknown contact".into(), |id| id.to_string());
-                osg_ship_wasm::SensorContact {
-                    name,
-                    measured: abi::Contact {
-                        id: handles.get(group, track.id, self.snapshot.tick),
-                        kind: abi::CONTACT_SHIP,
-                        radius_m: track.radius_m.unwrap_or(1.0),
-                        position_m: track.pose.position.relative_to(self.origin).to_array(),
-                        velocity_m_s: (DVec3::from_array(track.pose.velocity)
-                            - DVec3::from_array(self.velocity))
-                        .to_array(),
-                    },
-                }
-            })
+            .take(n.min(256))
+            .filter_map(|contact| self.contact(contact.id))
             .collect()
+    }
+
+    fn contact(&self, handle: u64) -> Option<osg_ship_wasm::SensorContact> {
+        let contact = self.snapshot.contacts.get(&handle)?;
+        Some(osg_ship_wasm::SensorContact {
+            name: contact
+                .iff
+                .as_ref()
+                .and_then(|iff| iff.labels.first())
+                .cloned()
+                .or_else(|| contact.entity.map(|id| id.to_string()))
+                .unwrap_or_else(|| "Unknown contact".into()),
+            iff: contact
+                .iff
+                .as_ref()
+                .zip(contact.entity)
+                .map(|(iff, entity)| (entity, iff.clone())),
+            measured: abi::Contact {
+                id: contact.id,
+                kind: abi::CONTACT_SHIP,
+                radius_m: contact.radius_m,
+                position_m: contact.pose.position.relative_to(self.origin).to_array(),
+                velocity_m_s: (DVec3::from_array(contact.pose.velocity)
+                    - DVec3::from_array(self.velocity))
+                .to_array(),
+            },
+        })
     }
 }
 
@@ -513,7 +333,7 @@ struct Aperture {
     radius: f64,
 }
 
-impl FusedScan {
+impl ShipScan {
     fn prediction_epoch(&self, after_seconds: f64) -> Result<hifitime::Epoch> {
         ensure!(
             after_seconds.is_finite() && (0.0..=MAX_PREDICTION_SECONDS).contains(&after_seconds),
@@ -539,7 +359,7 @@ impl FusedScan {
     }
 
     fn publication_age_seconds(&self) -> f64 {
-        self.tick.saturating_sub(self.publication_tick) as f64 * 0.1
+        self.tick.saturating_sub(self.publication_tick) as f64 * osg_model::TICK_SECONDS
     }
 
     fn beacon_pose_at(&self, id: Id, epoch: hifitime::Epoch) -> Result<Pose> {
@@ -608,7 +428,7 @@ impl FusedScan {
             permitted(ownership::Permission::Dock, bay.public, &bay.allowed)
                 && bay
                     .reservation
-                    .is_none_or(|(ship, until)| ship == self.own || until < self.snapshot.tick)
+                    .is_none_or(|(ship, until)| ship == self.own || until < self.tick)
                 && self.radius <= bay.radius_m
                 && self.mass <= bay.mass_capacity_kg
         });
@@ -656,7 +476,7 @@ pub(crate) fn predicted_aperture_clear(
         return false;
     }
     let publication = world.resource::<PublishedWorld>();
-    let now = world.resource::<SimulationCounters>().ticks as f64 * 0.1;
+    let now = world.resource::<SimulationCounters>().ticks as f64 * osg_model::TICK_SECONDS;
     let epoch = hifitime::Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
         + hifitime::Duration::from_seconds(now + after_seconds);
     aperture_clearance(
@@ -671,7 +491,7 @@ pub(crate) fn predicted_aperture_clear(
                 .resource::<SimulationCounters>()
                 .ticks
                 .saturating_sub(publication.tick) as f64
-                * 0.1,
+                * osg_model::TICK_SECONDS,
     )
 }
 
@@ -696,7 +516,6 @@ pub fn publish_indexes(
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
     navigation: Option<Res<super::infrastructure::NavigationPublication>>,
-    groups: Query<&Group>,
     bodies: Query<
         (
             Entity,
@@ -724,11 +543,6 @@ pub fn publish_indexes(
             .as_ref()
             .map(|registry| Arc::new(UniverseApertures::new((**registry).clone())));
     }
-    publication.public = groups
-        .iter()
-        .find(|group| group.id == PUBLIC_GROUP)
-        .map(|group| group.snapshot.clone())
-        .unwrap_or_default();
     let public_beacons: BTreeSet<_> = beacons
         .iter()
         .filter(|data| data.iff.0.enabled)
@@ -757,7 +571,7 @@ pub fn publish_indexes(
             .iter()
             .filter(|data| data.iff.0.enabled)
             .map(|data| {
-                let pose = super::intelligence::pose(data.transform, data.velocity, data.angular);
+                let pose = super::identity::pose(data.transform, data.velocity, data.angular);
                 let systems = navigation
                     .as_ref()
                     .and_then(|navigation| navigation.beacons.get(&data.id.0))
@@ -823,23 +637,18 @@ struct SourceContext {
     slip: Option<super::travel::SlipDrive>,
 }
 
-fn fused_source(
+fn ship_source(
     publication: &PublishedWorld,
     tick: u64,
-    group: &Group,
-    state: &ServiceState,
+    snapshot: Arc<ObservationSnapshot>,
     context: SourceContext,
-) -> Arc<FusedScan> {
-    state.handles.lock().unwrap().expire(tick);
-    state.queries.lock().unwrap().expire(tick);
-    state.display_queries.lock().unwrap().expire(tick);
+) -> Arc<ShipScan> {
     let slip = context.slip.as_ref();
-    Arc::new(FusedScan {
+    Arc::new(ShipScan {
         routing: context.routing,
-        navigation_revision: publication.navigation_revision,
         universe: publication.universe.clone(),
         epoch: hifitime::Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
-            + hifitime::Duration::from_seconds(tick as f64 * 0.1),
+            + hifitime::Duration::from_seconds(tick as f64 * osg_model::TICK_SECONDS),
         publication_tick: publication.tick,
         own: context.id,
         physical: context.entity,
@@ -847,20 +656,16 @@ fn fused_source(
         directory: publication.directory.clone(),
         radius: context.radius,
         mass: context.mass,
-        group: group.id,
-        handles: state.handles.clone(),
         pose: context.pose.clone(),
         travel: context.travel,
         slip_ready: slip.is_some(),
+        slip_axis: slip.map_or([0.0, 0.0, -1.0], |drive| drive.axis),
         slip_power_w: slip.map_or(0.0, |drive| drive.power_w),
         slip_preparation: slip.and_then(|drive| drive.preparation.clone()),
         tick,
         beacons: publication.beacons.clone(),
         apertures: publication.public_apertures.clone(),
-        public: publication.public.clone(),
-        queries: state.queries.clone(),
-        display_queries: state.display_queries.clone(),
-        snapshot: group.snapshot.clone(),
+        snapshot,
         origin: context.pose.position,
         velocity: context.pose.velocity,
     })
@@ -870,21 +675,10 @@ pub(crate) fn current_source(
     world: &mut World,
     ship: Entity,
 ) -> Option<Arc<dyn osg_ship_wasm::ScanSource>> {
-    current_fused_source(world, ship).map(|source| source as Arc<dyn osg_ship_wasm::ScanSource>)
+    current_ship_source(world, ship).map(|source| source as Arc<dyn osg_ship_wasm::ScanSource>)
 }
 
-fn current_fused_source(world: &mut World, ship: Entity) -> Option<Arc<FusedScan>> {
-    let membership = world.get::<Membership>(ship)?.0;
-    let group_id = world.get::<Group>(membership)?.id;
-    if world
-        .get::<ServiceState>(ship)
-        .is_none_or(|state| state.group != Some(group_id))
-    {
-        world.entity_mut(ship).insert(ServiceState {
-            group: Some(group_id),
-            ..Default::default()
-        });
-    }
+fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>> {
     let routing = world
         .get_resource::<super::route_service::RouteService>()
         .cloned()
@@ -911,71 +705,30 @@ fn current_fused_source(world: &mut World, ship: Entity) -> Option<Arc<FusedScan
             .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
             .cloned(),
     };
-    Some(fused_source(
+    Some(ship_source(
         world.get_resource::<PublishedWorld>()?,
         world.get_resource::<SimulationCounters>()?.ticks,
-        world.get::<Group>(membership)?,
-        world.get::<ServiceState>(ship)?,
-        context,
-    ))
-}
-
-pub(crate) fn retained_source(
-    world: &mut World,
-    parent: Entity,
-) -> Option<Arc<dyn osg_ship_wasm::ScanSource>> {
-    world.get::<super::travel::Dormant>(parent)?;
-    let membership = world.get::<Membership>(parent)?.0;
-    let group_id = world.get::<Group>(membership)?.id;
-    if world
-        .get::<ServiceState>(parent)
-        .is_none_or(|state| state.group != Some(group_id))
-    {
-        world.entity_mut(parent).insert(ServiceState {
-            group: Some(group_id),
-            ..Default::default()
-        });
-    }
-
-    // The remembered position is only a coordinate origin for already shared
-    // intelligence. It creates no sensor measurements or physical observer.
-    let pose = super::intelligence::pose(world.get::<PreciseTransform>(parent)?, None, None);
-    let context = SourceContext {
-        routing: None,
-        entity: parent,
-        id: world.get::<Identity>(parent)?.0,
-        owner: world.get::<super::ownership::AssetOwner>(parent)?.0,
-        radius: world.get::<super::vessel::ShipDesign>(parent)?.0.radius,
-        mass: world.get::<super::physics::MassProps>(parent)?.mass,
-        pose,
-        travel: world
-            .get::<super::travel::Travel>(parent)
-            .map_or_else(CurrentOrder::default, |travel| {
-                CurrentOrder::from(&travel.0)
-            }),
-        slip: None,
-    };
-    Some(fused_source(
-        world.get_resource::<PublishedWorld>()?,
-        world.get_resource::<SimulationCounters>()?.ticks,
-        world.get::<Group>(membership)?,
-        world.get::<ServiceState>(parent)?,
+        if world.get::<super::travel::Dormant>(ship).is_some() {
+            Arc::default()
+        } else {
+            world
+                .get::<Observations>(ship)
+                .map(|value| value.0.clone())
+                .unwrap_or_default()
+        },
         context,
     ))
 }
 
 pub fn prepare_sources(
-    mut commands: Commands,
     publication: Res<PublishedWorld>,
     clock: Res<SimulationCounters>,
     world_epoch: Res<super::identity::WorldEpoch>,
     routing: Option<Res<super::route_service::RouteService>>,
-    groups: Query<&Group>,
     mut ships: Query<
         (
             Entity,
             &Identity,
-            &Membership,
             &super::ownership::AssetOwner,
             Option<&super::identity::Control>,
             &PreciseTransform,
@@ -985,7 +738,7 @@ pub fn prepare_sources(
             &super::physics::MassProps,
             Option<&super::travel::Travel>,
             Option<&super::travel::SlipDrive>,
-            Option<&ServiceState>,
+            Option<&Observations>,
             &mut ShipSoftware,
         ),
         Without<super::travel::SystemsSuspended>,
@@ -994,7 +747,6 @@ pub fn prepare_sources(
     for (
         entity,
         id,
-        membership,
         owner,
         authority,
         transform,
@@ -1008,23 +760,11 @@ pub fn prepare_sources(
         mut software,
     ) in &mut ships
     {
-        let Ok(group) = groups.get(membership.0) else {
-            software.world_source = None;
-            continue;
-        };
-        let fresh = ServiceState {
-            group: Some(group.id),
-            ..Default::default()
-        };
-        let state = state
-            .filter(|state| state.group == Some(group.id))
-            .unwrap_or(&fresh);
-        let pose = super::intelligence::pose(transform, velocity, angular);
-        software.world_source = Some(fused_source(
+        let pose = super::identity::pose(transform, velocity, angular);
+        software.world_source = Some(ship_source(
             &publication,
             clock.ticks,
-            group,
-            state,
+            state.map(|value| value.0.clone()).unwrap_or_default(),
             SourceContext {
                 routing: routing.as_ref().zip(authority).map(|(service, authority)| {
                     (
@@ -1052,9 +792,6 @@ pub fn prepare_sources(
                 slip: slip.cloned(),
             },
         ));
-        if std::ptr::eq(state, &fresh) {
-            commands.entity(entity).insert(fresh);
-        }
     }
 }
 
@@ -1097,62 +834,37 @@ pub fn dispatch_actions(world: &mut World) {
     }
 }
 
-pub fn contact_ref(
-    world: &World,
-    ship: Entity,
-    handle: u64,
-) -> Option<osg_model::presentation::ContactRef> {
-    let state = world.get::<ServiceState>(ship)?;
-    let handles = state.handles.lock().unwrap();
-    let &(group, track) = handles.reverse.get(&handle)?;
-    let &(_, seen) = handles.entries.get(&(group, track))?;
-    if seen.saturating_add(600) < world.resource::<SimulationCounters>().ticks {
+pub fn contact_ref(world: &World, ship: Entity, handle: u64) -> Option<ContactRef> {
+    if world.get::<super::travel::Dormant>(ship).is_some() {
         return None;
     }
-    let group_entity = super::identity::lookup(world, group).ok()?;
-    if group != PUBLIC_GROUP && world.get::<Membership>(ship)?.0 != group_entity {
-        return None;
-    }
-    world
-        .get::<Group>(group_entity)?
-        .snapshot
-        .tracks
-        .get(&track)?;
-    Some(osg_model::presentation::ContactRef { group, track })
-}
-
-pub fn resolve_handle(world: &World, ship: Entity, handle: u64) -> Option<Entity> {
-    let contact = contact_ref(world, ship, handle)?;
-    let group = super::identity::lookup(world, contact.group).ok()?;
-    let tracks = world.get::<super::intelligence::GroupTracks>(group)?;
-    tracks.iter().find_map(|entity| {
-        let estimate = world.get::<super::intelligence::TrackEstimate>(entity)?;
-        if estimate.0.id != contact.track {
-            return None;
-        }
-        let association = world.get::<super::intelligence::TrackAssociation>(entity)?;
-        super::identity::lookup(world, association.0).ok()
+    world.get::<Observations>(ship)?.0.contacts.get(&handle)?;
+    Some(ContactRef {
+        observer: world.get::<Identity>(ship)?.0,
+        contact: handle,
     })
 }
 
+pub fn resolve_handle(world: &World, ship: Entity, handle: u64) -> Option<Entity> {
+    contact_ref(world, ship, handle)?;
+    let snapshot = &world.get::<Observations>(ship)?.0;
+    let id = snapshot
+        .targets
+        .iter()
+        .find_map(|(id, value)| (*value == handle).then_some(*id))?;
+    super::identity::lookup(world, id).ok()
+}
+
 pub fn handle_for_entity(world: &mut World, ship: Entity, target: Entity) -> Result<u64> {
-    let physical = world
+    let id = world
         .get::<Identity>(target)
         .ok_or_else(|| anyhow::anyhow!("target unavailable"))?
         .0;
-    let group = world
-        .get::<Membership>(ship)
-        .ok_or_else(|| anyhow::anyhow!("group unavailable"))?
-        .0;
-    let estimate = world
-        .resource::<super::intelligence::AssociationIndex>()
-        .0
-        .get(&(group, physical))
-        .and_then(|entity| world.get::<super::intelligence::TrackEstimate>(*entity))
-        .ok_or_else(|| anyhow::anyhow!("target not observed"))?;
-    let track = estimate.0.id;
-    let group_id = world.get::<Group>(group).unwrap().id;
-    contact_handle(world, ship, group_id, track)
+    world
+        .get::<Observations>(ship)
+        .and_then(|observations| observations.0.targets.get(&id))
+        .copied()
+        .ok_or_else(|| anyhow::anyhow!("target not observed"))
 }
 
 const APERTURE_WORK_LIMIT: usize = 1024;
@@ -1335,38 +1047,23 @@ mod tests {
         );
     }
 
-    pub(super) fn track(id: Id, position: DVec3, celestial: bool) -> Track {
-        Track {
+    pub(super) fn contact(id: u64, position: DVec3) -> SensorObservation {
+        SensorObservation {
             spatial_instance: Id::new(),
             id,
-            entity: celestial.then(Id::new),
+            entity: None,
             pose: Pose {
                 position: GalacticPosition::from_meters(position),
                 ..Default::default()
             },
-            position_sigma_m: 1.0,
-            velocity_sigma_m_s: 1.0,
-            observed_tick: 1,
-            estimate_tick: 1,
-            tags: if celestial {
-                [
-                    Tag::Kind("celestial".into()),
-                    Tag::Advertised("Neris".into()),
-                ]
-                .into()
-            } else {
-                BTreeSet::from([Tag::Kind("ship".into())])
-            },
-            provenance: Provenance::Extrapolated,
-            radius_m: Some(10.0),
-            appearance: None,
+            radius_m: 10.,
+            iff: None,
         }
     }
 
-    pub(super) fn source() -> FusedScan {
-        FusedScan {
+    pub(super) fn source() -> ShipScan {
+        ShipScan {
             routing: None,
-            navigation_revision: 0,
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),
             publication_tick: 0,
@@ -1376,19 +1073,15 @@ mod tests {
             mass: 1.0,
             physical: Entity::PLACEHOLDER,
             apertures: Arc::default(),
-            public: Arc::default(),
             own: Id::new(),
-            group: Id::new(),
-            handles: Arc::default(),
             pose: Pose::default(),
             travel: CurrentOrder::default(),
             slip_ready: true,
+            slip_axis: [0.0, 0.0, -1.0],
             slip_power_w: 100e6,
             slip_preparation: None,
             tick: 0,
             beacons: Arc::default(),
-            queries: Arc::default(),
-            display_queries: Arc::default(),
             snapshot: Arc::default(),
             origin: GalacticPosition::ZERO,
             velocity: [0.0; 3],
@@ -1411,7 +1104,6 @@ mod tests {
             destination: GalacticPosition::from_meters(DVec3::Y * 1e6),
             departure_after_seconds,
             arrival_after_seconds: departure_after_seconds + 1.0,
-            speed_ly_s: 0.001,
             navigation_beacon: None,
         };
         assert!(matches!(
@@ -1442,108 +1134,29 @@ mod tests {
     }
 
     #[test]
-    fn retained_computer_reads_fresh_shared_intelligence_without_a_physical_observer() {
-        let mut world = World::new();
-        world.init_resource::<SimulationCounters>();
-        world.init_resource::<PublishedWorld>();
-        let group_id = Id::new();
-        let first = Id::new();
-        let second = Id::new();
-        let mut snapshot = osg_intel::Snapshot::default();
-        snapshot.put(track(first, DVec3::X * 100.0, false));
-        let group = world
-            .spawn(Group {
-                id: group_id,
-                key: None,
-                snapshot: Arc::new(snapshot),
-            })
-            .id();
-        let catalogue = osg_ships::Catalogue::builtin();
-        let design = Arc::new(osg_ships::armed_starter().compile(&catalogue).unwrap());
-        let parent = world
-            .spawn((
-                Identity(Id::new()),
-                Membership(group),
-                super::super::ownership::AssetOwner(ownership::Principal::Player(Id::new())),
-                PreciseTransform::default(),
-                super::super::vessel::ShipDesign(design),
-                super::super::physics::MassProps::default(),
-                super::super::travel::Travel::default(),
-                super::super::travel::PresenceState(Presence::Destroyed),
-                super::super::travel::Dormant,
-                super::super::travel::SlipDrive::default(),
-            ))
-            .id();
-        let contact = |track| {
-            ProgramQuery::Contact(ContactRef {
-                group: group_id,
-                track,
-            })
-        };
-        let old = retained_source(&mut world, parent).unwrap();
+    fn dormant_ship_has_no_sensor_observations() {
+        let mut app =
+            crate::sim::bootstrap::provision_combat_fixture(&[Id::new()], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<crate::sim::vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
         assert!(
-            old.query(contact(first), false, ReplyCapacity::UNLIMITED)
-                .is_ok()
+            !current_source(world, ship)
+                .unwrap()
+                .scan(1e8, 256)
+                .is_empty()
         );
 
-        let mut next = osg_intel::Snapshot::default();
-        next.tick = 2;
-        next.put(track(second, DVec3::Y * 200.0, false));
-        world.get_mut::<Group>(group).unwrap().snapshot = Arc::new(next);
-        world.resource_mut::<SimulationCounters>().ticks = 2;
-        let current = retained_source(&mut world, parent).unwrap();
+        // Even a snapshot retained before dormancy cannot supply live observations.
+        world.entity_mut(ship).insert(super::super::travel::Dormant);
         assert!(
-            current
-                .query(contact(first), false, ReplyCapacity::UNLIMITED)
-                .is_err()
+            current_source(world, ship)
+                .unwrap()
+                .scan(1e8, 256)
+                .is_empty()
         );
-        let ProgramReply::Contact { pose, .. } = current
-            .query(contact(second), false, ReplyCapacity::UNLIMITED)
-            .unwrap()
-        else {
-            panic!("expected shared contact");
-        };
-        assert_eq!(
-            pose.position,
-            GalacticPosition::from_meters(DVec3::Y * 200.0)
-        );
-        let foreign = ProgramQuery::Contact(ContactRef {
-            group: Id::new(),
-            track: second,
-        });
-        assert!(
-            current
-                .query(foreign, false, ReplyCapacity::UNLIMITED)
-                .is_err()
-        );
-        assert!(matches!(
-            current
-                .query(ProgramQuery::Travel, false, ReplyCapacity::UNLIMITED)
-                .unwrap(),
-            ProgramReply::Travel {
-                slip_ready: false,
-                ..
-            }
-        ));
-
-        assert!(world.get::<Velocity>(parent).is_none());
-        assert!(world.get::<AngularVelocity>(parent).is_none());
-        assert!(
-            world
-                .get::<super::super::physics::RigidBody>(parent)
-                .is_none()
-        );
-        assert!(
-            world
-                .get::<super::super::physics::collision::CollisionBody>(parent)
-                .is_none()
-        );
-        assert!(
-            world
-                .get::<super::super::spatial::SpatialBody>(parent)
-                .is_none()
-        );
-        assert!(world.get::<super::super::sensors::Sensor>(parent).is_none());
     }
 
     #[test]
@@ -1584,57 +1197,20 @@ mod tests {
     }
 
     #[test]
-    fn native_scan_excludes_celestials_and_preserves_stable_ship_handles() {
+    fn native_scan_respects_range_and_preserves_observer_handles() {
+        use osg_ship_wasm::ScanSource;
         let mut source = source();
-        let mut public = osg_intel::Snapshot::default();
-        public.tick = 1;
-        public.put(track(Id::new(), DVec3::X * 100.0, true));
-        source.public = Arc::new(public);
-        let mut group = osg_intel::Snapshot::default();
-        group.tick = 1;
-        group.put(track(Id::new(), DVec3::Y * 50.0, false));
-        source.snapshot = Arc::new(group);
-
-        let first = source.scan(1000.0, 8);
-        let second = source.scan(1000.0, 8);
-        assert_eq!(first.len(), 1);
-        assert_eq!(first[0].measured.kind, abi::CONTACT_SHIP);
-        assert_eq!(first[0].measured.id, second[0].measured.id);
-    }
-
-    #[test]
-    fn program_cursors_do_not_consume_display_retention() {
-        let mut source = source();
-        let mut snapshot = osg_intel::Snapshot::default();
-        snapshot.put(track(Id::new(), DVec3::X, false));
-        source.snapshot = Arc::new(snapshot);
-        let query = ProgramQuery::Tracks(TrackQuery {
-            limit: 1,
-            work: 100,
-            ..Default::default()
-        });
-        for _ in 0..8 {
-            source
-                .query(query.clone(), false, ReplyCapacity::UNLIMITED)
-                .unwrap();
-        }
-        assert!(
-            source
-                .query(query.clone(), false, ReplyCapacity::UNLIMITED)
-                .is_err()
-        );
-        assert!(source.query(query, true, ReplyCapacity::UNLIMITED).is_ok());
-    }
-
-    #[test]
-    fn handles_change_after_expiry_and_between_groups() {
-        let mut handles = ContactHandles::default();
-        let group = Id::new();
-        let track = Id::new();
-        let first = handles.get(group, track, 0);
-        assert_eq!(first, handles.get(group, track, 1));
-        assert_ne!(first, handles.get(Id::new(), track, 1));
-        assert_ne!(first, handles.get(group, track, 602));
+        Arc::make_mut(&mut source.snapshot)
+            .contacts
+            .insert(42, contact(42, DVec3::X * 50.));
+        Arc::make_mut(&mut source.snapshot)
+            .contacts
+            .insert(43, contact(43, DVec3::X * 500.));
+        let scan = source.scan(100., 256);
+        assert_eq!(scan.len(), 1);
+        assert_eq!(scan[0].id, 42);
+        assert_eq!(source.scan(100., 256)[0].id, 42);
+        assert!(source.scan(100., 0).is_empty());
     }
 
     #[test]
@@ -1699,7 +1275,6 @@ mod tests {
                     faction: None,
                     labels: Default::default(),
                     enabled: true,
-                    range_m: 1e8,
                 },
                 bays: (0..4).map(|id| (id, Pose::default())).collect(),
             },
@@ -1735,7 +1310,6 @@ mod tests {
                     faction: None,
                     labels: Default::default(),
                     enabled: true,
-                    range_m: 1e8,
                 },
                 bays: (0..count).map(|id| (id as u32, Pose::default())).collect(),
             },
@@ -1782,9 +1356,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             reserved,
-            std::mem::size_of::<osg_ship_api::world_intel::BeaconPage>()
-                + std::mem::size_of::<osg_ship_api::world_intel::Beacon>()
-                + MAX_QUERY_BEACON_BAYS * std::mem::size_of::<osg_ship_api::world_intel::Bay>()
+            std::mem::size_of::<osg_ship_api::beacons::BeaconPage>()
+                + std::mem::size_of::<osg_ship_api::beacons::Beacon>()
+                + MAX_QUERY_BEACON_BAYS * std::mem::size_of::<osg_ship_api::beacons::Bay>()
         );
         let expected =
             osg_ship_wasm::query_work(&one) + QUERY_BAY_GAS * MAX_QUERY_BEACON_BAYS as u64;
@@ -1805,66 +1379,51 @@ mod tests {
     }
 
     #[test]
-    fn contact_query_allocates_one_handle() {
+    fn contact_query_requires_current_observer_and_contact() {
+        use osg_ship_wasm::ScanSource;
         let mut source = source();
-        let id = Id::new();
-        Arc::make_mut(&mut source.snapshot).put(track(id, DVec3::ZERO, false));
-        let query = ProgramQuery::Contact(ContactRef {
-            group: source.group,
-            track: id,
-        });
-        assert!(source.handles.lock().unwrap().entries.is_empty());
-
+        Arc::make_mut(&mut source.snapshot)
+            .contacts
+            .insert(42, contact(42, DVec3::X));
+        let reference = ContactRef {
+            observer: source.own,
+            contact: 42,
+        };
         assert!(matches!(
             source
-                .query(query, false, ReplyCapacity::UNLIMITED)
+                .query(
+                    ProgramQuery::Contact(reference),
+                    false,
+                    ReplyCapacity::UNLIMITED
+                )
                 .unwrap(),
-            ProgramReply::Contact { .. }
+            ProgramReply::Contact { handle: 42, .. }
         ));
-        assert_eq!(source.handles.lock().unwrap().entries.len(), 1);
+        assert!(
+            source
+                .query(
+                    ProgramQuery::Contact(ContactRef {
+                        observer: Id::new(),
+                        ..reference
+                    }),
+                    false,
+                    ReplyCapacity::UNLIMITED
+                )
+                .is_err()
+        );
+        Arc::make_mut(&mut source.snapshot).contacts.clear();
+        assert!(
+            source
+                .query(
+                    ProgramQuery::Contact(reference),
+                    false,
+                    ReplyCapacity::UNLIMITED
+                )
+                .is_err()
+        );
     }
 
-    #[test]
-    fn expired_contact_lookup_renews_only_the_requested_handle() {
-        let mut handles = ContactHandles::default();
-        let group = Id::new();
-        let first_track = Id::new();
-        let second_track = Id::new();
-        let first = handles.get(group, first_track, 0);
-        let second = handles.get(group, second_track, 0);
-        assert_eq!(handles.get(group, first_track, 600), first);
-        let replacement = handles.get(group, second_track, 601);
-        assert_ne!(replacement, second);
-        assert!(!handles.reverse.contains_key(&second));
-        assert_eq!(handles.entries.len(), 2);
-
-        let replacement = handles.get(group, first_track, 1201);
-        assert_ne!(replacement, first);
-        assert_eq!(handles.entries.len(), 2);
-        handles.expire(1202);
-        assert_eq!(handles.entries.len(), 1);
-        assert!(handles.reverse.contains_key(&replacement));
-    }
-
-    #[test]
-    fn contact_handle_indexes_remain_bounded_and_remove_old_references() {
-        let mut handles = ContactHandles::default();
-        let group = Id::new();
-        let first = handles.get(group, Id::new(), 0);
-        for _ in 0..8192 {
-            handles.get(group, Id::new(), 1);
-        }
-        assert_eq!(handles.entries.len(), 8192);
-        assert_eq!(handles.reverse.len(), 8192);
-        assert_eq!(handles.expiry.len(), 8192);
-        assert!(!handles.reverse.contains_key(&first));
-        handles.expire(602);
-        assert!(handles.entries.is_empty());
-        assert!(handles.reverse.is_empty());
-        assert!(handles.expiry.is_empty());
-    }
-
-    pub(super) fn universe_source() -> FusedScan {
+    pub(super) fn universe_source() -> ShipScan {
         let mut source = source();
         let universe = Arc::new(
             osg_universe::universe::Universe::init(osg_universe::example_config()).unwrap(),

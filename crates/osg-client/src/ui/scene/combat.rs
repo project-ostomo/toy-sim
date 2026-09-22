@@ -2,7 +2,7 @@ mod debris;
 mod tracer;
 
 use super::{ViewCamera, ViewMember};
-use crate::state::{CombatPublication, Contact, DisplayPose, RenderTime};
+use crate::state::{CombatPublication, DisplayPose, Optical, RenderTime};
 use bevy::{camera::visibility::RenderLayers, mesh::MeshTag, prelude::*};
 use osg_model::{CombatEvent, GalacticPosition, presentation::CombatEventKind};
 use osg_ship_view::explosion::{ExplosionAssets, flash_power};
@@ -88,9 +88,7 @@ fn sample(
             (radius_m * 0.7).clamp(2., 200.),
             2.,
         ),
-        CombatEventKind::Projectile { .. }
-        | CombatEventKind::Beam { .. }
-        | CombatEventKind::Slip { .. } => return None,
+        CombatEventKind::Projectile { .. } | CombatEventKind::Beam { .. } => return None,
     };
     if !energy.is_finite() || energy <= 0. || !scale.is_finite() {
         return None;
@@ -139,7 +137,7 @@ fn update(
     history: Res<EffectClock>,
     assets: Res<ExplosionAssets>,
     publications: Query<(Entity, &CombatPublication)>,
-    contacts: Query<(&Contact, &DisplayPose)>,
+    contacts: Query<(&Optical, &DisplayPose)>,
     cameras: Query<(Entity, &ViewCamera, &Transform, &Camera, &Projection), Without<EffectVisual>>,
     mut visuals: Query<(
         Entity,
@@ -174,7 +172,7 @@ fn update(
             let velocity = if let CombatEventKind::Fired { source, .. } = &event.kind {
                 contacts
                     .iter()
-                    .find(|(contact, _)| contact.1 == *source)
+                    .find(|(contact, _)| contact.0.id == *source)
                     .map_or(glam::DVec3::ZERO, |(_, pose)| {
                         glam::DVec3::from_array(pose.0.velocity)
                     })

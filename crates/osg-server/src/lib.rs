@@ -197,12 +197,6 @@ fn run_loop(
             .reset_requested
         {
             let config = app.world().resource::<sim::ScenarioConfig>().clone();
-            let populated = app
-                .world_mut()
-                .query::<&sim::npc::state::NpcOrganization>()
-                .iter(app.world())
-                .next()
-                .is_some();
             let sessions = app
                 .world_mut()
                 .query_filtered::<Entity, With<Connection>>()
@@ -215,17 +209,10 @@ fn run_loop(
             let checkpoints = app
                 .world_mut()
                 .remove_resource::<persistence::Checkpoints>();
-            let llm = app.world_mut().remove_resource::<sim::llm::LlmService>();
             let assets = assets(app);
             *app = scenario(&config.accounts, config.debug_account, config.ship)?;
-            if populated {
-                sim::npc::seed::populate(app.world_mut())?;
-            }
             assets.extend(app.world().resource::<AppearanceAssets>().snapshot());
             app.insert_resource(assets);
-            if let Some(llm) = llm {
-                app.insert_resource(llm);
-            }
             if let Some(checkpoints) = checkpoints {
                 app.insert_resource(checkpoints);
                 persistence::request(app.world());
@@ -315,7 +302,7 @@ fn run_loop(
         {
             break;
         }
-        next += Duration::from_millis(100);
+        next += osg_model::TICK_DURATION;
         if let Some(wait) = next.checked_duration_since(Instant::now()) {
             std::thread::sleep(wait);
         } else {
@@ -513,10 +500,10 @@ mod asset_tests {
             world: Id::new(),
             sequence: 1,
             tick: 1,
-            sim_time_ns: 100_000_000,
+            sim_time_ns: osg_model::TICK_NS,
             rate: 1.0,
             views: Vec::new(),
-            tracks: BTreeMap::new(),
+            contacts: BTreeMap::new(),
             ships: Vec::new(),
             screens: Vec::new(),
             events: Vec::new(),

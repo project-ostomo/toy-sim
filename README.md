@@ -31,16 +31,15 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 | `osg-spatial` | [crates/osg-spatial](crates/osg-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
 | `osg-space` | [crates/osg-space](crates/osg-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
 | `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
-| `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` ship ABI 32: fixed C records, typed world/service imports, caller-owned output arrays and a small SDK. Also holds the generated C header and AssemblyScript bindings. |
+| `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` Rust C-ABI records, typed world/service imports, caller-owned output arrays and a small SDK. |
 | `osg-ships` | [crates/osg-ships](crates/osg-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `osg-ship-wasm` | [crates/osg-ship-wasm](crates/osg-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |
 | `osg-ship-view` | [crates/osg-ship-view](crates/osg-ship-view) | Bevy 3D presentation used by the client and the editor: part meshes, plumes, shield fields, tracers and explosions. |
 | `osg-ui` | [crates/osg-ui](crates/osg-ui) | Shared egui theme, embedded fonts, Bevy integration, instruments and programmable screen widgets. |
 | `osg-example-controller` | [crates/osg-example-controller](crates/osg-example-controller) | Source of the standard flight computer firmware: hardware discovery, control allocation, braking rendezvous guidance, forecasts, weapons control and execution of the current host-owned navigation command. Strategic route search runs on the server. |
 | `osg-model` | [crates/osg-model](crates/osg-model) | Shared serde types for the server, client and firmware: IDs, poses, tags, tracks, queries, frames, actions, debug commands, presentation records, travel and screen drawing lists. |
-| `osg-protocol` | [crates/osg-protocol](crates/osg-protocol) | `TSF1` application message framing, sections and validation limits. |
+| `osg-protocol` | [crates/osg-protocol](crates/osg-protocol) | Application message framing and validation of client requests. |
 | `osg-net` | [crates/osg-net](crates/osg-net) | Authenticated X25519/Ed25519 handshake, ChaCha20-Poly1305 records, Zstd compression and picomux multiplexing. |
-| `osg-intel` | [crates/osg-intel](crates/osg-intel) | Measurements, immutable track snapshots and metered track queries. |
 | `osg-universe` | [crates/osg-universe](crates/osg-universe) | Shared deterministic system catalogue, lazy celestial generation, stable identities, Keplerian solver and atmosphere tables; independent of Bevy. |
 | `osg-server` | [crates/osg-server](crates/osg-server) | The authoritative Bevy ECS simulation in private modules under `src/sim`, the 10 Hz simulation loop, TCP listener, asset streams, configuration, demo key provisioning, the server binary and the network benchmark example. |
 | `osg-client` | [crates/osg-client](crates/osg-client) | Network client library and playback buffer. With the `ui` feature it adds the Bevy/egui client UI and the `osg-client` binary. |
@@ -49,7 +48,7 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 
 - [assets/](assets/README.md): runtime assets (universe and star system TOML files, the bundled starter ship, models).
 - [docs/](docs): topic guides, listed below.
-- [tools/](tools): Python scripts for Gaia downloads, Gaia conversion and ABI binding generation, and a standalone compression experiment.
+- [tools/](tools): Scripts for Gaia downloads, catalogue conversion and firmware builds.
 - [tests/fixtures/](tests/fixtures): a remote star system used by tests and a synthetic Gaia-shaped CSV.
 - [.cargo/config.toml](.cargo/config.toml): linker arguments for `wasm32-unknown-unknown` builds (64 KiB guest stack, 8 MiB maximum memory).
 
@@ -63,7 +62,6 @@ Optional tools:
 
 - `python3` for the scripts in `tools/`. The `osg-stars` integration test `python_converter_fixture_matches_portable_loader` runs `tools/import_gaia.py`.
 - The `wasm32-unknown-unknown` Rust target if you build controller firmware in Rust.
-- A C compiler that targets `wasm32` if you build C controllers against [ship.h](crates/osg-ship-api/include/ship.h).
 
 ## Build and run
 
@@ -109,7 +107,7 @@ cargo run -p osg-star-query --release
 cargo test --workspace
 ```
 
-`osg-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral`, `--enable-llm` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
+`osg-debug` accepts `--ship PATH`, `--server EXECUTABLE`, `--state-dir PATH`, `--ephemeral` and `--check`. A persistent state directory retains the world and identity between runs; `--ephemeral` creates a disposable world. It:
 
 1. Opens its state directory, creating the local server configuration and account keys when necessary. The server listens on loopback with an automatically allocated port.
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 60 s for the file to contain the listening address.
@@ -128,16 +126,13 @@ cargo run -- --state-dir "$HOME/.local/state/openspacegame/mvp-world"
 ```
 
 Subsequent launches with the same directory restore that world, including its
-ships and exact saved firmware. Add `--enable-llm` to enable NPC directors and
-radio replies through `OPENROUTER_API_KEY`. The shared installation budget is
-capped at $100; [the LLM guide](docs/llm.md) explains admission, billing and
-recovery. Ordinary launches leave paid calls disabled.
+ships and exact saved firmware.
 
 ## What happens at startup
 
 For a new world, the server builds the scenario in [bootstrap.rs](crates/osg-server/src/sim/bootstrap.rs). A saved world restores its authoritative data before accepting clients.
 
-- The player starts on the day side of Helion I Neris, in a circular orbit about 40,000 km above the surface. The client initially places the camera on the illuminated side.
+- The player starts on the day side of Helion I Neris, in a circular orbit 1,000 km outside Neris's slip exclusion radius. The client initially places the camera on the illuminated side.
 - The first ship uses the configured blueprint, or `assets/ships/expedition-patrol.ship`. Additional configured accounts receive their own ships.
 - A hostile patrol starts 1 km away with the same orbital velocity. Neris Anchorage is a nearby destination; navigation installations provide references for interstellar travel.
 - Neris Anchorage provides manufacturing modules, cargo storage and starting industrial supplies. The player can manage its production remotely and dock for physical transfers.
@@ -171,9 +166,8 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 
 | Guide | Topic |
 | --- | --- |
-| [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, intelligence model, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
+| [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, sensor and visual observations, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
 | [docs/industry.md](docs/industry.md) | Factories, material reservations, ship construction, cargo transfers and commissioning |
-| [docs/llm.md](docs/llm.md) | Asynchronous ship and NPC language-model calls, radio context and the shared dollar budget |
 | [docs/persistence.md](docs/persistence.md) | SQLite world snapshots, restoration and durable ship programs |
 | [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, dynamic public inhabitation and shared universe generation |
 | [docs/stations-navigation.md](docs/stations-navigation.md) | Navigation controls, itinerary risk, natural capture, beacons, exotic fuel and docking |
@@ -184,25 +178,28 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 | [docs/weapons.md](docs/weapons.md) | Weapon parts, target marking, firing, interlocks and control requests |
 | [docs/collisions.md](docs/collisions.md) | Continuous collision detection, impacts, shields and destruction |
 | [docs/rendezvous.md](docs/rendezvous.md) | The navigation request contract, the braking guidance law, states and tests |
-| [docs/pursuit-trajectory-design.md](docs/pursuit-trajectory-design.md) | Historical proposal for trajectory presentation, written for the earlier pursuit law |
 | [docs/orbital-navigation.md](docs/orbital-navigation.md) | The two-body orbit overlay, camera framing and published paths |
 | [docs/gaia-catalogue.md](docs/gaia-catalogue.md) | The star catalogue format, import tools and sky rendering |
 | [docs/asset-workflow.md](docs/asset-workflow.md) | Editing universe, star system, catalogue, model and generated assets |
-| [docs/ship-step-profile.md](docs/ship-step-profile.md) | Historical ship-step measurements and the current fleet profiling test |
 
 Directory notes: [assets/README.md](assets/README.md), [assets/models/parts/README.md](assets/models/parts/README.md), [crates/osg-stars/data/README.md](crates/osg-stars/data/README.md), [crates/osg-ui/data/fonts/README.md](crates/osg-ui/data/fonts/README.md).
 
 ## Architecture overview
 
+`osg_ship_api::GAME_VERSION` is the single compatibility version, re-exported by
+`osg-model`. It governs connection handshakes, firmware and saved worlds.
+`osg-model` also defines `TICK_NS`, `TICK_DURATION`, `TICK_SECONDS` and
+`TICK_RATE_HZ` for the shared 100 ms simulation cadence.
+
 - **Processes.** `osg-server` owns the only simulation. Clients connect over TCP, authenticate with an account key, pin the server's public key, and exchange input and state frames ([docs/server-client.md](docs/server-client.md)). `osg-debug` is a client that starts its own server process. A debug account is an ordinary account with extra protocol capabilities; its commands use the same session and transport paths as any other command.
 - **Coordinates.** Authoritative positions are `GalacticPosition` values in integer micrometres ([osg-space](crates/osg-space/src/lib.rs)). Code subtracts positions before converting to `f64`. The client renders with a floating origin.
-- **Schedule.** The server's Bevy `App` runs one fixed 10 Hz step per update ([simulation.rs](crates/osg-server/src/sim/simulation.rs)). `FixedFirst` advances travel. `FixedUpdate` activates star systems, publishes world-service indexes, runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`). `FixedPostUpdate` applies firmware world actions, integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index, runs sensor scans, and then runs intelligence: acquisition, coasting, fusion and snapshot publication.
+- **Schedule.** The server's Bevy `App` runs one fixed 10 Hz step per update ([simulation.rs](crates/osg-server/src/sim/simulation.rs)). `FixedFirst` advances travel. `FixedUpdate` activates star systems, publishes world-service indexes, runs ship controllers and hardware (`PrepareBodies`), then gravity and drag (`Forces`). `FixedPostUpdate` applies firmware world actions, integrates bodies and collisions (`Integrate`), then advances celestial ephemerides (`Celestials`). `FixedLast` rebuilds the spatial index, runs sensor scans, and publishes current observations for each ship.
 - **Ship hardware.** Inventory, hull, thermal state, avionics, device settings and sensor range are ECS components on the ship entity. Each installed part is its own entity with typed device components, and hardware systems step them ([hardware.rs](crates/osg-server/src/sim/hardware.rs)). `osg_ships::ShipState` builds those components when a ship spawns or resets, and snapshots them for presentation and collision damage.
 - **Universe.** Clients and server share a compact catalogue of 1,001,760 system roots, authored definitions, deterministic generation and stable system/body keys. Each process resolves detailed systems independently and evaluates their Keplerian motion at the shared epoch. Clients receive the public inhabited set and gameplay state; celestial definitions are generated locally ([osg-universe](crates/osg-universe)).
 - **Server activity.** Actual objects outside slip activate overlapping systems inside their gravitational influence bounds ([orrery/](crates/osg-server/src/sim/orrery)). Ships, stations, dark installations and wrecks can maintain activity. Inspection and slip intersection queries can resolve dormant definitions without activating ongoing simulation. Gravity queries use the relevant local systems.
 - **Integration.** Plain rigid bodies use symplectic Euler with a split rotational integrator ([rotation.rs](crates/osg-server/src/sim/physics/rotation.rs)). Ships and projectiles are integrated inside the event-driven collision solver ([docs/collisions.md](docs/collisions.md)).
-- **Firmware.** Flight programs run in Wasmtime with a gas budget. They see their own flight state, device readings, fused contacts from their ship's information group, and world services for travel ([docs/ship-abi.md](docs/ship-abi.md)).
-- **Intelligence.** Clients receive fused tracks from information groups they have joined, exact reports shared by group members or IFF broadcasts, private telemetry and presentation for ships they control, and presentation for tracks whose identity the group already knows ([docs/server-client.md](docs/server-client.md#observations-and-intelligence)).
+- **Firmware.** Flight programs run in Wasmtime with a gas budget. They see their own flight state, device readings, current contacts from their ship's sensors, and world services for travel ([docs/ship-abi.md](docs/ship-abi.md)).
+- **Observations.** Clients receive exact current detections from authorized ships and independently filtered optical observations. Enabled IFF accompanies either detection; disabling IFF clears advertised identity immediately ([docs/server-client.md](docs/server-client.md#sensor-and-visual-observations)).
 - **Presentation.** The client buffers state frames, consumes them in a 10 Hz client FixedUpdate, and interpolates hulls, the camera, effects and instruments between frames. Instruments come from records the firmware publishes. Screens come from a separate `ship_display` instance that runs only while a client subscribes ([docs/mfds.md](docs/mfds.md)).
 
 ## Known limitations

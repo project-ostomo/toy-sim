@@ -1,15 +1,16 @@
-use crate::{EntityId, GalacticPosition, GroupId, Pose, TrackId};
+use crate::{EntityId, GalacticPosition, Pose};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ContactRef {
-    pub group: GroupId,
-    pub track: TrackId,
+    pub observer: EntityId,
+    pub contact: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PresentationFrame {
+    pub slip: crate::slip_visual::SlipPresentation,
     pub navigation: std::sync::Arc<NavigationSnapshot>,
     pub ships: Vec<ShipPresentation>,
     pub combat: Vec<CombatEvent>,
@@ -47,7 +48,6 @@ pub struct ShipPresentation {
     pub cargo: Vec<crate::industry::CargoStack>,
     pub cargo_capacity_m3: f64,
     pub cargo_used_m3: f64,
-    pub devices: Vec<DeviceTelemetry>,
     pub computer: ComputerStatus,
     pub instruments: Option<Instruments>,
     pub screens: Vec<ScreenDefinition>,
@@ -82,7 +82,8 @@ pub struct SlipChargeTelemetry {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SlipTransitTelemetry {
     pub departed_ns: u64,
-    pub speed_ly_s: f64,
+    pub destination: GalacticPosition,
+    pub failure_ppm: f64,
     pub direction: [f64; 3],
 }
 
@@ -118,62 +119,6 @@ pub struct ResourceAmount {
     pub name: String,
     pub amount_kg: f64,
     pub capacity_kg: f64,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct DeviceTelemetry {
-    pub part: u64,
-    pub name: String,
-    pub enabled: bool,
-    pub power_requested_w: f64,
-    pub power_delivered_w: f64,
-    pub reading: DeviceReading,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum DeviceReading {
-    Rcs {
-        thrust_n: [f64; 3],
-    },
-    Accelerometer {
-        acceleration_m_s2: Option<[f64; 3]>,
-    },
-    Engine {
-        throttle: f64,
-        thrust_n: f64,
-    },
-    Torquer {
-        torque_nm: [f64; 3],
-    },
-    Generator {
-        output_w: f64,
-    },
-    Battery {
-        energy_j: u64,
-        capacity_j: u64,
-    },
-    Shield {
-        temperature_k: f64,
-        area_m2: f64,
-        reserve_kg: f64,
-        feed_kg_s: f64,
-        ablation_kg_s: f64,
-    },
-    Weapon {
-        yaw_rad: f64,
-        pitch_rad: f64,
-        loaded: bool,
-        firing: bool,
-        progress: f64,
-    },
-    Sensor {
-        range_m: f64,
-    },
-    Storage {
-        contents: Vec<ResourceAmount>,
-    },
-    Avionics,
-    Structure,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -321,15 +266,8 @@ pub struct CombatEvent {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum CombatEventKind {
-    Slip {
-        position: GalacticPosition,
-        velocity_m_s: [f64; 3],
-        direction: [f64; 3],
-        radius_m: f64,
-        arriving: bool,
-    },
     Beam {
-        source: ContactRef,
+        source: crate::Id,
         start: GalacticPosition,
         end: GalacticPosition,
         velocity_m_s: [f64; 3],
@@ -337,27 +275,27 @@ pub enum CombatEventKind {
     },
     Projectile {
         id: u64,
-        source: Option<ContactRef>,
+        source: Option<crate::Id>,
         start: GalacticPosition,
         end: GalacticPosition,
         end_time_ns: u64,
         radius_m: f64,
     },
     Fired {
-        source: ContactRef,
+        source: crate::Id,
         position: GalacticPosition,
         energy_j: f64,
     },
     Impact {
         normal: [f64; 3],
-        target: Option<ContactRef>,
+        target: Option<crate::Id>,
         position: GalacticPosition,
         velocity_m_s: [f64; 3],
         energy_j: f64,
         shield: bool,
     },
     Destroyed {
-        target: ContactRef,
+        target: crate::Id,
         pose: Pose,
         appearance: Option<[u8; 32]>,
         energy_j: f64,

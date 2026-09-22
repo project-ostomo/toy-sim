@@ -19,9 +19,6 @@ pub enum UtilityDef {
     Command {
         power_w: f64,
     },
-    MissileLauncher {
-        spec: crate::missiles::MissileLauncherDef,
-    },
     Sensor {
         range_m: f64,
         power_w: f64,
@@ -83,7 +80,6 @@ impl UtilityDef {
                     && max_radius_m.is_finite()
                     && max_radius_m > 0.;
             }
-            Self::MissileLauncher { spec } => return spec.valid(),
             Self::SlipDrive { power_w }
             | Self::Command { power_w }
             | Self::DirectoryTransmitter { power_w }

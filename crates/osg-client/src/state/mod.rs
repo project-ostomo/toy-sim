@@ -1,3 +1,7 @@
+#[derive(bevy::prelude::Resource, Default)]
+#[cfg(feature = "ui")]
+pub(crate) struct SlipEffects(pub osg_model::slip_visual::SlipPresentation);
+
 mod calendar;
 mod chat;
 pub(super) use calendar::CalendarClock;
@@ -22,7 +26,7 @@ use transport::{receive, send};
 pub(super) struct WorldMember;
 
 #[derive(Component)]
-pub(super) struct Contact(pub Track, pub ContactRef);
+pub(super) struct Contact(pub SensorObservation, pub ContactRef);
 
 #[derive(Component)]
 pub(super) struct Optical(pub optical::OpticalObservation);
@@ -93,7 +97,6 @@ pub(super) struct SessionInfo {
     pub tick: u64,
     pub sequence: u64,
     pub capabilities: Vec<DebugCapability>,
-    pub groups: Vec<GroupId>,
     pub diagnostics: Option<Diagnostics>,
     pub universe_descriptor: Option<UniverseDescriptor>,
     pub inhabited: std::sync::Arc<InhabitedDirectory>,
@@ -199,7 +202,7 @@ struct BufferedPlayback(Playback);
 
 #[derive(Resource, Default)]
 struct Replication {
-    contacts: BTreeMap<(Id, Id), Entity>,
+    contacts: BTreeMap<(Id, u64), Entity>,
     ships: BTreeMap<Id, Entity>,
     optical: BTreeMap<(u64, Id), Entity>,
     beacons: BTreeMap<Id, Entity>,
@@ -215,7 +218,7 @@ pub(super) enum PresentationSet {
 }
 
 pub(super) fn install(app: &mut App, endpoint: Endpoint, local: bool) {
-    app.insert_resource(Time::<Fixed>::from_hz(10.))
+    app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
         .insert_resource(Transport {
             endpoint,
             input_sequence: 0,
@@ -225,6 +228,8 @@ pub(super) fn install(app: &mut App, endpoint: Endpoint, local: bool) {
         .add_systems(Update, diagnostics::update)
         .init_resource::<Replication>()
         .init_resource::<RenderTime>()
+        .init_resource::<SlipEffects>()
+        .add_observer(reset_resource::<SlipEffects>)
         .init_resource::<CalendarClock>()
         .init_resource::<SessionInfo>()
         .init_resource::<Outgoing>()

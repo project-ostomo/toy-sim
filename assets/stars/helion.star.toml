@@ -55,16 +55,22 @@ mie_asymmetry = 0.76
 ground_albedo = [0.38, 0.31, 0.24]
 
 
+# Five modest rocky satellites, density 3000 kg/m^3, on circular prograde
+# orbits in Neris's orbital plane. Distances are measured from Neris's center.
+# Orbits lie outside the fluid Roche limit and inside 0.35 of the Hill radius.
+# Neighboring orbits are separated by over ten mutual Hill radii.
+# Rotation periods match each moon's Keplerian orbital period.
 [[bodies]]
 key = "body/3"
 name = "Helion I a Ione"
 class = "planet"
 parent = "Helion I Neris"
-mass = 7.634070148223196e+21
-radius = "900 km"
-semi_major = "12000000 m"
+mass = 2.7143360527015813e+18
+radius = "60 km"
+semi_major = "50000 km"
+inclination = 1.5707963267948966
 mean_anomaly = 0.55
-rotation_period = "3 d"
+rotation_period = "111266.580874 s"
 surface_color = [0.65, 0.54, 0.4]
 # No atmosphere section: this moon is airless.
 
@@ -75,7 +81,7 @@ equilibrium_temperature_k = 264
 temperature_k = 264
 bond_albedo = 0.19
 ocean_fraction = 0
-relief_m = 9000
+relief_m = 3000
 cloud_fraction = 0
 cloud_altitude_m = 0
 cloud_rotation_period_s = 0
@@ -87,11 +93,12 @@ key = "body/4"
 name = "Helion I b Cinder"
 class = "planet"
 parent = "Helion I Neris"
-mass = 1.3938199406426714e+22
-radius = "1100 km"
-semi_major = "16000000 m"
+mass = 2.1714688421612650e+19
+radius = "120 km"
+semi_major = "90000 km"
+inclination = 1.5707963267948966
 mean_anomaly = 3.3
-rotation_period = "3 d"
+rotation_period = "268703.1821 s"
 surface_color = [0.35, 0.26, 0.23]
 # No atmosphere section: this moon is airless.
 
@@ -114,17 +121,18 @@ key = "body/5"
 name = "Helion I c Vela"
 class = "planet"
 parent = "Helion I Neris"
-mass = 2.8735100804834636e+22
-radius = "1400 km"
-semi_major = "20000000 m"
+mass = 3.3929200658769773e+20
+radius = "300 km"
+semi_major = "160000 km"
+inclination = 1.5707963267948966
 mean_anomaly = -0.5
-rotation_period = "3 d"
+rotation_period = "636909.127441 s"
 surface_color = [0.56, 0.62, 0.68]
 # No atmosphere section: this moon is airless.
 
 [bodies.planet]
 seed = [254, 82, 48, 26, 219, 24, 0, 107, 244, 26, 135, 33, 246, 28, 94, 166, 236, 157, 195, 35, 159, 13, 206, 88, 57, 157, 154, 176, 174, 36, 251, 197]
-kind = "ice"
+kind = "rocky"
 equilibrium_temperature_k = 234
 temperature_k = 234
 bond_albedo = 0.5
@@ -141,17 +149,18 @@ key = "body/6"
 name = "Helion I d Rime"
 class = "planet"
 parent = "Helion I Neris"
-mass = 1.8095573684677207e+22
-radius = "1200 km"
-semi_major = "24000000 m"
+mass = 7.3287073422942683e+19
+radius = "180 km"
+semi_major = "280000 km"
+inclination = 1.5707963267948966
 mean_anomaly = 3.5
-rotation_period = "3 d"
+rotation_period = "1474498.100049 s"
 surface_color = [0.7, 0.74, 0.78]
 # No atmosphere section: this moon is airless.
 
 [bodies.planet]
 seed = [195, 245, 246, 60, 249, 17, 120, 159, 172, 158, 86, 177, 176, 105, 102, 138, 102, 212, 14, 224, 251, 40, 136, 175, 235, 191, 145, 122, 45, 109, 192, 34]
-kind = "ice"
+kind = "rocky"
 equilibrium_temperature_k = 212
 temperature_k = 212
 bond_albedo = 0.66
@@ -168,11 +177,12 @@ key = "body/7"
 name = "Helion I e Orin"
 class = "planet"
 parent = "Helion I Neris"
-mass = 3.534291735288517e+22
-radius = "1500 km"
-semi_major = "25000000 m"
+mass = 1.1451105222334794e+21
+radius = "450 km"
+semi_major = "480000 km"
+inclination = 1.5707963267948966
 mean_anomaly = 0.40
-rotation_period = "3 d"
+rotation_period = "3309253.669902 s"
 surface_color = [0.55, 0.43, 0.34]
 # No atmosphere section: this moon is airless.
 

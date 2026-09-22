@@ -3,7 +3,7 @@ use crate::sim::{identity::SpatialInstance, spatial::SpatialIndex, vessel::ShipD
 use osg_model::optical::{
     MAX_OPTICAL_OBSERVATIONS, MIN_OPTICAL_FLUX_W_M2, OpticalObservation, flux_w_m2,
 };
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BinaryHeap, HashMap};
 
 const IDENTITY_GRACE_TICKS: u64 = 100;
 const MAX_OPTICAL_BYTES: usize = 4 * 1024 * 1024;
@@ -66,6 +66,7 @@ impl PartialEq for OpticalCandidate {
 impl Eq for OpticalCandidate {}
 
 struct OpticalIdentity {
+    physical: Id,
     id: Id,
     last_seen: u64,
 }
@@ -77,61 +78,20 @@ pub(super) struct OpticalSession {
     previous_views: Vec<(u64, Option<Id>, Option<Id>)>,
 }
 
-struct Associations {
-    identified: HashSet<Id>,
-    groups: HashMap<GroupId, Entity>,
-}
-
-impl Associations {
-    fn new(world: &World, tracks: &BTreeMap<GroupId, BTreeMap<TrackId, Track>>) -> Self {
-        Self {
-            identified: tracks
-                .values()
-                .flat_map(|group| group.values().filter_map(|track| track.entity))
-                .collect(),
-            groups: tracks
-                .keys()
-                .filter_map(|group| {
-                    identity::lookup(world, *group)
-                        .ok()
-                        .map(|entity| (*group, entity))
-                })
-                .collect(),
-        }
-    }
-
-    fn contact(
-        &self,
-        world: &World,
-        group: GroupId,
-        identity: Id,
-        tracks: &BTreeMap<GroupId, BTreeMap<TrackId, Track>>,
-    ) -> Option<ContactRef> {
-        let group_entity = self.groups.get(&group)?;
-        let association = world
-            .get_resource::<super::super::intelligence::AssociationIndex>()?
-            .0
-            .get(&(*group_entity, identity))?;
-        let estimate = &world
-            .get::<super::super::intelligence::TrackEstimate>(*association)?
-            .0;
-        tracks
-            .get(&group)?
-            .contains_key(&estimate.id)
-            .then_some(ContactRef {
-                group,
-                track: estimate.id,
-            })
-    }
-}
-
 impl OpticalSession {
+    pub(super) fn references(&self) -> BTreeMap<Id, Id> {
+        self.identities
+            .values()
+            .map(|value| (value.physical, value.id))
+            .collect()
+    }
+
     pub(super) fn observe(
         &mut self,
         world: &World,
         account: AccountId,
         views: &[ViewState],
-        tracks: &BTreeMap<GroupId, BTreeMap<TrackId, Track>>,
+        contacts: &BTreeMap<EntityId, BTreeMap<u64, SensorObservation>>,
     ) -> (Vec<OpticalObservation>, BTreeSet<Id>) {
         let tick = world.resource::<SimulationCounters>().ticks;
         let current_views: Vec<_> = views
@@ -149,7 +109,6 @@ impl OpticalSession {
             self.previous_entities.clear();
             self.previous_views = current_views;
         }
-        let associations = Associations::new(world, tracks);
         let mut visual_states = HashMap::<Entity, (Pose, ShipVisual, usize)>::new();
         let mut observations = Vec::new();
         let mut visible_entities = BTreeSet::new();
@@ -203,8 +162,12 @@ impl OpticalSession {
                     .identities
                     .get(&entity)
                     .map_or_else(Id::new, |identity| identity.id);
+                let iff = world
+                    .get::<super::super::identity::Transponder>(entity)
+                    .filter(|value| value.0.enabled)
+                    .map(|value| value.0.clone());
                 let known_entity = (entity == observer
-                    || associations.identified.contains(&identity)
+                    || iff.is_some()
                     || super::super::ownership::can_access(
                         world,
                         account,
@@ -215,9 +178,21 @@ impl OpticalSession {
                 let observation = OpticalObservation {
                     view: view.id,
                     id,
-                    spatial_instance: identity::track_spatial_instance(id, instance.0),
+                    spatial_instance: identity::observation_spatial_instance(id, instance.0),
                     known_entity,
-                    contact: associations.contact(world, view.group, identity, tracks),
+                    iff,
+                    contact: view.focused_ship.and_then(|observer_id| {
+                        let handle = world
+                            .get::<super::super::sensors::Observations>(observer)?
+                            .0
+                            .targets
+                            .get(&identity)?;
+                        contacts.get(&observer_id)?.get(handle)?;
+                        Some(ContactRef {
+                            observer: observer_id,
+                            contact: *handle,
+                        })
+                    }),
                     pose: pose.clone(),
                     radius_m,
                     luminosity_w,
@@ -230,6 +205,7 @@ impl OpticalSession {
                     self.identities.insert(
                         entity,
                         OpticalIdentity {
+                            physical: identity,
                             id,
                             last_seen: tick,
                         },
@@ -301,10 +277,8 @@ impl OpticalSession {
                 }
             }
         }
-        self.identities.retain(|entity, identity| {
-            tick.saturating_sub(identity.last_seen) <= IDENTITY_GRACE_TICKS
-                && world.get_entity(*entity).is_ok()
-        });
+        self.identities
+            .retain(|_, identity| tick.saturating_sub(identity.last_seen) <= IDENTITY_GRACE_TICKS);
         observations.sort_unstable_by_key(|object| (object.view, object.id));
         (observations, visible_entities)
     }
@@ -378,29 +352,8 @@ mod tests {
                     revision: 1,
                     focused_ship: Some(own_id),
                     origin: GalacticPosition::ZERO,
-                    group: PUBLIC_GROUP,
-                    tracks: Vec::new(),
-                    completion: Completion::Complete,
                 },
             }
-        }
-
-        fn tracks(&self) -> BTreeMap<GroupId, BTreeMap<TrackId, Track>> {
-            let track = Track {
-                spatial_instance: Id::new(),
-                id: Id::new(),
-                entity: Some(self.target_id),
-                pose: ship_pose(self.app.world(), self.target).unwrap(),
-                position_sigma_m: 0.,
-                velocity_sigma_m_s: 0.,
-                observed_tick: 0,
-                estimate_tick: 0,
-                tags: Default::default(),
-                provenance: Provenance::Transponder,
-                radius_m: Some(10.),
-                appearance: Some([1; 32]),
-            };
-            BTreeMap::from([(PUBLIC_GROUP, BTreeMap::from([(track.id, track)]))])
         }
     }
 
@@ -409,6 +362,13 @@ mod tests {
         let mut fixture = Fixture::new();
         let mut optical = OpticalSession::default();
         let views = [fixture.view.clone()];
+        fixture
+            .app
+            .world_mut()
+            .get_mut::<Transponder>(fixture.target)
+            .unwrap()
+            .0
+            .enabled = false;
         let world = fixture.app.world();
         let (observed, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert_eq!(world.get::<SensorRange>(fixture.observer).unwrap().0, 0.);
@@ -425,13 +385,32 @@ mod tests {
         assert_eq!(unknown.contact, None);
         assert!(unknown.appearance.is_some());
         let opaque_id = unknown.id;
-        let tracks = fixture.tracks();
-        let (observed, _) = optical.observe(world, fixture.account, &views, &tracks);
+        let world = fixture.app.world_mut();
+        world
+            .get_mut::<Transponder>(fixture.target)
+            .unwrap()
+            .0
+            .enabled = true;
+        let (observed, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         let identified = observed
             .iter()
             .find(|object| object.known_entity == Some(fixture.target_id))
             .unwrap();
         assert_eq!(identified.id, opaque_id);
+        assert!(identified.iff.is_some());
+        assert!(identified.contact.is_none());
+        world
+            .get_mut::<Transponder>(fixture.target)
+            .unwrap()
+            .0
+            .enabled = false;
+        let (unidentified, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let anonymous = unidentified
+            .iter()
+            .find(|object| object.id == opaque_id)
+            .unwrap();
+        assert!(anonymous.iff.is_none());
+        assert!(anonymous.known_entity.is_none());
 
         let world = fixture.app.world_mut();
         let target_index = world
@@ -441,14 +420,13 @@ mod tests {
         world
             .resource_mut::<SpatialIndex>()
             .set_luminosity(target_index, 0.);
-        let (dark, _) = optical.observe(world, fixture.account, &views, &tracks);
+        let (dark, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert_eq!(dark.len(), 1);
-        assert_eq!(tracks[&PUBLIC_GROUP].len(), 1);
         world.resource_mut::<SimulationCounters>().ticks += 5;
         world
             .resource_mut::<SpatialIndex>()
             .set_luminosity(target_index, 100.);
-        let (lit_again, _) = optical.observe(world, fixture.account, &views, &tracks);
+        let (lit_again, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert!(lit_again.iter().any(|object| object.id == opaque_id));
 
         let blocker = world.spawn_empty().id();
@@ -460,7 +438,7 @@ mod tests {
             optical_occludes: true,
             optical_luminosity_w: 0.,
         });
-        let (occluded, _) = optical.observe(world, fixture.account, &views, &tracks);
+        let (occluded, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert_eq!(occluded.len(), 1);
         assert_eq!(occluded[0].known_entity, Some(fixture.own_id));
     }
@@ -571,6 +549,7 @@ mod tests {
                 view: 128,
                 id: Id((index as u128).to_le_bytes()),
                 spatial_instance: Id::new(),
+                iff: None,
                 known_entity: (index % 2 == 0).then(Id::new),
                 contact: None,
                 pose: Pose::default(),
@@ -665,6 +644,7 @@ mod tests {
             view: 0,
             id: Id::new(),
             spatial_instance: Id::new(),
+            iff: None,
             known_entity: Some(focus),
             contact: None,
             pose: Pose::default(),

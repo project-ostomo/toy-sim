@@ -421,22 +421,6 @@ pub fn recipes(cat: &Catalogue) -> Result<Vec<Recipe>> {
         0,
     );
 
-    let missile = crate::missiles::blueprint().compile(cat)?;
-    let mut missile_inputs = construction_requirements(&missile, cat)?.inputs;
-    missile_inputs.push(resource(
-        crate::missiles::PROPELLANT,
-        crate::missiles::FUEL_KG,
-    ));
-    add(
-        "interceptor_missile",
-        "Assemble and charge Kite interceptor",
-        Fabricator,
-        missile_inputs,
-        vec![resource(crate::missiles::AMMUNITION, 1)],
-        100_000_000,
-        crate::missiles::BATTERY_J,
-    );
-
     recipes.extend(
         cat.parts
             .iter()

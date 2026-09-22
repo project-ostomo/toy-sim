@@ -2,8 +2,7 @@
 use core::mem::{align_of, size_of};
 #[cfg(target_endian = "big")]
 compile_error!("ship ABI requires little endian");
-pub const IMPORT_MODULE: &str = "ship_v32";
-pub const VERSION: u32 = 34;
+pub const IMPORT_MODULE: &str = "ship";
 pub const ERR_BUFFER: i32 = -2;
 pub const ERR_ARGUMENT: i32 = -3;
 pub const ERR_UNAVAILABLE: i32 = -4;
@@ -785,6 +784,25 @@ pub struct Contact {
     pub velocity_m_s: [f64; 3],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug)]
+pub struct ContactIff {
+    pub present: u64,
+    pub entity: [u8; 16],
+    pub owner: [u8; 16],
+    pub faction: [u8; 16],
+    pub faction_present: u64,
+    pub labels_count: u64,
+    pub labels: [Text64; 16],
+}
+
+impl private::Sealed for ContactIff {}
+impl Record for ContactIff {}
+const _: () = assert!(size_of::<ContactIff>() == 1224 && align_of::<ContactIff>() == 8);
+const _: () = assert!(core::mem::offset_of!(ContactIff, entity) == 8);
+const _: () = assert!(core::mem::offset_of!(ContactIff, faction_present) == 56);
+const _: () = assert!(core::mem::offset_of!(ContactIff, labels) == 72);
+
 impl private::Sealed for Contact {}
 
 impl Record for Contact {}
@@ -1200,56 +1218,10 @@ const _: () = assert!(core::mem::offset_of!(ScreenEvent, modifiers) == 32);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, x) == 40);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, y) == 48);
 const _: () = assert!(core::mem::offset_of!(ScreenEvent, text) == 56);
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct MissileObservation {
-    pub handle: u64,
-    pub target_visible: u64,
-    pub target_offset_m: [f64; 3],
-    pub target_relative_velocity_m_s: [f64; 3],
-    pub rotation: [f64; 4],
-    pub angular_velocity_rad_s: [f64; 3],
-    pub velocity_m_s: [f64; 3],
-    pub maximum_acceleration_m_s2: f64,
-    pub turn_rate_rad_s: f64,
-    pub fuel_units: u64,
-    pub dt_s: f64,
-    pub time_s: f64,
-    pub target_uncertainty_m: f64,
-}
-
-impl private::Sealed for MissileObservation {}
-impl Record for MissileObservation {}
-const _: () =
-    assert!(size_of::<MissileObservation>() == 192 && align_of::<MissileObservation>() == 8);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, target_offset_m) == 16);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, rotation) == 64);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, angular_velocity_rad_s) == 96);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, maximum_acceleration_m_s2) == 144);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, fuel_units) == 160);
-const _: () = assert!(core::mem::offset_of!(MissileObservation, target_uncertainty_m) == 184);
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct MissileControl {
-    pub direction: [f64; 3],
-    pub throttle: f64,
-}
-
-impl private::Sealed for MissileControl {}
-impl Record for MissileControl {}
-const _: () = assert!(size_of::<MissileControl>() == 32 && align_of::<MissileControl>() == 8);
-const _: () = assert!(core::mem::offset_of!(MissileControl, throttle) == 24);
-
 pub const IMPORTS: &[&str] = &[
-    "llm_submit",
-    "llm_poll",
-    "llm_cancel",
     "chat_send",
     "serial_write",
     "chat_read",
-    "missile_read",
-    "missile_control",
     "persistent_read",
     "persistent_write",
     "orrery_read",
@@ -1268,8 +1240,6 @@ pub const IMPORTS: &[&str] = &[
     "travel_reserve_bay",
     "travel_dock",
     "travel_undock",
-    "intel_tracks",
-    "intel_continue",
     "beacons_read",
     "beacon_read",
     "tick_read",
@@ -1287,6 +1257,7 @@ pub const IMPORTS: &[&str] = &[
     "resource_info",
     "resource_read",
     "sensor_scan",
+    "contact_iff",
     "contact_label",
     "request_info",
     "request_read",
@@ -1311,16 +1282,8 @@ pub const IMPORTS: &[&str] = &[
 ];
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
-    #[link(wasm_import_module = "ship_v32")]
+    #[link(wasm_import_module = "ship")]
     unsafe extern "C" {
-        pub fn llm_submit(id: u64, input: *const u8, bytes: u32, max_tokens: u32) -> i32;
-        pub fn llm_poll(
-            id: u64,
-            out: *mut u8,
-            capacity: u32,
-            status: *mut crate::services::LlmPoll,
-        ) -> i32;
-        pub fn llm_cancel(id: u64) -> i32;
         pub fn serial_write(input: *const u8, bytes: u32) -> i32;
         pub fn chat_send(id: u64, input: *const u8, bytes: u32) -> i32;
         pub fn chat_read(
@@ -1329,8 +1292,6 @@ pub mod raw {
             capacity: u32,
             page: *mut crate::services::ChatPage,
         ) -> i32;
-        pub fn missile_read(output: *mut u8, bytes: u32) -> i32;
-        pub fn missile_control(input: *const u8, bytes: u32) -> i32;
         pub fn persistent_read(output: *mut u8, capacity: u32) -> i32;
         pub fn persistent_write(input: *const u8, length: u32) -> i32;
         pub fn tick_read(out: *mut u8, bytes: u32) -> i32;
@@ -1353,6 +1314,7 @@ pub mod raw {
             contacts: *mut u8,
             contacts_bytes: u32,
         ) -> i32;
+        pub fn contact_iff(contact: u64, out: *mut super::ContactIff, bytes: u32) -> i32;
         pub fn contact_label(contact: u64, out: *mut u8, bytes: u32) -> i32;
         pub fn request_info(index: u32, out: *mut u8, bytes: u32) -> i32;
         pub fn request_read(index: u32, expected_kind: u64, out: *mut u8, bytes: u32) -> i32;

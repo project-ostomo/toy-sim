@@ -6,7 +6,6 @@ use std::{collections::BTreeSet, sync::OnceLock};
 
 pub const LIGHT_YEAR_M: f64 = 9.460_730_472_580_8e15;
 pub const INITIAL_SETTLEMENTS: usize = 3000;
-pub const GENERATION_VERSION: u32 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Alignment {
@@ -26,7 +25,6 @@ pub struct SettledSystem {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CivilizationMap {
-    pub generation_version: u32,
     pub systems: Vec<SettledSystem>,
 }
 
@@ -167,10 +165,7 @@ fn generate() -> CivilizationMap {
         systems.push(settlement(name, star.id.clone(), position));
     }
     assert_eq!(systems.len(), INITIAL_SETTLEMENTS);
-    CivilizationMap {
-        generation_version: GENERATION_VERSION,
-        systems,
-    }
+    CivilizationMap { systems }
 }
 
 fn settlement(name: String, catalogue_id: String, position: GalacticPosition) -> SettledSystem {

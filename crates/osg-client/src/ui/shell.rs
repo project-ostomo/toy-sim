@@ -319,27 +319,27 @@ fn draw(
         });
     if let Some((view, systems, _, _)) = view {
         for (contact, pose) in &contacts {
-            let track = &contact.0;
-            if contact.1.group != view.0.group || !view.0.tracks.contains(&track.id) {
+            let observation = &contact.0;
+            if Some(contact.1.observer) != view.0.focused_ship {
                 continue;
             }
-            let own = track.entity.is_some_and(|id| Some(id) == selection.ship);
+            let own = observation
+                .entity
+                .is_some_and(|id| Some(id) == selection.ship);
             if own
-                || track
+                || observation
                     .entity
                     .is_some_and(|id| beacons.iter().any(|(b, _)| b.0.id == id))
             {
                 continue;
             }
-            let name = track
-                .tags
-                .iter()
-                .find_map(|tag| match tag {
-                    Tag::Advertised(name) => Some(name.clone()),
-                    _ => None,
-                })
-                .unwrap_or_else(|| format!("Contact {}", short_id(track.id)));
-            let kind = super::contacts::kind(&track.tags).to_owned();
+            let name = observation
+                .iff
+                .as_ref()
+                .and_then(|iff| iff.labels.first())
+                .cloned()
+                .unwrap_or_else(|| format!("Contact {:08x}", observation.id));
+            let kind = "Ship".to_owned();
             rows.push(Row {
                 slip_order: None,
                 celestial: None,
@@ -350,22 +350,18 @@ fn draw(
                 offset: pose.0.position.relative_to(origin),
                 distance: pose.0.position.relative_to(origin).length(),
                 speed: (glam::DVec3::from_array(pose.0.velocity) - velocity).length(),
-                radius: track.radius_m.unwrap_or(0.),
+                radius: observation.radius_m,
                 own,
                 can_look: pose.0.position.relative_to(origin).length() <= scene::LOOK_AT_RANGE_M
                     && optical.iter().any(|object| {
                         object.0.view == view.0.id && object.0.contact == Some(contact.1)
                     }),
-                affiliation: super::standing::advertised_principal(&track.tags),
+                affiliation: super::standing::advertised_principal(observation.iff.as_ref()),
                 standing: session
                     .society
                     .directory
-                    .track_standing(session.society.account, &track.tags),
-                detail: format!(
-                    "{:?} · position uncertainty {}",
-                    track.provenance,
-                    distance(track.position_sigma_m)
-                ),
+                    .contact_standing(session.society.account, observation.iff.as_ref()),
+                detail: "Sensor contact".into(),
             });
         }
         for (body, pose, system) in &bodies {
@@ -396,19 +392,17 @@ fn draw(
                     if radius <= body.0.radius_m + ship.radius_m {
                         return None;
                     }
-                    let speed_ly_s = travel::slip::fastest_speed_ly_s(
-                        radius,
-                        range,
-                        ship.travel.preferences.max_loss_ppm,
-                        false,
-                    )?;
+                    if travel::slip::capture_loss_ppm(radius, range, false)
+                        > ship.travel.preferences.max_loss_ppm
+                    {
+                        return None;
+                    }
                     Some(travel::Order::Slip {
                         destination: travel::Destination::Relative {
                             reference: travel::Reference::Celestial(body.0.reference),
                             offset: GalacticPosition::ZERO,
                             axes: travel::Axes::Galactic,
                         },
-                        speed_ly_s,
                         navigation_beacon: None,
                     })
                 }),
@@ -447,9 +441,8 @@ fn draw(
             contact: view.and_then(|(view, ..)| {
                 contacts.iter().find_map(|(contact, _)| {
                     (contact.0.entity == Some(beacon.id)
-                        && contact.1.group == view.0.group
-                        && view.0.tracks.contains(&contact.0.id))
-                    .then_some(contact.1)
+                        && Some(contact.1.observer) == view.0.focused_ship)
+                        .then_some(contact.1)
                 })
             }),
             name: beacon.name.clone(),
@@ -471,7 +464,9 @@ fn draw(
             affiliation: contacts
                 .iter()
                 .find(|(contact, _)| contact.0.entity == Some(beacon.id))
-                .and_then(|(contact, _)| super::standing::advertised_principal(&contact.0.tags)),
+                .and_then(|(contact, _)| {
+                    super::standing::advertised_principal(contact.0.iff.as_ref())
+                }),
             standing: contacts
                 .iter()
                 .find(|(contact, _)| contact.0.entity == Some(beacon.id))
@@ -479,7 +474,7 @@ fn draw(
                     session
                         .society
                         .directory
-                        .track_standing(session.society.account, &contact.0.tags)
+                        .contact_standing(session.society.account, contact.0.iff.as_ref())
                 }),
             detail: "Subspace beacon".into(),
             own: false,

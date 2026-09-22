@@ -5,7 +5,6 @@ use crate::sim::{
     travel::{PresenceState, Travel},
 };
 use bevy::math::DVec3;
-use std::collections::BTreeSet;
 
 fn fixture() -> (App, Id, Id, Entity, Id) {
     let owner = Id::new();
@@ -135,75 +134,55 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
 fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_state() {
     let (mut app, _, officer, ship, id) = fixture();
     let world = app.world_mut();
-    let group_entity = world.get::<Membership>(ship).unwrap().0;
-    let group_id = world.get::<Group>(group_entity).unwrap().id;
-    let other_group_entity = world
-        .query::<(Entity, &Control, &Membership)>()
-        .iter(world)
-        .find(|(_, control, _)| control.account == officer)
-        .unwrap()
-        .2
-        .0;
-    let other_group_id = world.get::<Group>(other_group_entity).unwrap().id;
-    let observed = Id::new();
-    let hidden = Id::new();
-    for (group, track) in [(group_entity, observed), (other_group_entity, hidden)] {
-        Arc::make_mut(&mut world.get_mut::<Group>(group).unwrap().snapshot).put(Track {
-            spatial_instance: Id::new(),
-            id: track,
-            entity: None,
-            pose: Pose::default(),
-            position_sigma_m: 100.,
-            velocity_sigma_m_s: 10.,
-            observed_tick: 0,
-            estimate_tick: 0,
-            tags: BTreeSet::from([Tag::Kind("ship".into())]),
-            provenance: Provenance::Sensor,
-            radius_m: Some(10.),
-            appearance: None,
-        });
-    }
-    let reader = source(world, officer, id).unwrap();
-    assert!(
-        reader
-            .query(
-                ProgramQuery::Contact(ContactRef {
-                    group: other_group_id,
-                    track: hidden
-                }),
-                true,
-                osg_model::wasm_world::ReplyCapacity::UNLIMITED
-            )
-            .is_err()
-    );
-    let ProgramReply::Tracks(page) = reader
-        .query(
-            ProgramQuery::Tracks(TrackQuery {
-                track: Some(hidden),
-                limit: 1,
-                work: 100_000,
-                ..Default::default()
-            }),
-            true,
-            osg_model::wasm_world::ReplyCapacity::UNLIMITED,
-        )
-        .unwrap()
-    else {
-        panic!("expected tracks")
+    let observed = 42;
+    let hidden = 43;
+    let observation = SensorObservation {
+        spatial_instance: Id::new(),
+        id: observed,
+        entity: None,
+        pose: Pose::default(),
+        radius_m: 10.,
+        iff: None,
     };
-    assert!(page.tracks.is_empty());
+    let mut snapshot = sim::sensors::ObservationSnapshot::default();
+    snapshot.contacts.insert(observed, observation);
+    world
+        .entity_mut(ship)
+        .insert(sim::sensors::Observations(Arc::new(snapshot)));
+    let reader = source(world, officer, id).unwrap();
+    let reference = ContactRef {
+        observer: id,
+        contact: observed,
+    };
+    for target in [
+        ContactRef {
+            observer: Id::new(),
+            ..reference
+        },
+        ContactRef {
+            contact: hidden,
+            ..reference
+        },
+    ] {
+        assert!(
+            reader
+                .query(
+                    ProgramQuery::Contact(target),
+                    false,
+                    osg_model::wasm_world::ReplyCapacity::UNLIMITED
+                )
+                .is_err()
+        );
+    }
     let ProgramReply::Contact { handle, .. } = reader
         .query(
-            ProgramQuery::Contact(ContactRef {
-                group: group_id,
-                track: observed,
-            }),
-            true,
+            ProgramQuery::Contact(reference),
+            false,
             osg_model::wasm_world::ReplyCapacity::UNLIMITED,
         )
         .unwrap()
     else {
-        panic!("expected observed contact")
+        panic!("expected contact");
     };
     let revision = world.get::<Control>(ship).unwrap().revision;
     assert!(
@@ -213,9 +192,11 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
             id,
             revision,
             ShipCommand::MarkTarget {
-                group: group_id,
-                track: hidden,
-                maximum_flight_time_s: 1.
+                target: ContactRef {
+                    contact: hidden,
+                    ..reference
+                },
+                maximum_flight_time_s: 1.,
             }
         )
         .is_err()
@@ -226,14 +207,13 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
         id,
         revision,
         ShipCommand::MarkTarget {
-            group: group_id,
-            track: observed,
+            target: reference,
             maximum_flight_time_s: 1.,
         },
     )
     .unwrap();
     assert!(
-        matches!(world.get::<ShipSoftware>(ship).unwrap().inbox.last().unwrap().command, Command::MarkTarget {contact, ..} if contact == handle)
+        matches!(world.get::<ShipSoftware>(ship).unwrap().inbox.last().unwrap().command, Command::MarkTarget { contact, .. } if contact == handle)
     );
 
     let host = world
@@ -260,6 +240,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
         state,
         pose,
         slip_ready,
+        ..
     } = reader
         .query(
             ProgramQuery::Travel,
@@ -298,7 +279,6 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
         .get_mut::<sim::travel::SlipDrive>(ship)
         .unwrap()
         .preparation = Some(sim::travel::Preparation {
-        speed_ly_s: 0.01,
         navigation_beacon: None,
         destination: GalacticPosition::ZERO,
         started: 7,

@@ -427,7 +427,6 @@ impl Equipment {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Catalogue {
-    pub revision: u32,
     pub resources: Vec<ResourceDef>,
     pub parts: Vec<PartDef>,
 }
@@ -544,24 +543,6 @@ impl Catalogue {
                 weapon
                     .spec(self)
                     .ok_or_else(|| anyhow::anyhow!("unknown ammunition"))?;
-            }
-            if matches!(
-                p.equipment,
-                Equipment::Utility {
-                    utility: crate::utilities::UtilityDef::MissileLauncher { .. }
-                }
-            ) {
-                let ammunition = self
-                    .resources
-                    .iter()
-                    .find(|resource| resource.id == crate::missiles::AMMUNITION)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("missile launcher requires interceptor ammunition")
-                    })?;
-                ensure!(
-                    p.tank_volume_m3 >= ammunition.volume_m3,
-                    "missile launcher needs room for at least one round"
-                );
             }
             if let Equipment::Engine {
                 propellant_resource,

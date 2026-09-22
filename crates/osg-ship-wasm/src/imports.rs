@@ -3,10 +3,9 @@ mod admission;
 pub(super) use admission::PreparedWorldQuery;
 use admission::*;
 
+mod beacons;
 mod drawing;
 mod instruments;
-mod intel;
-mod missiles;
 mod publications;
 mod services;
 mod world;
@@ -159,7 +158,6 @@ pub(super) fn imports(engine: &Engine) -> Result<Linker<Host>> {
     let mut linker = Linker::new(engine);
     persistent(&mut linker)?;
     services::register(&mut linker)?;
-    missiles::register(&mut linker)?;
     context(&mut linker)?;
     hardware(&mut linker)?;
     sensors(&mut linker)?;
@@ -222,7 +220,7 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
 
 fn context(linker: &mut Linker<Host>) -> Result<()> {
     world::register(linker)?;
-    intel::register(linker)?;
+    beacons::register(linker)?;
     metered!(
         linker,
         "serial_write",
@@ -691,25 +689,50 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
 
     metered!(
         linker,
+        "contact_iff",
+        |mut caller: Caller<'_, Host>, id: u64, pointer: u32, bytes: u32| {
+            CallPlan::record::<w::ContactIff>(&caller, pointer, bytes)
+        },
+        {
+            status((|| {
+                let contact = caller
+                    .data()
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.contact(id))
+                    .ok_or(w::ERR_UNAVAILABLE)?;
+                let mut value = w::ContactIff::default();
+                if let Some((entity, iff)) = contact.iff {
+                    value.present = 1;
+                    value.entity = entity.0;
+                    value.owner = iff.owner.0;
+                    value.faction_present = u64::from(iff.faction.is_some());
+                    value.faction = iff.faction.unwrap_or_default().0;
+                    value.labels_count = iff.labels.len().min(16) as u64;
+                    for (output, label) in value.labels.iter_mut().zip(&iff.labels) {
+                        *output = w::Text64::new(label);
+                    }
+                }
+                emit(&mut caller, pointer, bytes, &value)
+            })())
+        },
+    )?;
+
+    metered!(
+        linker,
         "contact_label",
         |mut caller: Caller<'_, Host>, id: u64, pointer: u32, bytes: u32| {
             CallPlan::record::<w::Text64>(&caller, pointer, bytes)
         },
         {
             status((|| {
-                let track = caller
+                let contact = caller
                     .data()
-                    .working
-                    .spatial
-                    .tracks
-                    .get(&id)
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.contact(id))
                     .ok_or(w::ERR_UNAVAILABLE)?;
-
-                if track.latest.epoch + 2. <= caller.data().current.epoch {
-                    return Err(w::ERR_UNAVAILABLE.into());
-                }
-
-                let value = w::Text64::new(&track.contact.name);
+                let value = w::Text64::new(&contact.name);
                 emit(&mut caller, pointer, bytes, &value)
             })())
         },

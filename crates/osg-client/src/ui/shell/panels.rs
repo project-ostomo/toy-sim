@@ -65,7 +65,7 @@ pub(super) fn draw(
                 seconds / 3600,
                 (seconds / 60) % 60,
                 seconds % 60,
-                (model.time_ns / 100_000_000) % 10,
+                (model.time_ns / osg_model::TICK_NS) % 10,
             ));
         ui.separator();
         let color = if model.connected {
@@ -178,14 +178,19 @@ pub(super) fn draw(
                         {
                             ui.colored_label(THREAT, "FUEL EXHAUSTION RISK · replan in Navigation");
                         }
-                        instruments::itinerary(ui, &ship.travel, model.time_ns / 100_000_000);
+                        instruments::itinerary(
+                            ui,
+                            &ship.travel,
+                            model.time_ns / osg_model::TICK_NS,
+                        );
                         if let Some(arrival) = ship
                             .travel
                             .estimated_arrival_tick
                             .filter(|_| matches!(ship.presence, travel::Presence::SlipTransit(_)))
                         {
-                            let seconds =
-                                (arrival as f64 * 0.1 - model.time_ns as f64 * 1e-9).max(0.);
+                            let seconds = (arrival as f64 * osg_model::TICK_SECONDS
+                                - model.time_ns as f64 * 1e-9)
+                                .max(0.);
                             ui.label(
                                 egui::RichText::new(format!(
                                     "SLIP TRANSIT   ETA {:02}:{:02}",

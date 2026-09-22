@@ -20,7 +20,3 @@ crate-type = ["cdylib", "rlib"]
 [[example]]
 name = "custom_screen"
 crate-type = ["cdylib"]
-
-[[example]]
-name = "chatter"
-crate-type = ["cdylib"]

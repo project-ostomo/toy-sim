@@ -1,6 +1,6 @@
 # Weapons
 
-The catalogue includes projectile guns, lasers, and launchers for guided kinetic interceptors. Projectile guns launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Electric weapons draw shot energy from the shared ship battery. Conventional guns use cartridges and draw no shot electricity or separate counterpropellant.
+The catalogue includes projectile guns and lasers. Projectile guns launch physical slugs. A slug is a small sphere with mass that flies through the same continuous collision solver as ships. Firmware controls weapons by staging a short-lived aim-and-trigger setting each tick. The hardware slews turrets, checks firing conditions, and schedules launches inside the tick. Electric weapons draw shot energy from the shared ship battery. Conventional guns use cartridges and draw no shot electricity or separate counterpropellant.
 
 Source:
 
@@ -42,9 +42,7 @@ Electric shot energy is `½·m·v² / efficiency`. An electric shot also consume
 | `laser_2m` | 2 MW optical output | Continuous, integrated at 10 Hz | 5 MW electrical |
 | `laser_4m` | 40 MW optical output | Continuous, integrated at 10 Hz | 100 MW electrical |
 
-The default expedition patrol carries lasers. The optional Shrike patrol carries
-two missile launchers; the Kestrel defense installation carries four. Tank
-configuration supplies ammunition.
+Patrol ships and defense installations carry lasers.
 
 ## The weapon setting
 
@@ -100,7 +98,7 @@ The reading reports current resource availability and relevant conditions from t
 
 The bundled firmware separates target marking from the firing latch (see [ship-abi.md](ship-abi.md#requests)):
 
-- `REQUEST_MARK_TARGET { contact, maximum_flight_time_s }` replaces the marked target and stops firing. The contact must be a visible ship, and the maximum flight time must be in [0.01, 60] s. Marking also works on ships equipped only with missile launchers.
+- `REQUEST_MARK_TARGET { contact, maximum_flight_time_s }` replaces the marked target and stops firing. The contact must be a visible ship, and the maximum flight time must be in [0.01, 60] s.
 - `REQUEST_UNMARK_TARGET` clears the mark and stops firing.
 - `REQUEST_START_FIRING` enables fire against the marked target. It is rejected when no target is marked.
 - `REQUEST_STOP_FIRING` disables fire while retaining the target and its aiming solutions.
@@ -154,24 +152,3 @@ These cover:
 Laser specifications include `beam_power_w`, `beam_range_m`, and divergence. The existing weapon aiming and firing controls operate them, but ammunition and projectile fields are zero. A firing interval consumes electricity and resolves an immediate ray against the first intersected shield, hull, or projectile. Emitter inefficiency adds ship heat. Range and occlusion limit damage; no projectile body or vacuum tracer is spawned. Point-defence automation remains a controller policy. The current ABI exposes the beam fields to firmware.
 
 The small water-NTR patrol blueprint uses `autocannon_compact`: 0.1 kg rounds at 1100 m/s and 40 shots/s, with 35% efficiency. It can fire with an empty battery and no counterpropellant. Avionics still need power to issue aim and trigger commands.
-
-## Guided kinetic interceptors
-
-The Kite is a 400 kg wet missile with 240 kg of storable propellant, a 25 kN
-chemical engine, a 3 km/s exhaust speed, powered sensors, a finite battery, and
-ordinary attitude actuators. A launcher consumes a packaged round, ejects it
-outside the carrier's shield, and conserves launch mass and momentum. Each
-launcher holds twelve rounds and cycles every ten seconds. The firing latch
-starts new launches; holding fire leaves already launched missiles flying.
-
-Missiles use ordinary ship physics, collision, heat, optics, and damage. They can
-be shot down by the carrier's own weapons. Guidance exhaustion leaves a coasting
-physical body. The standard firmware uses proportional navigation and coasting
-between corrections; guidance reads the group's observed track, including sensor
-uncertainty. There is no separate explosive warhead rule in this version.
-
-The optional `missile_tick(handle)` callback shares its carrier's VM, memory,
-physical gas allowance, and owner's account. A destroyed carrier retains that
-computer while surviving missiles need it, without retaining a hull or sensors.
-The parent VM retires after its last guided dependent is lost. A checkpoint
-restores missile state and cold-boots the shared computer with its durable data.

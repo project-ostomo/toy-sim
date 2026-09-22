@@ -250,11 +250,17 @@ impl ActiveRoute {
                 .and_then(|(a, b)| cache.systems.get(&a).zip(cache.systems.get(&b)))
             {
                 self.systems.extend([a, b]);
-                if let travel::Order::Slip { speed_ly_s, .. } = action
+                if let travel::Order::Slip {
+                    navigation_beacon, ..
+                } = action
                     && a != b
                 {
-                    self.slips
-                        .push((a, b, *speed_ly_s, stage.estimated_loss_ppm));
+                    self.slips.push((
+                        a,
+                        b,
+                        travel::slip::cruise_speed_ly_s(navigation_beacon.is_some()),
+                        stage.estimated_loss_ppm,
+                    ));
                 }
             }
             cursor = next.or(cursor);

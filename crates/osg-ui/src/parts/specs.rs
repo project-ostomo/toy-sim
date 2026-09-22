@@ -466,30 +466,6 @@ impl PartDescription {
                             "Assembles empty ships from part kits and materials into station inventory.",
                         )
                     }
-                    UtilityDef::MissileLauncher { spec } => {
-                        performance.quantity("Launch interval", spec.cycle_interval_s, Seconds);
-                        performance.quantity("Ejection speed", spec.ejection_speed_m_s, Speed);
-                        performance.quantity("Engagement range", spec.maximum_range_m, Metres);
-                        requirements.quantity("Electrical input", spec.power_w, Power);
-                        if let Some(ammunition) = catalogue
-                            .resources
-                            .iter()
-                            .find(|resource| resource.id == osg_ships::missiles::AMMUNITION)
-                        {
-                            performance.text(
-                                "Magazine capacity",
-                                format!(
-                                    "{} rounds",
-                                    (part.tank_volume_m3 / ammunition.volume_m3).floor()
-                                ),
-                            );
-                            requirements.text("Ammunition", &ammunition.title);
-                        }
-                        (
-                            "Missile launcher",
-                            "Launches guided interceptors using the ship computer and shared sensor picture.",
-                        )
-                    }
                     UtilityDef::SlipDrive { power_w } => {
                         requirements.quantity("Preparation power", power_w, Power);
                         (
@@ -514,7 +490,7 @@ impl PartDescription {
                             } else {
                                 "Passive sensor"
                             },
-                            "Contributes observations to the ship's fused sensor picture.",
+                            "Contributes observations to the ship's current sensor detections.",
                         )
                     }
                     UtilityDef::DirectoryTransmitter { power_w } => {
@@ -598,12 +574,7 @@ impl PartDescription {
                         ("Power coupler", "Charges the batteries of docked ships.")
                     }
                 };
-                let category = if matches!(utility, UtilityDef::MissileLauncher { .. }) {
-                    Category::Weapons
-                } else {
-                    Category::Utilities
-                };
-                (kind, category, summary)
+                (kind, Category::Utilities, summary)
             }
             Equipment::Radiator {
                 area_m2,

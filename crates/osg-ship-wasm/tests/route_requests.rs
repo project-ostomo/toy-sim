@@ -1,8 +1,5 @@
 use osg_model::{ProgramQuery, ProgramReply, routing, travel};
-use osg_ship_api::{
-    abi::{self, Record},
-    world,
-};
+use osg_ship_api::{abi::Record, world};
 use osg_ship_wasm::{ControllerRuntime, FUEL_PER_TICK, Input, ScanSource, SensorContact};
 use std::sync::{
     Arc,
@@ -58,15 +55,15 @@ fn program(header: u32) -> Vec<u8> {
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
     wat::parse_str(format!(
         r#"(module
-            (import "ship_v32" "route_request" (func $query (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
+            (import "ship" "route_request" (func $query (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
             (memory (export "memory") 1)
             (data (i32.const 0) "{data}")
-            (func (export "ship_api_version") (result i32) i32.const {version})
+            (func (export "game_version") (result i32) i32.const {version})
             (func (export "ship_tick")
                 i32.const 0 i32.const {order_offset} i32.const 1 i32.const {header}
                 i32.const 4096 i32.const 0 i32.const 8192 i32.const 0 call $query
                 i32.const 0 i32.lt_s if unreachable end))"#,
-        version = abi::VERSION,
+        version = osg_ship_api::GAME_VERSION as u32,
         order_offset = std::mem::size_of::<world::RouteRequest>(),
     ))
     .unwrap()

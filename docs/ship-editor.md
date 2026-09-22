@@ -94,7 +94,7 @@ Authority estimates depend only on geometry. The panel notes that power, fuel an
 ## Firmware
 
 - **Standard firmware** selects `Firmware::Standard`, the bundled flight computer ([ships.md](ships.md#the-standard-firmware)).
-- **Custom firmware (advanced):** enter a path to a compiled `.wasm` file and press "Import WASM". The editor runs `ControllerRuntime::validate_program` on it: imports, exports, memory limits, and an actual instantiation that checks `ship_api_version`. On success the program bytes are embedded in the blueprint as `Firmware::Custom`, and the program size is shown. See [ship-abi.md](ship-abi.md).
+- **Custom firmware (advanced):** enter a path to a compiled `.wasm` file and press "Import WASM". The editor runs `ControllerRuntime::validate_program` on it: imports, exports, memory limits, and an actual instantiation that checks `game_version`. On success the program bytes are embedded in the blueprint as `Firmware::Custom`, and the program size is shown. See [ship-abi.md](ship-abi.md).
 
 ## Validation
 

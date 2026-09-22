@@ -34,7 +34,7 @@ observations per contact, interpolates between them and extrapolates measured
 velocity for at most two seconds. Hulls, target boxes, coast estimates and markers
 use one presentation clock; no renderer queries live target entity transforms.
 
-The current ABI ([version 21](ship-abi.md)) represents trajectories and space labels as leased paths and markers, as introduced in ABI 11. Snapshot
+The [ship ABI](ship-abi.md) represents trajectories and space labels as leased paths and markers. Snapshot
 frames retain the precise source observation origin. Forecast vertices carry absolute
 times, so a calculation can span callbacks without shifting old geometry onto a newer
 ship position. Ship, body and admitted-contact frames support current annotations;
@@ -81,38 +81,6 @@ across adjacent curve pieces instead of restarting at tessellation boundaries.
 
 The guest's trajectory interest bit controls publication. Camera movement and resizing make no guest calls.
 
-On the local Ryzen 9 5900XT, optimized development tests measured approximately:
-
-| Work | Mean | p95 |
-| --- | ---: | ---: |
-| Native prediction refresh, including a 512-segment plan | 2.73 ms | 2.81 ms |
-| Orbit view + egui tessellation, 1600×1000, no GPU | 0.51 ms | 0.62 ms |
-| Ship view at 100 m + egui tessellation, same resolution, no GPU | 0.055 ms | 0.070 ms |
-| 501-ship pursuit simulation, interest enabled | 7.05 ms/tick | — |
-| Same pursuit simulation, interest disabled | 7.16 ms/tick | — |
-
-These historical measurements used the Bezier renderer and ABI 7 with an explicit linear-frame
-publication. The preceding polyline renderer measured about 0.37 ms/frame in orbit
-view; the new renderer spends additional work on accurate geometry and clipping.
-Fleet rows are the earlier ABI 6 baseline; they are not a new ABI comparison.
-Automatic startup pursuit has since been removed, so the current fleet fixture
-uses coasting traffic and does not reproduce that historical pursuit workload.
-Fleet measurements use 16 worker threads and 200 measured ticks after warmup, with
-frozen positions to isolate ship work. They exclude the native overlay and GPU;
-the small enabled/disabled difference is run-to-run noise. The first ship is idle
-in that fixture; its interest bit does not request an active maneuver. The separate
-client benchmark includes a target and published plan. Costs should not be added to
-the simulation's per-ship timing counter.
-
-Run current validation and benchmarks with:
-
-```sh
-cargo test --workspace --offline
-cargo test -p osg-server --offline profile_orbit_overlay -- --ignored --nocapture
-SHIP_PROFILE_MODE=idle SHIP_PROFILE_THREADS=16 cargo test -p osg-server --offline profile_default_fleet -- --ignored --nocapture
-SHIP_PROFILE_MODE=no_instruments SHIP_PROFILE_THREADS=16 cargo test -p osg-server --offline profile_default_fleet -- --ignored --nocapture
-```
-
 Regression coverage includes conic energy/momentum and reversibility, energetic
 escape convergence, surface entry, synchronous closest approach, scan/publication
 epochs, stale and skipped observations, explicit clear/expiry/reboot, guidance-status and target independence, cross-primary
@@ -122,5 +90,3 @@ exact-curve samples to egui's flattened strokes at 1 m through 100,000 km camera
 distance, multiple inclinations and 1x/2x/4x pixel scales, including eccentric,
 parabolic and hyperbolic paths, clipping and occlusion transitions. Presentation
 velocity tests cover ships, celestial ephemeris velocities and teleport resets.
-The Bezier renderer was also checked in the running client on an isolated X11
-display for close and orbit views.

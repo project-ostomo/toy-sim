@@ -5,7 +5,6 @@ use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -15,7 +14,7 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use storage::{Database, SectionData, Snapshot};
+use storage::{Database, Snapshot};
 
 #[derive(Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -43,35 +42,15 @@ fn capture(world: &World) -> Result<Snapshot> {
         .duration_since(UNIX_EPOCH)?
         .as_millis()
         .try_into()?;
-    let records = BTreeMap::from([(
-        "world".into(),
-        SectionData {
-            version: 12,
-            bytes: self::world::capture(world).context("capture world checkpoint")?,
-        },
-    )]);
     Ok(Snapshot {
         tick,
         saved_at_unix_ms,
-        sections: records,
+        bytes: self::world::capture(world).context("capture world checkpoint")?,
     })
 }
 
 fn restore(world: &mut World, snapshot: Snapshot) -> Result<()> {
-    ensure!(
-        snapshot.sections.len() == 1,
-        "unsupported snapshot section set"
-    );
-    let saved = snapshot
-        .sections
-        .get("world")
-        .context("snapshot missing world section")?;
-    ensure!(
-        saved.version == 12,
-        "unsupported world snapshot section version {}; explicitly start a new database for this universe",
-        saved.version
-    );
-    self::world::restore(world, &saved.bytes).context("restore world checkpoint")?;
+    self::world::restore(world, &snapshot.bytes).context("restore world checkpoint")?;
     info!(
         tick = snapshot.tick,
         saved_at_unix_ms = snapshot.saved_at_unix_ms,
@@ -168,11 +147,7 @@ impl Prepared {
             .spawn(move || {
                 while let Ok(snapshot) = jobs.recv() {
                     let started = Instant::now();
-                    let bytes = snapshot
-                        .sections
-                        .values()
-                        .map(|section| section.bytes.len())
-                        .sum();
+                    let bytes = snapshot.bytes.len();
                     let result = database.save(&snapshot).map(|generation| Written {
                         generation,
                         tick: snapshot.tick,
@@ -352,36 +327,6 @@ mod tests {
     }
 
     #[test]
-    fn earlier_world_sections_are_rejected_before_restore() {
-        let mut world = World::new();
-        let epoch = osg_model::Id::new();
-        world.insert_resource(crate::sim::identity::WorldEpoch(epoch));
-
-        for version in [1, 2, 3, 4, 5, 6, 7, 8] {
-            let error = restore(
-                &mut world,
-                Snapshot {
-                    tick: 0,
-                    saved_at_unix_ms: 0,
-                    sections: BTreeMap::from([(
-                        "world".into(),
-                        SectionData {
-                            version,
-                            bytes: Vec::new(),
-                        },
-                    )]),
-                },
-            )
-            .unwrap_err();
-            assert!(error.to_string().contains("unsupported world snapshot"));
-            assert_eq!(
-                world.resource::<crate::sim::identity::WorldEpoch>().0,
-                epoch
-            );
-        }
-    }
-
-    #[test]
     fn preparation_distinguishes_empty_database_from_saved_world() {
         let directory =
             std::env::temp_dir().join(format!("osg-prepared-checkpoint-{}", osg_model::Id::new()));
@@ -396,7 +341,7 @@ mod tests {
             .save(&Snapshot {
                 tick: 1,
                 saved_at_unix_ms: 1,
-                sections: BTreeMap::new(),
+                bytes: Vec::new(),
             })
             .unwrap();
         drop(database);

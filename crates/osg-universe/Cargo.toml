@@ -12,6 +12,7 @@ serde_yml = "0.0.13"
 smol_str = { version = "0.3.6", features = ["serde"] }
 hifitime = "4.3.1"
 osg-space = { path = "../osg-space" }
+osg-ship-api = { path = "../osg-ship-api" }
 osg-stars = { path = "../osg-stars" }
 blake3 = "1.8"
 rand = "0.10"

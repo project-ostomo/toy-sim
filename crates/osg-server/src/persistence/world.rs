@@ -1,6 +1,6 @@
 use crate::sim::{
-    defense, gas, hardware, identity, industry, infrastructure, intelligence, missiles, npc,
-    orrery, ownership, physics, precision, registry, simulation, spatial, travel, vessel,
+    gas, hardware, identity, industry, infrastructure, orrery, ownership, physics, precision,
+    registry, sensors, simulation, spatial, travel, vessel,
 };
 use anyhow::{Context, Result, ensure};
 use bevy::{
@@ -8,7 +8,7 @@ use bevy::{
     prelude::*,
 };
 use osg_model::travel::{Presence, TravelState};
-use osg_model::{Id, IffIdentity, InfoGroupKey, Pose, Track};
+use osg_model::{Id, IffIdentity, Pose};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
@@ -18,37 +18,20 @@ struct WorldRecord {
     directory: osg_model::ownership::OwnershipDirectory,
     gas: gas::GasLedgerSnapshot,
     rate: f64,
-    sensor_seed: [u8; 32],
+    slip_history: crate::sim::slip_effects::SlipHistory,
     definitions: [u8; 32],
     resource_ids: Vec<String>,
     elapsed_ns: u64,
     tick: u64,
-    groups: Vec<GroupRecord>,
     accounts: Vec<AccountRecord>,
-    npc_organizations: Vec<npc::state::NpcOrganization>,
     ships: Vec<ShipRecord>,
-    tracks: Vec<TrackRecord>,
     programs: BTreeMap<[u8; 32], Vec<u8>>,
     projectiles: Vec<ProjectileRecord>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GroupRecord {
-    id: Id,
-    key: Option<InfoGroupKey>,
-}
-
-#[derive(Serialize, Deserialize)]
 struct AccountRecord {
     id: Id,
-    group: Id,
-}
-
-#[derive(Serialize, Deserialize)]
-struct TrackRecord {
-    group: Id,
-    physical: Id,
-    track: Track,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,16 +59,10 @@ struct ShipRecord {
     hardware: osg_ships::ShipState,
     parts: Vec<PartRecord>,
     software: Option<SoftwareRecord>,
-    missile: Option<missiles::Missile>,
-    launchers: Option<missiles::Launchers>,
-    retained_computer: bool,
     industry: Option<industry::IndustryFacility>,
     mine: Option<industry::MineSource>,
-    defense: Option<defense::DefenseDuty>,
-    hauling: Option<npc::logistics::HaulDuty>,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
-    group: Option<Id>,
     travel: TravelState,
     presence: Presence,
     physical_body: bool,
@@ -139,7 +116,7 @@ fn control(world: &World, entity: Entity) -> Option<ControlRecord> {
 }
 
 fn pose(world: &World, entity: Entity) -> Result<Pose> {
-    let mut pose = intelligence::pose(
+    let mut pose = identity::pose(
         world
             .get::<precision::PreciseTransform>(entity)
             .context("persistent body has no pose")?,
@@ -171,7 +148,10 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         directory: world.resource::<ownership::Directory>().0.clone(),
         gas: world.resource::<gas::GasLedger>().snapshot()?,
         rate: world.resource::<crate::sim::session::Clock>().rate,
-        sensor_seed: world.resource::<identity::SensorSeed>().0,
+        slip_history: world
+            .get_resource::<crate::sim::slip_effects::SlipHistory>()
+            .cloned()
+            .unwrap_or_default(),
         definitions: definition_fingerprint(world),
         resource_ids: world
             .resource::<vessel::ShipCatalogue>()
@@ -186,11 +166,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             .as_nanos()
             .try_into()?,
         tick: world.resource::<simulation::SimulationCounters>().ticks,
-        groups: Vec::new(),
         accounts: Vec::new(),
-        npc_organizations: Vec::new(),
         ships: Vec::new(),
-        tracks: Vec::new(),
         programs: BTreeMap::new(),
         projectiles: Vec::new(),
     };
@@ -203,24 +180,8 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
         .collect::<Vec<_>>();
     identities.sort_unstable_by_key(|(id, _)| **id);
     for (&stable_id, &entity) in identities {
-        if let Some(organization) = world.get::<npc::state::NpcOrganization>(entity) {
-            ensure!(
-                organization.organization == stable_id,
-                "NPC organization identity mismatch"
-            );
-            record.npc_organizations.push(organization.clone());
-        }
-        if let Some(group) = world.get::<intelligence::Group>(entity) {
-            record.groups.push(GroupRecord {
-                id: stable_id,
-                key: group.key,
-            });
-        }
-        if let Some(account) = world.get::<identity::Account>(entity) {
-            record.accounts.push(AccountRecord {
-                id: stable_id,
-                group: id(world, account.group)?,
-            });
+        if world.get::<identity::Account>(entity).is_some() {
+            record.accounts.push(AccountRecord { id: stable_id });
         }
         if let Some(design) = world.get::<vessel::ShipDesign>(entity) {
             // Compiled designs are immutable and shared by installations. Cache
@@ -315,21 +276,12 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     })
                     .collect(),
                 software,
-                missile: world.get::<missiles::Missile>(entity).cloned(),
-                launchers: world.get::<missiles::Launchers>(entity).cloned(),
-                retained_computer: world.get::<missiles::RetainedComputer>(entity).is_some(),
                 industry: facility,
                 mine,
-                defense: world.get::<defense::DefenseDuty>(entity).cloned(),
-                hauling: world.get::<npc::logistics::HaulDuty>(entity).cloned(),
                 control: control(world, entity),
                 iff: world
                     .get::<identity::Transponder>(entity)
                     .map(|iff| iff.0.clone()),
-                group: world
-                    .get::<identity::Membership>(entity)
-                    .map(|membership| id(world, membership.0))
-                    .transpose()?,
                 travel: world
                     .get::<travel::Travel>(entity)
                     .map(|travel| travel.0.clone())
@@ -374,18 +326,6 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             });
         }
     }
-    for (&(group, physical), &entity) in &world.resource::<intelligence::AssociationIndex>().0 {
-        if let Some(track) = world.get::<intelligence::TrackEstimate>(entity) {
-            record.tracks.push(TrackRecord {
-                group: id(world, group)?,
-                physical,
-                track: track.0.clone(),
-            });
-        }
-    }
-    record
-        .tracks
-        .sort_by_key(|track| (track.group, track.physical));
     for entity in world.iter_entities() {
         if let Some(projectile) = entity.get::<physics::collision::Projectile>() {
             let mass = entity
@@ -407,15 +347,15 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             });
         }
     }
-    let ships = record.ships.iter().map(|ship| (ship.id, ship)).collect();
-    validate_missiles(&record.ships, &ships)?;
     validate_industry_ids(&record)?;
-    validate_npc(world, &record)?;
     Ok(postcard::to_stdvec(&record)?)
 }
 
 fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
-    use osg_model::{PUBLIC_GROUP, ownership::Principal};
+    record
+        .slip_history
+        .validate(record.tick * osg_model::TICK_NS)?;
+    use osg_model::ownership::Principal;
     use std::collections::BTreeSet;
 
     ensure!(record.directory.valid(), "invalid ownership directory");
@@ -433,42 +373,17 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     );
     let mut identities = BTreeSet::new();
     for value in record
-        .groups
+        .accounts
         .iter()
         .map(|record| record.id)
-        .chain(record.accounts.iter().map(|record| record.id))
         .chain(record.ships.iter().map(|record| record.id))
-        .chain(
-            record
-                .npc_organizations
-                .iter()
-                .map(|record| record.organization),
-        )
     {
         ensure!(identities.insert(value), "duplicate persistent identity");
     }
     validate_industry_ids(record)?;
-    validate_npc(world, record)?;
-    let groups: BTreeSet<_> = record.groups.iter().map(|group| group.id).collect();
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
-    validate_missiles(&record.ships, &ships)?;
-    ensure!(
-        groups.contains(&PUBLIC_GROUP),
-        "public information group unavailable"
-    );
-    let mut keys = BTreeSet::new();
-    for group in &record.groups {
-        ensure!(
-            (group.id == PUBLIC_GROUP) == group.key.is_none(),
-            "invalid information group key"
-        );
-        if let Some(key) = group.key {
-            ensure!(keys.insert(key.0), "duplicate information group secret");
-        }
-    }
     for account in &record.accounts {
-        ensure!(groups.contains(&account.group), "account group unavailable");
         ensure!(
             record.directory.players.contains_key(&account.id),
             "account affiliation unavailable"
@@ -494,17 +409,9 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                 && iff
                     .faction
                     .is_none_or(|id| record.directory.organizations.contains_key(&id))
-                && iff.range_m.is_finite()
-                && iff.range_m >= 0.
+                && osg_protocol::validate_iff(iff).is_ok()
         })
     };
-    let missile_programs: BTreeSet<_> = record
-        .ships
-        .iter()
-        .filter_map(|ship| ship.missile.as_ref())
-        .filter(|missile| missile.guidance_enabled)
-        .map(|missile| ships[&missile.parent].program)
-        .collect();
     for (hash, program) in &record.programs {
         ensure!(
             *blake3::hash(program).as_bytes() == *hash,
@@ -512,16 +419,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         );
         let mut runtime = world.resource_mut::<vessel::WasmRuntime>();
         runtime.0.validate_program(program)?;
-        if missile_programs.contains(hash) {
-            ensure!(
-                runtime
-                    .0
-                    .compile(program)?
-                    .get_export("missile_tick")
-                    .is_some(),
-                "guided missile parent has no missile callback"
-            );
-        }
     }
     for job in record
         .ships
@@ -553,10 +450,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             "ship identity reference unavailable"
         );
         ensure!(
-            ship.group.is_none_or(|group| groups.contains(&group)),
-            "ship group unavailable"
-        );
-        ensure!(
             ship.stored_mass.is_finite() && ship.stored_mass >= 0.,
             "invalid contained mass"
         );
@@ -574,18 +467,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             catalogue,
             &record.directory,
         )?;
-        if let Some(launchers) = &ship.launchers {
-            ensure!(
-                launchers.next_handle > 0
-                    && launchers.last_guided < launchers.next_handle
-                    && launchers.next_launch_s.iter().all(|(part, seconds)| {
-                        design.part_index.contains_key(part)
-                            && seconds.is_finite()
-                            && *seconds >= 0.
-                    }),
-                "invalid saved missile launcher state"
-            );
-        }
+
         let hardware = &ship.hardware;
         ensure!(
             hardware.inventory.quantities.len() == catalogue.resources.len()
@@ -674,14 +556,15 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                     && transit.advanced_tick <= record.tick.saturating_add(1)
                     && transit.speed_ly_s.is_finite()
                     && transit.speed_ly_s > 0.0
-                    && transit.speed_ly_s <= osg_model::travel::slip::MAX_SPEED_LY_S
+                    && transit.speed_ly_s <= osg_model::travel::slip::CRUISE_SPEED_LY_S
                     && transit.departure_mass_kg.is_finite()
                     && transit.departure_mass_kg > 0.0
                     && transit.distance_ly.is_finite()
                     && transit.distance_ly >= 0.0
                     && transit.consumed_fuel_g.is_finite()
                     && transit.consumed_fuel_g >= 0.0
-                    && transit.beacon_loss_error.is_some() == transit.navigation_beacon.is_some()
+                    && transit.variance_m2.is_finite()
+                    && transit.variance_m2 >= 0.0
                     && (!transit.beacon_lost || transit.navigation_beacon.is_some())
                     && transit.capture_radius_m.is_finite()
                     && transit.capture_radius_m >= 0.0
@@ -691,18 +574,19 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                         .direction
                         .iter()
                         .chain(&transit.retained_velocity)
-                        .chain(&transit.departure_error)
+                        .chain(&transit.nominal_direction)
                         .all(|value| value.is_finite())
                     && (DVec3::from_array(transit.direction).length_squared() - 1.0).abs() < 1e-5
-                    && transit
-                        .beacon_loss_error
-                        .is_none_or(|error| error.iter().all(|value| value.is_finite())),
+                    && (DVec3::from_array(transit.nominal_direction).length_squared() - 1.0).abs()
+                        < 1e-5,
                 "invalid saved slip trajectory"
             );
         }
         if let Some(drive) = &ship.drive {
             ensure!(
-                drive.power_w.is_finite()
+                drive.axis.iter().all(|v| v.is_finite())
+                    && (DVec3::from_array(drive.axis).length_squared() - 1.0).abs() < 1e-6
+                    && drive.power_w.is_finite()
                     && drive.power_w >= 0.
                     && drive.fuel_fraction_g.is_finite()
                     && (0.0..1.0).contains(&drive.fuel_fraction_g),
@@ -712,9 +596,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                 ensure!(
                     preparation.mass.is_finite()
                         && preparation.mass > 0.
-                        && preparation.speed_ly_s.is_finite()
-                        && preparation.speed_ly_s > 0.0
-                        && preparation.speed_ly_s <= osg_model::travel::slip::MAX_SPEED_LY_S
                         && preparation.started <= record.tick
                         && preparation.work_j.is_finite()
                         && preparation.work_j >= 0.
@@ -763,15 +644,6 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
             current = ships.get(&host).context("containment host unavailable")?;
         }
     }
-    let mut tracks = BTreeSet::new();
-    for track in &record.tracks {
-        ensure!(
-            groups.contains(&track.group)
-                && tracks.insert((track.group, track.physical))
-                && valid_pose(&track.track.pose),
-            "invalid saved sensor association"
-        );
-    }
     for projectile in &record.projectiles {
         ensure!(
             projectile
@@ -793,69 +665,11 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     Ok(())
 }
 
-fn validate_npc(world: &World, record: &WorldRecord) -> Result<()> {
-    use osg_model::ownership::Principal;
-    use std::collections::BTreeSet;
-
-    let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
-    let universe = &world.resource::<registry::UniverseRegistry>().universe;
-    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
-    let mut organizations = BTreeSet::new();
-
-    for organization in &record.npc_organizations {
-        organization.validate(record.tick)?;
-        ensure!(
-            organizations.insert(organization.organization)
-                && record
-                    .directory
-                    .organizations
-                    .contains_key(&organization.organization)
-                && record.directory.players.contains_key(&organization.officer)
-                && accounts.contains(&organization.officer)
-                && universe.system_index(organization.home_system.0).is_some()
-                && record
-                    .gas
-                    .accounts
-                    .contains_key(&Principal::Organization(organization.organization)),
-            "saved NPC organization references an unavailable identity, system or gas account"
-        );
-    }
-
-    for ship in &record.ships {
-        if let Some(duty) = &ship.defense {
-            ensure!(
-                duty.valid()
-                    && accounts.contains(&duty.account)
-                    && record.directory.players.contains_key(&duty.account)
-                    && record
-                        .directory
-                        .organizations
-                        .contains_key(&duty.organization)
-                    && duty.installation.is_none_or(|id| id != Id::default()),
-                "invalid saved defense duty"
-            );
-        }
-        if let Some(duty) = &ship.hauling {
-            duty.validate()?;
-            ensure!(
-                accounts.contains(&duty.account)
-                    && record.directory.players.contains_key(&duty.account)
-                    && duty.source != Id::default()
-                    && duty.destination != Id::default(),
-                "invalid saved freight duty"
-            );
-            osg_ships::industry::item_mass_kg(&duty.item, catalogue)?;
-        }
-    }
-    Ok(())
-}
-
 fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
     let mut identities: std::collections::BTreeSet<_> = record
-        .groups
+        .accounts
         .iter()
-        .map(|group| group.id)
-        .chain(record.accounts.iter().map(|account| account.id))
+        .map(|account| account.id)
         .chain(record.ships.iter().map(|ship| ship.id))
         .chain(record.directory.players.keys().copied())
         .chain(record.directory.organizations.keys().copied())
@@ -866,72 +680,6 @@ fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
             ensure!(
                 identities.insert(job.view.id),
                 "duplicate persistent industry job identity"
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_missiles(records: &[ShipRecord], ships: &BTreeMap<Id, &ShipRecord>) -> Result<()> {
-    let mut handles = std::collections::BTreeSet::new();
-    let mut guided_parents = std::collections::BTreeSet::new();
-    for ship in records {
-        let Some(missile) = &ship.missile else {
-            continue;
-        };
-        let parent = ships
-            .get(&missile.parent)
-            .context("missile parent unavailable")?;
-        let launchers = parent
-            .launchers
-            .as_ref()
-            .context("missile parent launcher state unavailable")?;
-        ensure!(
-            parent.id != ship.id
-                && parent.missile.is_none()
-                && ship.software.is_none()
-                && !ship.retained_computer
-                && missile.handle > 0
-                && missile.handle < launchers.next_handle
-                && handles.insert((missile.parent, missile.handle)),
-            "invalid shared missile computer identity"
-        );
-        let direction_squared = missile
-            .direction
-            .iter()
-            .map(|value| value * value)
-            .sum::<f64>();
-        ensure!(
-            missile.age_s.is_finite()
-                && missile.age_s >= 0.
-                && missile.direction.iter().all(|value| value.is_finite())
-                && missile.throttle.is_finite()
-                && (0.0..=1.0).contains(&missile.throttle)
-                && ((direction_squared - 1.).abs() <= 1e-6
-                    || (direction_squared == 0. && missile.throttle == 0.)),
-            "invalid saved missile guidance"
-        );
-        if missile.guidance_enabled {
-            ensure!(
-                ship.presence == Presence::Space && ship.hardware.hull > 0.,
-                "inactive missile retains live guidance"
-            );
-            ensure!(
-                parent.software.is_some()
-                    && (parent.presence != Presence::Destroyed || parent.retained_computer),
-                "guided missile computer unavailable"
-            );
-            guided_parents.insert(parent.id);
-        }
-    }
-    for ship in records {
-        if ship.retained_computer {
-            ensure!(
-                ship.presence == Presence::Destroyed
-                    && ship.software.is_some()
-                    && ship.missile.is_none()
-                    && guided_parents.contains(&ship.id),
-                "invalid retained missile computer"
             );
         }
     }
@@ -978,11 +726,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         }
     }
     world.resource_mut::<identity::IdentityIndex>().0.clear();
-    world.resource_mut::<identity::GroupIndex>().0.clear();
-    world
-        .resource_mut::<intelligence::AssociationIndex>()
-        .0
-        .clear();
     *world.resource_mut::<orrery::activity::ActiveSystems>() = default();
     world.remove_resource::<infrastructure::NavigationPublication>();
     world
@@ -990,6 +733,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         .0
         .clear();
     world.resource_mut::<travel::TravelEvents>().0.clear();
+    world.insert_resource(record.slip_history);
     world.insert_resource(identity::WorldEpoch(record.epoch));
     world.insert_resource(ownership::Directory(record.directory));
     world.insert_resource(ledger);
@@ -1000,13 +744,10 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.remove_resource::<physics::collision::CollisionReport>();
     world.insert_resource(crate::sim::services::PublishedWorld::default());
     world.insert_resource(crate::sim::combat::CombatHistory::default());
-    world.insert_resource(missiles::Callbacks::default());
-    defense::reset_transient(world);
     world.insert_resource(spatial::SpatialIndex::default());
-    world.insert_resource(identity::SensorSeed(record.sensor_seed));
     world.resource_mut::<simulation::SimulationCounters>().ticks = record.tick;
     let elapsed = Duration::from_nanos(record.elapsed_ns);
-    let mut fixed = Time::<Fixed>::from_hz(10.0);
+    let mut fixed = Time::<Fixed>::from_duration(osg_model::TICK_DURATION);
     fixed.advance_to(elapsed);
     world.insert_resource(fixed);
     let mut virtual_time = Time::<Virtual>::default();
@@ -1015,32 +756,10 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let mut time = Time::<()>::default();
     time.advance_to(elapsed);
     world.insert_resource(time);
-    for group in record.groups {
-        let entity = world
-            .spawn((
-                intelligence::Group {
-                    id: group.id,
-                    key: group.key,
-                    snapshot: Arc::default(),
-                },
-                intelligence::Measurements::default(),
-                intelligence::GroupTracks::default(),
-            ))
-            .id();
-        identity::register(world, entity, group.id);
-        if let Some(key) = group.key {
-            world
-                .resource_mut::<identity::GroupIndex>()
-                .0
-                .insert(key, entity);
-        }
-    }
     for account in record.accounts {
-        let group = identity::lookup(world, account.group)?;
         let entity = world
             .spawn((
                 identity::Account {
-                    group,
                     debug: config.debug_account == Some(account.id),
                 },
                 identity::OwnedShips::default(),
@@ -1110,6 +829,22 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             ship.hardware.reset_commands(&design);
             ship.travel.estimated_arrival_tick = None;
         }
+        if ship
+            .travel
+            .orders
+            .iter()
+            .skip(ship.travel.order)
+            .any(|order| {
+                matches!(&order.action, osg_model::travel::Order::Guidance(guidance)
+                if matches!(guidance.target, osg_model::travel::Target::Contact(_)))
+            })
+        {
+            ship.travel.autopilot_enabled = false;
+            ship.travel.status = osg_model::travel::Status::Blocked(
+                "Sensor target must be selected again after restore".into(),
+            );
+            ship.travel.planning = None;
+        }
         if let Some(bays) = &mut ship.bays {
             for bay in bays {
                 bay.reservation = None;
@@ -1159,10 +894,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         if let Some(iff) = ship.iff {
             world.entity_mut(entity).insert(identity::Transponder(iff));
         }
-        if let Some(group) = ship.group {
-            let group = identity::lookup(world, group)?;
-            world.entity_mut(entity).insert(identity::Membership(group));
-        }
         if ship.controlled {
             world.entity_mut(entity).insert(vessel::ControlledVessel);
         }
@@ -1195,23 +926,12 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 power: ship.dock_services.1,
             },
         ));
-        if let Some(missile) = ship.missile {
-            world.entity_mut(entity).insert(missile);
-        }
-        if let Some(launchers) = ship.launchers {
-            world.entity_mut(entity).insert(launchers);
-        }
+
         if let Some(facility) = ship.industry {
             world.entity_mut(entity).insert(facility);
         }
         if let Some(mine) = ship.mine {
             world.entity_mut(entity).insert(mine);
-        }
-        if let Some(duty) = ship.defense {
-            world.entity_mut(entity).insert(duty);
-        }
-        if let Some(duty) = ship.hauling {
-            world.entity_mut(entity).insert(duty);
         }
         relationships.push((
             entity,
@@ -1219,7 +939,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             ship.physical_body,
             ship.spatial_instance,
             ship.dormant_thermal_s,
-            ship.retained_computer,
         ));
         drives.push((entity, ship.drive));
         thermal_parts.push((entity, ship.parts));
@@ -1254,9 +973,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             world.entity_mut(entity).insert(drive);
         }
     }
-    for (entity, presence, physical_body, instance, dormant_thermal_s, retained_computer) in
-        relationships
-    {
+    for (entity, presence, physical_body, instance, dormant_thermal_s) in relationships {
         if let Presence::Docked { host, .. } | Presence::StoredInWreck(host) = presence {
             let host = identity::lookup(world, host)?;
             world.entity_mut(entity).insert(travel::DockedIn(host));
@@ -1279,20 +996,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 .entity_mut(entity)
                 .insert(identity::SpatialInstance(instance));
         }
-        if retained_computer {
-            missiles::restore_retained(world, entity);
-        }
-        if world
-            .get::<missiles::Missile>(entity)
-            .is_some_and(|missile| !missile.guidance_enabled)
-        {
-            missiles::disable_guidance(world, entity);
-        }
-    }
-    for organization in record.npc_organizations {
-        let id = organization.organization;
-        let entity = world.spawn(organization).id();
-        identity::register(world, entity, id);
     }
     for projectile in record.projectiles {
         let inertia = bevy::math::DMat3::from_cols_array(&projectile.inertia);
@@ -1321,20 +1024,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             },
         ));
     }
-    for track in record.tracks {
-        let group = identity::lookup(world, track.group)?;
-        let entity = world
-            .spawn((
-                intelligence::TrackEstimate(track.track),
-                intelligence::TrackGroup(group),
-                intelligence::TrackAssociation(track.physical),
-            ))
-            .id();
-        world
-            .resource_mut::<intelligence::AssociationIndex>()
-            .0
-            .insert((group, track.physical), entity);
-    }
     let mut activate = Schedule::default();
     activate.add_systems(
         (
@@ -1348,7 +1037,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     hardware::utilities::refresh_emitters(world);
     infrastructure::publish_navigation(world);
     let mut publish = Schedule::default();
-    publish.add_systems((intelligence::publish, crate::sim::services::publish_indexes).chain());
+    publish.add_systems((sensors::publish, crate::sim::services::publish_indexes).chain());
     publish.run(world);
     travel::geometry::refresh(world);
     industry::refresh_publication(world);
@@ -1360,10 +1049,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
 mod industry_tests;
 
 #[cfg(test)]
-#[path = "npc_tests.rs"]
-mod npc_tests;
-
-#[cfg(test)]
 #[path = "route_tests.rs"]
 mod route_tests;
 
@@ -1371,6 +1056,52 @@ mod route_tests;
 mod tests {
     use super::*;
     use osg_model::travel::{Order, QueuedOrder, Status};
+
+    #[test]
+    fn restore_rebuilds_handles_and_blocks_saved_contact_orders() {
+        use osg_model::travel::{Guidance, GuidanceMode, Target};
+
+        let mut app =
+            crate::sim::bootstrap::provision_combat_fixture(&[Id::new()], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let ship_id = id(world, ship).unwrap();
+        let handle = *world
+            .get::<sensors::Observations>(ship)
+            .unwrap()
+            .0
+            .contacts
+            .keys()
+            .next()
+            .unwrap();
+        world.get_mut::<travel::Travel>(ship).unwrap().0 = TravelState {
+            autopilot_enabled: true,
+            orders: vec![QueuedOrder::from(Order::Guidance(Guidance {
+                mode: GuidanceMode::KeepRange,
+                target: Target::Contact(osg_model::ContactRef {
+                    observer: ship_id,
+                    contact: handle,
+                }),
+                range_m: 1000.,
+            }))],
+            ..Default::default()
+        };
+        let saved = capture(world).unwrap();
+        restore(world, &saved).unwrap();
+
+        let restored = identity::lookup(world, ship_id).unwrap();
+        let state = &world.get::<travel::Travel>(restored).unwrap().0;
+        assert!(!state.autopilot_enabled);
+        assert!(
+            matches!(&state.status, Status::Blocked(reason) if reason.contains("selected again"))
+        );
+        let observations = &world.get::<sensors::Observations>(restored).unwrap().0;
+        assert!(!observations.contacts.contains_key(&handle));
+        assert!(!observations.contacts.is_empty());
+    }
 
     fn saved_transit(origin: osg_model::GalacticPosition, tick: u64) -> travel::Transit {
         travel::Transit {
@@ -1380,15 +1111,15 @@ mod tests {
             departed: tick,
             advanced_tick: tick,
             direction: DVec3::X.to_array(),
-            speed_ly_s: 0.001,
+            speed_ly_s: osg_model::travel::slip::cruise_speed_ly_s(false),
             retained_velocity: [12.0, 34.0, 56.0],
             departure_mass_kg: 100_000.0,
             distance_ly: 0.25,
             consumed_fuel_g: 189.46457081379975,
             navigation_beacon: Some(Id::new()),
             beacon_lost: true,
-            departure_error: [1e-7, -2e-7],
-            beacon_loss_error: Some([3e-7, 4e-7]),
+            nominal_direction: DVec3::X.to_array(),
+            variance_m2: 1e12,
             intended_capture: None,
             risk_target: None,
             capture_radius_m: 0.0,
@@ -1428,289 +1159,6 @@ mod tests {
                 .get::<travel::DormantMotion>(ship)
                 .unwrap()
                 .has_physical_body()
-        );
-    }
-
-    #[test]
-    fn launched_missiles_restore_retained_computer_and_reject_broken_relations() {
-        let account = Id::new();
-        let blueprint = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../assets/ships/missile-patrol.ship");
-        let mut app = crate::scenario(&[account], Some(account), Some(blueprint)).unwrap();
-        for _ in 0..80 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let parent = world
-            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
-            .single(world)
-            .unwrap();
-        let parent_id = id(world, parent).unwrap();
-        assert!(
-            !world
-                .get::<vessel::ShipSoftware>(parent)
-                .unwrap()
-                .controller
-                .is_booting()
-        );
-        let launcher = world
-            .get::<vessel::ShipDesign>(parent)
-            .unwrap()
-            .0
-            .parts
-            .iter()
-            .find(|part| part.placed.prototype == osg_ships::missiles::LAUNCHER_PART)
-            .unwrap()
-            .placed
-            .id;
-        let group_entity = world.get::<identity::Membership>(parent).unwrap().0;
-        let group = world.get::<intelligence::Group>(group_entity).unwrap();
-        let parent_position = world
-            .get::<precision::PreciseTransform>(parent)
-            .unwrap()
-            .translation_um;
-        let target = group
-            .snapshot
-            .tracks
-            .values()
-            .filter(|track| track.entity != Some(parent_id))
-            .min_by(|a, b| {
-                a.pose
-                    .position
-                    .relative_to(parent_position)
-                    .length_squared()
-                    .total_cmp(
-                        &b.pose
-                            .position
-                            .relative_to(parent_position)
-                            .length_squared(),
-                    )
-            })
-            .unwrap();
-        let target = osg_model::ContactRef {
-            group: group.id,
-            track: target.id,
-        };
-        let missile = missiles::launch(world, parent, launcher, target).unwrap();
-        let missile_id = id(world, missile).unwrap();
-        let mut initialize = Schedule::default();
-        initialize.add_systems(hardware::initialize);
-        initialize.run(world);
-        {
-            let mut state = world.get_mut::<missiles::Missile>(missile).unwrap();
-            state.age_s = 12.5;
-            state.direction = DVec3::X.to_array();
-            state.throttle = 0.625;
-            state.target.track = Id::new();
-        }
-        let saved_guidance = world.get::<missiles::Missile>(missile).unwrap().clone();
-        let saved_launchers = world.get::<missiles::Launchers>(parent).unwrap().clone();
-        let saved_inventory = world
-            .get::<hardware::ShipInventory>(missile)
-            .unwrap()
-            .0
-            .clone();
-        let saved_pose = pose(world, missile).unwrap();
-        let group_id = id(world, group_entity).unwrap();
-        let owner = world.get::<ownership::AssetOwner>(parent).unwrap().0;
-        let mut checkpoint = world
-            .get::<vessel::ShipSoftware>(parent)
-            .unwrap()
-            .controller
-            .checkpoint();
-        checkpoint.persistent_data = b"retained missile controller".to_vec();
-        let controller = world
-            .resource_mut::<vessel::WasmRuntime>()
-            .0
-            .restore(&checkpoint)
-            .unwrap();
-        world
-            .get_mut::<vessel::ShipSoftware>(parent)
-            .unwrap()
-            .controller = controller;
-        world
-            .resource::<gas::GasLedger>()
-            .reserve(owner, 1234)
-            .unwrap()
-            .settle(1234)
-            .unwrap();
-        let expected_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
-        let active_bytes = capture(world).unwrap();
-
-        travel::destroy(world, parent);
-        assert!(world.get::<missiles::RetainedComputer>(parent).is_some());
-        let bytes = capture(world).unwrap();
-        restore(world, &bytes).unwrap();
-
-        let parent = identity::lookup(world, parent_id).unwrap();
-        let missile = identity::lookup(world, missile_id).unwrap();
-        assert_eq!(
-            world.get::<travel::PresenceState>(parent).unwrap().0,
-            Presence::Destroyed
-        );
-        assert!(world.get::<missiles::RetainedComputer>(parent).is_some());
-        assert!(world.get::<physics::Velocity>(parent).is_none());
-        assert!(world.get::<physics::RigidBody>(parent).is_none());
-        assert!(
-            world
-                .get::<physics::collision::CollisionBody>(parent)
-                .is_none()
-        );
-        assert!(world.get::<spatial::SpatialBody>(parent).is_none());
-        assert!(world.get::<crate::sim::sensors::Sensor>(parent).is_none());
-        assert!(
-            world
-                .get::<crate::sim::sensors::SensorContacts>(parent)
-                .is_none()
-        );
-        assert!(world.get::<identity::DirectoryEmitter>(parent).is_none());
-        assert!(world.resource::<missiles::Callbacks>().0.is_empty());
-        let restored_controller = &world
-            .get::<vessel::ShipSoftware>(parent)
-            .unwrap()
-            .controller;
-        assert!(restored_controller.is_booting());
-        assert_eq!(restored_controller.checkpoint().program, checkpoint.program);
-        assert_eq!(
-            restored_controller.checkpoint().persistent_data,
-            checkpoint.persistent_data
-        );
-        assert_eq!(world.get::<ownership::AssetOwner>(parent).unwrap().0, owner);
-        assert_eq!(
-            id(world, world.get::<identity::Membership>(parent).unwrap().0).unwrap(),
-            group_id
-        );
-        let restored_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
-        assert_eq!(restored_gas.accounts, expected_gas.accounts);
-        assert_eq!(restored_gas.fairness, expected_gas.fairness);
-        assert!(world.get::<vessel::ShipSoftware>(missile).is_none());
-        assert!(world.get::<physics::Velocity>(missile).is_some());
-        assert_eq!(pose(world, missile).unwrap(), saved_pose);
-        assert_eq!(
-            postcard::to_stdvec(&world.get::<hardware::ShipInventory>(missile).unwrap().0).unwrap(),
-            postcard::to_stdvec(&saved_inventory).unwrap()
-        );
-        assert_eq!(
-            world.get::<ownership::AssetOwner>(missile).unwrap().0,
-            owner
-        );
-        assert_eq!(
-            postcard::to_stdvec(world.get::<missiles::Missile>(missile).unwrap()).unwrap(),
-            postcard::to_stdvec(&saved_guidance).unwrap()
-        );
-        assert_eq!(
-            postcard::to_stdvec(world.get::<missiles::Launchers>(parent).unwrap()).unwrap(),
-            postcard::to_stdvec(&saved_launchers).unwrap()
-        );
-
-        let identities = world.resource::<identity::IdentityIndex>().0.clone();
-        for case in 0..6 {
-            let mut invalid: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-            let child_index = invalid
-                .ships
-                .iter()
-                .position(|ship| ship.id == missile_id)
-                .unwrap();
-            let parent_index = invalid
-                .ships
-                .iter()
-                .position(|ship| ship.id == parent_id)
-                .unwrap();
-            match case {
-                0 => invalid.ships[child_index].missile.as_mut().unwrap().parent = Id::new(),
-                1 => invalid.ships[child_index].missile.as_mut().unwrap().parent = missile_id,
-                2 => {
-                    invalid.ships[parent_index]
-                        .launchers
-                        .as_mut()
-                        .unwrap()
-                        .next_handle = saved_guidance.handle;
-                }
-                3 => invalid.ships[parent_index].software = None,
-                4 => {
-                    invalid.ships[child_index]
-                        .missile
-                        .as_mut()
-                        .unwrap()
-                        .throttle = 1.1
-                }
-                5 => {
-                    let mut duplicate: ShipRecord = postcard::from_bytes(
-                        &postcard::to_stdvec(&invalid.ships[child_index]).unwrap(),
-                    )
-                    .unwrap();
-                    duplicate.id = Id::new();
-                    invalid.ships.push(duplicate);
-                }
-                _ => unreachable!(),
-            }
-            assert!(
-                restore(world, &postcard::to_stdvec(&invalid).unwrap()).is_err(),
-                "case {case}"
-            );
-            assert_eq!(world.resource::<identity::IdentityIndex>().0, identities);
-            assert_eq!(
-                world
-                    .resource::<gas::GasLedger>()
-                    .snapshot()
-                    .unwrap()
-                    .accounts,
-                expected_gas.accounts
-            );
-        }
-
-        app.update();
-        let world = app.world_mut();
-        let parent = identity::lookup(world, parent_id).unwrap();
-        let presentation = crate::sim::presentation::ship(world, parent, false).unwrap();
-        assert!(matches!(
-            presentation.computer,
-            osg_model::presentation::ComputerStatus::Booting { .. }
-        ));
-        let design = &world.get::<vessel::ShipDesign>(parent).unwrap().0;
-        assert!(
-            !hardware::snapshot(world, parent)
-                .unwrap()
-                .computer_running(design)
-        );
-        assert!(
-            world
-                .resource::<gas::GasLedger>()
-                .account(owner)
-                .unwrap()
-                .spent
-                > expected_gas.accounts[&owner].spent
-        );
-        world
-            .get_mut::<vessel::ShipSoftware>(parent)
-            .unwrap()
-            .controller
-            .fail("retained computer trap".into());
-        let presentation = crate::sim::presentation::ship(world, parent, false).unwrap();
-        assert!(matches!(
-            presentation.computer,
-            osg_model::presentation::ComputerStatus::Fault {
-                reboot_remaining_s: Some(_),
-                ..
-            }
-        ));
-
-        restore(world, &active_bytes).unwrap();
-        let parent = identity::lookup(world, parent_id).unwrap();
-        let missile = identity::lookup(world, missile_id).unwrap();
-        travel::destroy(world, parent);
-        travel::destroy(world, missile);
-        let retired = capture(world).unwrap();
-        restore(world, &retired).unwrap();
-        let parent = identity::lookup(world, parent_id).unwrap();
-        let missile = identity::lookup(world, missile_id).unwrap();
-        assert!(world.get::<missiles::RetainedComputer>(parent).is_none());
-        assert!(world.get::<vessel::ShipSoftware>(parent).is_none());
-        assert!(
-            !world
-                .get::<missiles::Missile>(missile)
-                .unwrap()
-                .guidance_enabled
         );
     }
 
@@ -1773,7 +1221,7 @@ mod tests {
             .unwrap();
         let ship_id = id(world, ship).unwrap();
         let tick = world.resource::<simulation::SimulationCounters>().ticks;
-        let tracks = world.resource::<intelligence::AssociationIndex>().0.len();
+        let observations = world.query::<&sensors::Observations>().iter(world).count();
         let bytes = capture(world).unwrap();
         restore(world, &bytes).unwrap();
 
@@ -1793,8 +1241,8 @@ mod tests {
             tick
         );
         assert_eq!(
-            world.resource::<intelligence::AssociationIndex>().0.len(),
-            tracks
+            world.query::<&sensors::Observations>().iter(world).count(),
+            observations
         );
     }
 
@@ -1884,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_slip_preserves_trajectory_errors_fuel_and_order_queue() {
+    fn restored_slip_preserves_realized_walk_fuel_and_order_queue() {
         let account = Id::new();
         let mut app = crate::scenario(&[account], Some(account), None).unwrap();
         for _ in 0..3 {
@@ -1905,7 +1353,6 @@ mod tests {
         let orders = vec![
             QueuedOrder::from(Order::Slip {
                 destination: osg_model::travel::Destination::Galactic(destination),
-                speed_ly_s: 0.001,
                 navigation_beacon: None,
             }),
             QueuedOrder::from(Order::WaitUntil(tick + 1000)),

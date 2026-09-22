@@ -42,6 +42,7 @@ impl ScanSource for CurrentCommand {
                     state: self.state.lock().unwrap().clone(),
                     pose: Pose::default(),
                     slip_ready: false,
+                    slip_axis: [0.0, 0.0, -1.0],
                 })
             }
             other => {
@@ -90,7 +91,7 @@ fn stock_wasm_waits_for_server_plan_and_executes_only_the_current_command() {
                 Input {
                     tick,
                     observation: Observation {
-                        time_s: tick as f64 * 0.1,
+                        time_s: tick as f64 * osg_model::TICK_SECONDS,
                         flight: abi::FlightState {
                             rotation: [0., 0., 0., 1.],
                             mass_kg,
@@ -164,16 +165,9 @@ impl ScanSource for MovingSlip {
         _: bool,
         _: osg_model::wasm_world::ReplyCapacity,
     ) -> anyhow::Result<ProgramReply> {
-        let seconds = self.tick.load(Ordering::Relaxed) as f64 * 0.1;
+        let seconds = self.tick.load(Ordering::Relaxed) as f64 * osg_model::TICK_SECONDS;
         Ok(match query {
             ProgramQuery::Orrery { .. } => ProgramReply::Orrery(Default::default()),
-            ProgramQuery::Tracks(_) => ProgramReply::Tracks(osg_model::QueryPage {
-                revision: 0,
-                tracks: Vec::new(),
-                completion: osg_model::Completion::Complete,
-                continuation: None,
-                gas_used: 0,
-            }),
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: CurrentOrder {
                     autopilot_enabled: true,
@@ -181,7 +175,6 @@ impl ScanSource for MovingSlip {
                     index: 4,
                     order: Some(
                         Order::Slip {
-                            speed_ly_s: 0.01,
                             navigation_beacon: None,
                             destination: self.destination.clone(),
                         }
@@ -192,6 +185,7 @@ impl ScanSource for MovingSlip {
                 },
                 pose: Pose::default(),
                 slip_ready: true,
+                slip_axis: [0.0, 0.0, -1.0],
             },
             ProgramQuery::Resolve {
                 destination,
@@ -253,7 +247,7 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
                 Input {
                     tick,
                     observation: Observation {
-                        time_s: tick as f64 * 0.1,
+                        time_s: tick as f64 * osg_model::TICK_SECONDS,
                         flight: abi::FlightState {
                             rotation: [0., 0., 0., 1.],
                             mass_kg,
@@ -305,7 +299,7 @@ fn stock_wasm_refreshes_anchored_slip_lead_during_charging_within_gas_budget() {
             assert!(tick < 20, "hardware discovery did not complete");
             continue;
         };
-        let now = tick as f64 * 0.1;
+        let now = tick as f64 * osg_model::TICK_SECONDS;
         let arrival = now + (4. - now).max(0.) + 80.;
         let expected = GalacticPosition::from_meters(DVec3::new(1e16, 30_000. * arrival, 0.));
         assert!(destination.relative_to(expected).length() < 0.001);

@@ -15,10 +15,10 @@ fn guest(imports: &str, declarations: &str, body: &str) -> Vec<u8> {
         r#"(module
             {imports}
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const {version})
+            (func (export "game_version") (result i32) i32.const {version})
             {declarations}
             (func (export "ship_tick") {body}))"#,
-        version = abi::VERSION,
+        version = osg_ship_api::GAME_VERSION as u32,
     ))
     .unwrap()
 }
@@ -27,7 +27,7 @@ fn input(tick: u64) -> Input {
     Input {
         tick,
         observation: Observation {
-            time_s: tick as f64 * 0.1,
+            time_s: tick as f64 * osg_model::TICK_SECONDS,
             ..Default::default()
         },
         ..Default::default()
@@ -124,7 +124,7 @@ fn initialization_can_span_paid_slices_without_failing_preflight_validation() {
 #[test]
 fn locals_and_callback_identity_survive_many_small_grants() {
     let program = guest(
-        r#"(import "ship_v32" "persistent_write"
+        r#"(import "ship" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "(global $calls (mut i64) (i64.const 0))",
         r#"
@@ -168,11 +168,11 @@ fn locals_and_callback_identity_survive_many_small_grants() {
 fn borrowed_snapshot_survives_implicit_wait_until_it_can_be_pinned() {
     let program = guest(
         r#"
-            (import "ship_v32" "tick_read"
+            (import "ship" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v32" "snapshot_keep"
+            (import "ship" "snapshot_keep"
                 (func $keep (param i64) (result i32)))
-            (import "ship_v32" "snapshot_drop"
+            (import "ship" "snapshot_drop"
                 (func $drop (param i64) (result i32)))
         "#,
         "",
@@ -236,7 +236,7 @@ impl ScanSource for QuerySource {
 #[test]
 fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
     let program = guest(
-        r#"(import "ship_v32" "beacons_read"
+        r#"(import "ship" "beacons_read"
             (func $query (param i32 i32 i32 i32 i32 i32 i32) (result i32)))"#,
         "",
         "i32.const 0 i32.const 0 i32.const 512 i32.const 1 i32.const 4096 i32.const 128 i32.const 256 call $query \
@@ -288,7 +288,7 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
 #[test]
 fn malformed_typed_query_returns_argument_error_without_calling_service() {
     let program = guest(
-        r#"(import "ship_v32" "destination_resolve"
+        r#"(import "ship" "destination_resolve"
             (func $query (param i32 i32) (result i32)))"#,
         r#"(data (i32.const 0) "\ff\ff\ff\ff\ff\ff\ff\ff\ff\ff")"#,
         &format!(
@@ -310,13 +310,13 @@ fn malformed_typed_query_returns_argument_error_without_calling_service() {
 fn request_batches_stay_stable_while_observations_refresh() {
     let program = guest(
         r#"
-            (import "ship_v32" "request_info"
+            (import "ship" "request_info"
                 (func $request (param i32 i32 i32) (result i32)))
-            (import "ship_v32" "request_reply"
+            (import "ship" "request_reply"
                 (func $reply (param i64 i64 i32 i32) (result i32)))
-            (import "ship_v32" "tick_read"
+            (import "ship" "tick_read"
                 (func $tick (param i32 i32) (result i32)))
-            (import "ship_v32" "persistent_write"
+            (import "ship" "persistent_write"
                 (func $save (param i32 i32) (result i32)))
         "#,
         "",
@@ -376,7 +376,7 @@ fn request_batches_stay_stable_while_observations_refresh() {
 #[test]
 fn later_trap_keeps_prior_slice_durable_writes_but_reboots_the_computer() {
     let program = guest(
-        r#"(import "ship_v32" "persistent_write"
+        r#"(import "ship" "persistent_write"
             (func $save (param i32 i32) (result i32)))"#,
         "",
         r#"

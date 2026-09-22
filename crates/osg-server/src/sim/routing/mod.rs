@@ -63,6 +63,7 @@ pub struct SlipEstimate {
 
 pub trait RouteEnvironment: Send + Sync {
     fn system(&self, id: Id) -> Result<(Pose, f64)>;
+    fn system_targets(&self, id: Id, after_s: f64) -> Result<Vec<CaptureTarget>>;
     fn label(&self, order: &Order) -> String {
         order.label()
     }
@@ -92,7 +93,7 @@ pub trait RouteEnvironment: Send + Sync {
         destination: GalacticPosition,
         departure_after_s: f64,
         arrival_after_s: f64,
-        speed_ly_s: f64,
+        assisted: bool,
     ) -> Result<SlipEstimate>;
     fn cancelled(&self) -> bool {
         false
@@ -373,9 +374,8 @@ fn plan_inner(
             Order::Sublight(destination) => builder.sublight(destination.clone())?,
             Order::Slip {
                 destination,
-                speed_ly_s,
                 navigation_beacon,
-            } => builder.slip(destination.clone(), *speed_ly_s, *navigation_beacon, None)?,
+            } => builder.slip(destination.clone(), *navigation_beacon)?,
             Order::Undock => {
                 if builder.docked_at.is_some() {
                     builder.undock()?;
@@ -384,8 +384,8 @@ fn plan_inner(
             Order::WaitUntil(until) => {
                 let current_tick = request
                     .tick
-                    .saturating_add((builder.elapsed_s * 10.0).ceil() as u64);
-                let seconds = until.saturating_sub(current_tick) as f64 * 0.1;
+                    .saturating_add((builder.elapsed_s * osg_model::TICK_RATE_HZ).ceil() as u64);
+                let seconds = until.saturating_sub(current_tick) as f64 * osg_model::TICK_SECONDS;
                 builder.append(Order::WaitUntil(*until), seconds, 0.0)?;
                 builder.pose.position = builder
                     .pose
@@ -513,7 +513,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
 
     fn undock(&mut self) -> Result<()> {
         ensure!(self.docked_at.is_some(), "ship is already in space");
-        self.append(Order::Undock, 0.1, 0.0)?;
+        self.append(Order::Undock, osg_model::TICK_SECONDS, 0.0)?;
         self.docked_at = None;
         Ok(())
     }
@@ -554,9 +554,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
     fn slip(
         &mut self,
         destination: osg_model::travel::Destination,
-        mut speed_ly_s: f64,
         navigation_beacon: Option<Id>,
-        max_leg_loss_ppm: Option<f64>,
     ) -> Result<()> {
         use osg_model::travel::slip;
         ensure!(
@@ -581,27 +579,14 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                 .position
                 .offset_by(DVec3::from_array(self.pose.velocity) * preparation_s);
             let target = self.resolve(&destination, arrival)?;
-            if let Some(max_loss_ppm) = max_leg_loss_ppm {
-                let capture = self
-                    .environment
-                    .capture_target(&destination, arrival)?
-                    .ok_or_else(|| anyhow::anyhow!("slip aim has no natural capture target"))?;
-                ensure!(
-                    capture.radius_m > capture.surface_radius_m + self.request.performance.radius_m,
-                    "target surface extends into its capture boundary"
-                );
-                speed_ly_s = slip::fastest_speed_ly_s(
-                    capture.radius_m,
-                    target.position.relative_to(origin).length(),
-                    max_loss_ppm,
-                    navigation_beacon.is_some(),
-                )
-                .ok_or_else(|| anyhow::anyhow!("moving target exceeds capture floor"))?;
-            }
             self.work.charge(ENVIRONMENT_WORK, self.environment)?;
-            let estimate =
-                self.environment
-                    .slip(origin, target.position, departure, arrival, speed_ly_s)?;
+            let estimate = self.environment.slip(
+                origin,
+                target.position,
+                departure,
+                arrival,
+                navigation_beacon.is_some(),
+            )?;
             ensure!(
                 estimate.preparation_s.is_finite()
                     && estimate.preparation_s >= 0.0
@@ -627,12 +612,8 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                     "navigation beacon unavailable for this capture"
                 );
                 let distance = target.position.relative_to(origin).length();
-                let loss_ppm = slip::capture_loss_ppm(
-                    capture.radius_m,
-                    distance,
-                    speed_ly_s,
-                    navigation_beacon.is_some(),
-                );
+                let loss_ppm =
+                    slip::capture_loss_ppm(capture.radius_m, distance, navigation_beacon.is_some());
                 self.log_loss += slip::log_loss_from_ppm(loss_ppm);
                 ensure!(
                     self.log_loss
@@ -650,7 +631,6 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                 self.append(
                     Order::Slip {
                         destination,
-                        speed_ly_s,
                         navigation_beacon,
                     },
                     preparation_s + duration_s,
@@ -756,7 +736,11 @@ impl<E: RouteEnvironment> Builder<'_, E> {
             beacon.radius_m + self.request.performance.radius_m + if dock { 50.0 } else { 100.0 };
         if dock {
             let (pose, estimate) = self.estimate_approach(&destination, range_m)?;
-            self.append(Order::Dock(beacon.entity), estimate.0 + 0.1, estimate.1)?;
+            self.append(
+                Order::Dock(beacon.entity),
+                estimate.0 + osg_model::TICK_SECONDS,
+                estimate.1,
+            )?;
             self.pose = pose;
         } else {
             self.guided_approach(destination, range_m)?;
@@ -830,12 +814,7 @@ impl<E: RouteEnvironment> Builder<'_, E> {
                 ensure!(attempt < 15, "departure clearance did not converge");
                 self.sublight(departure)?;
             }
-            self.slip(
-                leg.destination(),
-                leg.speed_ly_s,
-                leg.target.navigation_beacon,
-                Some(leg.max_loss_ppm),
-            )?;
+            self.slip(leg.destination(), leg.target.navigation_beacon)?;
         }
         if let Some(station) = &station {
             self.arrive_at_beacon(station, dock)?;

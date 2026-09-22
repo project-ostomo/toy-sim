@@ -1,5 +1,5 @@
 use super::ViewCamera;
-use crate::state::{OwnedShip, ShipDetails, ViewObservation};
+use crate::state::{DisplayPose, Optical, OwnedShip, SessionInfo, ShipDetails, ViewObservation};
 use crate::ui::{Selection, shell::Shell};
 use bevy::{prelude::*, window::PrimaryWindow};
 use osg_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -16,6 +16,8 @@ fn overlay(
     mut contexts: EguiContexts,
     mut selection: ResMut<Selection>,
     shell: Res<Shell>,
+    session: Res<SessionInfo>,
+    optical: Query<(&Optical, &DisplayPose)>,
     cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,
     owned: Query<(&OwnedShip, Option<&ShipDetails>)>,
     windows: Query<&Window, With<PrimaryWindow>>,
@@ -53,6 +55,40 @@ fn overlay(
         let painter =
             osg_ui::desktop::hud_painter(ctx, egui::Id::new(("objects", observation.0.id)))
                 .with_clip_rect(clip);
+
+        for (object, pose) in &optical {
+            if object.0.view != observation.0.id
+                || object.0.contact.is_some()
+                || object.0.known_entity == observation.0.focused_ship
+            {
+                continue;
+            }
+            let Some(iff) = &object.0.iff else { continue };
+            let relative = pose.0.position.relative_to(view_camera.origin);
+            let Ok(projected) = camera.world_to_viewport(transform, relative.as_vec3()) else {
+                continue;
+            };
+            let center = egui::pos2(projected.x * scale, projected.y * scale);
+            if !clip.contains(center) {
+                continue;
+            }
+            let name = iff
+                .labels
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "Identified ship".into());
+            let standing = session
+                .society
+                .directory
+                .contact_standing(session.society.account, Some(iff));
+            painter.text(
+                center + egui::vec2(10., 8.),
+                egui::Align2::LEFT_TOP,
+                format!("{}\n{}", name, distance(relative.length())),
+                egui::FontId::proportional(11.),
+                crate::ui::standing::color(standing).gamma_multiply(0.55),
+            );
+        }
 
         for object in &shell.hud {
             let relative = object.position.relative_to(view_camera.origin);

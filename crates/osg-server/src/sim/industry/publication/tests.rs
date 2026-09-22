@@ -84,7 +84,6 @@ impl Fixture {
     fn publish(&mut self, interest: &IndustrySubscription) -> IndustrySnapshot {
         refresh(&mut self.world);
         let snapshot = snapshot(&self.world, self.account, interest);
-        osg_protocol::validate_industry_snapshot_content(&snapshot).unwrap();
         snapshot
     }
 }

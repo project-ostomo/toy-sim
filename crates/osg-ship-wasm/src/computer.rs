@@ -144,14 +144,12 @@ impl Default for Input {
 pub enum CallbackKind {
     Ship,
     Display,
-    Missile(u64),
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct Output {
     pub world_actions: Vec<osg_model::ProgramAction>,
     pub devices: Vec<DeviceCommand>,
-    pub missiles: Vec<(u64, abi::MissileControl)>,
     pub replies: Vec<RequestReply>,
     pub screens: Vec<ScreenImage>,
     pub cleared_screens: Vec<u64>,
@@ -160,6 +158,7 @@ pub struct Output {
 
 #[derive(Clone, Debug, Default)]
 pub struct SensorContact {
+    pub iff: Option<(osg_model::EntityId, osg_model::IffIdentity)>,
     pub measured: abi::Contact,
     pub name: String,
 }
@@ -478,9 +477,9 @@ mod tests {
         let bytes = wat::parse_str(format!(
             r#"(module
             (memory (export "memory") 1)
-            (func (export "ship_api_version") (result i32) i32.const {})
+            (func (export "game_version") (result i32) i32.const {})
             (func (export "ship_tick")))"#,
-            abi::VERSION,
+            osg_ship_api::GAME_VERSION as u32,
         ))
         .unwrap();
         crate::ControllerRuntime::new()
@@ -601,8 +600,6 @@ pub fn query_work(query: &osg_model::ProgramQuery) -> u64 {
         ProgramQuery::RouteRequest(_) => osg_model::routing::REQUEST_GAS,
         ProgramQuery::RoutePoll { .. } => osg_model::routing::POLL_GAS,
         ProgramQuery::SlipEligibility { .. } => 131_072,
-        ProgramQuery::Tracks(query) => query.work.min(1_000_000),
-        ProgramQuery::Continue { work, .. } => (*work).min(1_000_000),
         ProgramQuery::Beacons { limit, .. } => 100 + 1008 * u64::from((*limit).min(256)),
         ProgramQuery::Beacon(_)
         | ProgramQuery::Contact(_)

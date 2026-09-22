@@ -4,7 +4,7 @@ use osg_ship_api::world as a;
 
 pub(super) fn prepare(
     caller: &Caller<'_, Host>,
-    mut query: ProgramQuery,
+    query: ProgramQuery,
     capacity: ReplyCapacity,
     input_bytes: usize,
     output_budget: usize,
@@ -16,11 +16,6 @@ pub(super) fn prepare(
         .min(output_budget);
     let base = w::CALL_GAS + words(input_bytes) + words(output_budget);
     let maximum = caller.data().gas_per_tick.saturating_sub(base);
-    match &mut query {
-        ProgramQuery::Tracks(query) => query.work = query.work.min(maximum),
-        ProgramQuery::Continue { work, .. } => *work = (*work).min(maximum),
-        _ => {}
-    }
     let work = source
         .query_work(&query)
         .map_err(|error| world_query_error(error).priced(w::CALL_GAS + words(input_bytes)))?;
@@ -50,10 +45,7 @@ pub(super) fn execute(caller: &mut Caller<'_, Host>) -> CallResult<ProgramReply>
         caller.data().display_only,
         prepared.capacity,
     );
-    let used = match &result {
-        Ok(ProgramReply::Tracks(page)) => page.gas_used,
-        _ => prepared.work,
-    };
+    let used = prepared.work;
     assert!(
         used <= prepared.work,
         "world service exceeded admitted work"
