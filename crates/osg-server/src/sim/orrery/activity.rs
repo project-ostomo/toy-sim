@@ -103,6 +103,7 @@ pub fn activate(
     >,
 ) {
     let mut needed = BTreeSet::new();
+    let _profile = crate::sim::diagnostics::ProfileScope::new("activate_systems");
     active.object_systems.clear();
     for (entity, p, v, presence, motion, dormant) in &objects {
         match presence.map(|presence| &presence.0) {

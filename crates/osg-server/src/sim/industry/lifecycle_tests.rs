@@ -12,14 +12,14 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
     let id = world.get::<identity::Identity>(facility).unwrap().0;
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let metal = CargoItem::Resource("industrial_metals".into());
-    let repair = CargoItem::Resource("repair_material".into());
+    let electronics = CargoItem::Resource("industrial_electronics".into());
     let initial = world
         .get::<hardware::ShipInventory>(facility)
         .unwrap()
         .0
         .clone();
     let metal_before = initial.cargo_quantity(&metal, &catalogue).unwrap();
-    let repair_before = initial.cargo_quantity(&repair, &catalogue).unwrap();
+    let electronics_before = initial.cargo_quantity(&electronics, &catalogue).unwrap();
 
     seed_demo(world, facility, account).unwrap();
     assert_eq!(
@@ -31,7 +31,7 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
         account,
         IndustryCommand::StartRecipe {
             facility: id,
-            recipe: "repair_material".into(),
+            recipe: "electronics".into(),
             batches: 1,
         },
         None,
@@ -95,8 +95,8 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
         metal_before - input
     );
     assert_eq!(
-        inventory.cargo_quantity(&repair, &catalogue).unwrap(),
-        repair_before + 1
+        inventory.cargo_quantity(&electronics, &catalogue).unwrap(),
+        electronics_before + input / 8 * 10
     );
     assert!(inventory.reservations.is_empty());
     assert_eq!(paid_energy, energy as f64);

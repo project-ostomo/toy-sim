@@ -27,7 +27,7 @@ fn starting_orbit_allows_slip_departure_without_a_clearance_burn() {
     let system = universe
         .systems
         .iter()
-        .find(|system| system.name == "Fomalhaut B")
+        .find(|system| system.name == "HIP 117953")
         .unwrap();
     let request = Request {
         id: 1,
@@ -138,7 +138,6 @@ fn enqueue_idempotence_namespace_and_revision_checks_precede_mutation() {
         Status::Pending { .. }
     ));
 }
-
 
 fn completed(world: &mut World, ship: Entity, id: u64) -> Plan {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

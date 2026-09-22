@@ -477,7 +477,6 @@ throughput_kg_s = 0.0001
 power_w = 2000000.0
 recovery_fraction = 0.95
 produces_charges = false
-fissile_fraction = 1.0
 
 [[parts]]
 id = "fuel_plant_8m"
@@ -493,7 +492,6 @@ throughput_kg_s = 0.01
 power_w = 20000000.0
 recovery_fraction = 1.0
 produces_charges = true
-fissile_fraction = 0.01
 
 [[resources]]
 id = "reactor_fuel"
@@ -797,12 +795,6 @@ title = "Life support supplies"
 mass_kg = 1.0
 volume_m3 = 0.001
 
-[[resources]]
-id = "repair_material"
-title = "Repair material"
-mass_kg = 1.0
-volume_m3 = 0.0003333333333333333
-
 [[parts]]
 id = "command_2m"
 title = "2m Command module"
@@ -874,21 +866,6 @@ type = "life_support"
 capacity = 16
 power_w = 16000.0
 supplies_kg_per_person_s = 0.00003
-
-[[parts]]
-id = "workshop_4m"
-title = "4m Repair workshop"
-dimensions = [40, 40, 40]
-mass_kg = 6000.0
-hull = 6000.0
-color = [0.45, 0.5, 0.56]
-model = "models/parts/workshop-4m.glb"
-kind = "utility"
-[parts.utility]
-type = "workshop"
-repair_hp_s = 5.0
-material_kg_hp = 0.2
-power_w = 100000.0
 
 [[parts]]
 id = "cargo_handler_4m"

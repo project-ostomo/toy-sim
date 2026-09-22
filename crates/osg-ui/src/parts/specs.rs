@@ -367,8 +367,7 @@ impl PartDescription {
                 performance.quantity("Processing rate", spec.throughput_kg_s, MassFlow);
                 performance.quantity("Recovery", spec.recovery_fraction, Percent);
                 if spec.produces_charges {
-                    requirements.text("Inputs", "Reactor fuel and structural material");
-                    requirements.quantity("Fuel fraction", spec.fissile_fraction, Percent);
+                    requirements.text("Input", "Reactor fuel");
                     performance.text("Output", "Micropulse charges");
                 } else {
                     requirements.text("Input", "Bred fuel");
@@ -540,22 +539,6 @@ impl PartDescription {
                         (
                             "Life support",
                             "Consumes supplies and electricity to sustain the crew.",
-                        )
-                    }
-                    UtilityDef::Workshop {
-                        repair_hp_s,
-                        material_kg_hp,
-                        power_w,
-                    } => {
-                        performance.text("Hull repair", format!("{} HP/s", number(repair_hp_s)));
-                        requirements.text(
-                            "Repair material",
-                            format!("{} kg/HP", number(material_kg_hp)),
-                        );
-                        requirements.quantity("Electrical input", power_w, Power);
-                        (
-                            "Repair workshop",
-                            "Repairs hull damage using stored repair material.",
                         )
                     }
                     UtilityDef::CargoHandler {

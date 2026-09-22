@@ -79,42 +79,21 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
             bay.public = true;
         }
     }
-    for (resource, quantity) in [("repair_material", 20_000), ("exotic_fuel", 10_000_000)] {
-        let capacity = world
-            .get::<vessel::ShipDesign>(station)
-            .unwrap()
-            .0
-            .capacity_m3;
-        world
-            .get_mut::<hardware::ShipInventory>(station)
-            .unwrap()
-            .0
-            .insert_item(
-                &industry::CargoItem::Resource(resource.into()),
-                quantity,
-                capacity,
-                &catalogue,
-            )?;
-    }
     let capacity = world
-        .get::<vessel::ShipDesign>(player)
+        .get::<vessel::ShipDesign>(station)
         .unwrap()
         .0
         .capacity_m3;
-    let repair = catalogue
-        .resources
-        .iter()
-        .find(|resource| resource.id == "repair_material")
-        .context("repair material unavailable")?;
-    let mut inventory = world.get_mut::<hardware::ShipInventory>(player).unwrap();
-    let available = ((capacity - inventory.0.cargo_volume(&catalogue)).max(0.0) / repair.volume_m3)
-        .floor() as u64;
-    inventory.0.insert_item(
-        &industry::CargoItem::Resource("repair_material".into()),
-        available.min(100),
-        capacity,
-        &catalogue,
-    )?;
+    world
+        .get_mut::<hardware::ShipInventory>(station)
+        .unwrap()
+        .0
+        .insert_item(
+            &industry::CargoItem::Resource("exotic_fuel".into()),
+            10_000_000,
+            capacity,
+            &catalogue,
+        )?;
     super::industry::synchronize_mass(world, &[player]);
 
     let account = world.get::<identity::Control>(player).unwrap().account;

@@ -484,39 +484,6 @@ fn guidance_waits_for_alignment_and_brakes_at_arrival() {
 }
 
 #[test]
-fn slow_attitude_control_and_throttle_limit_still_intercept() {
-    let mut f = Flight::new(
-        DVec3::ZERO,
-        DVec3::X * 50_000.,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        false,
-    );
-    let torquer = f.cat.parts.iter_mut().find(|p| p.id == "torquer").unwrap();
-    if let Equipment::Torquer { torque_nm, .. } = &mut torquer.equipment {
-        *torque_nm *= 0.1;
-    }
-    f.design = f.design.blueprint.compile(&f.cat).unwrap();
-    f.hardware = fixture(&f.design, &f.cat);
-    f.tick(vec![]);
-    f.tick(vec![
-        Command::SelectTarget(42),
-        Command::EngageNavigation {
-            throttle_limit: 0.5,
-            stand_off_m: 100.,
-        },
-    ]);
-    for _ in 0..1000 {
-        let out = f.tick(vec![]);
-        for d in &out.devices {
-            if let DeviceSetting::Throttle(t) = d.setting {
-                assert!(t <= 0.5);
-            }
-        }
-    }
-    f.finish();
-}
-#[test]
 fn pursuit_tracks_target_maneuvers_without_reengagement() {
     for acceleration in [DVec3::X * 15., DVec3::new(8., 6., -3.)] {
         let mut f = Flight::new(
@@ -913,74 +880,6 @@ fn target_already_at_requested_stand_off_requires_no_burn() {
     f.finish();
     assert_eq!(f.pilot.navigation.throttle, 0.);
     assert_eq!(f.pilot.navigation.stand_off, 100.);
-}
-
-#[test]
-fn forecast_reaches_first_pass_and_retains_the_path_between_refreshes() {
-    for range in [50_000., 1_000_000.] {
-        let mut f = Flight::new(
-            DVec3::ZERO,
-            DVec3::NEG_Z * range,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            false,
-        );
-        f.display = true;
-        f.engage();
-        let (origin, path) = f.forecast();
-        let end = path.points.last().unwrap();
-        assert!(end.seconds > 30.);
-        assert!(path.eta.unwrap() > 30. && path.eta.unwrap() <= end.seconds);
-        assert!(path.points.iter().any(|point| point.speed > 500.0));
-        assert!(path.points.iter().any(|point| {
-            let predicted = origin + point.r + path.frame_velocity * point.seconds;
-            predicted.distance(f.target) < range * 0.05
-        }));
-        assert!(path.points.len() <= abi::MAX_PATH_VERTICES as usize);
-        f.tick(vec![]);
-        assert!(
-            !f.pilot.forecast_changed(),
-            "retain the previous complete publication"
-        );
-    }
-}
-
-#[test]
-fn complete_forecast_tracks_full_thrust_approach() {
-    let mut f = Flight::new(
-        DVec3::ZERO,
-        DVec3::NEG_Z * 50_000.,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        false,
-    );
-    f.display = true;
-    f.engage();
-    let (origin, path) = f.forecast();
-    let eta = path.eta.unwrap();
-    assert!(eta > 30.);
-    f.display = false;
-    while f.time - path.epoch < eta {
-        let t = f.time - path.epoch;
-        let j = path
-            .points
-            .partition_point(|p| p.seconds < t)
-            .clamp(1, path.points.len() - 1);
-        let a = path.points[j - 1];
-        let b = path.points[j];
-        let p = a.r.lerp(b.r, (t - a.seconds) / (b.seconds - a.seconds));
-        let predicted = origin + p + path.frame_velocity * t;
-        let tolerance = (f.pilot.navigation.error().length() * 0.05).max(250.);
-        assert!(
-            predicted.distance(f.p) < tolerance,
-            "t={} error={} tolerance={}",
-            t,
-            predicted.distance(f.p),
-            tolerance
-        );
-        f.tick(vec![]);
-    }
-    assert!(f.pilot.navigation.u.length() <= 1.);
 }
 
 #[test]

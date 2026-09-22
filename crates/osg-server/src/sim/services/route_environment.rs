@@ -8,7 +8,6 @@ pub(crate) struct Environment {
     source: Arc<ShipScan>,
     cancel: Arc<AtomicBool>,
     navigation: BTreeMap<Id, Id>,
-    assisted: osg_spatial::SpatialHash,
     deadline: std::time::Instant,
 }
 
@@ -57,26 +56,10 @@ impl Environment {
                 }
             }
         }
-        let mut assisted = osg_spatial::SpatialHash::default();
-        if let Some(universe) = &source.universe {
-            for system in navigation.keys() {
-                if let Some(index) = universe.registry.universe.system_index(system.0) {
-                    assisted.insert(
-                        index as u32,
-                        osg_spatial::Entry {
-                            position: universe.registry.universe.systems[index].position,
-                            radius_m: 0.,
-                            luminosity: 0.,
-                        },
-                    );
-                }
-            }
-        }
         Ok(Self {
             source,
             cancel,
             navigation,
-            assisted,
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(2),
         })
     }
@@ -232,16 +215,14 @@ impl RouteEnvironment for Environment {
         indices.extend(universe.index.nearest_many(goal, limit / 4 + 1));
         let displacement = goal.relative_to(origin);
         for fraction in [0.25, 0.5, 0.75] {
-            indices.extend(
-                self.assisted
-                    .nearest(
-                        origin.offset_by(displacement * fraction),
-                        f64::INFINITY,
-                        limit / 8 + 1,
-                    )
-                    .into_iter()
-                    .map(|index| index as usize),
-            );
+            indices.extend(universe.index.nearest_filtered(
+                origin.offset_by(displacement * fraction),
+                limit / 8 + 1,
+                |index| {
+                    self.navigation
+                        .contains_key(&Id(universe.systems[index].id))
+                },
+            ));
             indices.extend(
                 universe
                     .index
@@ -249,10 +230,12 @@ impl RouteEnvironment for Environment {
             );
         }
         indices.extend(
-            self.assisted
-                .nearest(goal, f64::INFINITY, limit / 8 + 1)
-                .into_iter()
-                .map(|index| index as usize),
+            universe
+                .index
+                .nearest_filtered(goal, limit / 8 + 1, |index| {
+                    self.navigation
+                        .contains_key(&Id(universe.systems[index].id))
+                }),
         );
         indices.sort_unstable();
         indices.dedup();

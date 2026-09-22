@@ -1,3 +1,4 @@
+mod capture;
 pub(crate) mod celestials;
 mod console;
 mod input;
@@ -62,6 +63,7 @@ pub fn run(endpoint: Endpoint, local: bool) {
     app.add_observer(state::reset_resource::<selection::Subscriptions>);
 
     app.add_plugins((
+        capture::install,
         input::install,
         scene::install,
         console::install,

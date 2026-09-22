@@ -145,7 +145,6 @@ fn write_pose(world: &mut World, entity: Entity, pose: Pose) {
         Velocity(DVec3::from_array(pose.velocity)),
         AngularVelocity(DVec3::from_array(pose.angular_velocity)),
     ));
-    geometry::update(world, entity);
 }
 fn emit(world: &mut World, entity: Entity, kind: &'static str, position: Option<GalacticPosition>) {
     world
@@ -439,15 +438,7 @@ pub fn clear_at(
         if other == ship || Some(other) == ignore || world.get::<Dormant>(other).is_some() {
             return true;
         }
-        match (
-            world.get::<PreciseTransform>(other),
-            world.get::<super::spatial::SpatialBody>(other),
-        ) {
-            (Some(pose), Some(body)) => {
-                pose.translation_um.relative_to(position).length() > radius + body.radius_m
-            }
-            _ => true,
-        }
+        false
     });
     clear && celestial_conditions(world, position, radius).0
 }
@@ -481,12 +472,22 @@ fn celestial_conditions(
         return (clear, outside);
     }
 
-    let mut query = world.query::<(&PreciseTransform, &CelestialState)>();
-    query
-        .iter(world)
+    let Some(scene) = world.get_resource::<super::spatial::SpatialIndex>() else {
+        return (false, false);
+    };
+    scene
+        .service()
+        .sphere_candidates(position.to_array(), radius)
+        .into_iter()
+        .filter(|record| record.kind == osg_spatial_bvh::RecordKind::Body)
+        .filter_map(|record| {
+            world
+                .get::<CelestialState>(Entity::from_bits(record.id))
+                .map(|body| (record, body))
+        })
         .filter(|(_, body)| !matches!(body.body.class_params, super::orrery::BodyClass::Barycenter))
-        .fold((true, true), |(clear, outside), (pose, body)| {
-            let distance = pose.translation_um.relative_to(position).length();
+        .fold((true, true), |(clear, outside), (record, body)| {
+            let distance = record.distance(position.to_array());
             (
                 clear && distance > body.body.radius + radius,
                 outside
@@ -682,7 +683,6 @@ pub(crate) fn set_dormant(world: &mut World, ship: Entity, presence: Presence) {
             DirectoryEmitter,
             NavigationBeaconEmitter,
         )>();
-    geometry::update(world, ship);
 }
 
 fn set_active(world: &mut World, ship: Entity) {
@@ -710,7 +710,6 @@ fn set_active(world: &mut World, ship: Entity) {
         }
     }
     super::hardware::wake(world, ship);
-    geometry::update(world, ship);
 }
 
 pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramAction) -> Result<()> {

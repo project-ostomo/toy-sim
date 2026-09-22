@@ -123,7 +123,17 @@ fn arriving_body_interacts_only_after_its_capture_time() {
         divergence_rad: 0.0,
         duration_s: 0.001,
     };
-    assert!(weapons::resolve_beam(before_arrival, &mut bodies[1..], 0.05, &mut report).is_none());
+    let spatial = test_snapshot(&bodies, 0.1);
+    assert!(
+        weapons::resolve_beam(
+            before_arrival,
+            &mut bodies[1..],
+            &spatial,
+            0.05,
+            &mut report
+        )
+        .is_none()
+    );
     let report = simulate(&mut bodies, 0.1);
     assert_eq!(report.impacts, 0);
     assert!((bodies[0].position.to_meters_64() - DVec3::X * 5.0).length() < 1e-6);
@@ -441,7 +451,7 @@ fn destroyed_slug_cannot_hit_a_second_ship() {
 }
 
 #[test]
-fn hash_boundaries_and_diagonal_sweeps_match_exhaustive_candidates() {
+fn galactic_diagonal_sweeps_match_exhaustive_candidates() {
     let origin = GalacticPosition::splat(1_i128 << 100);
     let mut proxies = Vec::new();
     for i in 0..200 {
@@ -450,26 +460,45 @@ fn hash_boundaries_and_diagonal_sweeps_match_exhaustive_candidates() {
             ((i * 7919) % 200000) as f64,
             ((i * 173) % 200000) as f64,
         );
-        proxies.push(Proxy {
+        proxies.push(SpatialRecord {
+            kind: RecordKind::Collision,
             id: i,
-            position: origin.offset_by(p),
-            displacement: DVec3::new((i % 3) as f64 * 100000.0, -50000.0, 10000.0),
-            radius: 1000.0,
+            position: origin.offset_by(p).to_array(),
+            radius_m: 1000.0,
         });
     }
-    let index = SweptIndex::build(&proxies);
-    let pairs = index.pairs();
+    let displacement = |id: u64| DVec3::new((id % 3) as f64 * 100000.0, -50000.0, 10000.0);
+    let mut index = SpatialService::new([]);
+    index.rebuild_dynamic(
+        proxies
+            .iter()
+            .map(|p| p.dynamic(0., displacement(p.id).to_array())),
+    );
+    let pairs: std::collections::BTreeSet<_> = index
+        .collision_candidates(|_, _| true)
+        .into_iter()
+        .map(|(a, b)| (a.id.min(b.id), a.id.max(b.id)))
+        .collect();
     for a in 0..proxies.len() {
         for b in a + 1..proxies.len() {
             if sphere_interval(
-                proxies[b].position.relative_to(proxies[a].position),
-                proxies[b].displacement - proxies[a].displacement,
+                GalacticPosition::new(
+                    proxies[b].position[0],
+                    proxies[b].position[1],
+                    proxies[b].position[2],
+                )
+                .relative_to(GalacticPosition::new(
+                    proxies[a].position[0],
+                    proxies[a].position[1],
+                    proxies[a].position[2],
+                )),
+                displacement(proxies[b].id) - displacement(proxies[a].id),
                 2000.0,
                 1.0,
             )
             .is_some()
             {
-                assert!(pairs.binary_search(&(a as u32, b as u32)).is_ok());
+                assert!(pairs.contains(&(a as u64, b as u64)));
             }
         }
     }
@@ -589,24 +618,34 @@ fn destroying_a_docked_member_preserves_the_survivors_velocity_field() {
 }
 
 #[test]
-fn swept_storage_reuse_handles_migration_deletion_and_reordered_ids() {
-    let mut index = SweptIndex::default();
+fn successive_snapshots_handle_migration_deletion_and_reordered_ids() {
+    let mut index = SpatialService::new([]);
     for tick in 0..5 {
         let mut proxies: Vec<_> = (tick..120)
-            .map(|i| Proxy {
+            .map(|i| SpatialRecord {
+                kind: RecordKind::Collision,
                 id: i * 1_000_003,
                 position: GalacticPosition::from_meters(DVec3::new(
                     (i % 12) as f64 * 30000.0 - tick as f64 * 80000.0,
                     (i / 12) as f64 * 30000.0,
                     0.0,
-                )),
-                displacement: DVec3::new(130000.0, 170000.0, 0.0),
-                radius: 1000.0,
+                ))
+                .to_array(),
+                radius_m: 1000.0,
             })
             .collect();
         proxies.reverse();
-        index.refresh(&proxies);
-        assert_eq!(index.pairs(), SweptIndex::build(&proxies).pairs());
+        index.rebuild_dynamic(
+            proxies
+                .iter()
+                .map(|p| p.dynamic(0., [130000.0, 170000.0, 0.0])),
+        );
+        let ids: std::collections::BTreeSet<_> = index
+            .sphere_candidates([0; 3], f64::INFINITY)
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(ids, proxies.iter().map(|p| p.id).collect());
     }
 }
 
@@ -869,7 +908,8 @@ fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
         member.thermal.shield_enabled = true;
         member.thermal.shield_powered = true;
     }
-    activate(&mut bodies);
+    let spatial = test_snapshot(&bodies, 0.1);
+    activate(&mut bodies, &spatial);
     assert!(
         bodies
             .iter()
@@ -877,14 +917,16 @@ fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
     );
 
     bodies[1].position = GalacticPosition::from_meters(DVec3::X * 3.0);
-    activate(&mut bodies);
+    let spatial = test_snapshot(&bodies, 0.1);
+    activate(&mut bodies, &spatial);
     assert!(bodies[0].members[0].shielded());
     assert_eq!(
         bodies[1].members[0].thermal.shield_state,
         abi::SHIELD_BLOCKED
     );
     bodies[1].position = GalacticPosition::from_meters(DVec3::X * 5.0);
-    activate(&mut bodies);
+    let spatial = test_snapshot(&bodies, 0.1);
+    activate(&mut bodies, &spatial);
     assert!(bodies[1].members[0].shielded());
 }
 

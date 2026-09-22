@@ -69,6 +69,7 @@ fn move_orrery(
     )>,
 ) {
     let epoch = sim_time(&time);
+    let _profile = super::diagnostics::ProfileScope::new("move_orrery");
     bodies
         .par_iter_mut()
         .for_each(|(body, mut pose, mut state)| {

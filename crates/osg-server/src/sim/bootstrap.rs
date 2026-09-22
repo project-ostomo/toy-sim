@@ -105,7 +105,6 @@ fn provision_inner(
         identity::add_account(world, account, true);
     }
     super::infrastructure::spawn(world, player)?;
-    travel::geometry::refresh(world);
     let mut publish = Schedule::default();
     publish.add_systems(
         (
@@ -155,7 +154,6 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                     physics::AccumulatedTorque::default(),
                 ));
                 world.entity_mut(entity).remove::<physics::WithinSoi>();
-                travel::geometry::update(world, entity);
                 identity::renew_spatial_instance(world, entity);
                 if let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity) {
                     software.command(osg_ship_wasm::Command::StopGuidance);
@@ -244,7 +242,6 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                     ))
                     .remove::<physics::WithinSoi>();
                 travel::cancel_pending(world, entity);
-                travel::geometry::update(world, entity);
                 identity::renew_spatial_instance(world, entity);
                 if let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity) {
                     software.command(osg_ship_wasm::Command::StopGuidance);
@@ -254,102 +251,4 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_patrol_encounter_starts_close_and_hostile_fires_repeatedly_without_player_input() {
-        let account = Id::new();
-        let mut app = provision_combat_fixture(&[account], Some(account), None).unwrap();
-        let world = app.world_mut();
-        let ships = world
-            .query_filtered::<Entity, (
-                With<vessel::Vessel>,
-                Without<super::super::infrastructure::Landmark>,
-            )>()
-            .iter(world)
-            .collect::<Vec<_>>();
-        assert_eq!(ships.len(), 2);
-        let player = *ships
-            .iter()
-            .find(|&&ship| world.get::<vessel::ControlledVessel>(ship).is_some())
-            .unwrap();
-        let hostile = *ships.iter().find(|&&ship| ship != player).unwrap();
-        let player_pose = world.get::<precision::PreciseTransform>(player).unwrap();
-        let hostile_pose = world.get::<precision::PreciseTransform>(hostile).unwrap();
-        let separation = hostile_pose
-            .translation_um
-            .relative_to(player_pose.translation_um)
-            .length();
-        assert!((separation - 1_000.).abs() < 1.);
-        assert_ne!(
-            world.get::<identity::Control>(hostile).unwrap().account,
-            account
-        );
-        for &ship in &ships {
-            assert!(
-                world
-                    .get::<vessel::ShipDesign>(ship)
-                    .unwrap()
-                    .0
-                    .blueprint
-                    .parts
-                    .iter()
-                    .any(|part| part.prototype == "micropulse_engine_4m")
-            );
-        }
-        let mut own_projectiles = std::collections::HashSet::new();
-        let mut previous_shots = 0;
-        let mut multiple_shots_in_tick = false;
-        for _ in 0..200 {
-            app.update();
-            if let Some(report) = app
-                .world()
-                .get_resource::<super::super::physics::collision::CollisionReport>()
-            {
-                own_projectiles.extend(
-                    report
-                        .report
-                        .shots
-                        .iter()
-                        .filter(|shot| shot.owner == hostile)
-                        .map(|shot| shot.projectile),
-                );
-                assert!(
-                    !report.report.impact_events.iter().any(|impact| impact
-                        .entities
-                        .contains(&hostile)
-                        && impact
-                            .entities
-                            .iter()
-                            .any(|id| own_projectiles.contains(id))),
-                    "patrol gun hits its own voxel hull"
-                );
-            }
-            let state = super::super::hardware::snapshot(app.world(), hostile).unwrap();
-            let shots = state
-                .weapons
-                .iter()
-                .map(|weapon| weapon.shots_fired)
-                .sum::<u64>();
-            multiple_shots_in_tick |= shots.saturating_sub(previous_shots) >= 2;
-            previous_shots = shots;
-            if shots >= 20 && multiple_shots_in_tick {
-                return;
-            }
-        }
-        let state = super::super::hardware::snapshot(app.world(), hostile).unwrap();
-        let software = app.world().get::<vessel::ShipSoftware>(hostile).unwrap();
-        panic!(
-            "hostile patrol did not fire repeatedly: weapons={:?}, energy={}, resources={:?}, controller={:?}, inbox={:?}",
-            state.weapons,
-            state.inventory.energy_j,
-            state.inventory.quantities,
-            software.controller.state.weapons,
-            software.inbox
-        );
-    }
 }

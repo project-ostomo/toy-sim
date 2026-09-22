@@ -8,9 +8,9 @@ fn main() -> anyhow::Result<()> {
         None => StarCatalogue::embedded()?,
     };
     println!(
-        "{} stars, {} buckets; load+index {:.3} s; record memory {} MiB",
+        "{} stars, {} BVH nodes; load+index {:.3} s; record memory {} MiB",
         catalogue.len(),
-        catalogue.bucket_count(),
+        catalogue.node_count(),
         start.elapsed().as_secs_f64(),
         catalogue.len() * std::mem::size_of::<osg_stars::Star>() / (1024 * 1024)
     );

@@ -13,6 +13,10 @@ pub struct GalacticPosition {
 }
 
 impl GalacticPosition {
+    pub const fn to_array(self) -> [i128; 3] {
+        [self.x, self.y, self.z]
+    }
+
     pub const UNITS_PER_METRE: i128 = 1_000_000;
 
     #[inline]

@@ -28,9 +28,9 @@ The server binary `osg-server` and the remote client binary `osg-client` live in
 
 | Package | Path | Purpose |
 | --- | --- | --- |
-| `osg-spatial` | [crates/osg-spatial](crates/osg-spatial) | Shared geometric and brightness-bucketed spatial hash for visibility, sensors, collisions and world queries. |
+| `osg-spatial-bvh` | [crates/osg-spatial-bvh](crates/osg-spatial-bvh) | Shared immutable BVHs for visibility, sensors, collisions and world queries. |
 | `osg-space` | [crates/osg-space](crates/osg-space) | `GalacticPosition`: signed 128-bit integer micrometre coordinates. |
-| `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, brightness-bucketed spatial hash queries and the embedded Gaia catalogue. |
+| `osg-stars` | [crates/osg-stars](crates/osg-stars) | Star records, the flat `.stars` file format, shared BVH queries and the embedded Gaia catalogue. |
 | `osg-ship-api` | [crates/osg-ship-api](crates/osg-ship-api) | `no_std` Rust C-ABI records, typed world/service imports, caller-owned output arrays and a small SDK. |
 | `osg-ships` | [crates/osg-ships](crates/osg-ships) | Part catalogue, ship blueprints (`.ship`), design compilation, device and thermal models, weapon mechanisms, and `ShipState`, the hardware state record used to bootstrap and snapshot a ship. |
 | `osg-ship-wasm` | [crates/osg-ship-wasm](crates/osg-ship-wasm) | Wasmtime host for flight computers: gas metering, booting, syscalls, world services, spatial publications, screen frames and separate `ship_display` instances. |

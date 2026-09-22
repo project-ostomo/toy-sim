@@ -10,7 +10,7 @@ Run `tools/art/catalogue.py` inside Blender with `runpy.run_path(absolute_path, 
 
 ## Propulsion and fuel
 
-Micropulse drives consume complete manufactured charges. Their electricity recovery exists only during a burn. Smaller drives have lower specific impulse, so equal manoeuvres can cost more charge mass. The charge plant consumes reactor fuel and bulk repair material; charge energy utilization is deliberately much worse than sustained reactor utilization. Manufacturing coefficients describe abstract game inventories, not a physical device design.
+Micropulse drives consume complete manufactured charges. Their electricity recovery exists only during a burn. Smaller drives have lower specific impulse, so equal manoeuvres can cost more charge mass. The charge plant consumes reactor fuel; charge energy utilization is deliberately much worse than sustained reactor utilization. Manufacturing coefficients describe abstract game inventories, not a physical device design.
 
 Thermal engines contain their own propulsion reactor. Hydrogen variants offer greater exhaust velocity with bulky storage; water variants trade performance for dense, convenient propellant. Propellant and reactor fuel are consumed together, and exhausted reactor fuel must fit in spent-fuel storage. A shortage reduces thrust. Prompt waste and a decaying heat reservoir remain after a burn. An excessively hot cooling sink inhibits firing.
 
@@ -48,7 +48,7 @@ Powered beacon equipment enables navigation broadcasts. Docking ports and hangar
 
 Cargo handlers and power couplers serve docked ships belonging to the same owner. The docked ship must explicitly request cargo and/or power service using `SetDockServices`. Transfers respect authored rate limits and destination capacity. Cargo resupply targets allocated tanks. Service preferences are included in telemetry and cleared after leaving the dock.
 
-Crew quarters establish crew capacity and population. Life support consumes supplies and electricity, and reports the supported fraction. There is no crew death simulation. Workshops consume repair material and electricity to restore hull integrity; they do not fabricate replacement ships.
+Crew quarters establish crew capacity and population. Life support consumes supplies and electricity, and reports the supported fraction. There is no crew death simulation.
 
 ## Weapons
 

@@ -1,6 +1,6 @@
 use crate::sim::precision::GalacticPosition;
 use bevy::{math::DVec3, prelude::*};
-use osg_spatial::{Entry, SpatialHash};
+use osg_spatial_bvh::{DynamicEntry, RecordKind, SpatialQuery, SpatialRecord, SpatialService};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy)]
@@ -18,10 +18,13 @@ pub struct SpatialIndex {
     pub objects: Vec<SpatialObject>,
     entities: ahash::AHashMap<Entity, usize>,
     targets: Vec<usize>,
-    hash: SpatialHash,
-    celestial_hash: SpatialHash,
-    celestial_groups: Vec<Vec<usize>>,
-    celestial_systems: ahash::AHashMap<usize, usize>,
+    geometry: OnceLock<SpatialService<SpatialRecord>>,
+    pub velocities: ahash::AHashMap<Entity, DVec3>,
+    pub capture_radii: ahash::AHashMap<Entity, f64>,
+    pub collision_entries: Vec<DynamicEntry<SpatialRecord>>,
+    pub tick_seconds: f64,
+    pub tick: u64,
+    celestial_systems: ahash::AHashSet<usize>,
     illumination: Vec<OnceLock<Illumination>>,
     pub sky: super::lighting::Sky,
 }
@@ -34,18 +37,14 @@ struct Illumination {
 
 impl SpatialIndex {
     pub fn clear(&mut self) {
+        let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_clear");
         self.objects.clear();
         self.entities.clear();
         self.targets.clear();
-        self.hash.clear();
-        self.celestial_hash.clear();
-        for group in self
-            .celestial_groups
-            .iter_mut()
-            .take(self.celestial_systems.len())
-        {
-            group.clear();
-        }
+        self.geometry.take();
+        self.velocities.clear();
+        self.capture_radii.clear();
+        self.collision_entries.clear();
         self.celestial_systems.clear();
         self.illumination.clear();
         self.sky.local.clear();
@@ -61,26 +60,11 @@ impl SpatialIndex {
 
     fn insert_object(&mut self, object: SpatialObject, system: Option<usize>) {
         let id = self.objects.len();
-        assert!(id < u32::MAX as usize);
+        self.geometry.take();
         if let Some(system) = system {
-            let next_slot = self.celestial_systems.len();
-            let slot = *self.celestial_systems.entry(system).or_insert_with(|| {
-                if next_slot == self.celestial_groups.len() {
-                    self.celestial_groups.push(Vec::new());
-                }
-                next_slot
-            });
-            self.celestial_groups[slot].push(id);
+            self.celestial_systems.insert(system);
         } else {
             self.targets.push(id);
-            self.hash.insert(
-                id as u32,
-                Entry {
-                    position: object.position,
-                    radius_m: object.radius_m,
-                    luminosity: 0.,
-                },
-            );
         }
         self.entities.insert(object.entity, id);
         self.objects.push(object);
@@ -88,53 +72,96 @@ impl SpatialIndex {
     }
 
     pub fn finish_geometry(&mut self) {
-        for (id, group) in self
-            .celestial_groups
-            .iter()
-            .take(self.celestial_systems.len())
-            .enumerate()
-        {
-            let Some(&first) = group.first() else {
-                continue;
-            };
-            let anchor = self.objects[first].position;
-            let radius_m = group
+        self.service();
+    }
+
+    pub fn service(&self) -> &SpatialService<SpatialRecord> {
+        self.geometry.get_or_init(|| {
+            let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_geometry");
+            let entries = self
+                .objects
                 .iter()
-                .map(|&object| {
-                    let object = self.objects[object];
-                    object.position.relative_to(anchor).length() + object.radius_m
+                .enumerate()
+                .map(|(id, object)| {
+                    let record = SpatialRecord {
+                        kind: RecordKind::Body,
+                        id: object.entity.to_bits(),
+                        position: object.position.to_array(),
+                        radius_m: object.radius_m,
+                    };
+                    let displacement = (self
+                        .velocities
+                        .get(&object.entity)
+                        .copied()
+                        .unwrap_or_default()
+                        * self.tick_seconds)
+                        .to_array();
+                    let mut entry = record.dynamic(
+                        if self.targets.binary_search(&id).is_ok() {
+                            self.peak(id)
+                        } else {
+                            0.
+                        },
+                        displacement,
+                    );
+                    if let Some(&radius) = self.capture_radii.get(&object.entity) {
+                        entry.bounds = osg_spatial_bvh::Aabb::sphere(
+                            record.position,
+                            radius.max(record.radius_m),
+                        );
+                        entry.swept_bounds = osg_spatial_bvh::Aabb::swept_sphere(
+                            record.position,
+                            displacement,
+                            radius.max(record.radius_m),
+                        );
+                    }
+                    entry
                 })
-                .fold(0_f64, f64::max);
-            self.celestial_hash.insert(
-                id as u32,
-                Entry {
-                    position: anchor,
-                    radius_m,
-                    luminosity: 0.,
-                },
-            );
-        }
+                .chain(self.collision_entries.iter().cloned());
+            let mut service = match &self.sky.universe {
+                Some(universe) => (*universe.index.spatial).clone(),
+                None => SpatialService::new([]),
+            };
+            service.rebuild_dynamic(entries);
+            service
+        })
+    }
+
+    fn peak(&self, id: usize) -> f64 {
+        let object = self.objects[id];
+        self.illumination[id].get().map_or_else(
+            || object.optical_luminosity_w + self.sky.peak(object.position, object.radius_m),
+            |light| light.emitted_w + light.reflected.iter().map(|(_, power)| power).sum::<f64>(),
+        )
+    }
+
+    fn object_id(&self, record: &SpatialRecord) -> Option<usize> {
+        (record.kind == RecordKind::Body)
+            .then(|| self.entities.get(&Entity::from_bits(record.id)).copied())
+            .flatten()
+    }
+
+    fn target_id(&self, record: &SpatialRecord) -> Option<usize> {
+        self.object_id(record)
+            .filter(|id| self.targets.binary_search(id).is_ok())
     }
 
     fn segment_candidates(&self, origin: GalacticPosition, displacement: DVec3) -> Vec<usize> {
-        let mut result: Vec<_> = self
-            .hash
-            .segment_candidates(origin, displacement, 0.)
-            .ids
+        self.service()
+            .query_dynamic(SpatialQuery::Segment {
+                start: origin.to_array(),
+                end: origin.offset_by(displacement).to_array(),
+                radius_m: 0.,
+            })
+            .collect()
             .into_iter()
-            .map(|id| id as usize)
-            .collect();
-        for group in self
-            .celestial_hash
-            .segment_candidates(origin, displacement, 0.)
-            .ids
-        {
-            result.extend(self.celestial_groups[group as usize].iter().copied());
-        }
-        result
+            .filter_map(|record| self.object_id(record))
+            .collect()
     }
 
+    #[cfg(test)]
     pub fn set_luminosity(&mut self, id: usize, luminosity_w: f64) {
+        self.geometry.take();
         self.objects[id].optical_luminosity_w = luminosity_w;
         self.illumination[id] = OnceLock::from(Illumination {
             emitted_w: luminosity_w,
@@ -142,6 +169,7 @@ impl SpatialIndex {
         });
     }
 
+    #[cfg(test)]
     pub fn set_illumination(&mut self, id: usize, emitted_w: f64, reflected: Vec<(usize, f64)>) {
         let peak = emitted_w + reflected.iter().map(|(_, power)| power).sum::<f64>();
         self.set_luminosity(id, peak);
@@ -180,17 +208,17 @@ impl SpatialIndex {
         self.entities.get(&entity).copied()
     }
 
-    pub fn all_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.hash
-            .within_radius(centre, radius)
-            .ids
-            .into_iter()
-            .map(|id| id as usize)
-            .collect()
-    }
-
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.all_in_range(centre, radius)
+        self.service()
+            .query_dynamic(SpatialQuery::Sphere {
+                centre: centre.to_array(),
+                radius_m: radius,
+            })
+            .collect()
+            .into_iter()
+            .filter_map(|record| self.target_id(record))
+            .filter(|&id| self.objects[id].position.relative_to(centre).length() <= radius)
+            .collect()
     }
 
     pub fn visible(
@@ -198,9 +226,15 @@ impl SpatialIndex {
         centre: GalacticPosition,
         min_luminosity_over_distance2: f64,
     ) -> Vec<usize> {
-        self.targets
-            .iter()
-            .copied()
+        self.service()
+            .query_dynamic(SpatialQuery::Visibility {
+                observer: centre.to_array(),
+                observer_radius_m: 0.,
+                min_flux_w_m2: min_luminosity_over_distance2 / (4. * std::f64::consts::PI),
+            })
+            .collect()
+            .into_iter()
+            .filter_map(|record| self.target_id(record))
             .filter_map(|id| {
                 let object = &self.objects[id];
                 let peak = self.illumination[id].get().map_or_else(
@@ -226,39 +260,32 @@ impl SpatialIndex {
         radius: f64,
         n: usize,
     ) -> Vec<usize> {
-        self.hash
-            .nearest_filtered(centre, radius, n, |id| {
-                let object = self.objects[id as usize];
-                (object.entity != observer).then_some(object.entity.to_bits())
+        self.service()
+            .nearest_dynamic(centre.to_array(), radius, n, |record| {
+                let id = self.target_id(record)?;
+                let object = self.objects[id];
+                (object.entity != observer).then(|| record.distance(centre.to_array()))
             })
             .into_iter()
-            .map(|id| id as usize)
+            .filter_map(|record| self.target_id(record))
             .collect()
     }
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        let mut result: Vec<_> = self
-            .hash
-            .intersecting_sphere(centre, radius)
-            .ids
+        self.service()
+            .query_dynamic(SpatialQuery::Sphere {
+                centre: centre.to_array(),
+                radius_m: radius,
+            })
+            .collect()
             .into_iter()
-            .map(|id| id as usize)
-            .filter(|&id| self.objects[id].occludes)
-            .collect();
-        for group in self.celestial_hash.intersecting_sphere(centre, radius).ids {
-            result.extend(
-                self.celestial_groups[group as usize]
-                    .iter()
-                    .copied()
-                    .filter(|&id| {
-                        let object = self.objects[id];
-                        object.occludes
-                            && object.position.relative_to(centre).length()
-                                <= radius + object.radius_m
-                    }),
-            );
-        }
-        result
+            .filter_map(|record| self.object_id(record))
+            .filter(|&id| {
+                let object = self.objects[id];
+                object.occludes
+                    && object.position.relative_to(centre).length() <= radius + object.radius_m
+            })
+            .collect()
     }
 
     pub fn occluded(&self, observer: Entity, target: usize, centre: GalacticPosition) -> bool {
@@ -302,9 +329,7 @@ impl SpatialIndex {
     }
 
     pub fn has_celestial_system(&self, system: usize) -> bool {
-        self.celestial_systems
-            .get(&system)
-            .is_some_and(|&group| !self.celestial_groups[group].is_empty())
+        self.celestial_systems.contains(&system)
     }
 
     pub fn any_optical_blocker_on_segment(
@@ -316,10 +341,6 @@ impl SpatialIndex {
         self.segment_candidates(origin, displacement)
             .into_iter()
             .any(|id| self.objects[id].optical_occludes && blocks(id))
-    }
-
-    pub fn occupied_cells(&self) -> usize {
-        self.hash.occupied_cells()
     }
 }
 

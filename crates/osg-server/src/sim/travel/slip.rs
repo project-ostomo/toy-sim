@@ -413,10 +413,18 @@ fn first_capture(
             }
         }
     } else {
-        for (pose, celestial) in world
-            .query::<(&PreciseTransform, &CelestialState)>()
-            .iter(world)
-        {
+        let scene = world.get_resource::<crate::sim::spatial::SpatialIndex>()?;
+        for record in scene.service().segment_candidates(
+            origin.to_array(),
+            origin.offset_by(velocity * duration).to_array(),
+            ship_radius,
+        ) {
+            if record.kind != osg_spatial_bvh::RecordKind::Body {
+                continue;
+            }
+            let Some(celestial) = world.get::<CelestialState>(Entity::from_bits(record.id)) else {
+                continue;
+            };
             if matches!(
                 celestial.body.class_params,
                 crate::sim::orrery::BodyClass::Barycenter
@@ -430,8 +438,12 @@ fn first_capture(
             ] {
                 if radius > 0.0
                     && let Some(seconds) = sphere_entry(
-                        origin.relative_to(pose.translation_um),
-                        velocity - celestial.velocity,
+                        origin.relative_to(GalacticPosition::new(
+                            record.position[0],
+                            record.position[1],
+                            record.position[2],
+                        )),
+                        velocity - scene.velocities.get(&Entity::from_bits(record.id)).copied().unwrap_or_default(),
                         radius,
                         duration,
                     )
@@ -977,6 +989,7 @@ mod tests {
             ))
             .id();
         identity::register(&mut world, ship, Id::new());
+        crate::sim::spatial::rebuild(&mut world);
         (world, ship)
     }
 
@@ -993,6 +1006,10 @@ mod tests {
             PreciseTransform {
                 translation_um: position,
                 ..Default::default()
+            },
+            crate::sim::spatial::SpatialBody {
+                radius_m: physical_radius,
+                occludes: true,
             },
             CelestialState {
                 reference,
@@ -1011,6 +1028,7 @@ mod tests {
                 velocity: DVec3::ZERO,
             },
         ));
+        crate::sim::spatial::rebuild(world);
         reference
     }
 

@@ -1,5 +1,13 @@
 //! Emissive channels on the fixed slipdrive model, shared with the ship editor.
-use bevy::prelude::*;
+use bevy::{camera::Exposure, prelude::*};
+
+/// Emissive values below are tuned as if unexposed; scale them into physical
+/// units so they read the same under the default camera exposure but still
+/// follow manual and automatic exposure changes.
+fn emissive(red: f32, green: f32, blue: f32) -> LinearRgba {
+    let scale = 1.0 / Exposure::SUNLIGHT.exposure();
+    LinearRgba::rgb(red * scale, green * scale, blue * scale)
+}
 
 #[derive(Component, Default)]
 pub struct SlipRing {
@@ -43,7 +51,8 @@ fn discover(
         let Some(mut instance) = materials.get(&material.0).cloned() else {
             continue;
         };
-        instance.emissive = LinearRgba::rgb(1.0, 4.0, 8.0);
+        instance.emissive = emissive(1.0, 4.0, 8.0);
+        instance.emissive_exposure_weight = 1.0;
         commands
             .entity(entity)
             .insert((Emitter { ring }, MeshMaterial3d(materials.add(instance))));
@@ -73,8 +82,7 @@ fn animate(
         let surge = 0.8 + 0.2 * (phase + (phase * 0.37).sin()).sin();
         let power = 8.0 + 18_000.0 * ring.displayed.powi(2) * surge;
         if let Some(mut material) = materials.get_mut(&material.0) {
-            material.emissive =
-                LinearRgba::rgb(power * (0.22 + 0.1 * phase.sin()), power * 0.55, power);
+            material.emissive = emissive(power * (0.22 + 0.1 * phase.sin()), power * 0.55, power);
         }
     }
 }

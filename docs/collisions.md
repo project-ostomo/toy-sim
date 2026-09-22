@@ -2,7 +2,7 @@
 
 Ships in space and projectiles are integrated by a time-ordered continuous collision solver ([crates/osg-server/src/sim/physics/collision](../crates/osg-server/src/sim/physics/collision)). Within each 10 Hz tick, the solver predicts the first contact between each nearby pair, processes events in time order, and resolves contacts with partial restitution and impact heat. The absorbed energy is deposited as heat in hulls or shields. The solver also schedules weapon launches ([weapons.md](weapons.md)) and destruction from overheating.
 
-The shared `osg-spatial` hash supplies broad-phase candidates. Parry (`parry3d-f64`) supplies geometry queries, contact manifolds and acceleration structures inside compound shapes. Trajectory sampling, heat accounting and event scheduling are implemented in this module.
+The shared `osg-spatial-bvh` service supplies broad-phase candidates. Parry (`parry3d-f64`) supplies geometry queries, contact manifolds and acceleration structures inside compound shapes. Trajectory sampling, heat accounting and event scheduling are implemented in this module.
 
 ## Participating bodies
 
@@ -49,13 +49,13 @@ The solver counts these fallbacks in its diagnostics.
 
 ## Broad phase
 
-The solver works in a common translating frame: the first body's velocity plus the mass-weighted mean velocity offset. Ships that share an orbital velocity therefore have short swept volumes. Each live body becomes a proxy: its start position, its displacement over the rest of the tick in that frame, and its radius plus 2 mm.
+Each live body contributes a collision record to the shared dynamic BVH: its integer tick-start position, velocity, and conservative radius plus 2 mm. Swept AABBs include the entire predicted translation and rotational extent.
 
-`SweptIndex` ([spatial/swept.rs](../crates/osg-server/src/sim/spatial/swept.rs)) uses the shared [spatial hash](../crates/osg-spatial/src/lib.rs). Each proxy is indexed by a conservative sphere around its swept segment, with numerical padding. Hash queries discover overlapping envelopes; a geometric capsule filter rejects clear misses before the continuous solver runs. Near-parallel segments retain conservative candidates when closest-point arithmetic is ill-conditioned.
+The [spatial service](../crates/osg-spatial-bvh/src/service.rs) finds overlapping swept bounds. The narrow phase tests relative motion before continuous shape queries. Catalogue sources and observation records are excluded from collision pairs by record kind.
 
-The index persists between ticks and updates changed proxies in place. Its integer position anchor follows a retained reference body, avoiding needless cell migration for a fleet sharing orbital motion. `pairs()` returns initial candidate pairs, and after each event `neighbors()` finds the pairs to predict again. Capsule filtering compares geometric paths even when two bodies have different event times; the narrow phase then restricts prediction to their overlapping time interval. Insertions, removals and changes of reference preserve candidate coverage.
+The instantaneous and swept dynamic trees rebuild once per simulation tick. Collision pairs and moving-target queries use the swept tree. After events, changed trajectories and newly fired projectiles query the fixed tick-start scene. Generation counters invalidate stale contact predictions. Objects created during a tick become indexed targets on the next tick; no mid-tick tree mutation occurs.
 
-This replaces the separate region/BVH broad phase. Parry's BVHs within compound hulls still prune primitive pairs during detailed shape queries.
+Shield clearance and beams query the service's instantaneous tree. Parry's BVHs within compound hulls still prune primitive pairs during detailed shape queries.
 
 ## Narrow phase: predicting the next contact
 
@@ -147,12 +147,12 @@ cargo test -p osg-server collision
 - contacts caused by rotation alone
 - re-testing against the hull after a shield collapses
 - destroyed slugs not hitting a second ship
-- spatial cell boundaries and diagonal sweeps
+- galactic coordinates and diagonal sweeps
 - resting penetration correction without heat
 - nearest-neighbour queries
 - resting parts not masking new contacts
 - docked member destruction
-- swept-index reuse, moving frames, reference removal and near-parallel paths
+- successive snapshots, removal and reordered identities
 - the rotation speed bound
 - rotational energy in off-centre impacts
 - spinning spheres keeping their cast normal
@@ -163,6 +163,6 @@ cargo test -p osg-server collision
 
 [ecs.rs](../crates/osg-server/src/sim/physics/collision/ecs.rs) tests field activation, launched slug materialization, repeated impacts, slug impulse transfer and shield clearance.
 
-The shared hash has `cargo run --release -p osg-spatial --example benchmark`;
-it measures index construction, visibility/range/segment queries and updates
+The shared service has `cargo bench -p osg-spatial-bvh --bench gaia`;
+it measures index construction and visibility queries
 independently of collision detection. These CPU results do not measure client GPU performance.

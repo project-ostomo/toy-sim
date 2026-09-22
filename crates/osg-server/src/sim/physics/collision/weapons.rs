@@ -428,6 +428,7 @@ mod tests {
             ),
         ];
         let mut report = Report::default();
+        let spatial = test_snapshot(&bodies, 0.1);
         let hit = resolve_beam(
             BeamEvent {
                 owner,
@@ -439,6 +440,7 @@ mod tests {
                 duration_s: 0.1,
             },
             &mut bodies,
+            &spatial,
             0.0,
             &mut report,
         );
@@ -522,8 +524,9 @@ mod tests {
             duration_s: 0.1,
         };
         let mut report = Report::default();
+        let spatial = test_snapshot(&bodies, 0.1);
         assert_eq!(
-            resolve_beam(beam.clone(), &mut bodies, 0.0, &mut report),
+            resolve_beam(beam.clone(), &mut bodies, &spatial, 0.0, &mut report),
             None
         );
         assert_eq!(report.beam_traces.len(), 1);
@@ -536,6 +539,7 @@ mod tests {
                     ..beam
                 },
                 &mut bodies,
+                &spatial,
                 0.0,
                 &mut report
             ),
@@ -642,9 +646,11 @@ mod tests {
         let mut bodies = vec![body];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let report = simulate_with_workspace(&mut bodies, 0.01, &mut workspace, &mut || {
-            world.spawn_empty().id()
-        });
+        let spatial = test_snapshot(&bodies, 0.01);
+        let report =
+            simulate_with_workspace(&mut bodies, 0.01, &spatial, &mut workspace, &mut || {
+                world.spawn_empty().id()
+            });
         let ship = &workspace.weapons[&owner];
         assert_eq!(report.shots.len(), 1);
         assert_eq!(ship.weapons[0].shots_fired, 1);
@@ -772,9 +778,11 @@ mod tests {
         let mut bodies = vec![body, target];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let report = simulate_with_workspace(&mut bodies, 0.1, &mut workspace, &mut || {
-            world.spawn_empty().id()
-        });
+        let spatial = test_snapshot(&bodies, 0.1);
+        let report =
+            simulate_with_workspace(&mut bodies, 0.1, &spatial, &mut workspace, &mut || {
+                world.spawn_empty().id()
+            });
 
         assert_eq!(report.shots.len(), 2);
         assert_eq!(report.shots[0].time, 0.0);
@@ -814,9 +822,11 @@ mod tests {
         let mut bodies = vec![body, slug];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let report = simulate_with_workspace(&mut bodies, 0.1, &mut workspace, &mut || {
-            panic!("dead ship fired")
-        });
+        let spatial = test_snapshot(&bodies, 0.1);
+        let report =
+            simulate_with_workspace(&mut bodies, 0.1, &spatial, &mut workspace, &mut || {
+                panic!("dead ship fired")
+            });
         assert!(report.destroyed.iter().any(|d| d.entity == owner));
         assert!(report.shots.is_empty());
     }
@@ -893,12 +903,32 @@ pub struct BeamHit {
 pub fn resolve_beam(
     beam: BeamEvent,
     bodies: &mut [Body],
+    spatial: &SpatialService<SpatialRecord>,
     t: f64,
     report: &mut Report,
 ) -> Option<usize> {
     let mut closest = None;
     let mut distance = beam.range_m;
-    for (body_index, body) in bodies.iter().enumerate() {
+    let slots: ahash::AHashMap<_, _> = bodies
+        .iter()
+        .enumerate()
+        .map(|(i, body)| (body.entity.to_bits(), i))
+        .collect();
+    let bounds = osg_spatial_bvh::Aabb::swept_sphere(
+        beam.position.to_array(),
+        (beam.direction * beam.range_m).to_array(),
+        0.,
+    );
+    let mut candidates: Vec<_> = spatial
+        .query_dynamic(osg_spatial_bvh::SpatialQuery::Motion(bounds))
+        .collect()
+        .into_iter()
+        .filter(|record| record.kind == RecordKind::Collision)
+        .filter_map(|record| slots.get(&record.id).copied())
+        .collect();
+    candidates.sort_unstable();
+    for body_index in candidates {
+        let body = &bodies[body_index];
         if t < body.time {
             continue;
         }

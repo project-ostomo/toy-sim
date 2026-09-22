@@ -18,7 +18,7 @@ rand_chacha = "0.10"
 blake3 = "1.8"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 osg-space = { path = "../osg-space" }
-osg-spatial = { path = "../osg-spatial" }
+osg-spatial-bvh = { path = "../osg-spatial-bvh" }
 osg-ship-api = { path = "../osg-ship-api" }
 osg-ship-wasm = { path = "../osg-ship-wasm" }
 postcard = { version = "1.1", features = ["use-std"] }

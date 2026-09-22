@@ -1,6 +1,6 @@
 use super::ViewCamera;
 use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
-use bevy::{camera::visibility::RenderLayers, prelude::*};
+use bevy::{camera::visibility::RenderLayers, light::CascadeShadowConfigBuilder, prelude::*};
 use osg_model::{GalacticPosition, Id, presentation::CelestialPresentation};
 use std::collections::HashMap;
 
@@ -100,6 +100,7 @@ fn update(
             &StellarLight,
             &mut DirectionalLight,
             &mut Transform,
+            &mut RenderLayers,
         ),
         Without<ViewCamera>,
     >,
@@ -127,22 +128,22 @@ fn update(
         .into_iter()
         .map(|(view, star)| ((views[view].entity, star.star), (view, star)))
         .collect();
-    for (entity, parent, source, mut light, mut transform) in &mut lights {
+    for (entity, parent, source, mut light, mut transform, mut layers) in &mut lights {
         let Some((view, star)) = selected.remove(&(parent.parent(), source.0)) else {
             commands.entity(entity).despawn();
             continue;
         };
         apply_starlight(&mut light, &mut transform, star, views[view].rotation);
-        commands
-            .entity(entity)
-            .insert(RenderLayers::layer(views[view].layer));
+        layers.set_if_neq(RenderLayers::layer(views[view].layer));
     }
     let mut new_lights: Vec<_> = selected.into_values().collect();
     new_lights.sort_by_key(|&(view, star)| (views[view].id, star.star));
     for (view, star) in new_lights {
         let view = &views[view];
+
         let mut light = DirectionalLight {
             shadow_maps_enabled: true,
+            // Needs the view cameras' TAA to resolve its per-frame jitter.
             contact_shadows_enabled: true,
             ..default()
         };
@@ -153,6 +154,12 @@ fn update(
             StellarLight(star.star),
             bevy::light::SunDisk::OFF,
             light,
+            CascadeShadowConfigBuilder {
+                num_cascades: 1,
+                maximum_distance: 100.0, // tune for ship + camera distance
+                ..default()
+            }
+            .build(),
             transform,
             RenderLayers::layer(view.layer),
         ));

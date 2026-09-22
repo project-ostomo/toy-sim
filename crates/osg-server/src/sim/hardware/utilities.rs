@@ -187,7 +187,6 @@ pub fn run(
                 | UtilityDef::DirectoryTransmitter { power_w }
                 | UtilityDef::NavigationBeacon { power_w }
                 | UtilityDef::LifeSupport { power_w, .. }
-                | UtilityDef::Workshop { power_w, .. }
                 | UtilityDef::CargoHandler { power_w, .. } => power_w,
                 _ => 0.,
             };
@@ -240,23 +239,6 @@ pub fn run(
                         0.
                     };
                 }
-                UtilityDef::Workshop {
-                    repair_hp_s,
-                    material_kg_hp,
-                    ..
-                } => {
-                    let wanted_hp = (design.0.hull - h.hull.0)
-                        .max(0.)
-                        .min(repair_hp_s * dt * fraction);
-                    let material = consume(
-                        &mut h.inventory.0,
-                        &cat.0,
-                        "repair_material",
-                        wanted_hp * material_kg_hp,
-                    );
-                    h.hull.0 += material / material_kg_hp;
-                    device.0.actual = material / material_kg_hp / dt;
-                }
                 UtilityDef::CargoHandler { transfer_kg_s, .. } => {
                     services.cargo_kg_s += transfer_kg_s * fraction
                 }
@@ -281,14 +263,6 @@ pub fn run(
             commands.entity(ship).remove::<NavigationBeaconEmitter>();
         }
     }
-}
-
-fn consume(inventory: &mut Inventory, cat: &Catalogue, resource: &str, mass: f64) -> f64 {
-    let Some(index) = cat.resources.iter().position(|r| r.id == resource) else {
-        return 0.;
-    };
-    let units = inventory.consume(index, mass / cat.resources[index].mass_kg);
-    units as f64 * cat.resources[index].mass_kg
 }
 
 pub fn service_docked(
@@ -553,16 +527,8 @@ mod tests {
     }
 
     #[test]
-    fn workshop_cannot_repair_without_material_and_life_support_consumes_supplies() {
+    fn life_support_consumes_supplies() {
         let mut fixture = HardwareFixture::standard();
-        add(
-            &mut fixture,
-            UtilityDef::Workshop {
-                repair_hp_s: 10.,
-                material_kg_hp: 2.,
-                power_w: 100.,
-            },
-        );
         add(
             &mut fixture,
             UtilityDef::LifeSupport {
@@ -572,11 +538,6 @@ mod tests {
             },
         );
         let cat = &fixture.app.world().resource::<ShipCatalogue>().0;
-        let repair = cat
-            .resources
-            .iter()
-            .position(|r| r.id == "repair_material")
-            .unwrap();
         let supplies = cat
             .resources
             .iter()
@@ -585,34 +546,17 @@ mod tests {
         fixture
             .app
             .world_mut()
-            .get_mut::<Hull>(fixture.ship)
-            .unwrap()
-            .0 -= 10.;
-        let hull = fixture.app.world().get::<Hull>(fixture.ship).unwrap().0;
-        fixture
-            .app
-            .world_mut()
             .get_mut::<Crew>(fixture.ship)
             .unwrap()
             .people = 2;
         fixture.set_inventory(|i| {
             i.energy_j = 100;
-            i.quantities[repair] = 1;
             i.quantities[supplies] = 1;
         });
         step(&mut fixture);
-        assert_eq!(
-            fixture.app.world().get::<Hull>(fixture.ship).unwrap().0,
-            hull + 0.5
-        );
         let crew = fixture.app.world().get::<Crew>(fixture.ship).unwrap();
         assert!((crew.support_fraction - 0.5).abs() < 1e-9);
         assert_eq!(crew.people, 2);
-        step(&mut fixture);
-        assert_eq!(
-            fixture.app.world().get::<Hull>(fixture.ship).unwrap().0,
-            hull + 0.5
-        );
     }
 
     #[test]

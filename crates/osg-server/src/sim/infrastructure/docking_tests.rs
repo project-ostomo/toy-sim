@@ -66,7 +66,7 @@ fn docking_removes_physics_and_private_pose_follows_the_station() {
         .offset_by(DVec3::X * 1000.);
     let private = super::super::session::ship_pose(world, player).unwrap();
     assert!((private.position.relative_to(berth.position) - DVec3::X * 1000.).length() < 0.001);
-    travel::geometry::refresh(world);
+    crate::sim::spatial::rebuild(world);
     let destination = private.position.offset_by(DVec3::Z * 1000.);
     world.get_mut::<travel::Travel>(player).unwrap().0 = osg_model::travel::TravelState {
         autopilot_enabled: true,
@@ -216,6 +216,24 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
     )
     .unwrap();
     identity::attach_ship(world, other, account).unwrap();
+    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
+    let hold = world
+        .get::<vessel::ShipDesign>(player)
+        .unwrap()
+        .0
+        .capacity_m3;
+    world
+        .get_mut::<hardware::ShipInventory>(player)
+        .unwrap()
+        .0
+        .insert_item(
+            &osg_model::industry::CargoItem::Resource("rocket_propellant".into()),
+            20,
+            hold,
+            &catalogue,
+        )
+        .unwrap();
+    crate::sim::industry::synchronize_mass(world, &[player]);
     for ship in [player, other] {
         let berth = travel::reserve_bay(world, ship, station, 0).unwrap();
         world.entity_mut(ship).insert((
@@ -242,7 +260,7 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
         account,
         player,
         other,
-        osg_model::industry::CargoItem::Resource("repair_material".into()),
+        osg_model::industry::CargoItem::Resource("rocket_propellant".into()),
         20,
     )
     .unwrap();

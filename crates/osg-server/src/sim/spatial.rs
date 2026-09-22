@@ -1,4 +1,4 @@
-use crate::sim::{GameState, precision::PreciseTransform};
+use crate::sim::precision::PreciseTransform;
 
 use bevy::prelude::*;
 
@@ -10,7 +10,6 @@ pub struct SpatialBody {
 
 mod index;
 mod lighting;
-pub(crate) mod swept;
 pub use index::{SpatialIndex, SpatialObject, sphere_blocks, sphere_fully_blocks};
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -22,21 +21,40 @@ pub enum SensorSystems {
 pub struct SpatialPlugin;
 impl Plugin for SpatialPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SpatialIndex>()
-            .configure_sets(
-                FixedLast,
-                (SensorSystems::Index, SensorSystems::Scan).chain(),
-            )
-            .add_systems(
-                FixedLast,
-                rebuild
-                    .in_set(SensorSystems::Index)
-                    .run_if(in_state(GameState::Game)),
-            );
+        app.init_resource::<SpatialIndex>().configure_sets(
+            FixedLast,
+            (SensorSystems::Index, SensorSystems::Scan).chain(),
+        );
     }
 }
 
-pub(crate) fn rebuild(
+pub(crate) fn rebuild(world: &mut World) {
+    rebuild_with_collisions(world, Vec::new());
+}
+
+pub(crate) fn rebuild_with_collisions(
+    world: &mut World,
+    collisions: Vec<osg_spatial_bvh::DynamicEntry<osg_spatial_bvh::SpatialRecord>>,
+) {
+    let started = std::time::Instant::now();
+    world.init_resource::<SpatialIndex>();
+    world
+        .run_system_cached(collect)
+        .expect("collect spatial records");
+    let collect_ms = started.elapsed().as_secs_f64() * 1000.;
+    let mut index = world.resource_mut::<SpatialIndex>();
+    index.collision_entries = collisions;
+    index.finish_geometry();
+    debug!(
+        objects = index.objects.len(),
+        collisions = index.collision_entries.len(),
+        collect_ms,
+        total_ms = started.elapsed().as_secs_f64() * 1000.,
+        "spatial service rebuilt"
+    );
+}
+
+fn collect(
     mut index: ResMut<SpatialIndex>,
     bodies: Query<
         (
@@ -49,6 +67,7 @@ pub(crate) fn rebuild(
             Option<&super::vessel::ShipDesign>,
             Option<&super::hardware::ShipThermal>,
             Option<&super::hardware::PartDevices>,
+            Option<&super::physics::Velocity>,
         ),
         (
             Without<crate::sim::physics::collision::Projectile>,
@@ -58,20 +77,41 @@ pub(crate) fn rebuild(
     devices: Query<&super::hardware::Device>,
     universe: Option<Res<super::orrery::Universe>>,
     time: Option<Res<Time<Fixed>>>,
+    clock: Option<Res<super::simulation::SimulationCounters>>,
 ) {
     index.clear();
+    index.tick = clock.map_or(0, |clock| clock.ticks);
     index
         .sky
         .set_universe(universe.map(|universe| universe.0.clone()));
     index.sky.epoch = time.as_ref().map_or_else(hifitime::Epoch::default, |time| {
         super::physics::sim_time(&**time)
     });
-    for (entity, pose, body, celestial, celestial_state, star, design, thermal, parts) in &bodies {
+    index.tick_seconds = time.as_ref().map_or(0.1, |time| time.delta_secs_f64());
+    let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_collect_loop");
+    let mut celestial_count = 0_usize;
+    let mut stars = 0_usize;
+    for (entity, pose, body, celestial, celestial_state, star, design, thermal, parts, velocity) in
+        &bodies
+    {
+        if let Some(velocity) = velocity {
+            index.velocities.insert(entity, velocity.0);
+        }
+        if let Some(state) = celestial_state {
+            index.velocities.insert(entity, state.velocity);
+            if index.sky.universe.is_none() {
+                index.capture_radii.insert(
+                    entity,
+                    osg_model::travel::slip::exclusion_radius_m(state.body.mass),
+                );
+            }
+        }
         let emitted = star.map_or_else(
             || lighting::emitted_luminosity(design, thermal, parts, &devices),
             |star| star.lumens / lighting::LUMENS_PER_OPTICAL_WATT,
         );
         if star.is_some() {
+            stars += 1;
             index.sky.local.push(lighting::Light {
                 position: pose.translation_um,
                 radius: body.radius_m,
@@ -87,6 +127,7 @@ pub(crate) fn rebuild(
             optical_occludes: body.occludes && design.is_none(),
         };
         if celestial {
+            celestial_count += 1;
             index.insert_celestial(
                 object,
                 celestial_state.map_or(usize::MAX, |state| state.system),
@@ -95,7 +136,12 @@ pub(crate) fn rebuild(
             index.insert(object);
         }
     }
-    index.finish_geometry();
+    if std::env::var_os("OSG_SPATIAL_PROFILE").is_some() {
+        debug!(target: "osg_server::profile", tick = index.tick,
+            objects = index.objects.len(), celestial_count, stars,
+            non_celestial = index.objects.len() - celestial_count,
+            "spatial population");
+    }
     // Exact illumination is evaluated only when an optical observer requests it.
 }
 

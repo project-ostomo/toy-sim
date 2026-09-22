@@ -333,7 +333,7 @@ pub fn recipes(cat: &Catalogue) -> Result<Vec<Recipe>> {
         "pulse_charges",
         "Micropulse fuel charges",
         FuelPlant,
-        vec![resource("reactor_fuel", 1), resource("repair_material", 99)],
+        vec![resource("reactor_fuel", 100)],
         vec![resource("micropulse_charge", 100)],
         2_000_000_000,
         0,
@@ -402,16 +402,6 @@ pub fn recipes(cat: &Catalogue) -> Result<Vec<Recipe>> {
         0,
     );
     add(
-        "repair_material",
-        "Repair material",
-        Fabricator,
-        vec![resource(METALS, mg(1))],
-        vec![resource("repair_material", 1)],
-        1_000_000,
-        0,
-    );
-
-    add(
         "shield_coolant",
         "Radiator shield working fluid",
         FuelPlant,
@@ -453,7 +443,6 @@ pub fn starter_stock(cat: &Catalogue) -> Result<Vec<ItemStack>> {
         resource("reactor_fuel", 1000),
         resource("spent_fuel", 100),
         resource("bred_fuel", 100),
-        resource("repair_material", 1000),
         resource("water", 20_000),
         resource("rocket_propellant", 1000),
         resource("shield_coolant", 10_000),

@@ -1,16 +1,20 @@
 use crate::{GalacticPosition, Star, StarId, min_brightness};
 use anyhow::{Result, ensure};
-use osg_spatial::{Entry, SpatialHash};
+use osg_spatial_bvh::{
+    Aabb, BvhEntry, OPTICAL_LUMENS_PER_WATT, QueryBudget, RecordKind, SpatialQuery, SpatialRecord,
+    SpatialService,
+};
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap},
 };
+use std::{f64::consts::PI, sync::Arc};
 
 /// Immutable after construction; share with Arc for lock-free read-only queries.
 pub struct StarCatalogue {
     stars: Vec<Star>,
     identities: HashMap<StarId, usize>,
-    index: SpatialHash,
+    index: Arc<SpatialService<SpatialRecord>>,
 }
 #[derive(Clone, Copy)]
 pub struct VisibilityQuery<'a> {
@@ -33,7 +37,7 @@ pub struct VisibleStars {
     pub indices: Vec<usize>,
     pub matched: usize,
     pub candidates: usize,
-    pub buckets_searched: usize,
+    pub nodes_visited: usize,
 }
 #[derive(PartialEq)]
 struct Ranked {
@@ -56,9 +60,32 @@ impl PartialOrd for Ranked {
 }
 impl StarCatalogue {
     pub fn from_stars(stars: Vec<Star>) -> Result<Self> {
+        for star in &stars {
+            star.validate()?;
+        }
+        let index = Arc::new(SpatialService::new(stars.iter().enumerate().map(
+            |(id, star)| BvhEntry {
+                object: SpatialRecord {
+                    kind: RecordKind::Source,
+                    id: id as u64,
+                    position: star.position.to_array(),
+                    radius_m: 0.0,
+                },
+                bounds: Aabb::sphere(star.position.to_array(), 0.0),
+                luminosity: star.luminosity / OPTICAL_LUMENS_PER_WATT,
+            },
+        )));
+        Self::from_shared(stars, index)
+    }
+
+    /// Attach catalogue metadata to the universe's existing source records.
+    /// Source IDs must match the supplied star order.
+    pub fn from_shared(
+        stars: Vec<Star>,
+        index: Arc<SpatialService<SpatialRecord>>,
+    ) -> Result<Self> {
         ensure!(stars.len() <= u32::MAX as usize, "too many stars");
         let mut identities = HashMap::with_capacity(stars.len());
-        let mut spatial = SpatialHash::default();
         for (index, star) in stars.iter().enumerate() {
             star.validate()?;
             ensure!(
@@ -66,19 +93,11 @@ impl StarCatalogue {
                 "duplicate star identity {:?}",
                 star.id
             );
-            spatial.insert(
-                index as u32,
-                Entry {
-                    position: star.position,
-                    radius_m: 0.0,
-                    luminosity: star.luminosity,
-                },
-            );
         }
         Ok(Self {
             stars,
             identities,
-            index: spatial,
+            index,
         })
     }
     pub fn stars(&self) -> &[Star] {
@@ -90,8 +109,8 @@ impl StarCatalogue {
     pub fn is_empty(&self) -> bool {
         self.stars.is_empty()
     }
-    pub fn bucket_count(&self) -> usize {
-        self.index.bucket_count()
+    pub fn node_count(&self) -> usize {
+        self.index.node_count()
     }
     pub fn star(&self, id: StarId) -> Option<&Star> {
         self.identities.get(&id).map(|&i| &self.stars[i])
@@ -102,22 +121,26 @@ impl StarCatalogue {
             radius.is_finite() && radius >= 0.,
             "radius must be finite and nonnegative"
         );
-        Ok(self
+        let mut found: Vec<_> = self
             .index
-            .within_radius(origin, radius)
-            .ids
+            .sphere_candidates(origin.to_array(), radius)
             .into_iter()
-            .map(|id| id as usize)
-            .collect())
+            .filter(|r| r.kind == RecordKind::Source && r.distance(origin.to_array()) <= radius)
+            .map(|r| r.id as usize)
+            .collect();
+        found.sort_unstable();
+        Ok(found)
     }
 
     pub fn nearest(&self, origin: GalacticPosition) -> Result<Option<(usize, f64)>> {
         Ok(self
             .index
-            .nearest(origin, f64::INFINITY, 1)
+            .nearest(origin.to_array(), f64::INFINITY, 1, |r| {
+                (r.kind == RecordKind::Source).then(|| r.distance(origin.to_array()))
+            })
             .first()
-            .map(|&id| {
-                let index = id as usize;
+            .map(|record| {
+                let index = record.id as usize;
                 (
                     index,
                     self.stars[index].position.relative_to(origin).length(),
@@ -134,21 +157,32 @@ impl StarCatalogue {
             query.min_brightness.is_finite() && query.min_brightness >= 0.,
             "brightness threshold must be finite and nonnegative"
         );
-        let visible = self.index.visible(origin, query.min_brightness);
+        let mut cursor = self.index.query(SpatialQuery::Visibility {
+            observer: origin.to_array(),
+            observer_radius_m: 0.0,
+            min_flux_w_m2: query.min_brightness / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
+        });
+        let visible = cursor.advance(QueryBudget {
+            max_work: usize::MAX,
+            max_results: usize::MAX,
+        });
         let mut result = VisibleStars {
-            candidates: visible.stats.candidates,
-            buckets_searched: visible.stats.buckets_searched,
+            candidates: visible.stats.objects_tested,
+            nodes_visited: visible.stats.nodes_visited,
             ..Default::default()
         };
         let mut best = BinaryHeap::new();
-        for id in visible.ids {
-            let index = id as usize;
+        for record in visible.objects {
+            if record.kind != RecordKind::Source {
+                continue;
+            }
+            let index = record.id as usize;
             let star = &self.stars[index];
             if query.excluded.contains(&star.id) {
                 continue;
             }
             let d2 = star.position.relative_to(origin).length_squared();
-            if d2 <= 0.0 {
+            if d2 <= 0.0 || star.luminosity / d2 < query.min_brightness {
                 continue;
             }
             result.matched += 1;

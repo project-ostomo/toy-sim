@@ -512,6 +512,7 @@ pub struct BeaconData {
 
 pub fn publish_indexes(
     clock: Res<SimulationCounters>,
+    scene: Res<super::spatial::SpatialIndex>,
     directory: Res<super::ownership::Directory>,
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
@@ -537,6 +538,7 @@ pub fn publish_indexes(
         ),
     >,
 ) {
+    let _profile = super::diagnostics::ProfileScope::new("publish_indexes");
     publication.tick = clock.ticks;
     if publication.universe.is_none() {
         publication.universe = registry
@@ -550,21 +552,29 @@ pub fn publish_indexes(
         .collect();
     let mut apertures = Vec::new();
     let mut public_apertures = Vec::new();
-    for (entity, id, transform, velocity, body) in &bodies {
+    for (entity, id, _transform, _velocity, _body) in &bodies {
+        let Some(slot) = scene.object_index(entity) else {
+            continue;
+        };
+        let object = scene.objects[slot];
         let aperture = Aperture {
             reference: Some(Reference::Beacon(id.0)),
             entity,
-            position: transform.translation_um,
-            velocity: velocity.map_or(DVec3::ZERO, |velocity| velocity.0),
-            radius: body.radius_m,
+            position: object.position,
+            velocity: scene.velocities.get(&entity).copied().unwrap_or_default(),
+            radius: object.radius_m,
         };
         if public_beacons.contains(&entity) {
             public_apertures.push(aperture.clone());
         }
         apertures.push(aperture);
     }
-    publication.apertures = Arc::new(ApertureIndex::build(apertures));
-    publication.public_apertures = Arc::new(ApertureIndex::build(public_apertures));
+    let age_seconds = clock.ticks.saturating_sub(scene.tick) as f64 * osg_model::TICK_SECONDS;
+    {
+        let _profile = super::diagnostics::ProfileScope::new("aperture_indexes");
+        publication.apertures = Arc::new(ApertureIndex::new(apertures, age_seconds));
+        publication.public_apertures = Arc::new(ApertureIndex::new(public_apertures, age_seconds));
+    }
     publication.directory = Arc::new(directory.0.clone());
     publication.beacons = Arc::new(
         beacons
@@ -871,30 +881,39 @@ const APERTURE_WORK_LIMIT: usize = 1024;
 
 #[derive(Default)]
 struct ApertureIndex {
-    spatial: osg_spatial::SpatialHash,
+    spatial: osg_spatial_bvh::SpatialService<osg_spatial_bvh::SpatialRecord>,
     bodies: Vec<Aperture>,
+    slots: ahash::AHashMap<u64, usize>,
     max_speed: f64,
+    age_seconds: f64,
 }
 
 impl ApertureIndex {
-    fn build(bodies: Vec<Aperture>) -> Self {
-        let mut spatial = osg_spatial::SpatialHash::default();
+    fn new(bodies: Vec<Aperture>, age_seconds: f64) -> Self {
+        use osg_spatial_bvh::{RecordKind, SpatialRecord, SpatialService};
+
+        let mut spatial = SpatialService::default();
+        spatial.rebuild_dynamic(bodies.iter().map(|body| {
+            SpatialRecord {
+                kind: RecordKind::Body,
+                id: body.entity.to_bits(),
+                position: body.position.to_array(),
+                radius_m: body.radius,
+            }
+            .dynamic(0., [0.; 3])
+        }));
         let mut max_speed: f64 = 0.0;
+        let mut slots = ahash::AHashMap::new();
         for (slot, body) in bodies.iter().enumerate() {
-            spatial.insert(
-                slot.try_into().expect("aperture capacity"),
-                osg_spatial::Entry {
-                    position: body.position,
-                    radius_m: body.radius,
-                    luminosity: 0.0,
-                },
-            );
+            slots.insert(body.entity.to_bits(), slot);
             max_speed = max_speed.max(body.velocity.length());
         }
         Self {
             spatial,
             bodies,
+            slots,
             max_speed,
+            age_seconds,
         }
     }
 
@@ -905,26 +924,37 @@ impl ApertureIndex {
         radius: f64,
         after_seconds: f64,
     ) -> bool {
-        let mut cursor = self.spatial.range_cursor(
-            position,
-            radius + self.max_speed * after_seconds.abs(),
-            true,
-        );
-        let batch =
-            self.spatial
-                .advance_range(&mut cursor, APERTURE_WORK_LIMIT, APERTURE_WORK_LIMIT);
+        use osg_spatial_bvh::{QueryBudget, RecordKind, SpatialQuery};
+        let after_seconds = after_seconds + self.age_seconds;
+        let mut cursor = self.spatial.query_dynamic(SpatialQuery::Sphere {
+            centre: position.to_array(),
+            radius_m: radius + self.max_speed * after_seconds.abs(),
+        });
+        let batch = cursor.advance(QueryBudget {
+            max_work: APERTURE_WORK_LIMIT,
+            max_results: APERTURE_WORK_LIMIT,
+        });
         batch.complete
-            && !batch.invalidated
-            && batch.ids.into_iter().all(|slot| {
-                let body = &self.bodies[slot as usize];
-                body.entity == own
-                    || body
-                        .position
-                        .offset_by(body.velocity * after_seconds)
-                        .relative_to(position)
-                        .length()
-                        > radius + body.radius
-            })
+            && batch
+                .objects
+                .into_iter()
+                .filter(|record| record.kind == RecordKind::Body)
+                .filter_map(|record| self.slots.get(&record.id))
+                .all(|&slot| {
+                    let body = &self.bodies[slot];
+                    body.entity == own
+                        || body
+                            .position
+                            .offset_by(body.velocity * after_seconds)
+                            .relative_to(position)
+                            .length()
+                            > radius + body.radius
+                })
+    }
+
+    #[cfg(test)]
+    fn fixture(bodies: Vec<Aperture>) -> Self {
+        Self::new(bodies, 0.)
     }
 
     #[cfg(test)]
@@ -1092,7 +1122,7 @@ mod tests {
     fn predicted_departure_clearance_tracks_fractional_linear_motion() {
         use osg_ship_wasm::ScanSource;
         let mut source = source();
-        source.apertures = Arc::new(ApertureIndex::build(vec![Aperture {
+        source.apertures = Arc::new(ApertureIndex::fixture(vec![Aperture {
             reference: None,
             entity: Entity::from_bits(99),
             position: GalacticPosition::from_meters(DVec3::X * 1000.0),
@@ -1177,6 +1207,7 @@ mod tests {
                 },
             ))
             .id();
+        crate::sim::spatial::rebuild(&mut world);
         world.run_system_once(publish_indexes).unwrap();
         let publication = world.resource::<PublishedWorld>();
         assert_eq!(publication.apertures.bodies.len(), 1);
@@ -1215,27 +1246,29 @@ mod tests {
 
     #[test]
     fn aperture_index_prunes_large_distant_fleets() {
+        let mut world = World::new();
         let bodies = (0..10_000)
             .map(|index| Aperture {
                 reference: None,
                 velocity: DVec3::ZERO,
-                entity: Entity::PLACEHOLDER,
+                entity: world.spawn_empty().id(),
                 position: GalacticPosition::from_meters(DVec3::new(1e12, index as f64, 0.0)),
                 radius: 10.0,
             })
             .collect();
-        let index = ApertureIndex::build(bodies);
+        let index = ApertureIndex::fixture(bodies);
         assert!(index.admissible(GalacticPosition::ZERO, Entity::PLACEHOLDER, 1.0));
     }
 
     #[test]
     fn aperture_index_fails_closed_when_coincident_candidates_exhaust_work() {
-        let index = ApertureIndex::build(
+        let mut world = World::new();
+        let index = ApertureIndex::fixture(
             (0..5000)
                 .map(|_| Aperture {
                     reference: None,
                     velocity: DVec3::ZERO,
-                    entity: Entity::PLACEHOLDER,
+                    entity: world.spawn_empty().id(),
                     position: GalacticPosition::ZERO,
                     radius: 1.0,
                 })

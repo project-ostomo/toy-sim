@@ -4,6 +4,34 @@ use super::{
     physics::collision::CollisionStats, simulation::SimulationCounters, vessel::ShipSoftware,
 };
 
+/// Opt-in wall-clock scopes for spatial profiling, including early returns.
+pub(crate) struct ProfileScope {
+    name: &'static str,
+    started: Option<std::time::Instant>,
+}
+
+impl ProfileScope {
+    pub(crate) fn new(name: &'static str) -> Self {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let enabled = *ENABLED.get_or_init(|| std::env::var_os("OSG_SPATIAL_PROFILE").is_some());
+        Self {
+            name,
+            started: enabled.then(std::time::Instant::now),
+        }
+    }
+}
+
+impl Drop for ProfileScope {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            bevy::log::debug!(target: "osg_server::profile",
+                scope = self.name,
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.,
+                "spatial profile");
+        }
+    }
+}
+
 pub fn tick(world: &mut World, duration_ms: f64) {
     let slow = duration_ms >= 100.0;
     if !slow

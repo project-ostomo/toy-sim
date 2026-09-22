@@ -754,32 +754,6 @@
     "scene": "Part - Life support"
   },
   {
-    "id": "workshop-4m",
-    "title": "Repair workshop",
-    "dimensions_m": [
-      4,
-      4,
-      4
-    ],
-    "bounds_m": [
-      [
-        -2.0,
-        2.0
-      ],
-      [
-        -2.0,
-        2.0
-      ],
-      [
-        -2.0,
-        2.0
-      ]
-    ],
-    "model": "models/parts/workshop-4m.glb",
-    "objects": 8,
-    "scene": "Part - Repair workshop"
-  },
-  {
     "id": "cargo-handler-4m",
     "title": "Cargo manipulator",
     "dimensions_m": [

@@ -284,41 +284,20 @@ pub(crate) fn process(
             );
             let waste = resource(&cat.0, "spent_fuel");
             let requested = spec.throughput_kg_s * throttle * dt;
-            let fuel_fraction = if spec.produces_charges {
-                spec.fissile_fraction
-            } else {
-                1.0
-            };
-            let material = if spec.produces_charges {
-                Some(resource(&cat.0, "repair_material"))
-            } else {
-                None
-            };
             let amount = requested
-                .min(hardware.inventory.0.available(source) / fuel_fraction)
+                .min(hardware.inventory.0.available(source))
                 .min(hardware.inventory.0.energy_j as f64 / spec.power_w * spec.throughput_kg_s);
-            let amount = if let Some(material) = material {
-                amount.min(
-                    hardware.inventory.0.available(material)
-                        / (1.0 - fuel_fraction).max(f64::MIN_POSITIVE),
-                )
-            } else {
-                amount
-            };
             if amount <= 0.0 {
                 continue;
             }
             let units = (amount).stochastic_round();
-            let fuel_units = (units as f64 * fuel_fraction).stochastic_round().min(units);
-            let material_units = units - fuel_units;
             let recovered = (units as f64 * spec.recovery_fraction)
                 .stochastic_round()
                 .min(units);
             let discarded = units - recovered;
             let energy = units as f64 / spec.throughput_kg_s * spec.power_w;
             if units == 0
-                || fuel_units > hardware.inventory.0.quantities[source]
-                || material.is_some_and(|i| material_units > hardware.inventory.0.quantities[i])
+                || units > hardware.inventory.0.quantities[source]
                 || recovered > hardware.inventory.0.tank_room(target, &cat.0)
                 || discarded > hardware.inventory.0.tank_room(waste, &cat.0)
                 || energy > hardware.inventory.0.energy_j as f64
@@ -326,10 +305,7 @@ pub(crate) fn process(
                 continue;
             }
             let mut next = hardware.inventory.0.clone();
-            next.quantities[source] -= fuel_units;
-            if let Some(material) = material {
-                next.quantities[material] -= material_units;
-            }
+            next.quantities[source] -= units;
             next.insert_consumable(target, recovered, &cat.0)
                 .expect("reserved tank space");
             next.insert_consumable(waste, discarded, &cat.0)
@@ -499,16 +475,15 @@ mod tests {
         assert!(after.inventory.energy_j < before.inventory.energy_j);
     }
     #[test]
-    fn charge_factory_requires_material_and_conserves_mass() {
+    fn charge_factory_converts_fuel_into_charges_and_conserves_mass() {
         let mut fixture = fixture("fuel_plant_8m");
         let cat = Catalogue::builtin();
         let charges = resource(&cat, "micropulse_charge");
         let fuel = resource(&cat, "reactor_fuel");
-        let material = resource(&cat, "repair_material");
         fixture.advance();
         assert_eq!(fixture.state().inventory.quantities[charges], 0);
         fixture.set_inventory(|inventory| {
-            inventory.quantities[material] = 1;
+            inventory.quantities[fuel] = 1;
             inventory.energy_j = 10000000;
         });
         {
@@ -523,11 +498,10 @@ mod tests {
         assert_eq!(produced, 1);
         assert!((before.inventory.mass(&cat) - after.inventory.mass(&cat)).abs() < 1e-9);
         let used_fuel = before.inventory.quantities[fuel] - after.inventory.quantities[fuel];
-        let used_material =
-            before.inventory.quantities[material] - after.inventory.quantities[material];
         assert_eq!(
-            used_fuel + used_material,
+            used_fuel,
             produced + after.inventory.quantities[resource(&cat, "spent_fuel")]
+                - before.inventory.quantities[resource(&cat, "spent_fuel")]
         );
     }
     #[test]

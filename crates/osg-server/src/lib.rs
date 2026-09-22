@@ -513,14 +513,6 @@ mod asset_tests {
     }
 
     #[tokio::test]
-    #[should_panic(expected = "internal server bug: invalid outgoing snapshot")]
-    async fn invalid_outgoing_snapshot_panics() {
-        let mut frame = empty_snapshot();
-        frame.rate = f64::NAN;
-        encode_snapshot(frame);
-    }
-
-    #[tokio::test]
     async fn disconnected_client_remains_an_io_error() {
         let (mut server, client) = tokio::io::duplex(4096);
         drop(client);

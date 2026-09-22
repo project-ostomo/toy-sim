@@ -61,8 +61,14 @@ pub fn refresh_iff(world: &mut World, entity: Entity) {
 
 /// Publish only current measurements. Physical identities stay on the server.
 pub fn publish(world: &mut World) {
+    let _profile = super::diagnostics::ProfileScope::new("sensor_publish");
     use super::{hardware, identity, physics, simulation, travel, vessel};
 
+    let profile = std::env::var_os("OSG_SPATIAL_PROFILE").is_some();
+    let mut detection_time = std::time::Duration::ZERO;
+    let mut scan_count = 0_usize;
+    let mut candidate_count = 0_usize;
+    let mut visible_count = 0_usize;
     let tick = world.resource::<simulation::SimulationCounters>().ticks;
     let observers: Vec<_> = world
         .query_filtered::<Entity, With<identity::Identity>>()
@@ -103,6 +109,7 @@ pub fn publish(world: &mut World) {
                     .get::<hardware::SensorOverride>(observer)
                     .map_or(true, |value| value.occlusion),
             };
+            let started = profile.then(std::time::Instant::now);
             let detections = detect_nearest(
                 world.resource::<SpatialIndex>(),
                 observer,
@@ -110,6 +117,12 @@ pub fn publish(world: &mut World) {
                 &sensor,
                 256,
             );
+            if let Some(started) = started {
+                detection_time += started.elapsed();
+                scan_count += 1;
+                candidate_count += detections.candidates;
+                visible_count += detections.visible.len();
+            }
             for detection in detections.visible {
                 let target = detection.entity;
                 let (Some(id), Some(instance), Some(transform), Some(design)) = (
@@ -170,6 +183,10 @@ pub fn publish(world: &mut World) {
         world
             .entity_mut(observer)
             .insert(Observations(Arc::new(snapshot)));
+    }
+    if profile {
+        debug!(target: "osg_server::profile", tick, scan_count, candidate_count, visible_count,
+            detection_ms = detection_time.as_secs_f64() * 1000., "sensor profile");
     }
 }
 
@@ -248,6 +265,9 @@ pub fn detect(
     origin: crate::sim::precision::GalacticPosition,
     sensor: &Sensor,
 ) -> SensorContacts {
+    let origin = index
+        .object_index(observer)
+        .map_or(origin, |id| index.objects[id].position);
     if sensor.range_m <= 0. || !sensor.range_m.is_finite() {
         return SensorContacts::default();
     }
@@ -304,6 +324,9 @@ pub fn detect_nearest(
     sensor: &Sensor,
     n: usize,
 ) -> SensorContacts {
+    let origin = index
+        .object_index(observer)
+        .map_or(origin, |id| index.objects[id].position);
     if n == 0 || sensor.range_m <= 0. || !sensor.range_m.is_finite() {
         return SensorContacts::default();
     }
@@ -611,7 +634,7 @@ mod tests {
     }
 
     #[test]
-    fn scans_use_post_integration_positions_and_drop_despawned_objects() {
+    fn scans_use_tick_start_positions_and_drop_despawned_objects_next_tick() {
         #[derive(Component)]
         struct Target;
         let mut app = App::new();
@@ -626,6 +649,7 @@ mod tests {
         .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_millis(
             100,
         )))
+        .add_systems(FixedFirst, crate::sim::spatial::rebuild)
         .add_systems(
             FixedPostUpdate,
             |mut target: Query<&mut PreciseTransform, With<Target>>| {
@@ -659,6 +683,14 @@ mod tests {
             ))
             .id();
         app.update();
+        app.update();
+        assert!(
+            app.world()
+                .get::<SensorContacts>(sensor)
+                .unwrap()
+                .visible
+                .is_empty()
+        );
         app.update();
         assert_eq!(
             app.world().get::<SensorContacts>(sensor).unwrap().visible[0].entity,

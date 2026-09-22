@@ -327,7 +327,7 @@ impl Universe {
             entries.push(Entry {
                 position: summary.position,
                 luminosity: summary.luminosity,
-                influence: summary.influence_bound,
+                influence: summary.influence_bound.max(summary.capture_bound),
                 radius: summary.star_radius,
             });
             if let DefinitionSource::Authored { config, .. } = source {

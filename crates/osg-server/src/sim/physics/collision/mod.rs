@@ -1,4 +1,4 @@
-//! Time-ordered, dissipative contacts. Swept spatial hashes find candidates;
+//! Time-ordered, dissipative contacts using the shared tick snapshot.
 mod ecs;
 #[cfg(test)]
 mod solver_tests;
@@ -6,10 +6,7 @@ pub mod weapons;
 pub use ecs::{CollisionBody, CollisionReport, CollisionStats, Projectile, install};
 
 use super::rotation;
-use crate::sim::{
-    precision::GalacticPosition,
-    spatial::swept::{Proxy, SweptIndex, dvec, vector},
-};
+use crate::sim::precision::GalacticPosition;
 use bevy::{
     math::{DMat3, DQuat, DVec3},
     prelude::Entity,
@@ -19,6 +16,7 @@ use osg_ships::{
     CompiledShipDesign,
     thermal::{ThermalModel, ThermalState},
 };
+use osg_spatial_bvh::{RecordKind, SpatialRecord, SpatialService};
 use parry3d_f64::{
     math::{Pose, Rotation},
     query,
@@ -26,6 +24,21 @@ use parry3d_f64::{
 };
 use rayon::prelude::*;
 use std::{cmp::Ordering, collections::BinaryHeap, sync::Arc};
+
+pub fn vector(v: DVec3) -> parry3d_f64::math::Vector {
+    parry3d_f64::math::Vector::from_array(v.to_array())
+}
+
+pub fn dvec(v: parry3d_f64::math::Vector) -> DVec3 {
+    DVec3::from_array(v.to_array())
+}
+
+#[cfg(test)]
+fn test_snapshot(bodies: &[Body], end: f64) -> SpatialService<SpatialRecord> {
+    let mut service = SpatialService::default();
+    service.rebuild_dynamic(bodies.iter().map(|body| body.spatial_entry(end)));
+    service
+}
 
 pub fn pose(position: DVec3, rotation: DQuat) -> Pose {
     Pose::from_parts(
@@ -221,22 +234,14 @@ impl Body {
         self.members.iter().any(|m| !m.destroyed)
     }
 
-    pub fn proxy(&self, id: usize, end: f64) -> Proxy {
-        Proxy {
-            id: id as u32,
-            position: self.position,
-            displacement: self.velocity * (end - self.time),
-            radius: self.radius + 0.002,
+    pub fn spatial_entry(&self, end: f64) -> osg_spatial_bvh::DynamicEntry<SpatialRecord> {
+        SpatialRecord {
+            kind: RecordKind::Collision,
+            id: self.entity.to_bits(),
+            position: self.position.to_array(),
+            radius_m: self.radius + 0.002,
         }
-    }
-
-    fn proxy_in_frame(&self, id: usize, end: f64, frame_velocity: DVec3) -> Proxy {
-        Proxy {
-            id: id as u32,
-            position: self.position.offset_by(-frame_velocity * self.time),
-            displacement: (self.velocity - frame_velocity) * (end - self.time),
-            radius: self.radius + 0.002,
-        }
+        .dynamic(0., (self.velocity * (end - self.time).max(0.)).to_array())
     }
 
     fn rebase(&mut self, t: f64) {
@@ -650,7 +655,6 @@ fn record_deaths(body: &mut Body, t: f64, report: &mut Report) {
 pub struct SolverWorkspace {
     pub weapons: std::collections::BTreeMap<Entity, weapons::WeaponShip>,
     pub time_s: f64,
-    index: SweptIndex,
 }
 
 fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
@@ -766,14 +770,20 @@ fn resolve(a: &mut Body, b: &mut Body, hit: Hit, t: f64, report: &mut Report) {
 
 #[cfg(test)]
 pub fn simulate(bodies: &mut Vec<Body>, end: f64) -> Report {
-    simulate_with_workspace(bodies, end, &mut SolverWorkspace::default(), &mut || {
-        panic!("test has no guns")
-    })
+    let spatial = test_snapshot(bodies, end);
+    simulate_with_workspace(
+        bodies,
+        end,
+        &spatial,
+        &mut SolverWorkspace::default(),
+        &mut || panic!("test has no guns"),
+    )
 }
 
 pub fn simulate_with_workspace(
     bodies: &mut Vec<Body>,
     end: f64,
+    spatial: &SpatialService<SpatialRecord>,
     workspace: &mut SolverWorkspace,
     allocate: &mut dyn FnMut() -> Entity,
 ) -> Report {
@@ -781,26 +791,24 @@ pub fn simulate_with_workspace(
     for body in bodies.iter_mut() {
         body.prepare_rotation(end);
     }
-    // A common translating frame leaves collisions unchanged while avoiding
-    // enormous swept boxes for ships sharing an orbital velocity.
-    let reference = bodies.first().map_or(DVec3::ZERO, |b| b.velocity);
-    let total_mass: f64 = bodies.iter().map(|b| b.mass).sum();
-    let frame = reference
-        + bodies
-            .iter()
-            .map(|b| (b.velocity - reference) * b.mass)
-            .sum::<DVec3>()
-            / total_mass.max(1.0);
     let timer = std::time::Instant::now();
-    let proxies: Vec<_> = bodies
+    let slots: ahash::AHashMap<_, _> = bodies
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.alive())
-        .map(|(i, b)| b.proxy_in_frame(i, end, frame))
+        .map(|(i, b)| (b.entity.to_bits(), i))
         .collect();
-    workspace.index.refresh(&proxies);
-    let index = &mut workspace.index;
-    let pairs = index.pairs();
+    let mut pairs: Vec<_> = spatial
+        .dynamic_collision_candidates(|a, b| {
+            a.kind == RecordKind::Collision && b.kind == RecordKind::Collision
+        })
+        .into_iter()
+        .map(|(a, b)| {
+            let a = slots[&a.id];
+            let b = slots[&b.id];
+            (a.min(b), a.max(b))
+        })
+        .collect();
+    pairs.sort_unstable();
     report.index_seconds = timer.elapsed().as_secs_f64();
     report.candidates = pairs.len() as u64;
     let timer = std::time::Instant::now();
@@ -910,7 +918,7 @@ pub fn simulate_with_workspace(
                     }
                     while let Some(beam) = report.beams.pop() {
                         if let Some(target) =
-                            weapons::resolve_beam(beam, bodies, event.t, &mut report)
+                            weapons::resolve_beam(beam, bodies, spatial, event.t, &mut report)
                         {
                             changed.push(target);
                         }
@@ -937,9 +945,6 @@ pub fn simulate_with_workspace(
         for &id in &changed {
             if bodies[id].alive() {
                 bodies[id].prepare_rotation(end);
-                index.update(bodies[id].proxy_in_frame(id, end, frame));
-            } else {
-                index.remove(id as u32);
             }
         }
         for &id in &changed {
@@ -949,9 +954,21 @@ pub fn simulate_with_workspace(
             if let Some(event) = thermal_event(id, &bodies[id], end) {
                 events.push(event);
             }
-            for other in index.neighbors(bodies[id].proxy_in_frame(id, end, frame)) {
-                let other = other as usize;
-                pairs.push((id.min(other), id.max(other)));
+            // A changed path (including a newly fired slug) queries the frozen
+            // t1 scene. No insertion or tree rebuild occurs during the tick.
+            for record in spatial
+                .query_dynamic(osg_spatial_bvh::SpatialQuery::Motion(
+                    bodies[id].spatial_entry(end).swept_bounds,
+                ))
+                .collect()
+            {
+                if record.kind != RecordKind::Collision {
+                    continue;
+                }
+                let other = slots[&record.id];
+                if other != id && bodies[other].alive() {
+                    pairs.push((id.min(other), id.max(other)));
+                }
             }
         }
         pairs.sort_unstable();
@@ -987,7 +1004,7 @@ pub fn simulate_with_workspace(
     report
 }
 
-pub fn activate(bodies: &mut [Body]) {
+pub fn activate(bodies: &mut [Body], spatial: &SpatialService<SpatialRecord>) {
     let mut pending = Vec::new();
     for (a, body) in bodies.iter_mut().enumerate() {
         body.members.sort_unstable_by_key(|m| m.entity);
@@ -1013,23 +1030,27 @@ pub fn activate(bodies: &mut [Body]) {
         return;
     }
 
-    let last_start = bodies.iter().map(|body| body.time).fold(0.0, f64::max);
-    let proxies: Vec<_> = bodies
+    let slots: ahash::AHashMap<_, _> = bodies
         .iter()
         .enumerate()
-        .filter(|(_, b)| b.alive())
-        .map(|(i, b)| b.proxy(i, last_start))
+        .map(|(i, b)| (b.entity.to_bits(), i))
         .collect();
-    let index = SweptIndex::build(&proxies);
     for (a, member) in pending {
         let anchor = bodies[a].position;
         let start = bodies[a].time;
         let radius = bodies[a].collision_radius(member, true);
-        let blocked = index
-            .neighbors(bodies[a].proxy(a, start))
+        let blocked = spatial
+            .query_dynamic(osg_spatial_bvh::SpatialQuery::Sphere {
+                centre: anchor.to_array(),
+                radius_m: bodies[a].radius,
+            })
+            .collect()
             .into_iter()
-            .any(|b| {
-                let b = &bodies[b as usize];
+            .filter(|record| {
+                record.kind == RecordKind::Collision && record.id != bodies[a].entity.to_bits()
+            })
+            .any(|record| {
+                let b = &bodies[slots[&record.id]];
                 if b.time > start || b.launch_owner == Some(bodies[a].members[member].entity) {
                     return false;
                 }

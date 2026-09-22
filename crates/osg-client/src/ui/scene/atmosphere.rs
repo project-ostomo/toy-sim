@@ -1,7 +1,10 @@
 use super::ViewCamera;
 use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
 use bevy::{
-    light::atmosphere::{Falloff, PhaseFunction, ScatteringMedium, ScatteringTerm},
+    light::{
+        AtmosphereEnvironmentMapLight, EnvironmentMapLight, GeneratedEnvironmentMapLight,
+        atmosphere::{Falloff, PhaseFunction, ScatteringMedium, ScatteringTerm},
+    },
     math::curve::{FunctionCurve, Interval},
     pbr::{
         AtmosphereMode, AtmosphereSettings, ExtractedAtmosphere, GpuAtmosphereSettings,
@@ -14,6 +17,9 @@ use bevy::{
         sync_world::RenderEntity,
     },
 };
+
+const ENVIRONMENT_MAP_SIZE: UVec2 = UVec2::splat(64);
+const ENVIRONMENT_LIGHT_INTENSITY: f32 = 1.;
 
 #[derive(Component)]
 struct ViewAtmosphere {
@@ -84,18 +90,39 @@ pub(super) fn install(app: &mut App) {
 
 fn update(
     mut commands: Commands,
-    cameras: Query<(
+    mut cameras: Query<(
         Entity,
         &ViewCamera,
         &Transform,
         Option<&ViewAtmosphere>,
         &ViewSystems,
+        Option<&mut AtmosphereEnvironmentMapLight>,
+        Option<&mut GeneratedEnvironmentMapLight>,
+        Option<&mut EnvironmentMapLight>,
     )>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     mut media: ResMut<Assets<ScatteringMedium>>,
 ) {
-    for (entity, view, transform, previous, systems) in &cameras {
+    for (
+        entity,
+        view,
+        transform,
+        previous,
+        systems,
+        environment_source,
+        generated_environment,
+        environment,
+    ) in &mut cameras
+    {
         if view.private {
+            set_environment_light(
+                &mut commands,
+                entity,
+                false,
+                environment_source,
+                generated_environment,
+                environment,
+            );
             commands
                 .entity(entity)
                 .remove::<(ViewAtmosphere, AtmosphereSettings)>();
@@ -121,6 +148,14 @@ fn update(
         );
         let body = selected.and_then(|id| bodies.iter().find(|(body, _, _)| body.0.entity == id));
         let Some((body, pose, _)) = body else {
+            set_environment_light(
+                &mut commands,
+                entity,
+                false,
+                environment_source,
+                generated_environment,
+                environment,
+            );
             commands
                 .entity(entity)
                 .remove::<(ViewAtmosphere, AtmosphereSettings)>();
@@ -162,6 +197,14 @@ fn update(
                     ],
                 ))
             });
+        set_environment_light(
+            &mut commands,
+            entity,
+            true,
+            environment_source,
+            generated_environment,
+            environment,
+        );
         commands.entity(entity).insert((
             ViewAtmosphere {
                 inner_radius: body.radius_m as f32,
@@ -176,6 +219,39 @@ fn update(
                 ..default()
             },
         ));
+    }
+}
+
+fn set_environment_light(
+    commands: &mut Commands,
+    entity: Entity,
+    active: bool,
+    source: Option<Mut<AtmosphereEnvironmentMapLight>>,
+    generated: Option<Mut<GeneratedEnvironmentMapLight>>,
+    environment: Option<Mut<EnvironmentMapLight>>,
+) {
+    let intensity = if active {
+        ENVIRONMENT_LIGHT_INTENSITY
+    } else {
+        0.
+    };
+
+    if let Some(mut source) = source {
+        source.intensity = intensity;
+    } else if active {
+        commands
+            .entity(entity)
+            .insert(AtmosphereEnvironmentMapLight {
+                intensity,
+                size: ENVIRONMENT_MAP_SIZE,
+                ..default()
+            });
+    }
+    if let Some(mut generated) = generated {
+        generated.intensity = intensity;
+    }
+    if let Some(mut environment) = environment {
+        environment.intensity = intensity;
     }
 }
 
@@ -362,16 +438,66 @@ mod tests {
             .unwrap();
         world.run_system_once(update).unwrap();
         assert!(world.get::<ViewAtmosphere>(camera).is_some());
+        let environment_source = world.get::<AtmosphereEnvironmentMapLight>(camera).unwrap();
+        assert_eq!(environment_source.intensity, ENVIRONMENT_LIGHT_INTENSITY);
+        assert_eq!(environment_source.size, ENVIRONMENT_MAP_SIZE);
+
+        world.entity_mut(camera).insert((
+            GeneratedEnvironmentMapLight {
+                intensity: ENVIRONMENT_LIGHT_INTENSITY,
+                ..default()
+            },
+            EnvironmentMapLight {
+                intensity: ENVIRONMENT_LIGHT_INTENSITY,
+                ..default()
+            },
+        ));
 
         world.get_mut::<ViewCamera>(camera).unwrap().private = true;
         world.run_system_once(update).unwrap();
         assert!(world.get::<ViewAtmosphere>(camera).is_none());
         assert!(world.get::<AtmosphereSettings>(camera).is_none());
+        assert_eq!(
+            world
+                .get::<AtmosphereEnvironmentMapLight>(camera)
+                .unwrap()
+                .intensity,
+            0.
+        );
+        assert_eq!(
+            world
+                .get::<GeneratedEnvironmentMapLight>(camera)
+                .unwrap()
+                .intensity,
+            0.
+        );
+        assert_eq!(
+            world.get::<EnvironmentMapLight>(camera).unwrap().intensity,
+            0.
+        );
 
         world.get_mut::<ViewCamera>(camera).unwrap().private = false;
         world.run_system_once(update).unwrap();
         assert!(world.get::<ViewAtmosphere>(camera).is_some());
         assert!(world.get::<AtmosphereSettings>(camera).is_some());
+        assert_eq!(
+            world
+                .get::<AtmosphereEnvironmentMapLight>(camera)
+                .unwrap()
+                .intensity,
+            ENVIRONMENT_LIGHT_INTENSITY
+        );
+        assert_eq!(
+            world
+                .get::<GeneratedEnvironmentMapLight>(camera)
+                .unwrap()
+                .intensity,
+            ENVIRONMENT_LIGHT_INTENSITY
+        );
+        assert_eq!(
+            world.get::<EnvironmentMapLight>(camera).unwrap().intensity,
+            ENVIRONMENT_LIGHT_INTENSITY
+        );
     }
 
     #[test]

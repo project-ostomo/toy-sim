@@ -405,7 +405,9 @@ impl SurfaceGenerator {
 
         let mut roughness = 0.94;
         let mut color = if water {
-            roughness = 0.18;
+            // Represent unresolved wave slopes so orbital sun glints cover a
+            // visible area instead of collapsing into a nearly point highlight.
+            roughness = 0.40;
             mix(
                 [0.016, 0.045, 0.085],
                 [0.045, 0.21, 0.25],

@@ -1,17 +1,17 @@
 use crate::state::SessionInfo;
-mod bake;
 mod geometry;
+mod snapshot;
+mod sprites;
 
 use super::ViewCamera;
 use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
 use bevy::{
-    light::Skybox,
     prelude::*,
     render::{
         Render, RenderApp, RenderSystems,
         extract_resource::{ExtractResource, ExtractResourcePlugin},
+        mesh::RenderMesh,
         render_asset::RenderAssets,
-        texture::GpuImage,
     },
     tasks::{AsyncComputeTaskPool, Task, futures::check_ready},
 };
@@ -29,14 +29,10 @@ use std::{
 #[derive(Resource)]
 struct Settings {
     magnitude: f64,
-    brightness: f32,
 }
 impl Default for Settings {
     fn default() -> Self {
-        Self {
-            magnitude: 8.,
-            brightness: 10_000.,
-        }
+        Self { magnitude: 8. }
     }
 }
 
@@ -45,22 +41,18 @@ const MIN_BAKE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Component, Default)]
 pub(super) struct ViewSky {
-    snapshot: Option<Arc<bake::Snapshot>>,
-    image: Option<Handle<Image>>,
+    snapshot: Option<Arc<snapshot::Snapshot>>,
+    /// Sprite mesh for `snapshot`; `None` when it has no point stars.
+    mesh: Option<Handle<Mesh>>,
     last_job: u64,
     revision: u64,
-}
-
-#[derive(Component, Default)]
-pub(super) struct ExposureSettings {
-    stops: f32,
 }
 
 struct Job {
     camera: Entity,
     revision: u64,
     cancelled: Arc<AtomicBool>,
-    task: Task<anyhow::Result<Option<(Arc<bake::Snapshot>, bake::Baked)>>>,
+    task: Task<anyhow::Result<Option<(Arc<snapshot::Snapshot>, Option<Mesh>)>>>,
 }
 
 #[derive(Resource, Default)]
@@ -73,11 +65,13 @@ struct Skies {
     last_bake_started: Option<Instant>,
 }
 
+/// A new snapshot waiting for its mesh to reach the GPU, so the old star
+/// field keeps drawing until the swap cannot blank a frame.
 #[derive(Clone)]
 struct Upload {
     camera: Entity,
-    image: Handle<Image>,
-    snapshot: Arc<bake::Snapshot>,
+    mesh: Option<Handle<Mesh>>,
+    snapshot: Arc<snapshot::Snapshot>,
     ready: Arc<AtomicBool>,
 }
 
@@ -87,18 +81,15 @@ struct SkyUploads(Vec<Upload>);
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Skies>()
         .init_resource::<Settings>()
-        .add_systems(
-            osg_ui::bevy_egui::EguiPrimaryContextPass,
-            exposure_shortcuts.in_set(crate::ui::input::GameplayInput::Keyboard),
-        )
         .init_resource::<SkyUploads>()
         .add_plugins(ExtractResourcePlugin::<SkyUploads>::default())
         .add_systems(
             PostUpdate,
-            (update, geometry::sync)
+            (update, geometry::sync, sprites::sync)
                 .chain()
                 .before(bevy::transform::TransformSystems::Propagate),
         );
+    sprites::install(app);
 
     if let Some(render) = app.get_sub_app_mut(RenderApp) {
         render.add_systems(
@@ -108,29 +99,28 @@ pub(super) fn install(app: &mut App) {
     }
 }
 
-fn acknowledge_upload(uploads: Res<SkyUploads>, images: Res<RenderAssets<GpuImage>>) {
+fn acknowledge_upload(uploads: Res<SkyUploads>, meshes: Res<RenderAssets<RenderMesh>>) {
     for upload in &uploads.0 {
-        if images.get(&upload.image).is_some() {
+        if upload
+            .mesh
+            .as_ref()
+            .is_none_or(|mesh| meshes.get(mesh).is_some())
+        {
             upload.ready.store(true, Ordering::Release);
         }
     }
 }
 
 fn update(
-    mut commands: Commands,
     session: Res<SessionInfo>,
     celestials: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     settings: Res<Settings>,
-    mut skyboxes: Query<&mut Skybox>,
     mut cameras: Query<(Entity, &ViewCamera, &Transform, &mut ViewSky, &ViewSystems)>,
     mut skies: ResMut<Skies>,
     mut uploads: ResMut<SkyUploads>,
-    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let magnitude = settings.magnitude;
-    for mut skybox in &mut skyboxes {
-        skybox.brightness = settings.brightness;
-    }
     if skies.failed {
         return;
     }
@@ -149,7 +139,7 @@ fn update(
                     colour: system.colour,
                 })
                 .collect();
-            StarCatalogue::from_stars(stars).map(Arc::new)
+            StarCatalogue::from_shared(stars, universe.index.spatial.clone()).map(Arc::new)
         }));
     }
 
@@ -206,18 +196,12 @@ fn update(
                 )
             });
         if !valid {
-            images.remove(upload.image.id());
             return false;
         }
         if upload.ready.load(Ordering::Acquire) {
-            commands.entity(upload.camera).insert(Skybox {
-                image: Some(upload.image.clone()),
-                brightness: settings.brightness,
-                rotation: Quat::IDENTITY,
-            });
             if let Ok((_, _, _, mut view, _)) = cameras.get_mut(upload.camera) {
                 view.snapshot = Some(upload.snapshot.clone());
-                view.image = Some(upload.image.clone());
+                view.mesh = upload.mesh.clone();
             }
             return false;
         }
@@ -235,8 +219,7 @@ fn update(
             let camera = job.camera;
             skies.job = None;
             match result {
-                Ok(Some((snapshot, baked))) => {
-                    debug!("Sky bake completed in {:.3} ms", baked.seconds * 1000.);
+                Ok(Some((snapshot, mesh))) => {
                     if cameras
                         .get(camera)
                         .is_ok_and(|(_, camera, transform, view, _)| {
@@ -251,7 +234,7 @@ fn update(
                         uploads.0.push(Upload {
                             camera,
                             snapshot,
-                            image: images.add(baked.image),
+                            mesh: mesh.map(|mesh| meshes.add(mesh)),
                             ready: Arc::new(AtomicBool::new(false)),
                         });
                     }
@@ -266,9 +249,9 @@ fn update(
 
     let reusable: Vec<_> = cameras
         .iter()
-        .filter_map(|(_, _, _, view, _)| Some((view.snapshot.clone()?, view.image.clone()?)))
+        .filter_map(|(_, _, _, view, _)| Some((view.snapshot.clone()?, view.mesh.clone())))
         .collect();
-    for (entity, camera, transform, mut current, _) in &mut cameras {
+    for (_, camera, transform, mut current, _) in &mut cameras {
         let position = camera.origin.offset_by(transform.translation.as_dvec3());
         if current
             .snapshot
@@ -277,22 +260,17 @@ fn update(
         {
             continue;
         }
-        if let Some((snapshot, image)) = reusable
+        if let Some((snapshot, mesh)) = reusable
             .iter()
             .find(|(snapshot, _)| snapshot.valid(position, magnitude, current.revision, 0))
         {
-            commands.entity(entity).insert(Skybox {
-                image: Some(image.clone()),
-                brightness: settings.brightness,
-                rotation: Quat::IDENTITY,
-            });
             current.snapshot = Some(snapshot.clone());
-            current.image = Some(image.clone());
+            current.mesh = mesh.clone();
         }
     }
 
-    // Keep consuming completed work and sharing textures above, but limit CPU
-    // bake starts globally in real time, independently of simulation speed.
+    // Keep consuming completed work and sharing meshes above, but limit
+    // catalogue queries globally in real time, independently of simulation speed.
     // There is no request queue: select the latest camera position below.
     if skies.job.is_some()
         || !uploads.0.is_empty()
@@ -333,7 +311,7 @@ fn update(
         .collect();
     excluded.sort_unstable();
     excluded.dedup();
-    let stars: Vec<bake::Source> = celestials
+    let stars: Vec<snapshot::Source> = celestials
         .iter()
         .filter(|(Celestial(body), _, system)| {
             body.luminosity_lumens > 0.0
@@ -345,7 +323,7 @@ fn update(
         .map(|(Celestial(body), DisplayPose(pose), _)| {
             let mut identity = [0; 8];
             identity.copy_from_slice(&body.entity.0[..8]);
-            bake::Source {
+            snapshot::Source {
                 star: Star {
                     id: StarId {
                         namespace: 2,
@@ -357,7 +335,7 @@ fn update(
                     colour: body.color,
                 },
                 radius_m: body.radius_m,
-                key: bake::GeometryKey::Celestial(body.entity),
+                key: snapshot::GeometryKey::Celestial(body.entity),
             }
         })
         .collect();
@@ -372,7 +350,7 @@ fn update(
         revision,
         cancelled,
         task: AsyncComputeTaskPool::get().spawn(async move {
-            bake_view(
+            select_view(
                 &catalogue,
                 origin,
                 revision,
@@ -392,19 +370,20 @@ fn catalogue_star_id(id: osg_model::Id) -> StarId {
     }
 }
 
-fn bake_view(
+fn select_view(
     catalogue: &StarCatalogue,
     origin: GalacticPosition,
     revision: u64,
     magnitude: f64,
-    mut stars: Vec<bake::Source>,
+    mut stars: Vec<snapshot::Source>,
     excluded: &[StarId],
     cancelled: &AtomicBool,
-) -> anyhow::Result<Option<(Arc<bake::Snapshot>, bake::Baked)>> {
+) -> anyhow::Result<Option<(Arc<snapshot::Snapshot>, Option<Mesh>)>> {
+    let requested = osg_stars::min_brightness(magnitude);
     let selected = catalogue.visible(
         origin,
         VisibilityQuery {
-            min_brightness: osg_stars::min_brightness(magnitude + 0.05),
+            min_brightness: requested / snapshot::BRIGHTNESS_MARGIN,
             max_stars: MAX_SELECTED_STARS,
             excluded,
         },
@@ -412,51 +391,43 @@ fn bake_view(
     if cancelled.load(Ordering::Relaxed) {
         return Ok(None);
     }
-    stars.extend(selected.indices.iter().map(|&index| {
+    let faintest = (selected.matched > selected.indices.len())
+        .then(|| selected.indices.last())
+        .flatten()
+        .map(|&index| {
+            let star = catalogue.stars()[index];
+            star.luminosity / star.position.relative_to(origin).length_squared()
+        });
+    // Stars this close can brighten past any margin within the validity
+    // radius, so keep them whatever their current brightness.
+    let mut chosen: Vec<usize> = selected.indices;
+    chosen.extend(
+        catalogue
+            .within_radius(origin, 2.0 * snapshot::VALIDITY_RADIUS_M)?
+            .into_iter()
+            .filter(|&index| !excluded.contains(&catalogue.stars()[index].id)),
+    );
+    chosen.sort_unstable();
+    chosen.dedup();
+    stars.extend(chosen.into_iter().map(|index| {
         let star = catalogue.stars()[index];
-        bake::Source {
+        snapshot::Source {
             star,
-            radius_m: bake::estimated_radius(star.luminosity),
-            key: bake::GeometryKey::Catalogue(star.id),
+            radius_m: snapshot::estimated_radius(star.luminosity),
+            key: snapshot::GeometryKey::Catalogue(star.id),
         }
     }));
-    let nearest = catalogue
-        .nearest(origin)?
-        .map_or(f64::INFINITY, |(_, distance)| distance);
-    let snapshot = Arc::new(bake::Snapshot::new(
-        stars, origin, magnitude, revision, 0, nearest,
-    ));
-    Ok(bake::bake(&snapshot, cancelled).map(|image| (snapshot, image)))
-}
-
-fn exposure_shortcuts(
-    mut contexts: osg_ui::bevy_egui::EguiContexts,
-    selection: Res<crate::ui::Selection>,
-    mut exposures: Query<(
-        &ViewCamera,
-        &mut ExposureSettings,
-        &mut bevy::camera::Exposure,
-    )>,
-) -> Result {
-    let ctx = contexts.ctx_mut()?;
-    for (view, mut adjustment, mut exposure) in &mut exposures {
-        if Some(view.view) != selection.view {
-            continue;
-        }
-        ctx.input(|input| {
-            if !input.modifiers.command && !input.modifiers.ctrl && !input.modifiers.alt {
-                if input.key_pressed(osg_ui::egui::Key::Plus)
-                    || input.key_pressed(osg_ui::egui::Key::Equals)
-                {
-                    adjustment.stops += 0.5;
-                }
-                if input.key_pressed(osg_ui::egui::Key::Minus) {
-                    adjustment.stops -= 0.5;
-                }
-            }
-        });
-        adjustment.stops = adjustment.stops.clamp(-24., 32.);
-        exposure.ev100 = bevy::camera::Exposure::SUNLIGHT.ev100 - adjustment.stops;
+    let snapshot = snapshot::Snapshot::new(
+        stars,
+        origin,
+        magnitude,
+        revision,
+        0,
+        snapshot::effective_cutoff(requested, faintest),
+    );
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
     }
-    Ok(())
+    let mesh = sprites::star_mesh(&snapshot.stars);
+    Ok(Some((Arc::new(snapshot), mesh)))
 }

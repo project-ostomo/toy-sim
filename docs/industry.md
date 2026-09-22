@@ -110,10 +110,10 @@ dock power. The starting player can manage production and use its warehouse. Its
 initial supplies include the complete assembly bill for a Kestrel service launch,
 industrial materials, ore, water and reactor fuel.
 
-A short first job is Repair material: one kilogram of industrial metals becomes
-one kilogram of repair material in one second, consuming one megajoule. The
-Kestrel service launch takes 110 seconds and 110 megajoules to assemble. These
-durations assume continuous electrical supply and an available module.
+A short first job is Electronic components: industrial metals and chemical
+feedstock become electronic components. The Kestrel service launch takes 110
+seconds and 110 megajoules to assemble. These durations assume continuous
+electrical supply and an available module.
 
 Starter mines are explicit resource sources with fixed production rates. They
 load authorized, physically colocated cargo inventories and retain their fractional

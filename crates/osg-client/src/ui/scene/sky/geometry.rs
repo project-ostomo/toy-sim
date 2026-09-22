@@ -1,9 +1,9 @@
-//! Emissive galactic-coordinate spheres for stars too resolvable to bake.
+//! Emissive galactic-coordinate spheres for stars too resolvable to draw as points.
 //!
-//! `bake::Snapshot` diverts stars above the handover angular size into its
+//! `snapshot::Snapshot` diverts stars above the handover angular size into its
 //! geometry set; this module renders that set as real meshes so the stars get
 //! true per-frame parallax and participate in bloom as HDR point sources.
-use super::{Settings, ViewSky, bake};
+use super::{ViewSky, snapshot};
 use crate::state::{Celestial, DisplayPose};
 use crate::ui::scene::{ViewCamera, ViewMember, surfaces};
 use bevy::{camera::visibility::RenderLayers, prelude::*};
@@ -13,19 +13,22 @@ use std::collections::{HashMap, HashSet};
 #[derive(Component)]
 pub(super) struct StarMesh {
     view: Entity,
-    key: bake::GeometryKey,
+    key: snapshot::GeometryKey,
 }
 
 struct Desired {
     view: Entity,
     origin: GalacticPosition,
     layer: usize,
-    star: bake::GeometryStar,
+    star: snapshot::GeometryStar,
     position: GalacticPosition,
 }
 
-fn emissive(star: &bake::GeometryStar, brightness: f32) -> [f32; 3] {
-    let radiance = bake::star_radiance(star.luminosity, star.radius_m) * brightness as f64;
+/// Physical surface luminance tinted by the star's colour, the same tint its
+/// directional light uses. The material weights emissive by camera exposure,
+/// so the disc is metered and tone mapped like everything else.
+fn emissive(star: &snapshot::GeometryStar) -> [f32; 3] {
+    let radiance = snapshot::star_radiance(star.luminosity, star.radius_m);
     star.colour.map(|c| (c as f64 * radiance) as f32)
 }
 
@@ -47,7 +50,6 @@ pub(super) fn sync(
         ),
         Without<ViewCamera>,
     >,
-    settings: Res<Settings>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut surfaces: ResMut<surfaces::SurfaceCache>,
@@ -65,15 +67,15 @@ pub(super) fn sync(
         };
         for star in &snapshot.geometry {
             let position = match star.key {
-                bake::GeometryKey::Celestial(id) => {
+                snapshot::GeometryKey::Celestial(id) => {
                     let Some(position) = poses.get(&id).copied() else {
                         // Unsubscribed since this snapshot: hidden until the
-                        // next bake replaces it.
+                        // next snapshot replaces it.
                         continue;
                     };
                     position
                 }
-                bake::GeometryKey::Catalogue(_) => star.position,
+                snapshot::GeometryKey::Catalogue(_) => star.position,
             };
             desired.push(Desired {
                 view,
@@ -89,7 +91,7 @@ pub(super) fn sync(
         .enumerate()
         .map(|(i, entry)| ((entry.view, entry.star.key), i))
         .collect();
-    let mut existing: HashSet<(Entity, bake::GeometryKey)> = HashSet::new();
+    let mut existing: HashSet<(Entity, snapshot::GeometryKey)> = HashSet::new();
     for (entity, mesh, mut transform, material) in &mut stars {
         let Some(entry) = index.get(&(mesh.view, mesh.key)).map(|&i| &desired[i]) else {
             commands.entity(entity).despawn();
@@ -98,7 +100,7 @@ pub(super) fn sync(
         };
         *transform = star_transform(entry);
         existing.insert((mesh.view, mesh.key));
-        let emissive = emissive(&entry.star, settings.brightness);
+        let emissive = emissive(&entry.star);
         let stale = materials.get(&material.0).is_none_or(|material| {
             material.emissive.red != emissive[0]
                 || material.emissive.green != emissive[1]
@@ -113,10 +115,11 @@ pub(super) fn sync(
         if existing.contains(&(entry.view, entry.star.key)) {
             continue;
         }
-        let emissive = emissive(&entry.star, settings.brightness);
+        let emissive = emissive(&entry.star);
         let material = materials.add(StandardMaterial {
             base_color: Color::BLACK,
             emissive: LinearRgba::rgb(emissive[0], emissive[1], emissive[2]),
+            emissive_exposure_weight: 1.0,
             perceptual_roughness: 1.,
             ..default()
         });
@@ -172,10 +175,10 @@ mod tests {
         }
     }
 
-    fn celestial_source(star: &CelestialPresentation) -> bake::Source {
+    fn celestial_source(star: &CelestialPresentation) -> snapshot::Source {
         let mut identity = [0; 8];
         identity.copy_from_slice(&star.entity.0[..8]);
-        bake::Source {
+        snapshot::Source {
             star: Star {
                 id: StarId {
                     namespace: 2,
@@ -187,13 +190,13 @@ mod tests {
                 colour: star.color,
             },
             radius_m: star.radius_m,
-            key: bake::GeometryKey::Celestial(star.entity),
+            key: snapshot::GeometryKey::Celestial(star.entity),
         }
     }
 
-    fn catalogue_source(position: DVec3) -> bake::Source {
+    fn catalogue_source(position: DVec3) -> snapshot::Source {
         let id = StarId::gaia(7);
-        bake::Source {
+        snapshot::Source {
             star: Star {
                 id,
                 position: GalacticPosition::from_meters(position),
@@ -202,7 +205,7 @@ mod tests {
                 colour: [1., 0.9, 0.8],
             },
             radius_m: 6.96e8,
-            key: bake::GeometryKey::Catalogue(id),
+            key: snapshot::GeometryKey::Catalogue(id),
         }
     }
 
@@ -212,10 +215,6 @@ mod tests {
         world.init_resource::<Assets<Mesh>>();
         world.init_resource::<Assets<StandardMaterial>>();
         world.init_resource::<surfaces::SurfaceCache>();
-        world.insert_resource(Settings {
-            brightness: 1.0,
-            ..Default::default()
-        });
         let system = Id([3; 16]);
         let camera = world
             .spawn((
@@ -239,77 +238,73 @@ mod tests {
         world
             .run_system_once(crate::ui::scene::camera::setup_views)
             .unwrap();
-        world.get_mut::<ViewSky>(camera).unwrap().snapshot = Some(Arc::new(bake::Snapshot::new(
-            vec![
-                celestial_source(&star),
-                catalogue_source(-DVec3::X * 1.0e12),
-            ],
-            GalacticPosition::ZERO,
-            6.0,
-            0,
-            0,
-            f64::INFINITY,
-        )));
+        world.get_mut::<ViewSky>(camera).unwrap().snapshot =
+            Some(Arc::new(snapshot::Snapshot::new(
+                vec![
+                    celestial_source(&star),
+                    catalogue_source(-DVec3::X * 1.0e12),
+                ],
+                GalacticPosition::ZERO,
+                6.0,
+                0,
+                0,
+                1.0,
+            )));
 
         world.run_system_once(sync).unwrap();
-        let instances: HashMap<bake::GeometryKey, (Entity, &Transform, Handle<StandardMaterial>)> =
-            world
-                .query::<(&StarMesh, &Transform, &MeshMaterial3d<StandardMaterial>)>()
-                .iter(&world)
-                .map(|(mesh, transform, material)| {
-                    (mesh.key, (mesh.view, transform, material.0.clone()))
-                })
-                .collect();
+        let instances: HashMap<
+            snapshot::GeometryKey,
+            (Entity, &Transform, Handle<StandardMaterial>),
+        > = world
+            .query::<(&StarMesh, &Transform, &MeshMaterial3d<StandardMaterial>)>()
+            .iter(&world)
+            .map(|(mesh, transform, material)| {
+                (mesh.key, (mesh.view, transform, material.0.clone()))
+            })
+            .collect();
         assert_eq!(instances.len(), 2);
         let (view, transform, _) = instances
-            .get(&bake::GeometryKey::Celestial(star.entity))
+            .get(&snapshot::GeometryKey::Celestial(star.entity))
             .unwrap();
         assert_eq!(*view, camera);
         assert!((transform.translation.x - 2.0e11).abs() < 1.0e4);
         assert!((transform.scale.x - 6.96e8).abs() < 1.0);
         let (_, transform, material) = instances
-            .get(&bake::GeometryKey::Catalogue(StarId::gaia(7)))
+            .get(&snapshot::GeometryKey::Catalogue(StarId::gaia(7)))
             .unwrap();
         assert!((transform.translation.x + 1.0e12).abs() < 1.0e5);
-        let expected = emissive(
-            &bake::GeometryStar {
-                key: bake::GeometryKey::Catalogue(StarId::gaia(7)),
-                position: GalacticPosition::ZERO,
-                radius_m: 6.96e8,
-                luminosity: SOLAR_LUMENS,
-                colour: [1., 0.9, 0.8],
-            },
-            1.,
-        );
+        let expected = emissive(&snapshot::GeometryStar {
+            key: snapshot::GeometryKey::Catalogue(StarId::gaia(7)),
+            position: GalacticPosition::ZERO,
+            radius_m: 6.96e8,
+            luminosity: SOLAR_LUMENS,
+            colour: [1., 0.9, 0.8],
+        });
         let material = world
             .resource::<Assets<StandardMaterial>>()
             .get(material)
             .unwrap();
         assert_eq!(material.emissive.red, expected[0]);
+        assert_eq!(material.emissive_exposure_weight, 1.0);
         assert_eq!(material.emissive.green, expected[1]);
         assert_eq!(material.emissive.blue, expected[2]);
 
         // Live pose moves are reflected every frame: the sphere has real
-        // parallax instead of waiting for a skybox rebake.
+        // parallax instead of waiting for a new snapshot.
         let mut pose = world.get_mut::<DisplayPose>(body).unwrap();
         pose.0.position = pose.0.position.offset_by(DVec3::X * 5.0e10);
         drop(pose);
         world.run_system_once(sync).unwrap();
         for (mesh, transform) in world.query::<(&StarMesh, &Transform)>().iter(&world) {
-            if matches!(mesh.key, bake::GeometryKey::Celestial(_)) {
+            if matches!(mesh.key, snapshot::GeometryKey::Celestial(_)) {
                 assert!((transform.translation.x - 2.5e11).abs() < 1.0e4);
             }
         }
 
         // A snapshot without the stars retires their spheres and materials.
-        world.get_mut::<ViewSky>(camera).unwrap().snapshot = Some(Arc::new(bake::Snapshot::new(
-            vec![],
-            GalacticPosition::ZERO,
-            6.0,
-            0,
-            0,
-            f64::INFINITY,
-        )));
+        world.get_mut::<ViewSky>(camera).unwrap().snapshot = Some(Arc::new(
+            snapshot::Snapshot::new(vec![], GalacticPosition::ZERO, 6.0, 0, 0, 1.0),
+        ));
         world.run_system_once(sync).unwrap();
         assert_eq!(world.query::<&StarMesh>().iter(&world).count(), 0);
         assert_eq!(
@@ -318,17 +313,18 @@ mod tests {
         );
 
         // Restored stars respawn, and despawning the view removes its spheres.
-        world.get_mut::<ViewSky>(camera).unwrap().snapshot = Some(Arc::new(bake::Snapshot::new(
-            vec![
-                celestial_source(&star),
-                catalogue_source(-DVec3::X * 1.0e12),
-            ],
-            GalacticPosition::ZERO,
-            6.0,
-            0,
-            0,
-            f64::INFINITY,
-        )));
+        world.get_mut::<ViewSky>(camera).unwrap().snapshot =
+            Some(Arc::new(snapshot::Snapshot::new(
+                vec![
+                    celestial_source(&star),
+                    catalogue_source(-DVec3::X * 1.0e12),
+                ],
+                GalacticPosition::ZERO,
+                6.0,
+                0,
+                0,
+                1.0,
+            )));
         world.run_system_once(sync).unwrap();
         assert_eq!(world.query::<&StarMesh>().iter(&world).count(), 2);
         world.despawn(camera);

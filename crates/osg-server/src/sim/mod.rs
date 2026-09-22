@@ -90,7 +90,6 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     app.add_systems(
         FixedLast,
         (
-            travel::geometry::refresh,
             identity::identify_celestials,
             identity::clean_indexes,
             sensors::publish,

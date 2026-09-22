@@ -1,6 +1,7 @@
 use crate::assets::{Appearance, ShipAppearance};
 mod atmosphere;
 mod camera;
+mod exposure;
 mod glints;
 mod lighting;
 mod navigation_hud;
@@ -104,6 +105,7 @@ pub(super) fn install(app: &mut App) {
     slip::install(app);
     navigation_hud::install(app);
     sky::install(app);
+    exposure::install(app);
     combat::install(app);
     atmosphere::install(app);
     orbit::install(app);
@@ -168,6 +170,7 @@ fn sync_ships(
         &RenderSource,
         &ShipMesh,
         &mut Transform,
+        Option<&ViewLayer>,
     )>,
     designs: Res<Assets<ShipAppearance>>,
     assets: Res<PartVisualAssets>,
@@ -176,7 +179,7 @@ fn sync_ships(
 ) {
     let existing: HashMap<_, _> = objects
         .iter()
-        .map(|(entity, view, source, _, _)| ((view.0, source.0), entity))
+        .map(|(entity, view, source, ..)| ((view.0, source.0), entity))
         .collect();
     let mut visible = HashSet::new();
     for (view_entity, observation, camera, render_camera, projection, camera_transform) in &views {
@@ -228,42 +231,42 @@ fn sync_ships(
             let transform =
                 Transform::from_translation(pose.0.position.relative_to(camera.origin).as_vec3())
                     .with_rotation(Quat::from_array(pose.0.rotation.map(|v| v as f32)));
-            let entity = if let Some((entity, _, _, mesh, mut current)) = existing
+            let reused = existing
                 .get(&(view_entity, source))
                 .and_then(|e| objects.get_mut(*e).ok())
-            {
-                if mesh.appearance == appearance.hash {
+                .filter(|(_, _, _, mesh, ..)| mesh.appearance == appearance.hash)
+                .map(|(entity, _, _, _, mut current, layer)| {
                     *current = transform;
+                    (entity, layer.is_some_and(|layer| layer.0 == camera.layer))
+                });
+            let entity = match reused {
+                Some((entity, true)) => entity,
+                reused => {
+                    let entity = reused.map_or_else(
+                        || {
+                            spawn_ship(
+                                &mut commands,
+                                &design.0,
+                                &assets,
+                                &loader,
+                                &thermal,
+                                transform,
+                            )
+                        },
+                        |(entity, _)| entity,
+                    );
+                    commands.entity(entity).insert((
+                        ViewMember(view_entity),
+                        RenderSource(source),
+                        ShipMesh {
+                            appearance: appearance.hash,
+                        },
+                        ViewLayer(camera.layer),
+                        RenderLayers::layer(camera.layer),
+                    ));
                     entity
-                } else {
-                    spawn_ship(
-                        &mut commands,
-                        &design.0,
-                        &assets,
-                        &loader,
-                        &thermal,
-                        transform,
-                    )
                 }
-            } else {
-                spawn_ship(
-                    &mut commands,
-                    &design.0,
-                    &assets,
-                    &loader,
-                    &thermal,
-                    transform,
-                )
             };
-            commands.entity(entity).insert((
-                ViewMember(view_entity),
-                RenderSource(source),
-                ShipMesh {
-                    appearance: appearance.hash,
-                },
-                ViewLayer(camera.layer),
-                RenderLayers::layer(camera.layer),
-            ));
             visible.insert(entity);
         }
         if private_view {
@@ -305,26 +308,31 @@ fn sync_ships(
             let design = &design.0;
             let transform = Transform::from_translation(displacement.as_vec3())
                 .with_rotation(Quat::from_array(pose.0.rotation.map(|value| value as f32)));
-            let existing = existing
+            let reused = existing
                 .get(&(view_entity, source))
-                .and_then(|entity| objects.get_mut(*entity).ok());
-            let entity = if let Some((entity, _, _, mesh, mut current)) = existing {
-                if mesh.appearance == hash {
+                .and_then(|entity| objects.get_mut(*entity).ok())
+                .filter(|(_, _, _, mesh, ..)| mesh.appearance == hash)
+                .map(|(entity, _, _, _, mut current, layer)| {
                     *current = transform;
+                    (entity, layer.is_some_and(|layer| layer.0 == camera.layer))
+                });
+            let entity = match reused {
+                Some((entity, true)) => entity,
+                reused => {
+                    let entity = reused.map_or_else(
+                        || spawn_ship(&mut commands, design, &assets, &loader, &thermal, transform),
+                        |(entity, _)| entity,
+                    );
+                    commands.entity(entity).insert((
+                        ViewMember(view_entity),
+                        RenderSource(source),
+                        ShipMesh { appearance: hash },
+                        ViewLayer(camera.layer),
+                        RenderLayers::layer(camera.layer),
+                    ));
                     entity
-                } else {
-                    spawn_ship(&mut commands, design, &assets, &loader, &thermal, transform)
                 }
-            } else {
-                spawn_ship(&mut commands, design, &assets, &loader, &thermal, transform)
             };
-            commands.entity(entity).insert((
-                ViewMember(view_entity),
-                RenderSource(source),
-                ShipMesh { appearance: hash },
-                ViewLayer(camera.layer),
-                RenderLayers::layer(camera.layer),
-            ));
             visible.insert(entity);
         }
     }

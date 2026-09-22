@@ -42,11 +42,6 @@ pub enum UtilityDef {
         power_w: f64,
         supplies_kg_per_person_s: f64,
     },
-    Workshop {
-        repair_hp_s: f64,
-        material_kg_hp: f64,
-        power_w: f64,
-    },
     CargoHandler {
         transfer_kg_s: f64,
         power_w: f64,
@@ -104,11 +99,6 @@ impl UtilityDef {
                 }
                 vec![power_w, supplies_kg_per_person_s]
             }
-            Self::Workshop {
-                repair_hp_s,
-                material_kg_hp,
-                power_w,
-            } => vec![repair_hp_s, material_kg_hp, power_w],
             Self::CargoHandler {
                 transfer_kg_s,
                 power_w,

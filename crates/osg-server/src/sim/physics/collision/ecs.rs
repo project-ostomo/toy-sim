@@ -80,6 +80,7 @@ pub fn install(app: &mut App) {
 }
 
 pub fn step(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("collision_step");
     let timer = std::time::Instant::now();
     let dt = world.resource::<Time<Fixed>>().delta_secs_f64();
     let elapsed = world.resource::<Time<Fixed>>().elapsed_secs_f64();
@@ -206,7 +207,23 @@ pub fn step(world: &mut World) {
         });
     }
     let epoch = elapsed - dt;
-    activate(&mut bodies);
+    let index_timer = std::time::Instant::now();
+    crate::sim::spatial::rebuild_with_collisions(
+        world,
+        bodies
+            .iter()
+            .filter(|body| body.alive())
+            .map(|body| body.spatial_entry(dt))
+            .collect(),
+    );
+    let build_seconds = index_timer.elapsed().as_secs_f64();
+    {
+        let _profile = crate::sim::diagnostics::ProfileScope::new("shield_activation");
+        let spatial = world
+            .resource::<crate::sim::spatial::SpatialIndex>()
+            .service();
+        activate(&mut bodies, spatial);
+    }
     let mut combat = std::collections::BTreeMap::new();
     for (entity, design) in world
         .query_filtered::<(Entity, &ShipDesign), Without<crate::sim::travel::Dormant>>()
@@ -250,9 +267,14 @@ pub fn step(world: &mut World) {
         world.resource_scope(|world, mut workspace: Mut<SolverWorkspace>| {
             workspace.weapons = combat;
             workspace.time_s = epoch;
-            let report = simulate_with_workspace(&mut bodies, dt, &mut workspace, &mut || {
-                world.entity_allocator().alloc()
-            });
+            let spatial = world
+                .resource::<crate::sim::spatial::SpatialIndex>()
+                .service();
+            let mut report =
+                simulate_with_workspace(&mut bodies, dt, spatial, &mut workspace, &mut || {
+                    world.entity_allocator().alloc()
+                });
+            report.index_seconds += build_seconds;
             (report, std::mem::take(&mut workspace.weapons))
         });
     for shot in &report.shots {

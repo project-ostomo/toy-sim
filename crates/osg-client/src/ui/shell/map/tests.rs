@@ -188,7 +188,7 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
             expected
         );
         if !cleared {
-            assert_eq!(state.active.slips, [(0, 2, 0.003, Some(1_234.0))]);
+            assert_eq!(state.active.slips, [(0, 2, 0.03, Some(1_234.0))]);
         }
     }
 }
@@ -223,11 +223,11 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
     ];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(1, 2999, 0.003, None)]);
+    assert_eq!(active.slips, [(1, 2999, 0.03, None)]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
-    assert_eq!(active.slips, [(1, 2999, 0.003, None)]);
+    assert_eq!(active.slips, [(1, 2999, 0.03, None)]);
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
             }
             .into()],
         );
-        assert_eq!(active.slips, [(0, 2999, 0.003, None)]);
+        assert_eq!(active.slips, [(0, 2999, 0.03, None)]);
         assert_eq!(active.systems, BTreeSet::from([0, 2999]));
     }
 }
@@ -287,7 +287,7 @@ fn celestial_slip_route_resolves_without_ephemeris_download() {
     .into()];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 2999, 0.003, None)]);
+    assert_eq!(active.slips, [(0, 2999, 0.03, None)]);
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use super::{ViewLayer, orbit, sky, sun_direction};
+use super::{ViewLayer, exposure, orbit, sky, sun_direction};
 use crate::state::{
     Celestial, CelestialSystem, DisplayPose, Optical, OwnedShip, ViewObservation, ViewSystems,
 };
@@ -19,7 +19,12 @@ pub(in crate::ui) struct CameraOptions {
 }
 
 #[derive(Component)]
-#[require(orbit::ViewOptions, CameraOptions, sky::ViewSky, sky::ExposureSettings)]
+#[require(
+    orbit::ViewOptions,
+    CameraOptions,
+    sky::ViewSky,
+    exposure::ExposureSettings
+)]
 pub(in crate::ui) struct ViewCamera {
     pub view: u64,
     pub origin: GalacticPosition,
@@ -74,11 +79,17 @@ pub(super) fn setup_views(
         commands.entity(entity).insert((
             Camera3d::default(),
             Msaa::Off,
-            bevy::anti_alias::fxaa::Fxaa::default(),
+            // TAA resolves the per-frame jitter of contact shadows; without it
+            // they flicker as one-frame false shadows across hulls.
+            bevy::anti_alias::taa::TemporalAntiAliasing::default(),
             bevy::pbr::ContactShadows::default(),
             bevy::camera::Exposure::SUNLIGHT,
             Hdr,
-            Camera::default(),
+            // Space is black; stars are sprites drawn over the clear colour.
+            Camera {
+                clear_color: ClearColorConfig::Custom(Color::BLACK),
+                ..default()
+            },
             Projection::Perspective(PerspectiveProjection {
                 near: 0.1,
                 far: 1e15,
@@ -237,15 +248,18 @@ pub(super) fn update_views(
         });
         camera.order = index as isize;
         state.origin = origin;
+        let relayered = state.layer != index + 1;
         state.layer = index + 1;
         state.radius = radius;
         if state.followed != followed {
             state.distance = (radius * 3.).max(30.);
             state.followed = followed;
         }
-        commands
-            .entity(entity)
-            .insert((RenderLayers::layer(index + 1), ViewLayer(index + 1)));
+        if relayered {
+            commands
+                .entity(entity)
+                .insert((RenderLayers::layer(index + 1), ViewLayer(index + 1)));
+        }
     }
 }
 

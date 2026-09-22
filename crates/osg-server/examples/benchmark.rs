@@ -101,6 +101,7 @@ struct Measurements {
     elapsed_s: f64,
     tick_ms: f64,
     tick_samples: usize,
+    ticks: std::collections::BTreeMap<u64, f64>,
     context_bytes: usize,
     skipped_ticks: u64,
 }
@@ -185,6 +186,7 @@ async fn measure(
         if let Some(diagnostics) = &frame.presentation.diagnostics {
             result.tick_ms += diagnostics.tick_duration_ms;
             result.tick_samples += 1;
+            result.ticks.insert(frame.tick, diagnostics.tick_duration_ms);
         }
         let encoding = Instant::now();
         let bytes = osg_protocol::encode(&osg_protocol::Message::State((*frame).clone()))?;
@@ -325,11 +327,18 @@ async fn main() -> Result<()> {
         .iter()
         .map(|result| result.tick_samples)
         .sum::<usize>();
+    let ticks: std::collections::BTreeMap<_, _> = results.iter()
+        .flat_map(|result| result.ticks.iter().map(|(&tick, &ms)| (tick, ms))).collect();
+    let mut durations: Vec<_> = ticks.into_values().collect();
+    durations.sort_by(f64::total_cmp);
+    let percentile = |fraction: f64| {
+        durations.get(((durations.len().saturating_sub(1)) as f64 * fraction).ceil() as usize).copied().unwrap_or(0.)
+    };
     println!(
-        "ships,sessions,frames_per_session,contacts_per_frame,frame_bytes,recompressed_zstd_bytes,reencode_ms,recompress_ms,encoder_bytes_per_session,server_tick_ms,server_cpu_percent,server_rss_kib,server_peak_rss_kib,received_hz,skipped_ticks"
+        "ships,sessions,frames_per_session,contacts_per_frame,frame_bytes,recompressed_zstd_bytes,reencode_ms,recompress_ms,encoder_bytes_per_session,server_tick_ms,server_cpu_percent,server_rss_kib,server_peak_rss_kib,received_hz,skipped_ticks,tick_p50_ms,tick_p95_ms,tick_p99_ms"
     );
     println!(
-        "{},{},{},{:.1},{:.1},{:.1},{:.3},{:.3},{},{:.3},{:.1},{},{},{:.2},{}",
+        "{},{},{},{:.1},{:.1},{:.1},{:.3},{:.3},{},{:.3},{:.1},{},{},{:.2},{},{:.3},{:.3},{:.3}",
         options.ships,
         options.sessions,
         options.frames,
@@ -356,6 +365,9 @@ async fn main() -> Result<()> {
             .iter()
             .map(|result| result.skipped_ticks)
             .sum::<u64>(),
+        percentile(0.5),
+        percentile(0.95),
+        percentile(0.99),
     );
     Ok(())
 }

@@ -11,7 +11,7 @@ The server restores durable world state from SQLite checkpoints, including owner
 | `osg-model` | [crates/osg-model](../crates/osg-model) | Shared serde types: IDs, poses, sensor observations, queries, frames, actions, debug commands, presentation records, travel orders and drawing lists; explicit conversions to the WASM C ABI records |
 | `osg-protocol` | [crates/osg-protocol](../crates/osg-protocol) | Application message framing and validation of client requests |
 | `osg-net` | [crates/osg-net](../crates/osg-net) | TCP handshake, record encryption, Zstd compression and picomux multiplexing |
-| `osg-spatial` | [crates/osg-spatial](../crates/osg-spatial) | Shared spatial hash for brightness, radius, nearest-neighbour, segment and metered cursor queries |
+| `osg-spatial-bvh` | [crates/osg-spatial-bvh](../crates/osg-spatial-bvh) | Shared immutable BVHs for brightness, radius, nearest-neighbour, segment and metered cursor queries |
 | `osg-universe` | [crates/osg-universe](../crates/osg-universe) | Shared astronomical catalogue, lazy deterministic generation, Keplerian solver and initial population recipe |
 | `osg-server` | [crates/osg-server](../crates/osg-server) | The Bevy ECS simulation in private modules under [src/sim](../crates/osg-server/src/sim), the simulation loop, TCP listener, asset streams, configuration, key provisioning and the benchmark example |
 | `osg-client` | [crates/osg-client](../crates/osg-client) | `connect`, asset fetching, the `Playback` buffer, and the Bevy/egui UI behind the `ui` feature |
@@ -414,19 +414,19 @@ saved worlds fail explicitly; see [Persistence](persistence.md#universe-definiti
 
 ## Shared spatial queries
 
-[osg-spatial](../crates/osg-spatial/src/lib.rs) supplies one spatial-index implementation to the server and supporting crates. Each entry contains an integer galactic position, a conservative radius and a luminosity coefficient. Occupied cells form a sparse hierarchy with compressed empty scales. Coordinates remain signed 128-bit micrometres until a query needs relative floating-point distances.
+[osg-spatial-bvh](../crates/osg-spatial-bvh/src/service.rs) owns the shared spatial service. Positions remain signed 128-bit micrometres until a query needs relative floating-point distances. Radii use metres; indexed luminosity is optical watts. Photometric catalogue values use 220 lumens per optical watt at the boundary.
 
-The index maintains geometry cells and additional cells grouped by powers of two in luminosity. A brightness query uses each bucket's upper luminosity bound to choose a conservative search radius, then checks individual entries. Changing luminosity moves an entry between buckets as needed; zero-luminosity objects remain available for geometric queries. Radius, sphere-intersection, nearest-neighbour, segment and resumable range queries use the same implementation. Spatial queries have explicit work limits.
+The spatial service contains three `LuminosityBvh` trees: an unchanged static tree, an instantaneous dynamic tree, and a swept dynamic tree. Both dynamic trees rebuild at 10 Hz. Leaf payloads contain only IDs, distinguished by proxy role, and both dynamic trees share one object lookup table. Sphere, nearest, visibility and segment queries use the instantaneous tree; motion and collision queries use the swept tree. Exact geometry, brightness and permission predicates remain with callers. Cursors budget both node visits and leaf tests and borrow the service until traversal finishes. Previous tick trees are not retained. Published asynchronous aperture checks own a separate service containing only their aperture bodies.
 
-Consumers keep separate instances for their data and lifetimes:
+Consumers share the trees:
 
-- Server spatial observations index active ships and celestial bodies. Celestials block sensors but are excluded from ship sensor results. Projectiles and dormant ships are omitted from this observation index.
+- Server observations retain active ship and celestial metadata. Celestials block sensors but are excluded from ship sensor results. Projectiles have collision records but no sensor records; dormant ships have neither.
 - Immutable sensor snapshots hold at most 256 current detections per observing ship.
-- The star catalogue uses the hash for nearby-star and apparent-brightness queries.
+- The universe catalogue and client sky share the static tree. One source leaf covers each star and its system envelope, followed by the appropriate exact predicate.
 - Travel geometry queries physical extents and natural exclusion spheres for departure and swept capture.
-- Collision `SweptIndex` indexes conservative motion envelopes and filters candidate capsules before continuous contact prediction. Parry retains its shape queries and internal compound acceleration structures; see [collisions.md](collisions.md#broad-phase).
+- Collisions use the swept tree; shield clearance and beams use the instantaneous tree in the same service. Parry retains its shape queries and compound acceleration structures; see [collisions.md](collisions.md#broad-phase).
 
-Each instance has its own records and lifetime, and all use the same query implementation. The active observation index currently rebuilds at the simulation boundary; immutable readers may retain the preceding version. The hash itself supports incremental position and luminosity updates, which the collision adapter uses.
+The collision step rebuilds the current service from tick-start poses and predicted motion before solving contacts. That state stays authoritative until the next tick. Travel clearance and route planning use the current service. Published aperture predictions own an index of their eligible bodies for asynchronous use. New projectiles and changed trajectories query the tick-start scene without modifying its trees. `LuminosityForest` is not used.
 
 ## Sensor and visual observations
 
@@ -841,7 +841,7 @@ Initial focus uses the per-session `ShipTelemetry.can_control` permission flag a
 | --- | --- |
 | `osg-protocol` unit tests | Whole-message round trips, framing, and validation of untrusted client commands |
 | `osg-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, epoch rekeying |
-| `osg-spatial` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, updates/deletion, cursor budgets and invalidation |
+| `osg-spatial-bvh` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, retained snapshots, collision pairs and cursor budgets |
 | [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs) tests | Focused-vantage visibility, anonymous objects, sensor-independent visibility, occlusion, per-view budgets and optical IDs |
 | [session.rs](../crates/osg-server/src/sim/session.rs) tests | Views require access to the focused ship, a control change rejects old-revision commands without rewriting IFF, a non-debug account cannot change the clock, repeated command IDs are idempotent and replayed frames are rejected |
 | [displays.rs](../crates/osg-server/src/sim/displays.rs) tests | Subscribers share one instance released 10 ticks after the last viewer, authority and power changes revoke frames and queued input, every ABI input kind is forwarded |
@@ -861,10 +861,10 @@ Enable `osg-client/ui` to run the client ECS, asset-pipeline and rendering-math 
 ## Spatial CPU benchmarks
 
 ```sh
-cargo run --release -p osg-spatial --example benchmark
+cargo bench -p osg-spatial-bvh --bench gaia
 ```
 
-The standalone benchmark builds 100,000 entries in each of two deterministic distributions: a sparse volume and 100 dense clusters. It measures brightness queries, a 500 AU radius query, nearby geometry, segment candidates, and 10,000 position/luminosity updates. Output includes build time, process RSS growth on Linux, occupied cells, brightness buckets, time per query, visited cells, tested candidates and returned hits. The 500 AU case measures the spatial primitive; it does not imply that local-chat routing is already implemented.
+The Gaia benchmark checks visibility against exhaustive scans and measures construction and queries over the million-star catalogue. The server benchmark exercises complete ticks and multiple sessions; both measurements are needed to assess a spatial change.
 
 These are CPU index measurements. They exclude simulation, illumination updates, per-session serialization, network traffic and client rendering. Full observer batches and collision workloads must be measured separately; build contention and the number of returned objects materially affect timings.
 
@@ -1044,7 +1044,7 @@ worlds, debug identities, checkpoint configuration and recovery behavior.
 Local chat reaches physical ships within an inclusive 500 AU sphere around the
 sender. The server resolves both positions; a docked ship uses its host's
 position. Destroyed ships have no transmitter. Delivery is instantaneous within the simulation publication cycle.
-It uses the shared spatial hash's geometric range query, independently of light,
+It uses the shared spatial service's geometric range query, independently of light,
 occlusion, transponder range, or sensor power.
 
 `ChatSubscribe { revision, view }` binds one session subscription to a focused

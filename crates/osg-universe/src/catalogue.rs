@@ -1,6 +1,9 @@
 use crate::precision::GalacticPosition;
 use glam::DVec3;
-use osg_spatial::{Entry as SpatialEntry, SpatialHash};
+use osg_spatial_bvh::{
+    Aabb, BvhEntry, OPTICAL_LUMENS_PER_WATT, RecordKind, SpatialRecord, SpatialService,
+};
+use std::{f64::consts::PI, sync::Arc};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -12,71 +15,103 @@ pub struct Entry {
 
 pub struct CatalogueIndex {
     pub entries: Vec<Entry>,
-    spatial: SpatialHash,
+    pub spatial: Arc<SpatialService<SpatialRecord>>,
 }
 
 impl CatalogueIndex {
     pub fn new(entries: Vec<Entry>) -> Self {
-        let mut spatial = SpatialHash::default();
-        for (slot, entry) in entries.iter().enumerate() {
-            spatial.insert(
-                u32::try_from(slot).expect("too many stellar systems"),
-                SpatialEntry {
-                    position: entry.position,
-                    radius_m: entry.influence,
-                    luminosity: entry.luminosity,
+        let spatial = Arc::new(SpatialService::new(entries.iter().enumerate().map(
+            |(slot, entry)| BvhEntry {
+                object: SpatialRecord {
+                    kind: RecordKind::Source,
+                    id: slot as u64,
+                    position: entry.position.to_array(),
+                    radius_m: entry.influence.max(entry.radius),
                 },
-            );
-        }
+                bounds: Aabb::sphere(entry.position.to_array(), entry.influence.max(entry.radius)),
+                luminosity: entry.luminosity / OPTICAL_LUMENS_PER_WATT,
+            },
+        )));
         Self { entries, spatial }
     }
 
     pub fn brightest(&self, origin: GalacticPosition) -> Option<usize> {
-        self.spatial.brightest(origin).map(|id| id as usize)
+        self.spatial
+            .brightest(origin.to_array(), |r| {
+                let luminosity = self.entries[r.id as usize].luminosity;
+                (r.kind == RecordKind::Source && luminosity > 0.0).then(|| {
+                    luminosity
+                        / (4.0
+                            * PI
+                            * OPTICAL_LUMENS_PER_WATT
+                            * r.distance(origin.to_array()).powi(2).max(1.0))
+                })
+            })
+            .map(|r| r.id as usize)
     }
 
     pub fn visible(&self, origin: GalacticPosition, min_brightness: f64) -> Vec<usize> {
-        let found = if min_brightness <= 0.0 {
-            self.spatial.within_radius(origin, f64::INFINITY)
-        } else {
-            self.spatial
-                .visible(origin, min_brightness * (1.0 - 8.0 * f64::EPSILON))
-        };
-        found
-            .ids
+        let mut found: Vec<_> = self
+            .spatial
+            .visibility_candidates(
+                origin.to_array(),
+                0.0,
+                min_brightness.max(0.0) / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
+            )
             .into_iter()
-            .map(|id| id as usize)
+            .filter(|r| r.kind == RecordKind::Source)
+            .map(|r| r.id as usize)
             .filter(|&id| {
                 let entry = &self.entries[id];
                 entry.luminosity
                     >= min_brightness * entry.position.relative_to(origin).length_squared()
             })
-            .collect()
+            .collect();
+        found.sort_unstable();
+        found
     }
 
     pub fn containing_segment(&self, start: GalacticPosition, displacement: DVec3) -> Vec<usize> {
-        self.spatial
-            .segment_candidates(start, displacement, 0.0)
-            .ids
+        let mut found: Vec<_> = self
+            .spatial
+            .segment_candidates(
+                start.to_array(),
+                start.offset_by(displacement).to_array(),
+                0.0,
+            )
             .into_iter()
-            .map(|id| id as usize)
-            .collect()
+            .filter(|r| r.kind == RecordKind::Source)
+            .filter(|r| {
+                let p = self.entries[r.id as usize].position.relative_to(start);
+                let t = if displacement.length_squared() > 0.0 {
+                    (p.dot(displacement) / displacement.length_squared()).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                (p - t * displacement).length_squared()
+                    <= r.radius_m.powi(2) * (1.0 + 64.0 * f64::EPSILON)
+            })
+            .map(|r| r.id as usize)
+            .collect();
+        found.sort_unstable();
+        found
     }
 
     pub fn intersecting_sphere(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.spatial
-            .intersecting_sphere(centre, radius)
-            .ids
+            .sphere_candidates(centre.to_array(), radius)
             .into_iter()
-            .map(|id| id as usize)
+            .filter(|r| {
+                r.kind == RecordKind::Source
+                    && r.distance(centre.to_array())
+                        <= radius + self.entries[r.id as usize].influence
+            })
+            .map(|r| r.id as usize)
             .collect()
     }
 
     pub fn nearest(&self, origin: GalacticPosition) -> Option<usize> {
-        self.spatial
-            .nearest(origin, f64::INFINITY, 1)
-            .first()
-            .map(|&id| id as usize)
+        self.nearest_many(origin, 1).first().copied()
     }
 
     pub fn illumination_sources(
@@ -86,17 +121,39 @@ impl CatalogueIndex {
         threshold: f64,
     ) -> Vec<usize> {
         self.spatial
-            .extended_sources(origin, radius, threshold)
+            .visibility_candidates(
+                origin.to_array(),
+                radius,
+                threshold / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
+            )
             .into_iter()
-            .map(|id| id as usize)
+            .filter(|r| r.kind == RecordKind::Source)
+            .filter(|r| {
+                let distance = (r.distance(origin.to_array()) - radius - r.radius_m).max(0.0);
+                distance == 0.0
+                    || self.entries[r.id as usize].luminosity >= threshold * distance.powi(2)
+            })
+            .map(|r| r.id as usize)
             .collect()
     }
 
     pub fn nearest_many(&self, origin: GalacticPosition, count: usize) -> Vec<usize> {
+        self.nearest_filtered(origin, count, |_| true)
+    }
+
+    pub fn nearest_filtered(
+        &self,
+        origin: GalacticPosition,
+        count: usize,
+        accept: impl Fn(usize) -> bool,
+    ) -> Vec<usize> {
         self.spatial
-            .nearest(origin, f64::INFINITY, count)
+            .nearest(origin.to_array(), f64::INFINITY, count, |r| {
+                (r.kind == RecordKind::Source && accept(r.id as usize))
+                    .then(|| r.distance(origin.to_array()))
+            })
             .into_iter()
-            .map(|index| index as usize)
+            .map(|r| r.id as usize)
             .collect()
     }
 

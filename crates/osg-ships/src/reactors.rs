@@ -52,7 +52,6 @@ pub struct FuelProcessorSpec {
     pub power_w: f64,
     pub recovery_fraction: f64,
     pub produces_charges: bool,
-    pub fissile_fraction: f64,
 }
 
 impl FuelProcessorSpec {
@@ -64,8 +63,5 @@ impl FuelProcessorSpec {
             && self.recovery_fraction.is_finite()
             && self.recovery_fraction > 0.0
             && self.recovery_fraction <= 1.0
-            && self.fissile_fraction.is_finite()
-            && self.fissile_fraction > 0.0
-            && self.fissile_fraction <= 1.0
     }
 }

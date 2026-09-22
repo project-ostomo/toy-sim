@@ -93,6 +93,7 @@ impl OpticalSession {
         views: &[ViewState],
         contacts: &BTreeMap<EntityId, BTreeMap<u64, SensorObservation>>,
     ) -> (Vec<OpticalObservation>, BTreeSet<Id>) {
+        let _profile = crate::sim::diagnostics::ProfileScope::new("optical_observe");
         let tick = world.resource::<SimulationCounters>().ticks;
         let current_views: Vec<_> = views
             .iter()
@@ -131,6 +132,17 @@ impl OpticalSession {
                 continue;
             }
             let mut budget = ViewBudget::new(views.len());
+            let origin = world
+                .get_resource::<SpatialIndex>()
+                .and_then(|index| {
+                    let slot = index.object_index(observer)?;
+                    let pose = ship_pose(world, observer)?;
+                    Some(
+                        view.origin
+                            .offset_by(index.objects[slot].position.relative_to(pose.position)),
+                    )
+                })
+                .unwrap_or(view.origin);
             let mut append = |entity: Entity, radius_m: f64, luminosity_w: f64| {
                 if budget.remaining_count == 0 {
                     return true;
@@ -223,7 +235,7 @@ impl OpticalSession {
                     .and_then(|index| {
                         index
                             .object_index(observer)
-                            .map(|id| index.observed_luminosity(id, view.origin))
+                            .map(|id| index.observed_luminosity(id, origin))
                     })
                     .unwrap_or(0.);
                 append(observer, design.0.radius, luminosity_w);
@@ -238,10 +250,7 @@ impl OpticalSession {
                 continue;
             };
             let candidates: Vec<_> = index
-                .visible(
-                    view.origin,
-                    4. * std::f64::consts::PI * MIN_OPTICAL_FLUX_W_M2,
-                )
+                .visible(origin, 4. * std::f64::consts::PI * MIN_OPTICAL_FLUX_W_M2)
                 .into_iter()
                 .filter_map(|candidate| {
                     let object = &index.objects[candidate];
@@ -253,10 +262,10 @@ impl OpticalSession {
                     {
                         return None;
                     }
-                    let luminosity_w = index.observed_luminosity(candidate, view.origin);
+                    let luminosity_w = index.observed_luminosity(candidate, origin);
                     let flux = flux_w_m2(
                         luminosity_w,
-                        object.position.relative_to(view.origin).length(),
+                        object.position.relative_to(origin).length(),
                         object.radius_m,
                     );
                     (flux >= MIN_OPTICAL_FLUX_W_M2).then_some(OpticalCandidate {
@@ -268,7 +277,7 @@ impl OpticalSession {
                 .collect();
             let mut candidates = BinaryHeap::from(candidates);
             while let Some(candidate) = candidates.pop() {
-                if index.fully_occluded(observer, candidate.index, view.origin) {
+                if index.fully_occluded(observer, candidate.index, origin) {
                     continue;
                 }
                 let object = &index.objects[candidate.index];

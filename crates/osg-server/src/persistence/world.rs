@@ -1039,7 +1039,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let mut publish = Schedule::default();
     publish.add_systems((sensors::publish, crate::sim::services::publish_indexes).chain());
     publish.run(world);
-    travel::geometry::refresh(world);
+    crate::sim::spatial::rebuild(world);
     industry::refresh_publication(world);
     Ok(())
 }

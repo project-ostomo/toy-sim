@@ -530,14 +530,12 @@ impl Catalogue {
                 }
             }
             if matches!(p.equipment, Equipment::FuelProcessor { spec } if spec.produces_charges) {
-                for name in ["repair_material", "micropulse_charge"] {
-                    ensure!(
-                        self.resources
-                            .iter()
-                            .any(|r| r.id == name && r.mass_kg == 1.0),
-                        "charge production requires kilogram resource {name}"
-                    );
-                }
+                ensure!(
+                    self.resources
+                        .iter()
+                        .any(|r| r.id == "micropulse_charge" && r.mass_kg == 1.0),
+                    "charge production requires kilogram resource micropulse_charge"
+                );
             }
             if let Equipment::Weapon { weapon } = &p.equipment {
                 weapon
