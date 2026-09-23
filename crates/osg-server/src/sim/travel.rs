@@ -476,7 +476,8 @@ fn celestial_conditions(
     let Some(scene) = world.get_resource::<super::spatial::SpatialIndex>() else {
         return (false, false);
     };
-    let Ok(candidates) = scene.hash.within_radius(position, radius, true) else {
+    let hash = scene.hash.read().unwrap();
+    let Ok(candidates) = hash.within_radius(position, radius, true) else {
         return (false, false);
     };
     candidates
@@ -487,7 +488,7 @@ fn celestial_conditions(
             };
             world
                 .get::<CelestialState>(entity)
-                .map(|body| (scene.hash.get(&key).unwrap(), body))
+                .map(|body| (hash.get(&key).unwrap(), body))
         })
         .filter(|(_, body)| !matches!(body.body.class_params, super::orrery::BodyClass::Barycenter))
         .fold((true, true), |(clear, outside), (record, body)| {
@@ -1045,6 +1046,7 @@ pub(crate) fn destroy_collisions(
         Option<&mut super::hardware::DevicePower>,
     )>,
     mut observations: Query<(Entity, &mut super::sensors::Observations)>,
+    sensors: Option<Res<super::sensors::SensorService>>,
     mut spatial: ResMut<super::spatial::SpatialIndex>,
     mut events: ResMut<TravelEvents>,
 ) {
@@ -1052,6 +1054,8 @@ pub(crate) fn destroy_collisions(
         let entity = death.entity;
         spatial
             .hash
+            .write()
+            .unwrap()
             .remove(&super::spatial::SpatialKey::Entity(entity));
         let Ok(mut target) = targets.get_mut(entity) else {
             commands.entity(entity).despawn();
@@ -1109,6 +1113,9 @@ pub(crate) fn destroy_collisions(
                     *power = Default::default();
                 }
             }
+        }
+        if let Some(sensors) = &sensors {
+            sensors.invalidate(entity, target.identity.map(|identity| identity.0));
         }
         for (observer, mut observation) in &mut observations {
             super::sensors::invalidate_observation(

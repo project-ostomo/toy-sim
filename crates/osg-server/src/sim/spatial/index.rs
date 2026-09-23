@@ -34,7 +34,7 @@ pub struct SpatialIndex {
     celestial_systems: ahash::AHashSet<usize>,
     illumination: Vec<OnceLock<Illumination>>,
     pub sky: super::lighting::Sky,
-    pub hash: GalacticIndex<SpatialKey>,
+    pub hash: std::sync::Arc<std::sync::RwLock<GalacticIndex<SpatialKey>>>,
     indexed_entities: ahash::AHashSet<Entity>,
     indexed_universe: Option<std::sync::Arc<osg_universe::universe::Universe>>,
     collecting: bool,
@@ -47,6 +47,19 @@ struct Illumination {
 }
 
 impl SpatialIndex {
+    /// Immutable sensor metadata sharing the persistent hash, without copying
+    /// catalogue records or optical caches. Consumers run between scene updates.
+    pub(crate) fn sensor_snapshot(&self) -> Self {
+        Self {
+            objects: self.objects.clone(),
+            entities: self.entities.clone(),
+            targets: self.targets.clone(),
+            maximum_object_radius_m: self.maximum_object_radius_m,
+            hash: self.hash.clone(),
+            ..Default::default()
+        }
+    }
+
     pub fn clear(&mut self) {
         let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_clear");
         self.objects.clear();
@@ -95,7 +108,10 @@ impl SpatialIndex {
         let mut present: ahash::AHashSet<_> = self.entities.keys().copied().collect();
         present.extend(self.collision_entities.iter().copied());
         for &entity in self.indexed_entities.difference(&present) {
-            self.hash.remove(&SpatialKey::Entity(entity));
+            self.hash
+                .write()
+                .unwrap()
+                .remove(&SpatialKey::Entity(entity));
         }
         self.indexed_entities = present;
     }
@@ -105,6 +121,8 @@ impl SpatialIndex {
         self.indexed_entities.insert(entity);
         if !self.entities.contains_key(&entity) {
             self.hash
+                .write()
+                .unwrap()
                 .insert(
                     SpatialKey::Entity(entity),
                     HashRecord {
@@ -123,12 +141,14 @@ impl SpatialIndex {
         {
             return;
         }
-        self.hash = GalacticIndex::new();
+        *self.hash.write().unwrap() = GalacticIndex::new();
         self.indexed_entities.clear();
         self.indexed_universe = self.sky.universe.clone();
         if let Some(universe) = &self.indexed_universe {
             for (id, entry) in universe.index.entries.iter().enumerate() {
                 self.hash
+                    .write()
+                    .unwrap()
                     .insert(
                         SpatialKey::Catalogue(id),
                         HashRecord {
@@ -145,6 +165,8 @@ impl SpatialIndex {
     fn sync_object(&mut self, id: usize) {
         let object = self.objects[id];
         self.hash
+            .write()
+            .unwrap()
             .insert(
                 SpatialKey::Entity(object.entity),
                 HashRecord {
@@ -179,6 +201,8 @@ impl SpatialIndex {
         let mut budget = QueryBudget::new(usize::MAX);
         let candidates = self
             .hash
+            .read()
+            .unwrap()
             .segment_candidates_filtered(
                 origin,
                 displacement,
@@ -220,6 +244,8 @@ impl SpatialIndex {
     ) -> Result<Vec<Entity>, QueryError> {
         Ok(self
             .hash
+            .read()
+            .unwrap()
             .within_radius_budgeted(position, radius, true, budget)?
             .into_iter()
             .filter_map(|key| self.key_object(key))
@@ -278,6 +304,8 @@ impl SpatialIndex {
 
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.hash
+            .read()
+            .unwrap()
             .within_radius(centre, radius, false)
             .expect("scene query coordinates")
             .into_iter()
@@ -292,6 +320,8 @@ impl SpatialIndex {
         min_luminosity_over_distance2: f64,
     ) -> Vec<usize> {
         self.hash
+            .read()
+            .unwrap()
             .visibility_candidates(centre, min_luminosity_over_distance2, 0.0)
             .expect("scene query coordinates")
             .into_iter()
@@ -351,6 +381,8 @@ impl SpatialIndex {
                 .is_some_and(|id| self.targets.binary_search(&id).is_ok()),
         ));
         self.hash
+            .read()
+            .unwrap()
             .nearest_many(
                 centre,
                 n.min(available),
@@ -371,6 +403,8 @@ impl SpatialIndex {
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.hash
+            .read()
+            .unwrap()
             .within_radius(centre, radius, true)
             .expect("scene query coordinates")
             .into_iter()

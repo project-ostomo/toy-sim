@@ -44,6 +44,7 @@ fn beacon_page<T>(beacons: &BTreeMap<Id, T>, after: Option<Id>, limit: usize) ->
 }
 
 struct ShipScan {
+    sensors: Option<super::sensors::SensorService>,
     routing: Option<(
         super::route_service::RouteService,
         super::route_service::Caller,
@@ -223,8 +224,8 @@ impl osg_ship_wasm::ScanSource for ShipScan {
                     reference.observer == self.own,
                     "contact observer unavailable"
                 );
-                let contact = self
-                    .snapshot
+                let snapshot = self.observations();
+                let contact = snapshot
                     .contacts
                     .get(&reference.contact)
                     .ok_or_else(|| anyhow::anyhow!("contact unavailable"))?;
@@ -271,12 +272,12 @@ impl osg_ship_wasm::ScanSource for ShipScan {
     }
 
     fn scan(&self, range_m: f64, n: usize) -> Vec<osg_ship_wasm::SensorContact> {
-        if !range_m.is_finite() || range_m <= 0. {
+        if !range_m.is_finite() || range_m <= 0. || n == 0 {
             return Vec::new();
         }
 
-        let mut contacts: Vec<_> = self
-            .snapshot
+        let snapshot = self.observations();
+        let mut contacts: Vec<_> = snapshot
             .contacts
             .values()
             .filter(|contact| contact.pose.position.relative_to(self.origin).length() <= range_m)
@@ -297,7 +298,8 @@ impl osg_ship_wasm::ScanSource for ShipScan {
     }
 
     fn contact(&self, handle: u64) -> Option<osg_ship_wasm::SensorContact> {
-        let contact = self.snapshot.contacts.get(&handle)?;
+        let snapshot = self.observations();
+        let contact = snapshot.contacts.get(&handle)?;
         Some(osg_ship_wasm::SensorContact {
             name: contact
                 .iff
@@ -334,6 +336,13 @@ struct Aperture {
 }
 
 impl ShipScan {
+    fn observations(&self) -> Arc<ObservationSnapshot> {
+        self.sensors.as_ref().map_or_else(
+            || self.snapshot.clone(),
+            |sensors| sensors.observe(self.physical),
+        )
+    }
+
     fn prediction_epoch(&self, after_seconds: f64) -> Result<hifitime::Epoch> {
         ensure!(
             after_seconds.is_finite() && (0.0..=MAX_PREDICTION_SECONDS).contains(&after_seconds),
@@ -649,12 +658,14 @@ struct SourceContext {
 
 fn ship_source(
     publication: &PublishedWorld,
+    sensors: Option<super::sensors::SensorService>,
     tick: u64,
     snapshot: Arc<ObservationSnapshot>,
     context: SourceContext,
 ) -> Arc<ShipScan> {
     let slip = context.slip.as_ref();
     Arc::new(ShipScan {
+        sensors,
         routing: context.routing,
         universe: publication.universe.clone(),
         epoch: hifitime::Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
@@ -717,6 +728,10 @@ fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>>
     };
     Some(ship_source(
         world.get_resource::<PublishedWorld>()?,
+        world
+            .get_resource::<super::sensors::SensorService>()
+            .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
+            .cloned(),
         world.get_resource::<SimulationCounters>()?.ticks,
         if world.get::<super::travel::Dormant>(ship).is_some() {
             Arc::default()
@@ -732,6 +747,7 @@ fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>>
 
 pub fn prepare_sources(
     publication: Res<PublishedWorld>,
+    sensors: Option<Res<super::sensors::SensorService>>,
     clock: Res<SimulationCounters>,
     world_epoch: Res<super::identity::WorldEpoch>,
     routing: Option<Res<super::route_service::RouteService>>,
@@ -774,6 +790,7 @@ pub fn prepare_sources(
         let pose = super::identity::pose(transform, velocity, angular);
         software.world_source = Some(ship_source(
             &publication,
+            sensors.as_ref().map(|sensors| (**sensors).clone()),
             clock.ticks,
             state.map(|value| value.0.clone()).unwrap_or_default(),
             SourceContext {
@@ -847,7 +864,7 @@ pub fn contact_ref(world: &World, ship: Entity, handle: u64) -> Option<ContactRe
     if world.get::<super::travel::Dormant>(ship).is_some() {
         return None;
     }
-    world.get::<Observations>(ship)?.0.contacts.get(&handle)?;
+    observation_snapshot(world, ship)?.contacts.get(&handle)?;
     Some(ContactRef {
         observer: world.get::<Identity>(ship)?.0,
         contact: handle,
@@ -856,7 +873,7 @@ pub fn contact_ref(world: &World, ship: Entity, handle: u64) -> Option<ContactRe
 
 pub fn resolve_handle(world: &World, ship: Entity, handle: u64) -> Option<Entity> {
     contact_ref(world, ship, handle)?;
-    let snapshot = &world.get::<Observations>(ship)?.0;
+    let snapshot = observation_snapshot(world, ship)?;
     let id = snapshot
         .targets
         .iter()
@@ -870,10 +887,18 @@ pub fn handle_for_entity(world: &mut World, ship: Entity, target: Entity) -> Res
         .ok_or_else(|| anyhow::anyhow!("target unavailable"))?
         .0;
     world
-        .get::<Observations>(ship)
-        .and_then(|observations| observations.0.targets.get(&id))
-        .copied()
+        .get_resource::<super::sensors::SensorService>()
+        .map(|service| service.observe(ship))
+        .or_else(|| world.get::<Observations>(ship).map(|value| value.0.clone()))
+        .and_then(|observations| observations.targets.get(&id).copied())
         .ok_or_else(|| anyhow::anyhow!("target not observed"))
+}
+
+fn observation_snapshot(world: &World, ship: Entity) -> Option<Arc<ObservationSnapshot>> {
+    world
+        .get_resource::<super::sensors::SensorService>()
+        .and_then(|service| service.cached(ship))
+        .or_else(|| world.get::<Observations>(ship).map(|value| value.0.clone()))
 }
 
 const APERTURE_WORK_LIMIT: usize = 1024;
@@ -1071,6 +1096,7 @@ mod tests {
 
     pub(super) fn source() -> ShipScan {
         ShipScan {
+            sensors: None,
             routing: None,
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),

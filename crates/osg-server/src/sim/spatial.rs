@@ -15,16 +15,12 @@ pub use index::{SpatialIndex, SpatialKey, SpatialObject, sphere_blocks, sphere_f
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SensorSystems {
     Index,
-    Scan,
 }
 
 pub struct SpatialPlugin;
 impl Plugin for SpatialPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<SpatialIndex>().configure_sets(
-            FixedLast,
-            (SensorSystems::Index, SensorSystems::Scan).chain(),
-        );
+        app.init_resource::<SpatialIndex>();
         app.add_systems(
             FixedLast,
             collect

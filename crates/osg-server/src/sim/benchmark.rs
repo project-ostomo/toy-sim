@@ -103,7 +103,12 @@ fn production_tick_and_publication() {
             sessions.push(session);
         }
         spatial::rebuild(world);
-        let records = world.resource::<spatial::SpatialIndex>().hash.len();
+        let records = world
+            .resource::<spatial::SpatialIndex>()
+            .hash
+            .read()
+            .unwrap()
+            .len();
         let catalogue = world.resource::<orrery::Universe>().systems.len();
         assert!(catalogue >= 1_000_000);
         println!(
@@ -188,6 +193,10 @@ fn production_tick_and_publication() {
                         *frame_times.entry(name.into()).or_default() +=
                             end.duration_since(start).as_secs_f64() * 1000.0;
                         intervals.push((start, end));
+                    } else {
+                        *frame_times
+                            .entry(format!("publication.{name}"))
+                            .or_default() += end.duration_since(start).as_secs_f64() * 1000.0;
                     }
                 }
                 intervals.sort_unstable();
@@ -263,7 +272,12 @@ fn production_tick_and_publication() {
         }
         println!(
             "population records={} entities={}",
-            app.world().resource::<spatial::SpatialIndex>().hash.len(),
+            app.world()
+                .resource::<spatial::SpatialIndex>()
+                .hash
+                .read()
+                .unwrap()
+                .len(),
             app.world().entities().len()
         );
         println!(

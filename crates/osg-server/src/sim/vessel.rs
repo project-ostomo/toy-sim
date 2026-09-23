@@ -147,7 +147,7 @@ impl Plugin for VesselsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (run, clear_computer_resets)
+                (run, super::sensors::flush, clear_computer_resets)
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),

@@ -421,7 +421,7 @@ fn first_capture(
         let Some(scene) = world.get_resource::<crate::sim::spatial::SpatialIndex>() else {
             return Ok(None);
         };
-        for entity in scene.hash.segment_candidates(
+        for entity in scene.hash.read().unwrap().segment_candidates(
             origin,
             velocity * duration,
             ship_radius,
@@ -812,6 +812,7 @@ pub(crate) fn finish_arrivals(
     clock: Res<SimulationCounters>,
     mut ships: Query<Arrival>,
     mut observations: Query<(Entity, &mut crate::sim::sensors::Observations)>,
+    sensors: Option<Res<crate::sim::sensors::SensorService>>,
     mut history: ResMut<crate::sim::slip_effects::SlipHistory>,
     mut events: ResMut<TravelEvents>,
 ) {
@@ -863,6 +864,9 @@ pub(crate) fn finish_arrivals(
             if let Some(spatial) = motion.spatial {
                 entity.insert(spatial);
             }
+        }
+        if let Some(sensors) = &sensors {
+            sensors.invalidate(ship.entity, ship.identity.map(|id| id.0));
         }
         for (observer, mut observation) in &mut observations {
             crate::sim::sensors::invalidate_observation(

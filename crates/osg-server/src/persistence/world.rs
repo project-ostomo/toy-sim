@@ -745,6 +745,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.insert_resource(crate::sim::services::PublishedWorld::default());
     world.insert_resource(crate::sim::combat::CombatHistory::default());
     world.insert_resource(spatial::SpatialIndex::default());
+    world.insert_resource(crate::sim::sensors::SensorService::default());
     world.resource_mut::<simulation::SimulationCounters>().ticks = record.tick;
     let elapsed = Duration::from_nanos(record.elapsed_ns);
     let mut fixed = Time::<Fixed>::from_duration(osg_model::TICK_DURATION);

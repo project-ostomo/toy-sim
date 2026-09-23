@@ -383,13 +383,7 @@ impl Session {
         let mut contacts: BTreeMap<EntityId, BTreeMap<u64, SensorObservation>> = BTreeMap::new();
         for id in &focused {
             if let Ok(entity) = observe(world, self.account, *id) {
-                contacts.insert(
-                    *id,
-                    world
-                        .get::<super::sensors::Observations>(entity)
-                        .map(|value| value.0.contacts.clone())
-                        .unwrap_or_default(),
-                );
+                contacts.insert(*id, super::sensors::observe(world, entity).contacts.clone());
             }
         }
         let views: Vec<_> = self

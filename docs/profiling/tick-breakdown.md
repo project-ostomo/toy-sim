@@ -5,7 +5,7 @@ application. Release build on an AMD Ryzen 9 5900XT, 16 cores / 32 threads.
 Each configuration ran serially, with 70 warmup ticks and 300 measured ticks.
 These are single-run measurements, not a comparison against the old BVH build.
 
-The sparse fixture retains the normal 3,000 NPC population and all 1,001,760
+The sparse fixture retains the normal 3,000 navigation installations and all 1,001,760
 static catalogue entries. Player ships are spaced apart. The smallest hash cell
 is 512 km. One session per player subscribes to instruments and one display at
 10 Hz. Publication includes navigation, displays, session snapshots, postcard
@@ -159,3 +159,79 @@ those require further measurements or controlled implementation comparisons.
 Diagnostic timers and counters are enabled for these runs.
 
 Raw report: [three sensor profiling repeats](sensor-query-breakdown-16-players.txt).
+
+## CPU sampling of occlusion queries
+
+Sampled the same release executable with `perf record -F 99 -m 4M -e cycles:u
+-g --call-graph dwarf,8192 --delay=45000`, sixteen players, one repeat. The delay
+excludes provisioning and most/all warmup. This capture reported zero lost
+samples. An earlier 499 Hz capture lost samples and was discarded for numerical
+analysis.
+
+Exported stacks using `perf script -F period,ip,sym`. Selected samples with
+`segment_candidates` in the call chain, and grouped their leaf symbols weighted
+by the sampled cycle period. There were 407 matching samples, so percentages
+are approximate and refer to sampled CPU cycles, not independent wall timers.
+
+| Leaf operation within ray call stacks | Weighted share |
+|---|---:|
+| Spatial cell hash-table lookup closure | 72.3% |
+| Surrounding spatial cell iterator machinery | 13.6% |
+| Nearest query traversal | 11.4% |
+| Sphere intersection | 0.6% |
+| Other | 2.1% |
+
+The lookup closure is `SpatialHash::nearest`'s `filter_map` calling
+`self.map.get(&key)`. Its disassembly contains coordinate hashing and hash-table
+control-byte probing/key comparisons. The earlier candidate count does not
+count lookups of empty cells: it counts records yielded after those lookups.
+Each occupied brightness bucket enumerates a cube of neighboring cell keys
+for every probe. Empty brightness buckets already skip that enumeration.
+
+Thus the measured ray bottleneck is repeated spatial cell lookup/traversal.
+The sampling does not distinguish memory stalls from hashing/arithmetic cost;
+cache-miss attribution would require hardware counter measurements.
+
+## Demand-driven observations
+
+Sensor input publication now prepares query metadata without running scans.
+Computer scan/contact requests invoke the sensor service synchronously. Session
+frames request observations only for authorized ships whose contact lists they
+include. Results are cached by observer and scene revision. Publishing a new
+scene, possessing sensor hardware, and validating a cached contact handle do not
+initiate scans. Repeated reads share the cached result until the scene changes.
+
+The service shares the persistent spatial hash through a read/write lock; it
+does not clone the million catalogue records. Sensor metadata is copied at the
+completed-tick boundary. Computer-requested results are copied into ECS for
+other consumers, and lifetime/IFF changes invalidate or update cached contacts.
+There is no sensor subscription that can survive a client disconnect and keep
+initiating queries by itself.
+
+Release measurement, sixteen players, 70 warmup plus 300 measured ticks:
+
+| Measurement | Result |
+|---|---:|
+| Scans per tick | **17**, previously 3,017 |
+| Range queries, simulation + publication | **0.141 ms**, previously 13.86 ms |
+| Sensor input publication | 2.15 ms |
+| Requested detection during simulation | 2.30 ms |
+| Requested detection during session publication | 33.74 ms |
+| Simulation | 58.49 ms |
+| Publication | 66.84 ms |
+| Combined | 125.33 ms |
+| Occlusion rays per tick | 272 |
+
+The timing split moved with the work: most requested scans now happen while
+building client frames. The combined detection cost remains about 36 ms.
+The benchmark places player ships using ECS iteration order, which changed
+with component layout; this run has 272 contact rays versus the earlier 212.
+Consequently these timings are not a controlled comparison of identical ray
+geometry. The scan count demonstrates removal of the eager installation scans.
+
+The existing observation integration test now explicitly requests observations
+and verifies immediate computer scan results, lazy publication, cache reuse,
+private handles, IFF changes, and removal/reacquisition. It passed, as did the
+native scan range/handle test. The release benchmark also completed successfully.
+
+Raw report: [demand-driven sensors, sixteen players](sensor-demand-16-players.txt).

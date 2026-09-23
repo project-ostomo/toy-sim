@@ -269,14 +269,14 @@ fn synchronize(
     for body in &state.bodies {
         spatial.insert_collision(body.entity, body.position, body.radius);
     }
-    tick::synchronize(&state.bodies, &mut spatial.hash);
+    tick::synchronize(&state.bodies, &mut spatial.hash.write().unwrap());
     state.report.index_seconds += started.elapsed().as_secs_f64();
 }
 
 fn activate_shields(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<TickState>) {
     let _profile =
         crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.activate_shields");
-    activate(&mut state.bodies, &spatial.hash);
+    activate(&mut state.bodies, &spatial.hash.read().unwrap());
 }
 
 fn prepare_weapons(
@@ -368,7 +368,7 @@ fn beams(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<Tick
         weapons::resolve_beam(
             beam,
             &mut state.bodies,
-            &spatial.hash,
+            &spatial.hash.read().unwrap(),
             0.0,
             &mut state.report,
         );
@@ -385,7 +385,7 @@ fn integrate(
     state.impacts = tick::integrate(
         &mut state.bodies,
         state.dt,
-        &spatial.hash,
+        &spatial.hash.read().unwrap(),
         &mut workspace,
         &mut state.report,
     );
