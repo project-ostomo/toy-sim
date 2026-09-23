@@ -1,7 +1,7 @@
 use std::hash::Hash;
 
 use crate::{
-    Position,
+    Nearest, Position, QueryBudget, QueryExhausted,
     neighbor_index::{NeighborIndex, Record, Records},
 };
 
@@ -19,6 +19,7 @@ pub struct LuminosityMap<T> {
     buckets: [NeighborIndex; BUCKETS],
     // Retain the maximum seen to avoid scanning records on removal.
     top_brightness_bound: f64,
+    minimum_shift: u32,
 }
 
 fn brightness_bucket(brightness: f64) -> usize {
@@ -41,6 +42,7 @@ impl<T: Eq + Hash> LuminosityMap<T> {
             records: Records::new(),
             buckets: std::array::from_fn(|_| NeighborIndex::with_minimum_cell_shift(shift)),
             top_brightness_bound: 0.0,
+            minimum_shift: shift,
         }
     }
 
@@ -89,6 +91,87 @@ impl<T: Eq + Hash> LuminosityMap<T> {
         self.records.keys.is_empty()
     }
 
+    /// Finds the minimum eligible exact distance by expanding radius queries.
+    /// `distance` returns None for ineligible items. Its result must be at least
+    /// the stored centre distance minus `maximum_offset`; include object radii
+    /// and combined position quantization error in that bound. All distances use
+    /// index coordinate units. This supports nearest surfaces as well as centres.
+    ///
+    /// A successful None proves that no eligible item exists. Budget exhaustion
+    /// is a separate result and must not be interpreted as empty space.
+    pub fn nearest_by(
+        &self,
+        position: Position,
+        maximum_offset: f64,
+        budget: &mut QueryBudget,
+        distance: impl FnMut(&T) -> Option<f64>,
+    ) -> Result<Option<Nearest<'_, T>>, QueryExhausted> {
+        self.nearest_within_by(position, maximum_offset, f64::INFINITY, budget, distance)
+    }
+
+    /// Nearest eligible distance within a finite limit. Proving the bounded
+    /// region empty does not require scanning distant or ineligible records.
+    pub fn nearest_within_by(
+        &self,
+        position: Position,
+        maximum_offset: f64,
+        maximum_distance: f64,
+        budget: &mut QueryBudget,
+        mut distance: impl FnMut(&T) -> Option<f64>,
+    ) -> Result<Option<Nearest<'_, T>>, QueryExhausted> {
+        assert!(maximum_offset.is_finite() && maximum_offset >= 0.0);
+        assert!(!maximum_distance.is_nan());
+        if self.is_empty() {
+            return Ok(None);
+        }
+
+        let mut radius = 2_f64.powi(self.minimum_shift as i32);
+        let mut best: Option<Nearest<'_, T>> = None;
+        loop {
+            budget.charge_probe()?;
+            let all = radius >= 2_f64.powi(63);
+            for bucket in &self.buckets {
+                let nearby = (!all)
+                    .then_some(radius as i64)
+                    .into_iter()
+                    .flat_map(|r| bucket.candidates(&self.records.slots, position, r, 0));
+                let unbounded = bucket.all(&self.records.slots, position).take(if all {
+                    usize::MAX
+                } else {
+                    0
+                });
+                for (record, squared) in nearby.chain(unbounded) {
+                    budget.charge()?;
+                    if !all && squared > radius * radius {
+                        continue;
+                    }
+                    if let Some(value) = distance(&record.item) {
+                        assert!(value.is_finite(), "exact query distance must be finite");
+                        if value <= maximum_distance
+                            && best.as_ref().is_none_or(|old| value < old.distance)
+                        {
+                            best = Some(Nearest {
+                                item: &record.item,
+                                distance: value,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Round the lower bound outward, including at tangencies.
+            let rounding = 64.0 * f64::EPSILON * (radius + maximum_offset);
+            let lower = (radius.next_down() - maximum_offset - rounding).next_down();
+            if all
+                || lower > maximum_distance
+                || best.as_ref().is_some_and(|hit| lower > hit.distance)
+            {
+                return Ok(best);
+            }
+            radius *= 2.0;
+        }
+    }
+
     /// Removes a source, if present.
     pub fn remove(&mut self, item: &T) {
         if let Some(key) = self.records.keys.remove(item) {
@@ -118,6 +201,38 @@ impl<T: Eq + Hash> LuminosityMap<T> {
                 .nearest(&self.records.slots, position, radius, 0)
                 .map(|(record, _)| (&record.item, &record.position))
         })
+    }
+
+    /// Radius query that charges every examined cell candidate before filtering.
+    /// Infinite radii enumerate the whole index under the same work budget.
+    pub fn within_radius_budgeted(
+        &self,
+        position: Position,
+        radius: f64,
+        budget: &mut QueryBudget,
+    ) -> Result<Vec<&T>, QueryExhausted> {
+        assert!(!radius.is_nan() && radius >= 0.0);
+        budget.charge_probe()?;
+        let all = radius >= 2_f64.powi(63);
+        let radius = radius.ceil();
+        let mut found = Vec::new();
+        for bucket in &self.buckets {
+            let nearby = (!all)
+                .then_some(radius as i64)
+                .into_iter()
+                .flat_map(|r| bucket.candidates(&self.records.slots, position, r, 0));
+            let unbounded =
+                bucket
+                    .all(&self.records.slots, position)
+                    .take(if all { usize::MAX } else { 0 });
+            for (record, squared) in nearby.chain(unbounded) {
+                budget.charge()?;
+                if all || squared <= (radius * radius).next_up() {
+                    found.push(&record.item);
+                }
+            }
+        }
+        Ok(found)
     }
 
     /// Conservative visibility candidates when stored/query positions have bounded error.
@@ -202,6 +317,84 @@ impl<T: Eq + Hash> Default for LuminosityMap<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nearest_surface_can_have_a_farther_centre() {
+        let mut map = LuminosityMap::with_minimum_cell_shift(9);
+        let origin = Position { x: 0, y: 0, z: 0 };
+        map.insert(0, Position { x: 100, ..origin }, 0.0);
+        map.insert(1, Position { x: 1000, ..origin }, 1e20);
+        let surfaces = [99.0, 10.0];
+        let hit = map
+            .nearest_by(origin, 990.0, &mut QueryBudget::new(100), |&id| {
+                Some(surfaces[id])
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(*hit.item, 1);
+        assert_eq!(hit.distance, 10.0);
+
+        map.remove(&1);
+        let hit = map
+            .nearest_by(origin, 990.0, &mut QueryBudget::new(100), |&id| {
+                Some(surfaces[id])
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(*hit.item, 0);
+    }
+
+    #[test]
+    fn nearest_budget_counts_rejected_cell_candidates() {
+        let mut map = LuminosityMap::with_minimum_cell_shift(9);
+        let origin = Position { x: 0, y: 0, z: 0 };
+        // These lie in a visited cell but outside the initial radius sphere.
+        for id in 0..100 {
+            map.insert(
+                id,
+                Position {
+                    x: 510,
+                    y: 510,
+                    z: 510,
+                },
+                0.0,
+            );
+        }
+        let mut budget = QueryBudget::new(20);
+        assert_eq!(
+            map.nearest_by(origin, 0.0, &mut budget, |_| None)
+                .unwrap_err(),
+            QueryExhausted
+        );
+        assert_eq!(budget.used(), 20);
+    }
+
+    #[test]
+    fn nearest_expansion_covers_extreme_separations_and_empty_filters() {
+        let mut map = LuminosityMap::with_minimum_cell_shift(9);
+        let origin = Position {
+            x: i64::MIN,
+            y: 0,
+            z: 0,
+        };
+        let target = Position {
+            x: i64::MAX,
+            ..origin
+        };
+        map.insert(1, target, 0.0);
+        let hit = map
+            .nearest_by(origin, 0.0, &mut QueryBudget::new(1000), |_| {
+                Some(origin.x.abs_diff(target.x) as f64)
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(*hit.item, 1);
+        assert!(
+            map.nearest_by(origin, 0.0, &mut QueryBudget::new(1000), |_| None)
+                .unwrap()
+                .is_none()
+        );
+    }
 
     #[test]
     fn visibility_filters_exact_brightness_and_distance() {

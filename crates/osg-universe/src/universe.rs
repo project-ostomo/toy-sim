@@ -76,6 +76,7 @@ pub struct SystemDefinition {
     pub id: SystemId,
     pub solver: Orrery,
     pub influence: f64,
+    pub capture_bound: f64,
     pub star_name: SmolStr,
     pub root_name: SmolStr,
     bodies: BTreeMap<LocalBodyId, SmolStr>,
@@ -102,6 +103,7 @@ impl SystemDefinition {
         let mut identities = BTreeMap::new();
         let mut mass = 0.0;
         let mut extent: f64 = 0.0;
+        let mut capture_bound: f64 = 0.0;
         for body in solver.iter() {
             ensure!(
                 !body.key.is_empty(),
@@ -129,6 +131,8 @@ impl SystemDefinition {
                     .and_then(|name| solver.get_body(name));
             }
             extent = extent.max(reach);
+            let exclusion = 0.008 * 149_597_870_700.0 * (body.mass / 1.98847e30).cbrt();
+            capture_bound = capture_bound.max(reach - body.radius + body.radius.max(exclusion));
         }
         let influence = extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt();
         ensure!(influence.is_finite(), "invalid influence extent");
@@ -136,6 +140,7 @@ impl SystemDefinition {
             id,
             solver,
             influence,
+            capture_bound,
             star_name,
             root_name,
             bodies,
@@ -203,6 +208,7 @@ pub struct Universe {
     pub systems: Vec<SystemSummary>,
     pub index: Arc<CatalogueIndex>,
     pub fingerprint: [u8; 32],
+    maximum_capture_bound: f64,
     sources: Vec<DefinitionSource>,
     identities: HashMap<SystemId, usize>,
     names: HashMap<SmolStr, SystemId>,
@@ -343,6 +349,10 @@ impl Universe {
             }
         }
         Ok(Self {
+            maximum_capture_bound: systems
+                .iter()
+                .map(|system| system.capture_bound)
+                .fold(0.0, f64::max),
             systems,
             sources,
             identities,
@@ -469,6 +479,25 @@ impl Universe {
                 .length_squared()
                 <= definition.influence.powi(2)
         })
+    }
+
+    /// Conservative orbital envelopes for slip captures; exact moving-body
+    /// intersections are evaluated by the caller after resolving each system.
+    pub fn capture_candidates(
+        &self,
+        start: GalacticPosition,
+        delta: DVec3,
+        ship_radius: f64,
+        budget: &mut osg_space::spatial::QueryBudget,
+    ) -> Result<Vec<usize>, osg_space::spatial::QueryError> {
+        self.index.spatial.segment_candidates_filtered(
+            start,
+            delta,
+            ship_radius,
+            self.maximum_capture_bound,
+            budget,
+            |index| Some(self.systems[index].capture_bound),
+        )
     }
 
     pub fn containing_segment(&self, start: GalacticPosition, delta: DVec3) -> Vec<usize> {
@@ -620,7 +649,13 @@ fn authored_summary(
         name: config.name.clone(),
         position: config.position_um,
         influence_bound: definition.influence + extra_extent + extra_gravity,
-        capture_bound: definition.influence + extra_extent + extra_gravity,
+        capture_bound: definition.capture_bound
+            + extra_extent
+            + if populate {
+                0.008 * 149_597_870_700.0 * (11_000.0_f64 * 5.9722e24 / 1.98847e30).cbrt()
+            } else {
+                0.0
+            },
         star_radius: star.radius,
         stellar_mass: star.mass,
         luminosity: definition.solver.iter().map(stellar_luminosity).sum(),

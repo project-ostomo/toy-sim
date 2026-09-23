@@ -4,27 +4,24 @@ version.workspace = true
 edition.workspace = true
 
 [features]
-collision-prototype = ["dep:rapier3d", "dep:rapier3d-f64", "dep:osg-spatial-hash"]
+collision-prototype = ["dep:rapier3d"]
 collision-prototype-allocations = ["collision-prototype"]
 dynamic_linking = ["dep:bevy_dylib"]
 profile = ["bevy/trace_chrome"]
 
 [dependencies]
 rapier3d = { version = "=0.34.0", optional = true }
-rapier3d-f64 = { version = "=0.34.0", optional = true }
-osg-spatial-hash = { path = "../osg-spatial-hash", optional = true }
+rapier3d-f64 = { version = "=0.34.0" }
+osg-spatial-hash = { path = "../osg-spatial-hash" }
 bevy = { version = "0.19.1", default-features = false, features = ["std", "multi_threaded", "bevy_state", "bevy_asset", "bevy_log", "serialize"] }
-parry3d-f64.workspace = true
 rayon = "1.12"
 ahash.workspace = true
-ordered-float = "5.5"
 hifitime = "4.3.1"
 smol_str = { version = "0.3.6", features = ["serde"] }
 rand_chacha = "0.10"
 blake3 = "1.8"
 rusqlite = { version = "0.40.2", features = ["bundled", "fallible_uint"] }
 osg-space = { path = "../osg-space" }
-osg-spatial-bvh = { path = "../osg-spatial-bvh" }
 osg-ship-api = { path = "../osg-ship-api" }
 osg-ship-wasm = { path = "../osg-ship-wasm" }
 postcard = { version = "1.1", features = ["use-std"] }

@@ -46,7 +46,7 @@ impl Plugin for OrreryPlugin {
             .add_systems(
                 FixedUpdate,
                 activity::activate
-                    .before(SimulationSystems::History)
+                    .before(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),
             )
             .add_systems(

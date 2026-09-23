@@ -122,6 +122,10 @@ fn clip(wake: &SlipWake, a: f64, b: f64) -> SlipWake {
 }
 
 impl SlipHistory {
+    pub(crate) fn push_transition(&mut self, transition: SlipTransition) {
+        self.transitions.push(transition);
+    }
+
     pub fn prune_at(&mut self, time_ns: u64) {
         let cutoff = time_ns.saturating_sub((WAKE_LIFETIME_S * 1e9) as u64);
         self.spans.retain_mut(|span| {
@@ -175,10 +179,9 @@ impl SlipHistory {
     }
 }
 
-pub fn prune(world: &mut World) {
-    let time = now(world);
-    if let Some(mut history) = world.get_resource_mut::<SlipHistory>() {
-        history.prune_at(time);
+pub fn prune(clock: Res<SimulationCounters>, history: Option<ResMut<SlipHistory>>) {
+    if let Some(mut history) = history {
+        history.prune_at(clock.ticks * osg_model::TICK_NS);
     }
 }
 

@@ -1,4 +1,4 @@
-//! Discrete launch events inside the collision solver's continuous timeline.
+//! Weapon resource accounting and shots batched at gameplay boundaries.
 use super::*;
 use osg_ships::{
     Inventory,
@@ -38,28 +38,15 @@ pub fn advance(ship: &mut WeaponShip, body: &Body, member: usize, epoch: f64, t:
 }
 
 pub(super) fn next_event(
-    id: usize,
-    member: usize,
     weapon: usize,
     ship: &WeaponShip,
     epoch: f64,
     start: f64,
     end: f64,
-) -> Option<Event> {
+) -> Option<f64> {
     let state = &ship.weapons[weapon];
     let at = state.candidate(epoch + start, epoch + end)?;
-    Some(Event {
-        t: at - epoch,
-        a: id,
-        b: id,
-        ga: 0,
-        gb: 0,
-        kind: Kind::Fire {
-            member,
-            weapon,
-            sequence: state.shots_fired,
-        },
-    })
+    Some(at - epoch)
 }
 
 fn clear_muzzle(
@@ -165,7 +152,6 @@ pub fn fire(
     advance(ship, body, member, epoch, t);
     record_motion(body, t, report);
     body.rebase(t);
-    body.generation += 1;
     body.advance_thermal(t);
     let now = epoch + t;
     let spec = ship.design.weapon_specs[index];
@@ -318,7 +304,6 @@ pub fn fire(
     m.inertia *= (m.mass - removed_mass) / m.mass;
     m.mass -= removed_mass;
     m.thermal.add_hull_heat(heat);
-    body.generation += 1;
     report.shots.push(ShotEvent {
         projectile,
         owner: m.entity,
@@ -355,7 +340,6 @@ pub fn projectile_body(
 
         radius,
         shield_radius: radius,
-        feature: 2.0 * radius,
     });
     Body {
         entity,
@@ -367,10 +351,7 @@ pub fn projectile_body(
         mass,
         inertia_inv: inertia.inverse(),
         radius,
-        feature: 2.0 * radius,
-        generation: 0,
         impulse_dv: DVec3::ZERO,
-        rotation_path: None,
 
         projectile: true,
         launch_owner: None,
@@ -428,7 +409,7 @@ mod tests {
             ),
         ];
         let mut report = Report::default();
-        let spatial = test_snapshot(&bodies, 0.1);
+        let mut spatial = test_snapshot(&bodies, 0.1);
         let hit = resolve_beam(
             BeamEvent {
                 owner,
@@ -470,7 +451,6 @@ mod tests {
             world,
             geometry.surface.clone(),
             geometry.radius,
-            geometry.feature,
             DVec3::ZERO,
             DVec3::ZERO,
             mass,
@@ -524,7 +504,7 @@ mod tests {
             duration_s: 0.1,
         };
         let mut report = Report::default();
-        let spatial = test_snapshot(&bodies, 0.1);
+        let mut spatial = test_snapshot(&bodies, 0.1);
         assert_eq!(
             resolve_beam(beam.clone(), &mut bodies, &spatial, 0.0, &mut report),
             None
@@ -646,9 +626,9 @@ mod tests {
         let mut bodies = vec![body];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let spatial = test_snapshot(&bodies, 0.01);
+        let mut spatial = test_snapshot(&bodies, 0.01);
         let report =
-            simulate_with_workspace(&mut bodies, 0.01, &spatial, &mut workspace, &mut || {
+            simulate_with_workspace(&mut bodies, 0.01, &mut spatial, &mut workspace, &mut || {
                 world.spawn_empty().id()
             });
         let ship = &workspace.weapons[&owner];
@@ -735,7 +715,6 @@ mod tests {
 
                         radius: 100.0,
                         shield_radius: 100.0,
-                        feature: 200.0,
                     });
                     body.members.push(obstruction);
                 }
@@ -762,7 +741,7 @@ mod tests {
     }
 
     #[test]
-    fn launches_and_hits_share_the_same_continuous_timeline() {
+    fn due_shots_launch_together_and_ccd_reports_their_impacts() {
         let mut world = World::new();
         let (body, ship) = armed(&mut world);
         let owner = body.entity;
@@ -770,7 +749,6 @@ mod tests {
             &mut world,
             SharedShape::ball(20.0),
             20.0,
-            40.0,
             DVec3::new(0.0, 0.0, -200.0),
             DVec3::ZERO,
             10000.0,
@@ -778,23 +756,35 @@ mod tests {
         let mut bodies = vec![body, target];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let spatial = test_snapshot(&bodies, 0.1);
+        let mut spatial = test_snapshot(&bodies, 0.1);
         let report =
-            simulate_with_workspace(&mut bodies, 0.1, &spatial, &mut workspace, &mut || {
+            simulate_with_workspace(&mut bodies, 0.1, &mut spatial, &mut workspace, &mut || {
                 world.spawn_empty().id()
             });
 
         assert_eq!(report.shots.len(), 2);
         assert_eq!(report.shots[0].time, 0.0);
-        assert!((report.shots[1].time - 0.05).abs() < 1e-8);
-        assert_eq!(report.destroyed.iter().filter(|d| d.projectile).count(), 2);
+        assert_eq!(report.shots[1].time, 0.0);
+        workspace.time_s = 0.1;
+        let following =
+            super::super::solver_tests::next_tick(&mut bodies, &mut spatial, &mut workspace);
+        assert_eq!(
+            report
+                .destroyed
+                .iter()
+                .chain(&following.destroyed)
+                .filter(|d| d.projectile)
+                .count(),
+            2
+        );
         for shot in &report.shots {
             let death = report
                 .destroyed
                 .iter()
+                .chain(&following.destroyed)
                 .find(|d| d.entity == shot.projectile)
                 .unwrap();
-            assert!(death.time > shot.time && death.time < 0.1);
+            assert_eq!(death.time, 0.1);
             assert!(
                 report
                     .motion
@@ -805,11 +795,11 @@ mod tests {
     }
 
     #[test]
-    fn a_ship_destroyed_before_its_launch_time_does_not_fire() {
+    fn a_ship_already_destroyed_at_the_boundary_does_not_fire() {
         let mut world = World::new();
         let (mut body, mut ship) = armed(&mut world);
         ship.weapons[0].next_fire_s = 0.08;
-        body.members[0].hull = 0.001;
+        body.members[0].hull = 0.0;
         let owner = body.entity;
         let slug = projectile_body(
             world.spawn_empty().id(),
@@ -822,9 +812,9 @@ mod tests {
         let mut bodies = vec![body, slug];
         let mut workspace = SolverWorkspace::default();
         workspace.weapons.insert(owner, ship);
-        let spatial = test_snapshot(&bodies, 0.1);
+        let mut spatial = test_snapshot(&bodies, 0.1);
         let report =
-            simulate_with_workspace(&mut bodies, 0.1, &spatial, &mut workspace, &mut || {
+            simulate_with_workspace(&mut bodies, 0.1, &mut spatial, &mut workspace, &mut || {
                 panic!("dead ship fired")
             });
         assert!(report.destroyed.iter().any(|d| d.entity == owner));
@@ -843,7 +833,6 @@ mod shield_firing_tests {
             &mut world,
             SharedShape::ball(1.0),
             10.0,
-            2.0,
             DVec3::ZERO,
             DVec3::ZERO,
             10000.0,
@@ -851,6 +840,8 @@ mod shield_firing_tests {
         owner.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
         owner.members[0].model.shield_deployed_kg = 5.0;
         owner.members[0].thermal.shield_deployed_kg = 5.0;
+        owner.members[0].thermal.shield_enabled = true;
+        owner.members[0].thermal.shield_powered = true;
         let mut target = owner.clone();
         target.entity = world.spawn_empty().id();
         target.members[0].entity = target.entity;
@@ -866,9 +857,19 @@ mod shield_firing_tests {
         slug.launch_owner = Some(owner.entity);
         let target_id = target.entity;
         let mut bodies = vec![owner, target, slug];
-        let report = simulate(&mut bodies, 0.1);
-        assert_eq!(report.impact_events.len(), 1);
-        assert!(report.impact_events[0].entities.contains(&target_id));
+        let mut spatial = test_snapshot(&bodies, 0.1);
+        let mut workspace = SolverWorkspace::default();
+        let first =
+            super::super::solver_tests::next_tick(&mut bodies, &mut spatial, &mut workspace);
+        let second =
+            super::super::solver_tests::next_tick(&mut bodies, &mut spatial, &mut workspace);
+        let impacts: Vec<_> = first
+            .impact_events
+            .iter()
+            .chain(&second.impact_events)
+            .collect();
+        assert_eq!(impacts.len(), 1);
+        assert!(impacts[0].entities.contains(&target_id));
         assert_eq!(bodies[0].members[0].thermal.shield_energy_j, 0.0);
     }
 }
@@ -903,7 +904,7 @@ pub struct BeamHit {
 pub fn resolve_beam(
     beam: BeamEvent,
     bodies: &mut [Body],
-    spatial: &SpatialService<SpatialRecord>,
+    spatial: &GalacticIndex<SpatialKey>,
     t: f64,
     report: &mut Report,
 ) -> Option<usize> {
@@ -914,17 +915,26 @@ pub fn resolve_beam(
         .enumerate()
         .map(|(i, body)| (body.entity.to_bits(), i))
         .collect();
-    let bounds = osg_spatial_bvh::Aabb::swept_sphere(
-        beam.position.to_array(),
-        (beam.direction * beam.range_m).to_array(),
-        0.,
-    );
     let mut candidates: Vec<_> = spatial
-        .query_dynamic(osg_spatial_bvh::SpatialQuery::Motion(bounds))
-        .collect()
+        .segment_candidates_filtered(
+            beam.position,
+            beam.direction * beam.range_m,
+            0.0,
+            bodies.iter().map(|body| body.radius).fold(0.0, f64::max),
+            &mut QueryBudget::new(usize::MAX),
+            |key| match key {
+                SpatialKey::Entity(entity) => {
+                    slots.get(&entity.to_bits()).map(|&id| bodies[id].radius)
+                }
+                SpatialKey::Catalogue(_) => None,
+            },
+        )
+        .expect("beam query coordinates")
         .into_iter()
-        .filter(|record| record.kind == RecordKind::Collision)
-        .filter_map(|record| slots.get(&record.id).copied())
+        .filter_map(|key| match key {
+            SpatialKey::Entity(entity) => slots.get(&entity.to_bits()).copied(),
+            SpatialKey::Catalogue(_) => None,
+        })
         .collect();
     candidates.sort_unstable();
     for body_index in candidates {
@@ -936,9 +946,18 @@ pub fn resolve_beam(
             if member.destroyed || member.entity == beam.owner {
                 continue;
             }
-            let center = body.position.relative_to(beam.position) + body.velocity * (t - body.time);
-            let radius = body.collision_radius(member_index, member.shielded());
-            if let Some((hit, _)) = sphere_interval(center, -beam.direction, radius, distance) {
+            let shape = if member.shielded() {
+                SharedShape::ball(member.geometry.shield_radius)
+            } else {
+                member.geometry.surface.clone()
+            };
+            let ray = query::Ray::new(vector(DVec3::ZERO), vector(beam.direction));
+            if let Some(hit) = shape.cast_ray(
+                &body.shape_pose(member_index, t, beam.position),
+                &ray,
+                distance,
+                true,
+            ) {
                 distance = hit;
                 closest = Some((body_index, member_index));
             }
@@ -996,7 +1015,6 @@ pub fn resolve_beam(
     report.impacts += 1;
     report.dissipated_j += energy;
     body.sync_mass();
-    body.generation += 1;
     record_deaths(body, t, report);
     Some(body_index)
 }

@@ -183,7 +183,7 @@ mod tests {
             .collect();
         let (own_entity, own) = ships[&owner];
         let (peer_entity, other) = ships[&peer];
-        sim::chat::refresh(world);
+        world.run_system_cached(sim::chat::refresh).unwrap();
         let mut views = BTreeMap::from([(
             1,
             ViewSubscription {

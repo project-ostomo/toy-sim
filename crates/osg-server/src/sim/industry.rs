@@ -661,6 +661,7 @@ fn cumulative_energy(energy: u64, ticks: u64, duration: u64) -> u64 {
 }
 
 pub fn advance(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("industry.advance");
     let Some(catalogue) = world
         .get_resource::<PhysicalCatalogue>()
         .map(|catalogue| catalogue.0.clone())

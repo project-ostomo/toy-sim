@@ -18,4 +18,3 @@ blake3 = "1.8"
 rand = "0.10"
 rand_chacha = "0.10"
 serde_json = "1.0"
-osg-spatial-bvh = { path = "../osg-spatial-bvh" }

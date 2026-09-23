@@ -13,7 +13,7 @@ use osg_ships::*;
 use smol_str::SmolStr;
 use std::{collections::BTreeMap, sync::Arc};
 mod program_services;
-pub(crate) use program_services::services_for;
+pub(crate) use program_services::Services as ProgramServices;
 #[derive(Component)]
 pub struct ControlledVessel;
 /// Wall-clock stages of the most recent ship update. Scan is included in callback.
@@ -302,26 +302,24 @@ pub(crate) fn run(
     epoch: Res<super::identity::WorldEpoch>,
     time: Res<Time<Fixed>>,
     parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
-    mut ships: Query<
-        (
-            Entity,
-            &ShipDesign,
-            HardwareWrite,
-            &mut ShipSoftware,
-            &mut super::displays::DisplayEnvironment,
-            Option<&super::displays::Display>,
-            &PreciseTransform,
-            Option<&Velocity>,
-            Option<&AngularVelocity>,
-            &crate::sim::physics::AccelerometerState,
-            &MassProps,
-            &super::identity::Identity,
-            &super::ownership::AssetOwner,
-            Has<super::travel::SystemsSuspended>,
-        ),
-        Without<super::travel::ArrivalOffset>,
-    >,
+    mut ships: Query<(
+        Entity,
+        &ShipDesign,
+        HardwareWrite,
+        &mut ShipSoftware,
+        &mut super::displays::DisplayEnvironment,
+        Option<&super::displays::Display>,
+        &PreciseTransform,
+        Option<&Velocity>,
+        Option<&AngularVelocity>,
+        &crate::sim::physics::AccelerometerState,
+        &MassProps,
+        &super::identity::Identity,
+        &super::ownership::AssetOwner,
+        Has<super::travel::SystemsSuspended>,
+    )>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("vessel.run");
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (

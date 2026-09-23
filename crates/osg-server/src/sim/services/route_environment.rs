@@ -415,7 +415,12 @@ impl RouteEnvironment for Environment {
         let distance = displacement.length();
         if distance > 0.0 {
             let direction = displacement / distance;
-            for index in universe.index.containing_segment(origin, displacement) {
+            for index in universe.capture_candidates(
+                origin,
+                displacement,
+                self.source.radius,
+                &mut osg_space::spatial::QueryBudget::new(1_000_000),
+            )? {
                 self.check_budget()?;
                 for body in self.targets(index, arrival_after_s)? {
                     let offset = body.pose.position.relative_to(origin);

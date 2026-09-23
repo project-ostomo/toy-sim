@@ -169,23 +169,41 @@ impl ChatService {
     }
 }
 
-fn physical_origin(world: &World, mut entity: Entity) -> Option<GalacticPosition> {
-    for _ in 0..16 {
-        match world
-            .get::<super::travel::PresenceState>(entity)
-            .map(|state| &state.0)
-        {
-            Some(
-                osg_model::travel::Presence::Destroyed
-                | osg_model::travel::Presence::StoredInWreck(_),
-            ) => return None,
-            Some(osg_model::travel::Presence::Docked { host, .. }) => {
-                entity = identity::lookup(world, *host).ok()?;
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct PhysicalOrigins<'w, 's> {
+    index: Res<'w, identity::IdentityIndex>,
+    objects: Query<
+        'w,
+        's,
+        (
+            Option<&'static super::travel::PresenceState>,
+            Option<&'static super::precision::PreciseTransform>,
+            Option<&'static super::travel::Transit>,
+        ),
+    >,
+}
+
+impl PhysicalOrigins<'_, '_> {
+    fn get(&self, mut entity: Entity) -> Option<GalacticPosition> {
+        for _ in 0..16 {
+            let (presence, pose, transit) = self.objects.get(entity).ok()?;
+            match presence.map(|state| &state.0) {
+                Some(
+                    osg_model::travel::Presence::Destroyed
+                    | osg_model::travel::Presence::StoredInWreck(_),
+                ) => return None,
+                Some(osg_model::travel::Presence::Docked { host, .. }) => {
+                    entity = *self.index.0.get(host)?;
+                }
+                _ => {
+                    return transit
+                        .map(|flight| flight.position)
+                        .or_else(|| pose.map(|pose| pose.translation_um));
+                }
             }
-            _ => return super::session::ship_pose(world, entity).map(|pose| pose.position),
         }
+        None
     }
-    None
 }
 
 fn sender_name(labels: &std::collections::BTreeSet<String>) -> String {
@@ -209,16 +227,21 @@ pub fn flush(service: Res<ChatService>) {
     service.flush();
 }
 
-pub fn refresh(world: &mut World) {
-    world.resource::<ChatService>().flush();
-    let sites: BTreeMap<_, _> = world
-        .query_filtered::<
-            (Entity, &identity::Identity, Option<&identity::Transponder>),
-            With<super::vessel::ShipDesign>,
-        >()
-        .iter(world)
+pub fn refresh(
+    service: Res<ChatService>,
+    clock: Res<SimulationCounters>,
+    origins: PhysicalOrigins,
+    ships: Query<
+        (Entity, &identity::Identity, Option<&identity::Transponder>),
+        With<super::vessel::ShipDesign>,
+    >,
+) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("chat.refresh");
+    service.flush();
+    let sites: BTreeMap<_, _> = ships
+        .iter()
         .filter_map(|(entity, id, transponder)| {
-            let position = physical_origin(world, entity)?;
+            let position = origins.get(entity)?;
             let iff = transponder.filter(|iff| iff.0.enabled).map(|iff| &iff.0);
             Some((
                 id.0,
@@ -234,9 +257,8 @@ pub fn refresh(world: &mut World) {
             ))
         })
         .collect();
-    let service = world.resource::<ChatService>();
     let mut state = service.0.lock().expect("chat service poisoned");
-    state.tick = world.resource::<SimulationCounters>().ticks;
+    state.tick = clock.ticks;
     state.inboxes.retain(|id, _| sites.contains_key(id));
     state.sites = sites;
 }
@@ -246,6 +268,11 @@ mod tests {
     use super::*;
     use crate::sim::{precision::PreciseTransform, travel::PresenceState};
     use bevy::math::DVec3;
+
+    fn physical_origin(world: &mut World, entity: Entity) -> Option<GalacticPosition> {
+        let mut state = bevy::ecs::system::SystemState::<PhysicalOrigins>::new(world);
+        state.get(world).unwrap().get(entity)
+    }
 
     fn locations(service: &ChatService, tick: u64, locations: &[(Id, f64)]) {
         service.flush();
@@ -412,11 +439,11 @@ mod tests {
                 }),
             ))
             .id();
-        assert_eq!(physical_origin(&world, ship), Some(host_position));
+        assert_eq!(physical_origin(&mut world, ship), Some(host_position));
         world
             .entity_mut(host)
             .insert(PresenceState(osg_model::travel::Presence::Destroyed));
-        assert_eq!(physical_origin(&world, ship), None);
+        assert_eq!(physical_origin(&mut world, ship), None);
         world
             .entity_mut(host)
             .insert(PresenceState(osg_model::travel::Presence::Space));
@@ -433,12 +460,12 @@ mod tests {
             .single(world)
             .map(|(entity, id)| (entity, id.0))
             .unwrap();
-        refresh(world);
+        world.run_system_cached(refresh).unwrap();
         world.resource::<ChatService>().latest(id).unwrap();
 
         super::super::travel::destroy(world, ship);
 
-        refresh(world);
+        world.run_system_cached(refresh).unwrap();
         let service = world.resource::<ChatService>();
         assert!(service.latest(id).is_err());
         assert!(
@@ -453,7 +480,7 @@ mod tests {
             .insert(PresenceState(osg_model::travel::Presence::StoredInWreck(
                 Id::new(),
             )));
-        refresh(world);
+        world.run_system_cached(refresh).unwrap();
         assert!(world.resource::<ChatService>().latest(id).is_err());
     }
 
@@ -496,7 +523,7 @@ mod tests {
             }),
             super::super::travel::Dormant,
         ));
-        refresh(world);
+        world.run_system_cached(refresh).unwrap();
         let service = world.resource::<ChatService>();
         service
             .send(sender_id, [1; 32], 1, "Dockside receiver")

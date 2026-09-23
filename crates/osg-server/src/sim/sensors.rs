@@ -19,21 +19,30 @@ pub struct ObservationSnapshot {
 #[derive(Component, Default)]
 pub struct Observations(pub Arc<ObservationSnapshot>);
 
+pub(crate) fn invalidate_observation(
+    observer: Entity,
+    observations: &mut Observations,
+    entity: Entity,
+    id: Option<Id>,
+) {
+    if observer == entity {
+        observations.0 = Arc::default();
+    } else if let Some(id) = id.filter(|id| observations.0.targets.contains_key(id)) {
+        let snapshot = Arc::make_mut(&mut observations.0);
+        if let Some(handle) = snapshot.targets.remove(&id) {
+            snapshot.contacts.remove(&handle);
+        }
+        snapshot.instances.remove(&id);
+    }
+}
+
 pub fn invalidate(world: &mut World, entity: Entity) {
     let id = world
         .get::<super::identity::Identity>(entity)
         .map(|id| id.0);
     for (observer, mut observations) in world.query::<(Entity, &mut Observations)>().iter_mut(world)
     {
-        if observer == entity {
-            observations.0 = Arc::default();
-        } else if let Some(id) = id.filter(|id| observations.0.targets.contains_key(id)) {
-            let snapshot = Arc::make_mut(&mut observations.0);
-            if let Some(handle) = snapshot.targets.remove(&id) {
-                snapshot.contacts.remove(&handle);
-            }
-            snapshot.instances.remove(&id);
-        }
+        invalidate_observation(observer, &mut observations, entity, id);
     }
 }
 
@@ -60,31 +69,54 @@ pub fn refresh_iff(world: &mut World, entity: Entity) {
 }
 
 /// Publish only current measurements. Physical identities stay on the server.
-pub fn publish(world: &mut World) {
+#[derive(bevy::ecs::query::QueryData)]
+pub struct Observer {
+    entity: Entity,
+    instance: Option<&'static super::identity::SpatialInstance>,
+    observations: Option<&'static Observations>,
+    dormant: Has<super::travel::Dormant>,
+    pose: Option<&'static PreciseTransform>,
+    range: Option<&'static super::hardware::SensorRange>,
+    override_settings: Option<&'static super::hardware::SensorOverride>,
+}
+
+#[derive(bevy::ecs::query::QueryData)]
+pub struct Target {
+    id: &'static super::identity::Identity,
+    instance: &'static super::identity::SpatialInstance,
+    pose: &'static PreciseTransform,
+    design: &'static super::vessel::ShipDesign,
+    transponder: Option<&'static super::identity::Transponder>,
+    velocity: Option<&'static super::physics::Velocity>,
+    angular: Option<&'static super::physics::AngularVelocity>,
+}
+
+pub fn publish(
+    mut commands: Commands,
+    clock: Res<super::simulation::SimulationCounters>,
+    index: Res<SpatialIndex>,
+    observers: Query<
+        Observer,
+        (
+            With<super::identity::Identity>,
+            Or<(With<super::hardware::SensorRange>, With<Observations>)>,
+        ),
+    >,
+    targets: Query<Target>,
+) {
     let _profile = super::diagnostics::ProfileScope::new("sensor_publish");
-    use super::{hardware, identity, physics, simulation, travel, vessel};
+    use super::identity;
 
     let profile = std::env::var_os("OSG_SPATIAL_PROFILE").is_some();
     let mut detection_time = std::time::Duration::ZERO;
     let mut scan_count = 0_usize;
     let mut candidate_count = 0_usize;
     let mut visible_count = 0_usize;
-    let tick = world.resource::<simulation::SimulationCounters>().ticks;
-    let observers: Vec<_> = world
-        .query_filtered::<Entity, With<identity::Identity>>()
-        .iter(world)
-        .filter(|entity| {
-            world.get::<hardware::SensorRange>(*entity).is_some()
-                || world.get::<Observations>(*entity).is_some()
-        })
-        .collect();
-
-    for observer in observers {
-        let instance = world
-            .get::<identity::SpatialInstance>(observer)
-            .map(|value| value.0);
-        let old = world
-            .get::<Observations>(observer)
+    let tick = clock.ticks;
+    for observer in &observers {
+        let instance = observer.instance.map(|value| value.0);
+        let old = observer
+            .observations
             .map(|value| value.0.clone())
             .unwrap_or_default();
         let mut snapshot = ObservationSnapshot {
@@ -92,31 +124,24 @@ pub fn publish(world: &mut World) {
             observer_instance: instance.unwrap_or_default(),
             ..Default::default()
         };
-        let active = world.get::<travel::Dormant>(observer).is_none();
-        let origin = world
-            .get::<PreciseTransform>(observer)
-            .map(|pose| pose.translation_um);
-        let range = world
-            .get::<hardware::SensorRange>(observer)
-            .map_or(0., |range| range.0);
+        let active = !observer.dormant;
+        let origin = observer.pose.map(|pose| pose.translation_um);
+        let range = observer.range.map_or(0.0, |range| range.0);
         if active
             && range > 0.
             && let Some(origin) = origin
         {
             let sensor = Sensor {
                 range_m: range,
-                occlusion: world
-                    .get::<hardware::SensorOverride>(observer)
-                    .map_or(true, |value| value.occlusion),
+                occlusion: observer
+                    .override_settings
+                    .is_none_or(|value| value.occlusion),
             };
             let started = profile.then(std::time::Instant::now);
-            let detections = detect_nearest(
-                world.resource::<SpatialIndex>(),
-                observer,
-                origin,
-                &sensor,
-                256,
-            );
+            let detections = {
+                let _profile = super::diagnostics::ProfileScope::new("sensor_detection");
+                detect_nearest(&index, observer.entity, origin, &sensor, 256)
+            };
             if let Some(started) = started {
                 detection_time += started.elapsed();
                 scan_count += 1;
@@ -125,14 +150,11 @@ pub fn publish(world: &mut World) {
             }
             for detection in detections.visible {
                 let target = detection.entity;
-                let (Some(id), Some(instance), Some(transform), Some(design)) = (
-                    world.get::<identity::Identity>(target),
-                    world.get::<identity::SpatialInstance>(target),
-                    world.get::<PreciseTransform>(target),
-                    world.get::<vessel::ShipDesign>(target),
-                ) else {
+                let Ok(target) = targets.get(target) else {
                     continue;
                 };
+                let id = target.id;
+                let instance = target.instance;
                 let handle = old
                     .targets
                     .get(&id.0)
@@ -152,8 +174,8 @@ pub fn publish(world: &mut World) {
                             }
                         }
                     });
-                let iff = world
-                    .get::<identity::Transponder>(target)
+                let iff = target
+                    .transponder
                     .filter(|value| value.0.enabled)
                     .map(|value| value.0.clone());
                 let mut opaque = [0; 16];
@@ -168,20 +190,16 @@ pub fn publish(world: &mut World) {
                         ),
                         entity: iff.as_ref().map(|_| id.0),
                         iff,
-                        pose: identity::pose(
-                            transform,
-                            world.get::<physics::Velocity>(target),
-                            world.get::<physics::AngularVelocity>(target),
-                        ),
-                        radius_m: design.0.radius,
+                        pose: identity::pose(target.pose, target.velocity, target.angular),
+                        radius_m: target.design.0.radius,
                     },
                 );
                 snapshot.targets.insert(id.0, handle);
                 snapshot.instances.insert(id.0, instance.0);
             }
         }
-        world
-            .entity_mut(observer)
+        commands
+            .entity(observer.entity)
             .insert(Observations(Arc::new(snapshot)));
     }
     if profile {
@@ -249,6 +267,7 @@ fn scan(
         Without<crate::sim::hardware::SensorRange>,
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("sensors.scan");
     for (entity, pose, sensor, hardware, mut contacts) in &mut sensors {
         let sensor = Sensor {
             range_m: hardware.map_or(sensor.range_m, |h| sensor.range_m.min(h.0)),
@@ -330,7 +349,16 @@ pub fn detect_nearest(
     if n == 0 || sensor.range_m <= 0. || !sensor.range_m.is_finite() {
         return SensorContacts::default();
     }
-    let candidates = index.nearest(observer, origin, sensor.range_m, n);
+    let candidates = {
+        let _profile = super::diagnostics::ProfileScope::new("sensor_contact_selection");
+        index.nearest(observer, origin, sensor.range_m, n)
+    };
+    #[cfg(test)]
+    {
+        super::diagnostics::samples::count("sensor.scans", 1);
+        super::diagnostics::samples::count("sensor.selected_contacts", candidates.len());
+    }
+    let _profile = super::diagnostics::ProfileScope::new("sensor_occlusion_and_results");
     let mut result = SensorContacts {
         candidates: candidates.len(),
         ..default()
@@ -414,7 +442,7 @@ mod tests {
         });
         world.insert_resource(index);
 
-        publish(world);
+        world.run_system_cached(publish).unwrap();
         let handle = world.get::<Observations>(observer).unwrap().0.targets[&target_id];
         let other_handle = world.get::<Observations>(other).unwrap().0.targets[&target_id];
         assert_ne!(handle, other_handle);
@@ -430,7 +458,7 @@ mod tests {
         assert!(contact.iff.is_none());
         assert!(contact.entity.is_none());
         world.get_mut::<SensorRange>(observer).unwrap().0 = 0.;
-        publish(world);
+        world.run_system_cached(publish).unwrap();
         assert!(
             world
                 .get::<Observations>(observer)
@@ -449,17 +477,17 @@ mod tests {
         );
 
         world.get_mut::<SensorRange>(observer).unwrap().0 = 2000.;
-        publish(world);
+        world.run_system_cached(publish).unwrap();
         let reacquired = world.get::<Observations>(observer).unwrap().0.targets[&target_id];
         assert_ne!(handle, reacquired);
         world.get_mut::<SpatialInstance>(target).unwrap().0 = Id::new();
-        publish(world);
+        world.run_system_cached(publish).unwrap();
         assert_ne!(
             world.get::<Observations>(observer).unwrap().0.targets[&target_id],
             reacquired
         );
         world.despawn(target);
-        publish(world);
+        world.run_system_cached(publish).unwrap();
         assert!(
             world
                 .get::<Observations>(observer)
@@ -634,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn scans_use_tick_start_positions_and_drop_despawned_objects_next_tick() {
+    fn scans_use_completed_tick_positions_and_drop_despawned_objects_next_tick() {
         #[derive(Component)]
         struct Target;
         let mut app = App::new();
@@ -683,14 +711,6 @@ mod tests {
             ))
             .id();
         app.update();
-        app.update();
-        assert!(
-            app.world()
-                .get::<SensorContacts>(sensor)
-                .unwrap()
-                .visible
-                .is_empty()
-        );
         app.update();
         assert_eq!(
             app.world().get::<SensorContacts>(sensor).unwrap().visible[0].entity,

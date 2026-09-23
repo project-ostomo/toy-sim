@@ -33,7 +33,9 @@ fn fixture() -> (App, Entity, Id) {
         Arc::new(design),
         PreciseTransform {
             translation_um: GalacticPosition {
-                x: 1_i128 << 100,
+                // Outside the galaxy's gravity fields, within the checked
+                // i64-kilometre span of the shared catalogue index.
+                x: 1_i128 << 90,
                 y: 0,
                 z: 0,
             },

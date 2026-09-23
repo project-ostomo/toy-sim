@@ -1,7 +1,13 @@
 use crate::sim::precision::GalacticPosition;
 use bevy::{math::DVec3, prelude::*};
-use osg_spatial_bvh::{DynamicEntry, RecordKind, SpatialQuery, SpatialRecord, SpatialService};
+use osg_space::spatial::{GalacticIndex, QueryBudget, QueryError, SpatialRecord as HashRecord};
 use std::sync::OnceLock;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpatialKey {
+    Catalogue(usize),
+    Entity(Entity),
+}
 
 #[derive(Clone, Copy)]
 pub struct SpatialObject {
@@ -18,15 +24,20 @@ pub struct SpatialIndex {
     pub objects: Vec<SpatialObject>,
     entities: ahash::AHashMap<Entity, usize>,
     targets: Vec<usize>,
-    geometry: OnceLock<SpatialService<SpatialRecord>>,
+    /// Physical radius bound for segment queries over `objects`.
+    maximum_object_radius_m: f64,
     pub velocities: ahash::AHashMap<Entity, DVec3>,
     pub capture_radii: ahash::AHashMap<Entity, f64>,
-    pub collision_entries: Vec<DynamicEntry<SpatialRecord>>,
+    collision_entities: ahash::AHashSet<Entity>,
     pub tick_seconds: f64,
     pub tick: u64,
     celestial_systems: ahash::AHashSet<usize>,
     illumination: Vec<OnceLock<Illumination>>,
     pub sky: super::lighting::Sky,
+    pub hash: GalacticIndex<SpatialKey>,
+    indexed_entities: ahash::AHashSet<Entity>,
+    indexed_universe: Option<std::sync::Arc<osg_universe::universe::Universe>>,
+    collecting: bool,
 }
 
 #[derive(Clone, Default)]
@@ -39,15 +50,16 @@ impl SpatialIndex {
     pub fn clear(&mut self) {
         let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_clear");
         self.objects.clear();
+        self.maximum_object_radius_m = 0.0;
         self.entities.clear();
         self.targets.clear();
-        self.geometry.take();
         self.velocities.clear();
         self.capture_radii.clear();
-        self.collision_entries.clear();
+        self.collision_entities.clear();
         self.celestial_systems.clear();
         self.illumination.clear();
         self.sky.local.clear();
+        self.collecting = true;
     }
 
     pub fn insert(&mut self, object: SpatialObject) {
@@ -59,8 +71,8 @@ impl SpatialIndex {
     }
 
     fn insert_object(&mut self, object: SpatialObject, system: Option<usize>) {
+        self.maximum_object_radius_m = self.maximum_object_radius_m.max(object.radius_m);
         let id = self.objects.len();
-        self.geometry.take();
         if let Some(system) = system {
             self.celestial_systems.insert(system);
         } else {
@@ -69,65 +81,92 @@ impl SpatialIndex {
         self.entities.insert(object.entity, id);
         self.objects.push(object);
         self.illumination.push(OnceLock::new());
+        if !self.collecting {
+            self.sync_object(id);
+        }
     }
 
     pub fn finish_geometry(&mut self) {
-        self.service();
+        let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_finish_geometry");
+        self.collecting = false;
+        for id in 0..self.objects.len() {
+            self.sync_object(id);
+        }
+        let mut present: ahash::AHashSet<_> = self.entities.keys().copied().collect();
+        present.extend(self.collision_entities.iter().copied());
+        for &entity in self.indexed_entities.difference(&present) {
+            self.hash.remove(&SpatialKey::Entity(entity));
+        }
+        self.indexed_entities = present;
     }
 
-    pub fn service(&self) -> &SpatialService<SpatialRecord> {
-        self.geometry.get_or_init(|| {
-            let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_geometry");
-            let entries = self
-                .objects
-                .iter()
-                .enumerate()
-                .map(|(id, object)| {
-                    let record = SpatialRecord {
-                        kind: RecordKind::Body,
-                        id: object.entity.to_bits(),
-                        position: object.position.to_array(),
-                        radius_m: object.radius_m,
-                    };
-                    let displacement = (self
-                        .velocities
-                        .get(&object.entity)
-                        .copied()
-                        .unwrap_or_default()
-                        * self.tick_seconds)
-                        .to_array();
-                    let mut entry = record.dynamic(
-                        if self.targets.binary_search(&id).is_ok() {
-                            self.peak(id)
-                        } else {
-                            0.
+    pub fn insert_collision(&mut self, entity: Entity, position: GalacticPosition, radius_m: f64) {
+        self.collision_entities.insert(entity);
+        self.indexed_entities.insert(entity);
+        if !self.entities.contains_key(&entity) {
+            self.hash
+                .insert(
+                    SpatialKey::Entity(entity),
+                    HashRecord {
+                        position,
+                        radius_m,
+                        luminosity: 0.0,
+                    },
+                )
+                .expect("collision body coordinate range");
+        }
+    }
+
+    pub fn seed_catalogue(&mut self) {
+        if self.indexed_universe.as_ref().map(std::sync::Arc::as_ptr)
+            == self.sky.universe.as_ref().map(std::sync::Arc::as_ptr)
+        {
+            return;
+        }
+        self.hash = GalacticIndex::new();
+        self.indexed_entities.clear();
+        self.indexed_universe = self.sky.universe.clone();
+        if let Some(universe) = &self.indexed_universe {
+            for (id, entry) in universe.index.entries.iter().enumerate() {
+                self.hash
+                    .insert(
+                        SpatialKey::Catalogue(id),
+                        HashRecord {
+                            position: entry.position,
+                            radius_m: 0.0,
+                            luminosity: entry.luminosity / super::lighting::LUMENS_PER_OPTICAL_WATT,
                         },
-                        displacement,
-                    );
-                    if let Some(&radius) = self.capture_radii.get(&object.entity) {
-                        entry.bounds = osg_spatial_bvh::Aabb::sphere(
-                            record.position,
-                            radius.max(record.radius_m),
-                        );
-                        entry.swept_bounds = osg_spatial_bvh::Aabb::swept_sphere(
-                            record.position,
-                            displacement,
-                            radius.max(record.radius_m),
-                        );
-                    }
-                    entry
-                })
-                .chain(self.collision_entries.iter().cloned());
-            let mut service = match &self.sky.universe {
-                Some(universe) => (*universe.index.spatial).clone(),
-                None => SpatialService::new([]),
-            };
-            service.rebuild_dynamic(entries);
-            service
-        })
+                    )
+                    .expect("catalogue coordinate range");
+            }
+        }
+    }
+
+    fn sync_object(&mut self, id: usize) {
+        let object = self.objects[id];
+        self.hash
+            .insert(
+                SpatialKey::Entity(object.entity),
+                HashRecord {
+                    position: object.position,
+                    radius_m: object.radius_m.max(
+                        self.capture_radii
+                            .get(&object.entity)
+                            .copied()
+                            .unwrap_or(0.0),
+                    ),
+                    luminosity: if self.targets.binary_search(&id).is_ok() {
+                        self.peak(id)
+                    } else {
+                        0.0
+                    },
+                },
+            )
+            .expect("body coordinate range");
     }
 
     fn peak(&self, id: usize) -> f64 {
+        let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_luminosity_bounds");
         let object = self.objects[id];
         self.illumination[id].get().map_or_else(
             || object.optical_luminosity_w + self.sky.peak(object.position, object.radius_m),
@@ -135,38 +174,67 @@ impl SpatialIndex {
         )
     }
 
-    fn object_id(&self, record: &SpatialRecord) -> Option<usize> {
-        (record.kind == RecordKind::Body)
-            .then(|| self.entities.get(&Entity::from_bits(record.id)).copied())
-            .flatten()
-    }
-
-    fn target_id(&self, record: &SpatialRecord) -> Option<usize> {
-        self.object_id(record)
-            .filter(|id| self.targets.binary_search(id).is_ok())
-    }
-
-    fn segment_candidates(&self, origin: GalacticPosition, displacement: DVec3) -> Vec<usize> {
-        self.service()
-            .query_dynamic(SpatialQuery::Segment {
-                start: origin.to_array(),
-                end: origin.offset_by(displacement).to_array(),
-                radius_m: 0.,
-            })
-            .collect()
+    pub fn segment_candidates(&self, origin: GalacticPosition, displacement: DVec3) -> Vec<usize> {
+        let _profile = crate::sim::diagnostics::ProfileScope::new("sensor_segment_query");
+        let mut budget = QueryBudget::new(usize::MAX);
+        let candidates = self
+            .hash
+            .segment_candidates_filtered(
+                origin,
+                displacement,
+                0.0,
+                self.maximum_object_radius_m,
+                &mut budget,
+                |key| self.key_object(key).map(|id| self.objects[id].radius_m),
+            )
+            .expect("scene query coordinates");
+        #[cfg(test)]
+        {
+            use crate::sim::diagnostics::samples::count;
+            count("segment.rays", 1);
+            count("segment.probes", budget.probes());
+            count(
+                "segment.candidates_examined",
+                budget.used() - budget.probes(),
+            );
+            count("segment.intersections", candidates.len());
+        }
+        candidates
             .into_iter()
-            .filter_map(|record| self.object_id(record))
+            .filter_map(|key| self.key_object(key))
             .collect()
+    }
+
+    fn key_object(&self, key: SpatialKey) -> Option<usize> {
+        match key {
+            SpatialKey::Entity(entity) => self.entities.get(&entity).copied(),
+            SpatialKey::Catalogue(_) => None,
+        }
+    }
+
+    pub fn overlap_candidates(
+        &self,
+        position: GalacticPosition,
+        radius: f64,
+        budget: &mut QueryBudget,
+    ) -> Result<Vec<Entity>, QueryError> {
+        Ok(self
+            .hash
+            .within_radius_budgeted(position, radius, true, budget)?
+            .into_iter()
+            .filter_map(|key| self.key_object(key))
+            .map(|id| self.objects[id].entity)
+            .collect())
     }
 
     #[cfg(test)]
     pub fn set_luminosity(&mut self, id: usize, luminosity_w: f64) {
-        self.geometry.take();
         self.objects[id].optical_luminosity_w = luminosity_w;
         self.illumination[id] = OnceLock::from(Illumination {
             emitted_w: luminosity_w,
             reflected: Vec::new(),
         });
+        self.sync_object(id);
     }
 
     #[cfg(test)]
@@ -209,15 +277,12 @@ impl SpatialIndex {
     }
 
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.service()
-            .query_dynamic(SpatialQuery::Sphere {
-                centre: centre.to_array(),
-                radius_m: radius,
-            })
-            .collect()
+        self.hash
+            .within_radius(centre, radius, false)
+            .expect("scene query coordinates")
             .into_iter()
-            .filter_map(|record| self.target_id(record))
-            .filter(|&id| self.objects[id].position.relative_to(centre).length() <= radius)
+            .filter_map(|key| self.key_object(key))
+            .filter(|id| self.targets.binary_search(id).is_ok())
             .collect()
     }
 
@@ -226,15 +291,12 @@ impl SpatialIndex {
         centre: GalacticPosition,
         min_luminosity_over_distance2: f64,
     ) -> Vec<usize> {
-        self.service()
-            .query_dynamic(SpatialQuery::Visibility {
-                observer: centre.to_array(),
-                observer_radius_m: 0.,
-                min_flux_w_m2: min_luminosity_over_distance2 / (4. * std::f64::consts::PI),
-            })
-            .collect()
+        self.hash
+            .visibility_candidates(centre, min_luminosity_over_distance2, 0.0)
+            .expect("scene query coordinates")
             .into_iter()
-            .filter_map(|record| self.target_id(record))
+            .filter_map(|key| self.key_object(key))
+            .filter(|id| self.targets.binary_search(id).is_ok())
             .filter_map(|id| {
                 let object = &self.objects[id];
                 let peak = self.illumination[id].get().map_or_else(
@@ -260,26 +322,59 @@ impl SpatialIndex {
         radius: f64,
         n: usize,
     ) -> Vec<usize> {
-        self.service()
-            .nearest_dynamic(centre.to_array(), radius, n, |record| {
-                let id = self.target_id(record)?;
-                let object = self.objects[id];
-                (object.entity != observer).then(|| record.distance(centre.to_array()))
-            })
+        if radius.is_finite() {
+            let mut found = {
+                let _profile = crate::sim::diagnostics::ProfileScope::new("sensor_range_query");
+                self.within_range(centre, radius)
+            };
+            #[cfg(test)]
+            crate::sim::diagnostics::samples::count("sensor.range_results", found.len());
+            let _profile = crate::sim::diagnostics::ProfileScope::new("sensor_sort_truncate");
+            found.retain(|&id| self.objects[id].entity != observer);
+            found.sort_unstable_by(|&a, &b| {
+                self.objects[a]
+                    .position
+                    .relative_to(centre)
+                    .length_squared()
+                    .total_cmp(
+                        &self.objects[b]
+                            .position
+                            .relative_to(centre)
+                            .length_squared(),
+                    )
+            });
+            found.truncate(n);
+            return found;
+        }
+        let available = self.targets.len().saturating_sub(usize::from(
+            self.object_index(observer)
+                .is_some_and(|id| self.targets.binary_search(&id).is_ok()),
+        ));
+        self.hash
+            .nearest_many(
+                centre,
+                n.min(available),
+                &mut QueryBudget::new(usize::MAX),
+                |key| {
+                    self.key_object(key).is_some_and(|id| {
+                        self.targets.binary_search(&id).is_ok()
+                            && self.objects[id].entity != observer
+                    })
+                },
+            )
+            .expect("scene query coordinates")
             .into_iter()
-            .filter_map(|record| self.target_id(record))
+            .filter(|(_, distance)| *distance <= radius)
+            .filter_map(|(key, _)| self.key_object(key))
             .collect()
     }
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.service()
-            .query_dynamic(SpatialQuery::Sphere {
-                centre: centre.to_array(),
-                radius_m: radius,
-            })
-            .collect()
+        self.hash
+            .within_radius(centre, radius, true)
+            .expect("scene query coordinates")
             .into_iter()
-            .filter_map(|record| self.object_id(record))
+            .filter_map(|key| self.key_object(key))
             .filter(|&id| {
                 let object = self.objects[id];
                 object.occludes

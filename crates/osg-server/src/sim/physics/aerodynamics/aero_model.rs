@@ -51,6 +51,9 @@ pub(crate) fn calc_aerodynamics(
         &mut AccumulatedForce,
     )>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new(
+        "physics.aerodynamics.aero_model.calc_aerodynamics",
+    );
     for (env, model, ptf, mut force) in &mut ships {
         let local_airspeed = ptf.rotation.inverse() * env.airspeed;
         force.0 += ptf.rotation * model.drag_force(local_airspeed, env.density);

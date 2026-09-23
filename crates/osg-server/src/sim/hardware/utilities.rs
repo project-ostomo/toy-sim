@@ -133,6 +133,7 @@ pub fn run(
     >,
     mut parts: Query<(&Utility, &mut Device, &mut DevicePower)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.utilities.run");
     let dt = time.delta_secs_f64();
     for (
         ship,
@@ -284,6 +285,7 @@ pub fn service_docked(
     mut stored: Query<&mut crate::sim::travel::StoredMass>,
     mut masses: Query<&mut MassProps>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.utilities.service_docked");
     let Some(directory) = directory else {
         return;
     };

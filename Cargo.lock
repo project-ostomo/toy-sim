@@ -5516,7 +5516,6 @@ dependencies = [
  "blake3",
  "ed25519-dalek",
  "hifitime",
- "ordered-float",
  "osg-client",
  "osg-example-controller",
  "osg-model",
@@ -5526,10 +5525,8 @@ dependencies = [
  "osg-ship-wasm",
  "osg-ships",
  "osg-space",
- "osg-spatial-bvh",
  "osg-spatial-hash",
  "osg-universe",
- "parry3d-f64 0.30.2",
  "postcard",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
@@ -5608,17 +5605,10 @@ name = "osg-space"
 version = "0.1.0"
 dependencies = [
  "glam 0.32.1",
+ "osg-spatial-hash",
  "serde",
  "serde_yml",
  "toml",
-]
-
-[[package]]
-name = "osg-spatial-bvh"
-version = "0.1.0"
-dependencies = [
- "criterion",
- "rayon",
 ]
 
 [[package]]
@@ -5647,7 +5637,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "osg-space",
- "osg-spatial-bvh",
 ]
 
 [[package]]
@@ -5673,7 +5662,6 @@ dependencies = [
  "hifitime",
  "osg-ship-api",
  "osg-space",
- "osg-spatial-bvh",
  "osg-stars",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
@@ -5812,34 +5800,6 @@ dependencies = [
  "num-derive",
  "num-traits",
  "ordered-float",
- "rstar",
- "simba",
- "slab",
- "smallvec",
- "spade",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "parry3d-f64"
-version = "0.30.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c5f71cd1d7f0c475116a52c61baa8d0de69fc258bc4debf86cb4c4ca8f35f3f"
-dependencies = [
- "approx",
- "arrayvec",
- "bitflags 2.13.1",
- "downcast-rs 2.0.2",
- "either",
- "ena",
- "foldhash 0.2.0",
- "glamx",
- "hashbrown 0.17.1",
- "log",
- "num-derive",
- "num-traits",
- "ordered-float",
- "rayon",
  "rstar",
  "simba",
  "slab",
@@ -6353,7 +6313,7 @@ dependencies = [
  "log",
  "nalgebra",
  "num-traits",
- "parry3d-f64 0.29.0",
+ "parry3d-f64",
  "profiling",
  "serde",
  "simba",

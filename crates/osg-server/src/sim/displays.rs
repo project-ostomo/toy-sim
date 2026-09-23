@@ -52,95 +52,140 @@ impl Display {
 #[derive(Resource, Default)]
 struct Revisions(u64);
 
-pub fn update(world: &mut World) {
-    world.init_resource::<Revisions>();
-    let tick = world.resource::<SimulationCounters>().ticks;
-    let mut wanted: BTreeMap<Entity, BTreeMap<u8, u8>> = BTreeMap::new();
-    let mut sessions = world.query::<&Session>();
+#[derive(Resource, Default)]
+struct WantedDisplays(BTreeMap<Entity, BTreeMap<u8, u8>>);
 
-    for session in sessions.iter(world) {
+#[derive(bevy::ecs::schedule::ScheduleLabel, Clone, Debug, PartialEq, Eq, Hash)]
+struct DisplayUpdate;
+
+/// Host publication also runs while simulation time is paused.
+pub fn update(world: &mut World) {
+    if !world.contains_resource::<Revisions>() {
+        world.init_resource::<Revisions>();
+        world.init_resource::<WantedDisplays>();
+        let mut schedule = Schedule::new(DisplayUpdate);
+        schedule.add_systems((prepare, execute).chain());
+        world.add_schedule(schedule);
+    }
+    world.run_schedule(DisplayUpdate);
+}
+
+fn prepare(
+    mut commands: Commands,
+    clock: Res<SimulationCounters>,
+    sessions: Query<&Session>,
+    index: Res<super::identity::IdentityIndex>,
+    directory: Res<super::ownership::Directory>,
+    catalogue: Res<ShipCatalogue>,
+    mut runtime: ResMut<WasmRuntime>,
+    mut revisions: ResMut<Revisions>,
+    mut wanted: ResMut<WantedDisplays>,
+    ships: Query<(
+        Entity,
+        &Control,
+        &super::ownership::AssetOwner,
+        Option<&super::ownership::AssetAccess>,
+        &DisplayEnvironment,
+        &ShipDesign,
+        Option<&Display>,
+        Has<super::travel::Dormant>,
+    )>,
+) {
+    use osg_model::ownership::{Permission, Principal};
+
+    wanted.0.clear();
+    for session in &sessions {
         for (&(id, slot), &hz) in &session.screens {
-            let Ok(ship) = super::commands::observe(world, session.account, id) else {
+            let Some(&ship) = index.0.get(&id) else {
                 continue;
             };
-            if world.get::<super::travel::Dormant>(ship).is_some()
-                || !world
-                    .get::<DisplayEnvironment>(ship)
-                    .is_some_and(|env| env.powered)
+            let Ok((_, _, owner, access, env, _, _, dormant)) = ships.get(ship) else {
+                continue;
+            };
+            let permits = |permission| {
+                super::ownership::permits_principal(
+                    &directory.0,
+                    owner.0,
+                    access.map(|access| &access.0),
+                    Principal::Player(session.account),
+                    permission,
+                )
+            };
+            if dormant
+                || !env.powered
+                || !(permits(Permission::View) || permits(Permission::Control))
             {
                 continue;
             }
-            let rate = wanted.entry(ship).or_default().entry(slot).or_default();
+            let rate = wanted.0.entry(ship).or_default().entry(slot).or_default();
             *rate = (*rate).max(hz.clamp(1, 10));
         }
     }
 
-    let mut displays = world.query::<(
-        Entity,
-        &Display,
-        Option<&Control>,
-        Option<&DisplayEnvironment>,
-    )>();
-    let expired: Vec<_> = displays
-        .iter(world)
-        .filter_map(|(entity, display, control, env)| {
-            let valid = world.get::<super::travel::Dormant>(entity).is_none()
-                && control.is_some_and(|control| control.revision == display.authority)
-                && env.is_some_and(|env| env.powered)
-                && (wanted.contains_key(&entity) || tick.saturating_sub(display.last_viewed) < 10);
-            (!valid).then_some(entity)
-        })
-        .collect();
-
-    for entity in expired {
-        world.entity_mut(entity).remove::<Display>();
+    for (ship, control, _, _, env, design, display, dormant) in &ships {
+        let valid = !dormant
+            && env.powered
+            && display.is_some_and(|display| {
+                control.revision == display.authority
+                    && (wanted.0.contains_key(&ship)
+                        || clock.ticks.saturating_sub(display.last_viewed) < 10)
+            });
+        if display.is_some() && !valid {
+            commands.entity(ship).remove::<Display>();
+        }
+        let Some(slots) = wanted.0.get(&ship).filter(|_| !valid) else {
+            continue;
+        };
+        let Ok(mut program) = runtime.0.instantiate_display(&env.firmware) else {
+            continue;
+        };
+        program.configure_hardware(&design.0, &catalogue.0);
+        revisions.0 = revisions
+            .0
+            .checked_add(1)
+            .expect("display revision exhausted");
+        commands.entity(ship).insert(Display {
+            program,
+            program_hash: *blake3::hash(&env.firmware).as_bytes(),
+            frames: BTreeMap::new(),
+            last_viewed: clock.ticks,
+            authority: control.revision,
+            revision: revisions.0,
+            event_id: 0,
+            requested_slots: slots.clone(),
+        });
     }
+}
 
-    let ledger = world.resource::<super::gas::GasLedger>().clone();
+fn execute(
+    clock: Res<SimulationCounters>,
+    ledger: Res<super::gas::GasLedger>,
+    epoch: Res<super::identity::WorldEpoch>,
+    chat: Option<Res<super::chat::ChatService>>,
+    mut wanted: ResMut<WantedDisplays>,
+    mut ships: Query<(
+        &Identity,
+        &super::ownership::AssetOwner,
+        &mut Display,
+        &mut super::vessel::ShipSoftware,
+        &DisplayEnvironment,
+        &super::hardware::HardwareClock,
+    )>,
+) {
+    let tick = clock.ticks;
+    let wanted = std::mem::take(&mut wanted.0);
     let mut work = Vec::new();
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (ship, slots) in wanted {
-        let Some(identity) = world.get::<Identity>(ship) else {
+        let Ok((identity, owner, mut display, mut software, env, clock)) = ships.get_mut(ship)
+        else {
             continue;
         };
         let id = identity.0;
-        let authority = world.get::<Control>(ship).unwrap().revision;
-        if world.get::<Display>(ship).is_none() {
-            let firmware = world
-                .get::<DisplayEnvironment>(ship)
-                .unwrap()
-                .firmware
-                .clone();
-            let program = world
-                .resource_mut::<WasmRuntime>()
-                .0
-                .instantiate_display(&firmware);
-            let Ok(mut program) = program else {
-                continue;
-            };
-            let Some(design) = world.get::<ShipDesign>(ship) else {
-                continue;
-            };
-            program.configure_hardware(&design.0, &world.resource::<ShipCatalogue>().0);
-            let revision = next_revision(world);
-            world.entity_mut(ship).insert(Display {
-                program,
-                program_hash: *blake3::hash(&firmware).as_bytes(),
-                frames: BTreeMap::new(),
-                last_viewed: tick,
-                authority,
-                revision,
-                event_id: 0,
-                requested_slots: slots.clone(),
-            });
-        }
-
-        let env = world.get::<DisplayEnvironment>(ship).unwrap();
         let input = env.input.clone();
         let source = env.source.clone();
         let origin = env.origin;
-        let mut display = world.entity_mut(ship).take::<Display>().unwrap();
         display.last_viewed = tick;
         display.requested_slots.clone_from(&slots);
         display.frames.retain(|slot, _| slots.contains_key(slot));
@@ -162,16 +207,13 @@ pub fn update(world: &mut World) {
             || display.program.has_pending_input()
             || !input.requested_screens.is_empty();
         if !ready {
-            world.entity_mut(ship).insert(display);
             continue;
         }
 
-        let physical_tick = world.get::<super::hardware::HardwareClock>(ship).unwrap().0;
-        let mut software = world.get_mut::<super::vessel::ShipSoftware>(ship).unwrap();
-        software.begin_gas_tick(physical_tick);
+        software.begin_gas_tick(clock.0);
         let maximum = software.remaining_gas();
         let minimum = display.program.minimum_to_progress();
-        let owner = super::gas::payer(world, ship).expect("display owner");
+        let owner = owner.0;
         ledger.ensure_account(owner, super::gas::STARTING_GAS);
         if minimum <= maximum {
             requests
@@ -184,7 +226,7 @@ pub fn update(world: &mut World) {
                 });
             entities.insert(id, ship);
         }
-        work.push((ship, id, display, input, source, origin, slots));
+        work.push((ship, id, input, source, origin, slots));
     }
 
     let mut grants = BTreeMap::new();
@@ -197,7 +239,8 @@ pub fn update(world: &mut World) {
         }
     }
     let mut starts = 0;
-    for (ship, id, mut display, input, source, origin, slots) in work {
+    for (ship, id, input, source, origin, slots) in work {
+        let (_, owner, mut display, mut software, _, _) = ships.get_mut(ship).unwrap();
         let mut reservation = grants.remove(&ship);
         let mut grant = reservation.as_ref().map_or(0, |grant| grant.limit());
         if display.program.needs_instance_start() && grant > display.program.boot_remaining_gas() {
@@ -208,17 +251,17 @@ pub fn update(world: &mut World) {
                 starts += 1;
             }
         }
-        let physical_limit = world
-            .get::<super::vessel::ShipSoftware>(ship)
-            .unwrap()
-            .last_gas_limit;
+        let physical_limit = software.last_gas_limit;
         display.program.observer_origin = origin;
-        display.program.set_services(super::vessel::services_for(
-            world,
-            ship,
+        let services = super::vessel::ProgramServices::new(
+            chat.as_deref().cloned(),
+            epoch.0,
+            owner.0,
+            id,
             display.program_hash,
             true,
-        ));
+        );
+        display.program.set_services(Some(Arc::new(services)));
         let result = display
             .program
             .run_slice(input, source, grant, physical_limit);
@@ -230,10 +273,8 @@ pub fn update(world: &mut World) {
         } else {
             assert_eq!(used, 0, "unfunded display execution");
         }
-        let mut software = world.get_mut::<super::vessel::ShipSoftware>(ship).unwrap();
         software.last_gas_used += used;
         assert!(software.last_gas_used <= software.last_gas_limit);
-        drop(software);
         drop(reservation);
 
         match result {
@@ -284,19 +325,8 @@ pub fn update(world: &mut World) {
                 }
             }
         }
-        world.entity_mut(ship).insert(display);
     }
 }
-
-fn next_revision(world: &mut World) -> u64 {
-    let mut revisions = world.resource_mut::<Revisions>();
-    revisions.0 = revisions
-        .0
-        .checked_add(1)
-        .expect("display revision exhausted");
-    revisions.0
-}
-
 pub fn input(
     world: &mut World,
     ship: Entity,

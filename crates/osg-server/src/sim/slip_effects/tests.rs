@@ -230,6 +230,6 @@ fn a_late_observer_sees_a_swept_flyby_after_source_despawns() {
     assert_eq!(observe(world, account, &views), visible);
     assert!(observe(world, Id::new(), &views).wakes.is_empty());
     world.resource_mut::<SimulationCounters>().ticks += 3000;
-    prune(world);
+    world.run_system_cached(prune).unwrap();
     assert!(observe(world, account, &views).wakes.is_empty());
 }

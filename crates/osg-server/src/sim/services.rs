@@ -754,6 +754,7 @@ pub fn prepare_sources(
         Without<super::travel::SystemsSuspended>,
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("services.prepare_sources");
     for (
         entity,
         id,
@@ -806,10 +807,8 @@ pub fn prepare_sources(
 }
 
 pub fn dispatch_actions(world: &mut World) {
-    let mut query = world.query_filtered::<
-        (Entity, &Identity, &mut ShipSoftware),
-        Without<super::travel::ArrivalOffset>,
-    >();
+    let _profile = crate::sim::diagnostics::ProfileScope::new("services.dispatch_actions");
+    let mut query = world.query::<(Entity, &Identity, &mut ShipSoftware)>();
     let mut batches: Vec<_> = query
         .iter_mut(world)
         .filter_map(|(entity, id, mut software)| {
@@ -881,40 +880,43 @@ const APERTURE_WORK_LIMIT: usize = 1024;
 
 #[derive(Default)]
 struct ApertureIndex {
-    spatial: osg_spatial_bvh::SpatialService<osg_spatial_bvh::SpatialRecord>,
+    spatial: std::sync::OnceLock<osg_space::spatial::GalacticIndex<usize>>,
     bodies: Vec<Aperture>,
-    slots: ahash::AHashMap<u64, usize>,
     max_speed: f64,
     age_seconds: f64,
 }
 
 impl ApertureIndex {
     fn new(bodies: Vec<Aperture>, age_seconds: f64) -> Self {
-        use osg_spatial_bvh::{RecordKind, SpatialRecord, SpatialService};
-
-        let mut spatial = SpatialService::default();
-        spatial.rebuild_dynamic(bodies.iter().map(|body| {
-            SpatialRecord {
-                kind: RecordKind::Body,
-                id: body.entity.to_bits(),
-                position: body.position.to_array(),
-                radius_m: body.radius,
-            }
-            .dynamic(0., [0.; 3])
-        }));
-        let mut max_speed: f64 = 0.0;
-        let mut slots = ahash::AHashMap::new();
-        for (slot, body) in bodies.iter().enumerate() {
-            slots.insert(body.entity.to_bits(), slot);
-            max_speed = max_speed.max(body.velocity.length());
-        }
+        let max_speed = bodies
+            .iter()
+            .map(|body| body.velocity.length())
+            .fold(0.0, f64::max);
         Self {
-            spatial,
+            spatial: std::sync::OnceLock::new(),
             bodies,
-            slots,
             max_speed,
             age_seconds,
         }
+    }
+
+    fn spatial(&self) -> &osg_space::spatial::GalacticIndex<usize> {
+        self.spatial.get_or_init(|| {
+            let mut index = osg_space::spatial::GalacticIndex::new();
+            for (slot, body) in self.bodies.iter().enumerate() {
+                index
+                    .insert(
+                        slot,
+                        osg_space::spatial::SpatialRecord {
+                            position: body.position,
+                            radius_m: body.radius,
+                            luminosity: 0.0,
+                        },
+                    )
+                    .expect("published aperture coordinate range");
+            }
+            index
+        })
     }
 
     fn clear(
@@ -924,23 +926,17 @@ impl ApertureIndex {
         radius: f64,
         after_seconds: f64,
     ) -> bool {
-        use osg_spatial_bvh::{QueryBudget, RecordKind, SpatialQuery};
+        use osg_space::spatial::QueryBudget;
         let after_seconds = after_seconds + self.age_seconds;
-        let mut cursor = self.spatial.query_dynamic(SpatialQuery::Sphere {
-            centre: position.to_array(),
-            radius_m: radius + self.max_speed * after_seconds.abs(),
-        });
-        let batch = cursor.advance(QueryBudget {
-            max_work: APERTURE_WORK_LIMIT,
-            max_results: APERTURE_WORK_LIMIT,
-        });
-        batch.complete
-            && batch
-                .objects
-                .into_iter()
-                .filter(|record| record.kind == RecordKind::Body)
-                .filter_map(|record| self.slots.get(&record.id))
-                .all(|&slot| {
+        self.spatial()
+            .within_radius_budgeted(
+                position,
+                radius + self.max_speed * after_seconds.abs(),
+                true,
+                &mut QueryBudget::new(APERTURE_WORK_LIMIT),
+            )
+            .is_ok_and(|candidates| {
+                candidates.into_iter().all(|slot| {
                     let body = &self.bodies[slot];
                     body.entity == own
                         || body
@@ -950,6 +946,7 @@ impl ApertureIndex {
                             .length()
                             > radius + body.radius
                 })
+            })
     }
 
     #[cfg(test)]
@@ -1042,25 +1039,6 @@ mod tests {
             },
         ];
 
-        world
-            .entity_mut(ship)
-            .insert(super::super::travel::ArrivalOffset(0.05));
-        dispatch_actions(world);
-        assert_eq!(
-            world.get::<ShipSoftware>(ship).unwrap().world_actions.len(),
-            3
-        );
-        assert_eq!(
-            world
-                .get::<super::super::travel::Travel>(ship)
-                .unwrap()
-                .0
-                .estimated_arrival_tick,
-            None
-        );
-        world
-            .entity_mut(ship)
-            .remove::<super::super::travel::ArrivalOffset>();
         dispatch_actions(world);
 
         let state = &world.get::<super::super::travel::Travel>(ship).unwrap().0;

@@ -394,7 +394,7 @@ pub struct Diagnostics {
 pub struct CollisionDiagnostics {
     pub bodies: u64,
     pub candidates: u64,
-    pub detailed_queries: u64,
+    pub contact_pairs: u64,
     pub impacts: u64,
     pub dissipated_j: f64,
 }

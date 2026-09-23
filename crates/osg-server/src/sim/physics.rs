@@ -43,10 +43,8 @@ impl Plugin for PhysicsPlugin {
 
 /// Applies all the forces and torques.
 fn apply_forces(
-    mut commands: Commands,
     mut objects: Query<
         (
-            Entity,
             &MassProps,
             &mut PreciseTransform,
             &mut Velocity,
@@ -55,51 +53,29 @@ fn apply_forces(
             &mut AccumulatedTorque,
             Option<&mut GravityAcceleration>,
             Option<&mut AccelerometerState>,
-            Option<&super::travel::ArrivalOffset>,
         ),
         Without<collision::CollisionBody>,
     >,
     time: Res<Time<Fixed>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("physics.apply_forces");
     let dt = time.delta_secs_f64();
     // Symplectic Euler: kick with forces at the starting positions, then drift
     // using the updated velocity. No acceleration history survives the tick.
     objects.iter_mut().for_each(
-        |(
-            entity,
-            mass,
-            mut ptf,
-            mut vel,
-            mut force,
-            mut ang_vel,
-            mut torque,
-            gravity,
-            reading,
-            arrival,
-        )| {
-            let dt = (dt - arrival.map_or(0.0, |offset| offset.0)).max(0.0);
-            if arrival.is_some() {
-                commands
-                    .entity(entity)
-                    .remove::<super::travel::ArrivalOffset>();
-            }
+        |(mass, mut ptf, mut vel, mut force, mut ang_vel, mut torque, gravity, reading)| {
             let gravity = gravity.map_or(DVec3::ZERO, |mut g| std::mem::take(&mut g.0));
             let specific_force = force.0 / mass.mass - gravity;
             let old_w = ptf.rotation.inverse() * ang_vel.0;
             let alpha_world = ptf.rotation
                 * (mass.inertia_inv
                     * (ptf.rotation.inverse() * torque.0 - old_w.cross(mass.inertia * old_w)));
-            vel.0 += (force.0 / mass.mass) * dt;
-            ptf.translation_um = ptf.translation_um.offset_by(vel.0 * dt);
-
-            (ptf.rotation, ang_vel.0) = rotation::integrate(
-                ptf.rotation,
-                ang_vel.0,
-                torque.0,
-                mass.inertia,
-                mass.inertia_inv,
-                dt,
-            );
+            let (velocity, momentum) =
+                force_kick(vel.0, ptf.rotation, ang_vel.0, *mass, force.0, torque.0, dt);
+            vel.0 = velocity;
+            ptf.translation_um = ptf.translation_um.offset_by(velocity * dt);
+            (ptf.rotation, ang_vel.0) =
+                rotation::drift(ptf.rotation, momentum, mass.inertia_inv, dt);
             if let Some(mut reading) = reading {
                 *reading = AccelerometerState {
                     specific_force_body: ptf.rotation.inverse() * specific_force,
@@ -198,16 +174,78 @@ pub struct WithinSoi(pub Entity);
 #[relationship_target(relationship = WithinSoi)]
 pub struct HasWithinSoi(Vec<Entity>);
 
-/// Applies gravitational forces.
+/// Read-only gravity field shared by ordinary bodies and boundary launches.
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct GravityField<'w, 's> {
+    universe: Option<Res<'w, Universe>>,
+    active: Option<Res<'w, super::orrery::activity::ActiveSystems>>,
+    celestials: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static PreciseTransform,
+            &'static super::orrery::activity::CelestialState,
+        ),
+    >,
+}
+
+impl GravityField<'_, '_> {
+    pub(crate) fn sample(
+        &self,
+        entity: Entity,
+        position: osg_space::GalacticPosition,
+    ) -> (DVec3, Option<Entity>) {
+        let (Some(universe), Some(active)) = (&self.universe, &self.active) else {
+            return (DVec3::ZERO, None);
+        };
+        let mut strongest = 0.0;
+        let mut closest = None;
+        let mut acceleration = DVec3::ZERO;
+        for system in active.systems_for_object(universe, entity, position).iter() {
+            for (celestial, pose, state) in self
+                .celestials
+                .iter_many(active.entities.get(system).into_iter().flatten())
+            {
+                if position.relative_to(state.anchor).length_squared() > state.influence.powi(2) {
+                    continue;
+                }
+                let separation = pose.translation_um.relative_to(position);
+                let squared = separation.length_squared();
+                if squared == 0.0 {
+                    continue;
+                }
+                let strength = GRAVITATIONAL_CONSTANT * state.body.mass / squared;
+                acceleration += separation.normalize() * strength;
+                if strength > strongest {
+                    strongest = strength;
+                    closest = Some(celestial);
+                }
+            }
+        }
+        (acceleration, closest)
+    }
+}
+
+/// Apply one external force/torque kick before either free flight or Rapier.
+pub(crate) fn force_kick(
+    velocity: DVec3,
+    rotation: bevy::math::DQuat,
+    angular: DVec3,
+    mass: MassProps,
+    force: DVec3,
+    torque: DVec3,
+    dt: f64,
+) -> (DVec3, DVec3) {
+    (
+        velocity + force / mass.mass * dt,
+        rotation * (mass.inertia * (rotation.inverse() * angular)) + torque * dt,
+    )
+}
+
 fn gravity(
     commands: ParallelCommands,
-    star: Res<Universe>,
-    active: Res<super::orrery::activity::ActiveSystems>,
-    celestials: Query<(
-        Entity,
-        &PreciseTransform,
-        &crate::sim::orrery::activity::CelestialState,
-    )>,
+    field: GravityField,
     mut objects: Query<(
         Entity,
         &MassProps,
@@ -215,72 +253,25 @@ fn gravity(
         &mut AccumulatedForce,
         Option<&WithinSoi>,
         Option<&mut GravityAcceleration>,
-        Option<&super::travel::ArrivalOffset>,
     )>,
-    time: Res<Time<Fixed>>,
 ) {
-    let epoch = sim_time(&time) - hifitime::Duration::from_seconds(time.timestep().as_secs_f64());
-    objects.iter_mut().for_each(
-        |(object_ent, props, obj_ptf, mut force, soi, mut measured_gravity, arrival)| {
-            const GEE: f64 = GRAVITATIONAL_CONSTANT;
-            let mut closest_celestial = None;
-            let mut biggest_gravity = 0.0;
-            let mut total_gravity = DVec3::ZERO;
-            for system in active
-                .systems_for_object(&star, object_ent, obj_ptf.translation_um)
-                .iter()
-            {
-                for (cel_entity, cel_ptf, state) in
-                    celestials.iter_many(active.entities.get(system).into_iter().flatten())
-                {
-                    if obj_ptf
-                        .translation_um
-                        .relative_to(state.anchor)
-                        .length_squared()
-                        > state.influence.powi(2)
-                    {
-                        continue;
-                    }
-                    let cel_mass = state.body.mass;
-                    let position = arrival
-                        .and_then(|offset| {
-                            star.solve_position(
-                                super::registry::universe_reference(state.reference),
-                                epoch + hifitime::Duration::from_seconds(offset.0),
-                            )
-                        })
-                        .unwrap_or(cel_ptf.translation_um);
-                    let obj_to_cel = position.relative_to(obj_ptf.translation_um);
-                    let r_squared = obj_to_cel.length_squared();
-                    if r_squared <= 0.0 {
-                        continue;
-                    }
-                    let f = GEE * cel_mass * props.mass / r_squared;
-                    if f > biggest_gravity {
-                        biggest_gravity = f;
-                        closest_celestial = Some(cel_entity);
-                    }
-                    force.0 += obj_to_cel.normalize() * f;
-                    total_gravity += obj_to_cel.normalize() * (f / props.mass);
+    let _profile = crate::sim::diagnostics::ProfileScope::new("physics.gravity");
+    for (entity, mass, pose, mut force, soi, measured) in &mut objects {
+        let (acceleration, closest) = field.sample(entity, pose.translation_um);
+        force.0 += acceleration * mass.mass;
+        if let Some(mut measured) = measured {
+            measured.0 = acceleration;
+        }
+        if closest != soi.map(|soi| soi.0) {
+            commands.command_scope(|mut commands| {
+                if let Some(celestial) = closest {
+                    commands.entity(entity).insert(WithinSoi(celestial));
+                } else {
+                    commands.entity(entity).remove::<WithinSoi>();
                 }
-            }
-            if let Some(ref mut measured) = measured_gravity {
-                measured.0 = total_gravity;
-            }
-            if closest_celestial.is_none() && soi.is_some() {
-                commands.command_scope(|mut commands| {
-                    commands.entity(object_ent).remove::<WithinSoi>();
-                });
-            }
-            if let Some(cel_entity) = closest_celestial {
-                if soi.map(|s| s.0) != Some(cel_entity) {
-                    commands.command_scope(|mut commands| {
-                        commands.entity(object_ent).insert(WithinSoi(cel_entity));
-                    });
-                }
-            }
-        },
-    );
+            });
+        }
+    }
 }
 
 pub fn sim_time<T: Default>(t: &Time<T>) -> Epoch {
@@ -416,7 +407,7 @@ mod tests {
         );
     }
     #[test]
-    fn slip_arrival_integrates_only_the_remaining_tick() {
+    fn ordinary_motion_integrates_one_complete_tick() {
         let mut app = App::new();
         app.init_resource::<Time<Fixed>>()
             .add_systems(Update, apply_forces);
@@ -426,7 +417,6 @@ mod tests {
                 RigidBody,
                 PreciseTransform::default(),
                 Velocity(DVec3::X * 10.0),
-                super::super::travel::ArrivalOffset(0.075),
             ))
             .id();
         app.world_mut()
@@ -439,12 +429,7 @@ mod tests {
             .unwrap()
             .translation_um
             .x;
-        assert!((x - 250_000).abs() <= 1);
-        assert!(
-            app.world()
-                .get::<super::super::travel::ArrivalOffset>(ship)
-                .is_none()
-        );
+        assert!((x - 1_000_000).abs() <= 1);
         app.world_mut()
             .resource_mut::<Time<Fixed>>()
             .advance_by(osg_model::TICK_DURATION);
@@ -455,7 +440,7 @@ mod tests {
             .unwrap()
             .translation_um
             .x;
-        assert!((x - 1_250_000).abs() <= 1);
+        assert!((x - 2_000_000).abs() <= 1);
     }
 
     #[test]

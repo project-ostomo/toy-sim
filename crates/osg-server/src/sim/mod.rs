@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod benchmark;
 pub mod bootstrap;
 pub mod chat;
 pub mod combat;
@@ -68,34 +70,39 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     app.add_systems(
         FixedUpdate,
         (
-            services::publish_indexes,
+            services::publish_indexes.before(services::prepare_sources),
             chat::refresh,
             services::prepare_sources,
         )
-            .chain()
             .before(simulation::SimulationSystems::PrepareBodies),
     );
     app.add_systems(
         FixedPostUpdate,
-        (services::dispatch_actions, chat::flush)
-            .chain()
-            .before(simulation::SimulationSystems::Integrate),
+        (services::dispatch_actions, chat::flush).before(simulation::SimulationSystems::Integrate),
     );
     app.add_systems(
         FixedFirst,
-        (travel::advance, slip_effects::prune, travel::plan_orders)
-            .chain()
+        (
+            travel::advance.before(travel::plan_orders),
+            slip_effects::prune,
+            travel::plan_orders,
+        )
+            .run_if(in_state(GameState::Game)),
+    );
+    app.add_systems(
+        FixedLast,
+        travel::finish_arrivals
+            .before(spatial::SensorSystems::Index)
             .run_if(in_state(GameState::Game)),
     );
     app.add_systems(
         FixedLast,
         (
-            identity::identify_celestials,
+            identity::identify_celestials.before(sensors::publish),
             identity::clean_indexes,
             sensors::publish,
             combat::flush_travel,
         )
-            .chain()
             .in_set(simulation::SimulationSystems::Observations)
             .after(simulation::SimulationSystems::Complete)
             .run_if(in_state(GameState::Game)),

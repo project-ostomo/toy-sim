@@ -1,35 +1,14 @@
 use crate::sim::{precision::GalacticPosition, spatial::SpatialIndex};
 use bevy::prelude::*;
-use osg_spatial_bvh::{QueryBudget, RecordKind, SpatialQuery};
+use osg_space::spatial::QueryBudget;
 
 /// Query the authoritative tick state. Exhaustion fails closed.
 pub fn candidates(world: &World, position: GalacticPosition, radius: f64) -> Option<Vec<Entity>> {
     let index = world.get_resource::<SpatialIndex>()?;
-    let mut cursor = index.service().query_dynamic(SpatialQuery::Sphere {
-        centre: position.to_array(),
-        radius_m: radius,
-    });
-    let mut result = Vec::new();
-    while !cursor.is_complete() {
-        let batch = cursor.advance(QueryBudget {
-            max_work: 4096,
-            max_results: 256,
-        });
-        for record in batch.objects {
-            if record.kind == RecordKind::Body
-                && record.distance(position.to_array()) <= radius + record.radius_m
-            {
-                result.push(Entity::from_bits(record.id));
-                if result.len() > 4096 {
-                    return None;
-                }
-            }
-        }
-        if cursor.stats().work() > 32768 {
-            return None;
-        }
-    }
-    Some(result)
+    let result = index
+        .overlap_candidates(position, radius, &mut QueryBudget::new(32768))
+        .ok()?;
+    (result.len() <= 4096).then_some(result)
 }
 
 #[cfg(test)]

@@ -4,5 +4,4 @@ version = "0.1.0"
 edition = "2024"
 [dependencies]
 osg-space = { path = "../osg-space" }
-osg-spatial-bvh = { path = "../osg-spatial-bvh" }
 anyhow = "1.0.104"

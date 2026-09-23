@@ -37,6 +37,8 @@ pub(super) fn update_aero_env(
         &crate::sim::orrery::activity::CelestialState,
     )>,
 ) {
+    let _profile =
+        crate::sim::diagnostics::ProfileScope::new("physics.aerodynamics.aero_env.update_aero_env");
     for (entity, ptf, velocity, soi, mut env) in &mut objects {
         // Atmosphere membership is geometric, independent of gravitational SOI.
         let mut selected = soi.and_then(|s| bodies.get(s.0).ok());

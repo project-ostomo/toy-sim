@@ -139,7 +139,7 @@ fn update(
                     colour: system.colour,
                 })
                 .collect();
-            StarCatalogue::from_shared(stars, universe.index.spatial.clone()).map(Arc::new)
+            StarCatalogue::from_stars(stars).map(Arc::new)
         }));
     }
 

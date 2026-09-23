@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use osg_ships::{Equipment, thermal};
 use std::sync::{Arc, Mutex};
 
-pub use osg_spatial_bvh::OPTICAL_LUMENS_PER_WATT as LUMENS_PER_OPTICAL_WATT;
+pub use osg_space::spatial::OPTICAL_LUMENS_PER_WATT as LUMENS_PER_OPTICAL_WATT;
 const GEOMETRIC_ALBEDO: f64 = 0.3;
 const MIN_ILLUMINANCE_W_M2: f64 = 1e-7;
 const THERMAL_EXHAUST_OPTICAL_FRACTION: f64 = 0.001;
@@ -154,7 +154,15 @@ impl Sky {
         let Some(universe) = &self.universe else {
             return false;
         };
-        for system in universe.index.containing_segment(origin, displacement) {
+        let Ok(systems) = universe.capture_candidates(
+            origin,
+            displacement,
+            target_radius,
+            &mut osg_space::spatial::QueryBudget::new(1_000_000),
+        ) else {
+            return true;
+        };
+        for system in systems {
             if index.has_celestial_system(system) {
                 continue;
             }

@@ -741,7 +741,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         rate: record.rate,
         ..Default::default()
     });
-    world.remove_resource::<physics::collision::CollisionReport>();
+    physics::collision::reset(world);
     world.insert_resource(crate::sim::services::PublishedWorld::default());
     world.insert_resource(crate::sim::combat::CombatHistory::default());
     world.insert_resource(spatial::SpatialIndex::default());
@@ -1243,6 +1243,29 @@ mod tests {
         assert_eq!(
             world.query::<&sensors::Observations>().iter(world).count(),
             observations
+        );
+
+        // A resumed tick must still publish collisions and apply destruction.
+        let mut projectile = physics::collision::Projectile::new(0.1, 1.0);
+        projectile.remaining_s = 0.01;
+        let expired = world
+            .spawn((
+                projectile,
+                precision::PreciseTransform {
+                    translation_um: origin.offset_by(DVec3::Z * 2e6),
+                    ..Default::default()
+                },
+            ))
+            .id();
+        app.update();
+        assert!(app.world().get_entity(expired).is_err());
+        assert!(
+            app.world()
+                .resource::<physics::collision::CollisionReport>()
+                .report
+                .destroyed
+                .iter()
+                .any(|destruction| destruction.entity == expired)
         );
     }
 

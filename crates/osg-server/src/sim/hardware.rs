@@ -196,6 +196,7 @@ pub(crate) fn initialize(
         Option<&super::travel::DockingBays>,
     )>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.initialize");
     for (ship, d, reset, old, dormant, crew, bays) in &ships {
         for part in &old.0 {
             commands.entity(*part).despawn();
@@ -404,6 +405,7 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
 }
 
 fn apply_impacts(mut ships: Query<(&ShipDesign, &mut Hull, &mut ShipThermal, &mut ShipSoftware)>) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.apply_impacts");
     ships
         .par_iter_mut()
         .for_each(|(design, mut hull, mut thermal, mut software)| {
@@ -423,6 +425,7 @@ fn apply_impacts(mut ships: Query<(&ShipDesign, &mut Hull, &mut ShipThermal, &mu
 }
 
 fn advance_computer_clock(mut clocks: Query<&mut HardwareClock>) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.advance_computer_clock");
     for mut clock in &mut clocks {
         clock.0 = clock.0.checked_add(1).expect("hardware clock exhausted");
     }
@@ -439,6 +442,7 @@ fn begin(
         Without<super::travel::SystemsSuspended>,
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.begin");
     ships.par_iter_mut().for_each(
         |(design, mut hardware, mut dormant_elapsed, mut electrical)| {
             electrical.initial_energy_j = hardware.inventory.0.energy_j;
@@ -461,6 +465,7 @@ fn reset_weapons(
     ships: Query<(), Without<super::travel::SystemsSuspended>>,
     mut parts: Query<(&InstalledPart, &mut Weapon), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.reset_weapons");
     parts.par_iter_mut().for_each(|(installed, mut weapon)| {
         if !ships.contains(installed.ship) {
             return;
@@ -485,6 +490,7 @@ pub(crate) fn avionics(
     >,
     parts: Query<&Device>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.avionics");
     let dt = time.delta_secs_f64();
     ships
         .par_iter_mut()
@@ -546,6 +552,7 @@ pub(crate) fn generators(
     >,
     parts: Query<(&Generator, &Device)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.generators");
     let dt = time.delta_secs_f64();
     ships
         .par_iter_mut()
@@ -620,6 +627,7 @@ pub(crate) fn device_systems()
 }
 
 fn reset_demands(mut demands: Query<&mut Demand>) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.reset_demands");
     for mut demand in &mut demands {
         *demand = Demand::default();
     }
@@ -642,6 +650,7 @@ pub(crate) fn actuate(
     >,
     parts: Query<(&Demand, &Device, Has<Shield>)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.actuate");
     let dt = time.delta_secs_f64();
     ships.par_iter_mut().for_each(
         |(design, mut hardware, mut outputs, pose, mut force, mut torque, mut measured)| {
@@ -776,6 +785,7 @@ fn publish_devices(
     ships: Query<(&DeviceOutputs, &Hull), Without<super::travel::SystemsSuspended>>,
     mut parts: Query<(&InstalledPart, &mut Device, &mut DevicePower), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.publish_devices");
     parts
         .par_iter_mut()
         .for_each(|(installed, mut device, mut power)| {
@@ -811,6 +821,7 @@ pub(crate) fn publish_mass(
         Option<&super::travel::PresenceState>,
     )>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.publish_mass");
     let mut changes = Vec::new();
     for (entity, design, hardware, mut mass, stored, _) in &mut ships {
         let (own, inertia) = hardware.mass_properties(&design.0, &cat.0);
@@ -930,7 +941,7 @@ fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
     fraction
 }
 
-fn default_settings(d: &CompiledShipDesign) -> Vec<Option<DeviceSetting>> {
+pub(crate) fn default_settings(d: &CompiledShipDesign) -> Vec<Option<DeviceSetting>> {
     d.device_catalogue
         .iter()
         .map(|device| match device.kind {
@@ -962,6 +973,7 @@ fn power_totals(
     >,
     parts: Query<&DevicePower>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.power_totals");
     ships.par_iter_mut().for_each(
         |(design, installed, avionics, sensor, mut flow, electrical, display)| {
             *flow = PowerFlow::default();
@@ -1017,6 +1029,7 @@ fn finish_electrical_tick(
     mut generators: Query<(&mut DevicePower, &mut Device), With<devices::MicropulseEngine>>,
     time: Res<Time<Fixed>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.finish_electrical_tick");
     let dt = time.delta_secs_f64();
     for (design, parts, mut inventory, mut thermal, electrical, mut flow) in &mut ships {
         let excess = inventory.0.energy_j.saturating_sub(design.0.battery_j);
@@ -1061,6 +1074,7 @@ fn transit_thermal(
         ),
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.transit_thermal");
     for (design, mut hull, mut thermal) in &mut ships {
         thermal
             .0
@@ -1081,6 +1095,7 @@ fn dormant_thermal(
         With<super::travel::SystemsSuspended>,
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.dormant_thermal");
     ships
         .par_iter_mut()
         .for_each(|(design, mut hull, mut thermal, mut elapsed, presence)| {
@@ -1111,6 +1126,7 @@ fn sensor_overrides(
         Without<super::travel::Dormant>,
     >,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.sensor_overrides");
     for (override_, mut range, mut sensor) in &mut ships {
         range.0 = override_.range_m;
         sensor.range_m = override_.range_m;

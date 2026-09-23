@@ -1,7 +1,8 @@
 pub mod geometry;
 mod slip;
 
-pub use slip::{ArrivalOffset, Preparation, SlipChargingPower, SlipDrive, Transit, prepare_slip};
+pub(crate) use slip::finish_arrivals;
+pub use slip::{Preparation, SlipChargingPower, SlipDrive, Transit, prepare_slip};
 
 #[cfg(test)]
 mod router_tests;
@@ -475,19 +476,22 @@ fn celestial_conditions(
     let Some(scene) = world.get_resource::<super::spatial::SpatialIndex>() else {
         return (false, false);
     };
-    scene
-        .service()
-        .sphere_candidates(position.to_array(), radius)
+    let Ok(candidates) = scene.hash.within_radius(position, radius, true) else {
+        return (false, false);
+    };
+    candidates
         .into_iter()
-        .filter(|record| record.kind == osg_spatial_bvh::RecordKind::Body)
-        .filter_map(|record| {
+        .filter_map(|key| {
+            let super::spatial::SpatialKey::Entity(entity) = key else {
+                return None;
+            };
             world
-                .get::<CelestialState>(Entity::from_bits(record.id))
-                .map(|body| (record, body))
+                .get::<CelestialState>(entity)
+                .map(|body| (scene.hash.get(&key).unwrap(), body))
         })
         .filter(|(_, body)| !matches!(body.body.class_params, super::orrery::BodyClass::Barycenter))
         .fold((true, true), |(clear, outside), (record, body)| {
-            let distance = record.distance(position.to_array());
+            let distance = record.position.relative_to(position).length();
             (
                 clear && distance > body.body.radius + radius,
                 outside
@@ -872,6 +876,7 @@ fn complete_order(travel: &mut TravelState, now: u64) {
 }
 
 pub fn plan_orders(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("travel.plan_orders");
     use osg_model::routing::{Request, Status as RouteStatus};
 
     let planning: Vec<_> = world
@@ -928,6 +933,7 @@ pub fn plan_orders(world: &mut World) {
 }
 
 pub fn advance(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("travel.advance");
     for mut power in world.query::<&mut SlipChargingPower>().iter_mut(world) {
         power.0 = 0.;
     }
@@ -1006,6 +1012,142 @@ pub fn destroy(world: &mut World, ship: Entity) {
         .entity_mut(ship)
         .remove::<(DirectoryEmitter, NavigationBeaconEmitter)>();
     emit(world, ship, "destroyed", None);
+}
+
+#[derive(bevy::ecs::query::QueryData)]
+#[query_data(mutable)]
+pub(crate) struct DestructionTarget {
+    design: &'static ShipDesign,
+    identity: Option<&'static Identity>,
+    velocity: Option<&'static Velocity>,
+    angular: Option<&'static AngularVelocity>,
+    spatial: Option<&'static super::spatial::SpatialBody>,
+    rigid: Has<super::physics::RigidBody>,
+    collision: Has<super::physics::collision::CollisionBody>,
+    travel: Option<&'static mut Travel>,
+    drive: Option<&'static mut SlipDrive>,
+    stored: Option<&'static StoredShips>,
+    parts: Option<&'static super::hardware::PartDevices>,
+    settings: Option<&'static mut super::hardware::DeviceSettings>,
+    avionics: Option<&'static mut super::hardware::Avionics>,
+    sensors: Option<&'static mut super::hardware::SensorRange>,
+    power: Option<&'static mut super::hardware::PowerFlow>,
+    thermal: Option<&'static mut super::hardware::ShipThermal>,
+}
+
+pub(crate) fn destroy_collisions(
+    mut commands: Commands,
+    report: Res<super::physics::collision::CollisionReport>,
+    mut targets: Query<DestructionTarget>,
+    mut parts: Query<(
+        &mut super::hardware::Device,
+        Option<&mut super::hardware::Weapon>,
+        Option<&mut super::hardware::DevicePower>,
+    )>,
+    mut observations: Query<(Entity, &mut super::sensors::Observations)>,
+    mut spatial: ResMut<super::spatial::SpatialIndex>,
+    mut events: ResMut<TravelEvents>,
+) {
+    for death in &report.report.destroyed {
+        let entity = death.entity;
+        spatial
+            .hash
+            .remove(&super::spatial::SpatialKey::Entity(entity));
+        let Ok(mut target) = targets.get_mut(entity) else {
+            commands.entity(entity).despawn();
+            continue;
+        };
+        if let Some(travel) = target.travel.as_mut() {
+            travel.0.planning = None;
+            travel.0.status = Status::Paused;
+        }
+        if let Some(drive) = target.drive.as_mut() {
+            drive.preparation = None;
+        }
+        if let Some(identity) = target.identity {
+            for child in target.stored.into_iter().flat_map(|stored| stored.iter()) {
+                commands
+                    .entity(child)
+                    .insert(PresenceState(Presence::StoredInWreck(identity.0)));
+            }
+        }
+        if let Some(settings) = target.settings.as_mut() {
+            settings.0 = super::hardware::default_settings(&target.design.0);
+        }
+        if let Some(avionics) = target.avionics.as_mut() {
+            avionics.0.powered = false;
+        }
+        if let Some(sensors) = target.sensors.as_mut() {
+            sensors.0 = 0.0;
+        }
+        if let Some(power) = target.power.as_mut() {
+            **power = Default::default();
+        }
+        if let Some(thermal) = target.thermal.as_mut() {
+            thermal.0.shield_enabled = false;
+            thermal.0.shield_powered = false;
+            thermal.0.shield_state = osg_ship_api::abi::SHIELD_OFF;
+        }
+        for part in target
+            .parts
+            .into_iter()
+            .flat_map(|parts| parts.0.iter().copied())
+        {
+            commands
+                .entity(part)
+                .remove::<super::hardware::ActiveDevice>();
+            if let Ok((mut device, weapon, power)) = parts.get_mut(part) {
+                device.0.actual = 0.0;
+                device.0.generated_w = 0.0;
+                device.0.thrust_n = [0.0; 3];
+                device.0.powered = false;
+                if let Some(mut weapon) = weapon {
+                    weapon.0.powered = false;
+                    weapon.0.command = None;
+                }
+                if let Some(mut power) = power {
+                    *power = Default::default();
+                }
+            }
+        }
+        for (observer, mut observation) in &mut observations {
+            super::sensors::invalidate_observation(
+                observer,
+                &mut observation,
+                entity,
+                target.identity.map(|identity| identity.0),
+            );
+        }
+        commands
+            .entity(entity)
+            .insert((
+                Dormant,
+                SystemsSuspended,
+                PresenceState(Presence::Destroyed),
+                identity::SpatialInstance(Id::new()),
+                DormantMotion {
+                    velocity: target.velocity.map_or(DVec3::ZERO, |velocity| velocity.0),
+                    angular_velocity: target.angular.map_or(DVec3::ZERO, |angular| angular.0),
+                    spatial: target.spatial.copied(),
+                    rigid_body: target.rigid,
+                    collision_body: target.collision,
+                },
+            ))
+            .remove::<(
+                Transit,
+                Velocity,
+                AngularVelocity,
+                super::physics::RigidBody,
+                super::physics::AccumulatedForce,
+                super::physics::AccumulatedTorque,
+                super::physics::WithinSoi,
+                super::physics::collision::CollisionBody,
+                super::spatial::SpatialBody,
+                DirectoryEmitter,
+                NavigationBeaconEmitter,
+            )>();
+        events.0.push((entity, "destroyed", None));
+    }
 }
 
 pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {

@@ -49,21 +49,3 @@ impl ProgramServices for Services {
             .map_err(|_| abi::ERR_UNAVAILABLE)
     }
 }
-
-pub(crate) fn services_for(
-    world: &World,
-    ship: Entity,
-    program: [u8; 32],
-    display: bool,
-) -> Option<Arc<dyn ProgramServices>> {
-    let owner = world.get::<super::super::ownership::AssetOwner>(ship)?.0;
-    let computer = world.get::<super::super::identity::Identity>(ship)?.0;
-    Some(Arc::new(Services::new(
-        world.get_resource::<ChatService>().cloned(),
-        world.resource::<super::super::identity::WorldEpoch>().0,
-        owner,
-        computer,
-        program,
-        display,
-    )))
-}

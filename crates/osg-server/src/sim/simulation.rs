@@ -10,10 +10,8 @@ pub struct SimulationPlugin;
 /// ships, then advances celestial ephemerides to the same end-of-tick instant.
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SimulationSystems {
-    History,
     PrepareBodies,
     Forces,
-    GatherForces,
     Integrate,
     Celestials,
     Complete,
@@ -39,13 +37,7 @@ impl Plugin for SimulationPlugin {
             .init_resource::<TickMetrics>()
             .configure_sets(
                 FixedUpdate,
-                (
-                    SimulationSystems::History,
-                    SimulationSystems::PrepareBodies,
-                    SimulationSystems::Forces,
-                    SimulationSystems::GatherForces,
-                )
-                    .chain(),
+                (SimulationSystems::PrepareBodies, SimulationSystems::Forces).chain(),
             )
             .configure_sets(
                 FixedPostUpdate,

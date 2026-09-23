@@ -458,6 +458,7 @@ pub fn reset(world: &mut World) {
 }
 
 pub fn advance(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("route_service.advance");
     world.init_resource::<RouteService>();
     world.init_resource::<Workers>();
     let service = world.resource::<RouteService>().clone();

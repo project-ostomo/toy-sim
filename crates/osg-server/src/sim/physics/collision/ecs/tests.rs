@@ -7,9 +7,7 @@ fn world() -> World {
         bevy::tasks::TaskPoolBuilder::new().num_threads(2).build()
     });
     let mut world = World::new();
-    world.init_resource::<GeometryCache>();
-    world.init_resource::<SolverWorkspace>();
-    world.init_resource::<CollisionStats>();
+    initialize(&mut world);
     world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
     world.insert_resource(ShipCatalogue(Catalogue::builtin()));
     world
@@ -37,7 +35,7 @@ fn advance(world: &mut World) {
 }
 
 #[test]
-fn arriving_collision_body_uses_only_the_remaining_force_and_motion_interval() {
+fn active_collision_bodies_receive_one_full_tick_force_and_motion_interval() {
     let mut world = world();
     advance(&mut world);
     let spawn = |world: &mut World, x: f64| {
@@ -59,18 +57,15 @@ fn arriving_collision_body_uses_only_the_remaining_force_and_motion_interval() {
     };
     let arrival = spawn(&mut world, 0.0);
     let ordinary = spawn(&mut world, 1000.0);
-    world
-        .entity_mut(arrival)
-        .insert(crate::sim::travel::ArrivalOffset(0.075));
     step(&mut world);
-    assert!((world.get::<Velocity>(arrival).unwrap().0.x - 10.5).abs() < 1e-10);
+    assert!((world.get::<Velocity>(arrival).unwrap().0.x - 12.0).abs() < 1e-10);
     assert!(
         (world
             .get::<PreciseTransform>(arrival)
             .unwrap()
             .translation_um
             .x
-            - 262_500)
+            - 1_200_000)
             .abs()
             <= 1
     );
@@ -84,11 +79,6 @@ fn arriving_collision_body_uses_only_the_remaining_force_and_motion_interval() {
             - 1_001_200_000)
             .abs()
             <= 1
-    );
-    assert!(
-        world
-            .get::<crate::sim::travel::ArrivalOffset>(arrival)
-            .is_none()
     );
 }
 
@@ -271,7 +261,7 @@ fn barrage_overwhelms_shield_and_leaves_a_dormant_wreck() {
 }
 
 #[test]
-fn ecs_destroys_a_slug_after_transferring_its_impulse_to_a_ship() {
+fn expiring_slug_transfers_its_impulse_before_despawning() {
     let mut world = world();
     advance(&mut world);
 
@@ -313,8 +303,8 @@ fn ecs_destroys_a_slug_after_transferring_its_impulse_to_a_ship() {
         ))
         .id();
 
+    world.get_mut::<Projectile>(slug).unwrap().remaining_s = 0.1;
     step(&mut world);
-
     assert!(world.get_entity(slug).is_err());
     assert!(world.get::<Hull>(ship).unwrap().0 < initial_hull);
     assert!(world.get::<Velocity>(ship).unwrap().0.z > 0.0);

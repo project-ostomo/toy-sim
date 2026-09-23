@@ -1,5 +1,43 @@
 use bevy::prelude::*;
 
+#[cfg(test)]
+pub(crate) mod samples {
+    use std::{
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Instant,
+    };
+
+    pub static ENABLED: AtomicBool = AtomicBool::new(false);
+    static SAMPLES: Mutex<Vec<(&'static str, Instant, Instant)>> = Mutex::new(Vec::new());
+    static COUNTS: Mutex<std::collections::BTreeMap<&'static str, usize>> =
+        Mutex::new(std::collections::BTreeMap::new());
+
+    pub fn count(name: &'static str, value: usize) {
+        if enabled() {
+            *COUNTS.lock().unwrap().entry(name).or_default() += value;
+        }
+    }
+
+    pub fn take_counts() -> std::collections::BTreeMap<&'static str, usize> {
+        std::mem::take(&mut *COUNTS.lock().unwrap())
+    }
+
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    pub fn record(name: &'static str, start: Instant, end: Instant) {
+        SAMPLES.lock().unwrap().push((name, start, end));
+    }
+
+    pub fn take() -> Vec<(&'static str, Instant, Instant)> {
+        std::mem::take(&mut *SAMPLES.lock().unwrap())
+    }
+}
+
 use super::{
     physics::collision::CollisionStats, simulation::SimulationCounters, vessel::ShipSoftware,
 };
@@ -14,6 +52,8 @@ impl ProfileScope {
     pub(crate) fn new(name: &'static str) -> Self {
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let enabled = *ENABLED.get_or_init(|| std::env::var_os("OSG_SPATIAL_PROFILE").is_some());
+        #[cfg(test)]
+        let enabled = enabled || samples::enabled();
         Self {
             name,
             started: enabled.then(std::time::Instant::now),
@@ -24,6 +64,11 @@ impl ProfileScope {
 impl Drop for ProfileScope {
     fn drop(&mut self) {
         if let Some(started) = self.started {
+            #[cfg(test)]
+            if samples::enabled() {
+                samples::record(self.name, started, std::time::Instant::now());
+                return;
+            }
             bevy::log::debug!(target: "osg_server::profile",
                 scope = self.name,
                 elapsed_ms = started.elapsed().as_secs_f64() * 1000.,
@@ -76,7 +121,9 @@ pub fn tick(world: &mut World, duration_ms: f64) {
                 query_ms = collision.query_seconds * 1000.0,
                 solve_ms = collision.solve_seconds * 1000.0,
                 bodies = collision.bodies, candidates = collision.candidates,
-                detailed_queries = collision.detailed_queries, impacts = collision.impacts,
+                groups = collision.groups, grouped_bodies = collision.grouped_bodies,
+                reused_worlds = collision.reused_worlds,
+                contact_pairs = collision.contact_pairs, impacts = collision.impacts,
                 "server tick completed (software work sums parallel workers)");
         };
     }

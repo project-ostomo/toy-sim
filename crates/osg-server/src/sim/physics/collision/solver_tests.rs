@@ -5,7 +5,6 @@ pub(super) fn object(
     world: &mut World,
     shape: SharedShape,
     radius: f64,
-    feature: f64,
     position: DVec3,
     velocity: DVec3,
     mass: f64,
@@ -39,7 +38,6 @@ pub(super) fn object(
 
                 radius,
                 shield_radius: radius,
-                feature,
             }),
             local_position: DVec3::ZERO,
             local_rotation: DQuat::IDENTITY,
@@ -55,483 +53,44 @@ pub(super) fn object(
             destroyed: false,
         }],
         radius,
-        feature,
-        generation: 0,
         impulse_dv: DVec3::ZERO,
-        rotation_path: None,
     }
 }
 
 #[test]
-fn sphere_sweeps_have_stable_entry_and_exit_times() {
-    assert_eq!(
-        sphere_interval(
-            DVec3::new(10.0, 0.0, 0.0),
-            DVec3::new(-100.0, 0.0, 0.0),
-            2.0,
-            0.1
-        ),
-        Some((0.08, 0.1))
-    );
-    assert!(
-        sphere_interval(
-            DVec3::new(10.0, 3.0, 0.0),
-            DVec3::new(-100.0, 0.0, 0.0),
-            2.0,
-            0.1
-        )
-        .is_none()
-    );
-    assert_eq!(
-        sphere_interval(DVec3::ZERO, DVec3::ZERO, 1.0, 0.1),
-        Some((0.0, 0.1))
-    );
-    assert!(sphere_interval(DVec3::X * 10.0, DVec3::X * 100.0, 2.0, 0.1).is_none());
-}
-
-#[test]
-fn arriving_body_interacts_only_after_its_capture_time() {
-    let mut world = World::new();
-    let passing = object(
-        &mut world,
-        SharedShape::ball(1.0),
-        1.0,
-        2.0,
-        DVec3::NEG_X * 5.0,
-        DVec3::X * 100.0,
-        100.0,
-    );
-    let mut arriving = object(
-        &mut world,
-        SharedShape::ball(1.0),
-        1.0,
-        2.0,
-        DVec3::ZERO,
-        DVec3::Y * 40.0,
-        100.0,
-    );
-    arriving.time = 0.075;
-    arriving.members[0].thermal_time = 0.075;
-    let mut bodies = vec![passing, arriving];
-    let mut report = Report::default();
-    let before_arrival = weapons::BeamEvent {
-        owner: Entity::PLACEHOLDER,
-        position: GalacticPosition::from_meters(DVec3::new(-10.0, -1.0, 0.0)),
-        direction: DVec3::X,
-        range_m: 20.0,
-        energy_j: 100.0,
-        divergence_rad: 0.0,
-        duration_s: 0.001,
+fn rapier_preserves_model_frame_with_nondiagonal_inertia() {
+    let mut entities = World::new();
+    let axes = DMat3::from_quat(DQuat::from_rotation_y(0.63));
+    let inertia = axes * DMat3::from_diagonal(DVec3::new(2.0, 3.0, 5.0)) * axes.transpose();
+    let rotation = DQuat::from_euler(bevy::math::EulerRot::XYZ, 0.3, -0.2, 0.1);
+    let angular = rotation * axes.z_axis * 0.4;
+    let mut input = rapier::Input {
+        entity: entities.spawn_empty().id(),
+        position: GalacticPosition::splat(1_i128 << 100),
+        rotation,
+        velocity: DVec3::new(1e6, -3e6, 2e6),
+        angular,
+        mass: 1.0,
+        inertia,
+        shape: SharedShape::cuboid(1.0, 2.0, 3.0),
+        launch_owner: None,
     };
-    let spatial = test_snapshot(&bodies, 0.1);
-    assert!(
-        weapons::resolve_beam(
-            before_arrival,
-            &mut bodies[1..],
-            &spatial,
-            0.05,
-            &mut report
-        )
-        .is_none()
-    );
-    let report = simulate(&mut bodies, 0.1);
-    assert_eq!(report.impacts, 0);
-    assert!((bodies[0].position.to_meters_64() - DVec3::X * 5.0).length() < 1e-6);
-    assert!((bodies[1].position.to_meters_64() - DVec3::Y).length() < 1e-6);
-}
-
-#[test]
-fn head_on_contact_conserves_momentum_and_accounts_for_heat_once() {
-    let mut world = World::new();
-    let mut bodies = vec![
-        object(
-            &mut world,
-            SharedShape::ball(1.0),
-            1.0,
-            2.0,
-            DVec3::ZERO,
-            DVec3::X * 100.0,
-            2.0,
-        ),
-        object(
-            &mut world,
-            SharedShape::ball(1.0),
-            1.0,
-            2.0,
-            DVec3::X * 5.0,
-            DVec3::ZERO,
-            6.0,
-        ),
-    ];
-    let before: f64 = bodies
-        .iter()
-        .map(|b| b.members[0].thermal.hull_energy_j)
-        .sum();
-    let report = simulate(&mut bodies, 0.1);
-    assert!((bodies[0].velocity.x - 2.5).abs() < 1e-7);
-    assert!((bodies[1].velocity.x - 32.5).abs() < 1e-7);
-    assert!((report.dissipated_j - 6825.0).abs() < 1e-5);
-    let after: f64 = bodies
-        .iter()
-        .map(|b| b.members[0].thermal.hull_energy_j)
-        .sum();
-    assert!((after - before - report.dissipated_j).abs() < 1e-5);
-}
-
-#[test]
-fn shield_contact_uses_the_same_restitution_for_every_body_and_settles_slowly() {
-    for (speed, restitution) in [(0.05, 0.0), (100.0, 0.3)] {
-        for projectile in [false, true] {
-            let mut world = World::new();
-            let mut moving = object(
-                &mut world,
-                SharedShape::ball(1.0),
-                1.0,
-                2.0,
-                DVec3::ZERO,
-                DVec3::X * speed,
-                10.0,
-            );
-            moving.projectile = projectile;
-            let mut target = object(
-                &mut world,
-                SharedShape::ball(1.0),
-                1.0,
-                2.0,
-                DVec3::X * 2.001,
-                DVec3::ZERO,
-                10.0,
-            );
-            target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
-            target.members[0].thermal.shield_deployed_kg = 1.0;
-            target.members[0].model.shield_deployed_kg = 1.0;
-            let mut bodies = vec![moving, target];
-            let report = simulate(&mut bodies, 0.1);
-            assert_eq!(report.impacts, 1);
-            assert!((bodies[0].velocity.x - speed * (1.0 - restitution) * 0.5).abs() < 1e-8);
-            assert!((bodies[1].velocity.x - speed * (1.0 + restitution) * 0.5).abs() < 1e-8);
-            let lost_energy = 2.5 * speed * speed * (1.0 - restitution * restitution);
-            assert!((report.dissipated_j - lost_energy).abs() < 1e-8);
-            assert!((bodies[0].members[0].thermal.hull_energy_j - lost_energy * 0.5).abs() < 1e-8);
-            assert!(
-                (bodies[1].members[0].thermal.shield_energy_j - lost_energy * 0.5).abs() < 1e-8
-            );
-        }
+    let momentum = rotation * (inertia * (rotation.inverse() * angular));
+    let mut simulation = rapier::CollisionWorld::default();
+    for tick in 1..=1000 {
+        let output = simulation.step(&[input.clone()], 0.1, &HashSet::new());
+        let actual = &output.motion[0];
+        let expected = rotation * DQuat::from_axis_angle(axes.z_axis, 0.04 * tick as f64);
+        assert!(actual.rotation.dot(expected).abs() > 1.0 - 1e-5);
+        let actual_momentum =
+            actual.rotation * (inertia * (actual.rotation.inverse() * actual.angular));
+        assert!((actual_momentum - momentum).length() < 1e-8);
+        assert!(output.impacts.is_empty());
+        input.position = actual.position;
+        input.rotation = actual.rotation;
+        input.velocity = actual.velocity;
+        input.angular = actual.angular;
     }
-}
-
-#[test]
-fn fast_slug_hits_the_bounding_sphere_even_outside_the_hull() {
-    for offset in [0.0, 2.0, 6.0] {
-        let miss = offset > 5.1;
-        let mut world = World::new();
-        let mut bodies = vec![
-            object(
-                &mut world,
-                SharedShape::ball(0.0005),
-                0.0005,
-                0.001,
-                DVec3::new(-50_000.0, offset, 0.0),
-                DVec3::X * 1e6,
-                0.01,
-            ),
-            object(
-                &mut world,
-                SharedShape::cuboid(0.05, 0.5, 5.0),
-                5.1,
-                0.1,
-                DVec3::ZERO,
-                DVec3::ZERO,
-                1000.0,
-            ),
-        ];
-        let report = simulate(&mut bodies, 0.1);
-        assert_eq!(report.impacts > 0, !miss);
-        if !miss {
-            assert!(bodies[0].position.x <= bodies[1].position.x);
-            let impact = &report.impact_events[0];
-            let surface = impact.surface_positions[1].relative_to(GalacticPosition::ZERO);
-            assert!((surface.x + 0.05).abs() < 1e-5);
-            assert!((surface.y - offset.min(0.5)).abs() < 1e-5);
-            assert!(surface.distance(impact.position.relative_to(GalacticPosition::ZERO)) > 1.0);
-        }
-    }
-}
-
-#[test]
-fn large_common_position_and_velocity_do_not_change_impact_energy() {
-    let run = |anchor: GalacticPosition, boost: DVec3| {
-        let mut world = World::new();
-        let mut bodies = vec![
-            object(
-                &mut world,
-                SharedShape::ball(1.0),
-                1.0,
-                2.0,
-                DVec3::ZERO,
-                DVec3::X * 100.0 + boost,
-                2.0,
-            ),
-            object(
-                &mut world,
-                SharedShape::ball(1.0),
-                1.0,
-                2.0,
-                DVec3::X * 5.0,
-                boost,
-                6.0,
-            ),
-        ];
-        for b in &mut bodies {
-            b.position += anchor;
-        }
-        simulate(&mut bodies, 0.1).dissipated_j
-    };
-    assert!(
-        (run(GalacticPosition::ZERO, DVec3::ZERO)
-            - run(
-                GalacticPosition::splat(1_i128 << 100),
-                DVec3::new(1e6, 1e6, 1e6)
-            ))
-        .abs()
-            < 1e-3
-    );
-}
-
-#[test]
-fn rotation_does_not_change_spherical_contacts() {
-    let mut world = World::new();
-    let mut rod = object(
-        &mut world,
-        SharedShape::cuboid(3.0, 0.1, 0.1),
-        3.1,
-        0.2,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        10.0,
-    );
-    rod.momentum = DVec3::Z * 100.0;
-    let ball = object(
-        &mut world,
-        SharedShape::ball(0.1),
-        0.1,
-        0.2,
-        DVec3::new(2.0, 1.0, 0.0),
-        DVec3::ZERO,
-        1.0,
-    );
-    let report = simulate(&mut vec![rod, ball], 0.1);
-    assert_eq!(report.impacts, 0);
-    assert_eq!(report.dissipated_j, 0.0);
-}
-
-#[test]
-fn depleted_reserve_retests_hull_instead_of_damaging_at_field_surface() {
-    for miss in [false, true] {
-        let mut world = World::new();
-        let mut target = object(
-            &mut world,
-            SharedShape::cuboid(0.5, 0.5, 0.5),
-            2.0,
-            1.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            1000.0,
-        );
-        Arc::make_mut(&mut target.members[0].geometry).radius = 0.75_f64.sqrt();
-        target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
-        target.members[0].model.shield_deployed_kg = 5.0;
-        target.members[0].thermal.shield_deployed_kg = 1e-8;
-        let initial = target.members[0].thermal.hull_energy_j;
-        let mut slug = object(
-            &mut world,
-            SharedShape::ball(0.01),
-            0.01,
-            0.02,
-            DVec3::new(-10.0, if miss { 1.0 } else { 0.0 }, 0.0),
-            DVec3::X * 1000.0,
-            1.0,
-        );
-        slug.projectile = true;
-        let mut bodies = vec![slug, target];
-        let report = simulate(&mut bodies, 0.1);
-        assert!(report.impacts > 0);
-        assert!(bodies[1].members[0].thermal.shield_deployed_kg <= 0.0);
-        assert_eq!(bodies[1].members[0].thermal.hull_energy_j > initial, !miss);
-    }
-}
-
-#[test]
-fn partial_shield_interception_preserves_projectile_and_residual_energy() {
-    let mut world = World::new();
-    let mut target = object(
-        &mut world,
-        SharedShape::cuboid(0.5, 0.5, 0.5),
-        2.0,
-        1.0,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        1000.0,
-    );
-    Arc::make_mut(&mut target.members[0].geometry).radius = 0.75_f64.sqrt();
-    target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
-    target.members[0].model.shield_deployed_kg = 5.0;
-    target.members[0].thermal.shield_deployed_kg = 0.00001;
-    let absorption = target.members[0].thermal.headroom(target.members[0].model);
-    let slug = weapons::projectile_body(
-        world.spawn_empty().id(),
-        GalacticPosition::from_meters(DVec3::new(-10.0, 1.0, 0.0)),
-        DVec3::X * 5000.0,
-        0.01,
-        0.005,
-        0.0,
-    );
-    let initial_hp = slug.members[0].hull;
-    let initial_energy = 0.5 * slug.mass * slug.velocity.length_squared();
-    assert!(absorption < initial_hp * osg_ships::thermal::JOULES_PER_HP);
-    assert!(absorption < initial_energy);
-    let mut bodies = vec![slug, target];
-    let report = simulate(&mut bodies, 0.01);
-    assert_eq!(report.impacts, 1);
-    assert!(report.destroyed.is_empty());
-    assert!(
-        (bodies[0].members[0].hull - (initial_hp - absorption / osg_ships::thermal::JOULES_PER_HP))
-            .abs()
-            < 1e-10
-    );
-    assert!(bodies[0].members[0].thermal.hull_energy_j > 0.0);
-    assert_eq!(bodies[1].members[0].thermal.shield_deployed_kg, 0.0);
-    assert_eq!(bodies[1].members[0].thermal.hull_energy_j, 0.0);
-    assert!((report.dissipated_j - 2.0 * absorption).abs() < 1e-8);
-    let remaining_energy: f64 = bodies
-        .iter()
-        .map(|body| {
-            0.5 * body.mass * body.velocity.length_squared()
-                + 0.5 * body.momentum.dot(body.world_inverse() * body.momentum)
-        })
-        .sum();
-    assert!((initial_energy - remaining_energy - report.dissipated_j).abs() < 1e-5);
-}
-
-#[test]
-fn destroyed_slug_cannot_hit_a_second_ship() {
-    let mut world = World::new();
-    let mut slug = object(
-        &mut world,
-        SharedShape::ball(0.01),
-        0.01,
-        0.02,
-        DVec3::ZERO,
-        DVec3::X * 10000.0,
-        0.01,
-    );
-    slug.members[0].hull = 0.001;
-    let target = object(
-        &mut world,
-        SharedShape::ball(1.0),
-        1.0,
-        2.0,
-        DVec3::X * 10.0,
-        DVec3::ZERO,
-        1000.0,
-    );
-    let farther = object(
-        &mut world,
-        SharedShape::ball(1.0),
-        1.0,
-        2.0,
-        DVec3::X * 20.0,
-        DVec3::ZERO,
-        1000.0,
-    );
-    let mut bodies = vec![slug, target, farther];
-    let report = simulate(&mut bodies, 0.1);
-    assert_eq!(report.destroyed.len(), 1);
-    assert_eq!(bodies[2].velocity, DVec3::ZERO);
-}
-
-#[test]
-fn galactic_diagonal_sweeps_match_exhaustive_candidates() {
-    let origin = GalacticPosition::splat(1_i128 << 100);
-    let mut proxies = Vec::new();
-    for i in 0..200 {
-        let p = DVec3::new(
-            ((i * 7717) % 200000) as f64,
-            ((i * 7919) % 200000) as f64,
-            ((i * 173) % 200000) as f64,
-        );
-        proxies.push(SpatialRecord {
-            kind: RecordKind::Collision,
-            id: i,
-            position: origin.offset_by(p).to_array(),
-            radius_m: 1000.0,
-        });
-    }
-    let displacement = |id: u64| DVec3::new((id % 3) as f64 * 100000.0, -50000.0, 10000.0);
-    let mut index = SpatialService::new([]);
-    index.rebuild_dynamic(
-        proxies
-            .iter()
-            .map(|p| p.dynamic(0., displacement(p.id).to_array())),
-    );
-    let pairs: std::collections::BTreeSet<_> = index
-        .collision_candidates(|_, _| true)
-        .into_iter()
-        .map(|(a, b)| (a.id.min(b.id), a.id.max(b.id)))
-        .collect();
-    for a in 0..proxies.len() {
-        for b in a + 1..proxies.len() {
-            if sphere_interval(
-                GalacticPosition::new(
-                    proxies[b].position[0],
-                    proxies[b].position[1],
-                    proxies[b].position[2],
-                )
-                .relative_to(GalacticPosition::new(
-                    proxies[a].position[0],
-                    proxies[a].position[1],
-                    proxies[a].position[2],
-                )),
-                displacement(proxies[b].id) - displacement(proxies[a].id),
-                2000.0,
-                1.0,
-            )
-            .is_some()
-            {
-                assert!(pairs.contains(&(a as u64, b as u64)));
-            }
-        }
-    }
-}
-
-#[test]
-fn resting_penetration_is_corrected_without_heat_or_launch() {
-    let mut world = World::new();
-    let mut bodies = vec![
-        object(
-            &mut world,
-            SharedShape::cuboid(1.0, 1.0, 1.0),
-            1.8,
-            2.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            1.0,
-        ),
-        object(
-            &mut world,
-            SharedShape::cuboid(1.0, 1.0, 1.0),
-            1.8,
-            2.0,
-            DVec3::X,
-            DVec3::ZERO,
-            1.0,
-        ),
-    ];
-    let report = simulate(&mut bodies, 0.1);
-    assert_eq!(report.dissipated_j, 0.0);
-    assert_eq!(bodies[0].velocity, DVec3::ZERO);
-    assert_eq!(bodies[1].velocity, DVec3::ZERO);
-    assert!(bodies[1].position.relative_to(bodies[0].position).length() >= 2.0);
 }
 
 #[test]
@@ -584,7 +143,6 @@ fn destroying_a_docked_member_preserves_the_survivors_velocity_field() {
         &mut world,
         SharedShape::ball(1.0),
         1.0,
-        2.0,
         DVec3::ZERO,
         DVec3::X * 10.0,
         2.0,
@@ -593,7 +151,6 @@ fn destroying_a_docked_member_preserves_the_survivors_velocity_field() {
         &mut world,
         SharedShape::ball(1.0),
         1.0,
-        2.0,
         DVec3::ZERO,
         DVec3::ZERO,
         1.0,
@@ -618,230 +175,12 @@ fn destroying_a_docked_member_preserves_the_survivors_velocity_field() {
 }
 
 #[test]
-fn successive_snapshots_handle_migration_deletion_and_reordered_ids() {
-    let mut index = SpatialService::new([]);
-    for tick in 0..5 {
-        let mut proxies: Vec<_> = (tick..120)
-            .map(|i| SpatialRecord {
-                kind: RecordKind::Collision,
-                id: i * 1_000_003,
-                position: GalacticPosition::from_meters(DVec3::new(
-                    (i % 12) as f64 * 30000.0 - tick as f64 * 80000.0,
-                    (i / 12) as f64 * 30000.0,
-                    0.0,
-                ))
-                .to_array(),
-                radius_m: 1000.0,
-            })
-            .collect();
-        proxies.reverse();
-        index.rebuild_dynamic(
-            proxies
-                .iter()
-                .map(|p| p.dynamic(0., [130000.0, 170000.0, 0.0])),
-        );
-        let ids: std::collections::BTreeSet<_> = index
-            .sphere_candidates([0; 3], f64::INFINITY)
-            .into_iter()
-            .map(|p| p.id)
-            .collect();
-        assert_eq!(ids, proxies.iter().map(|p| p.id).collect());
-    }
-}
-
-#[test]
-fn glancing_sphere_impacts_conserve_energy_without_spurious_torque() {
-    let mut world = World::new();
-    let mut bodies = vec![
-        object(
-            &mut world,
-            SharedShape::cuboid(1.0, 1.0, 1.0),
-            1.8,
-            2.0,
-            -DVec3::X * 4.0,
-            DVec3::X * 100.0,
-            10.0,
-        ),
-        object(
-            &mut world,
-            SharedShape::cuboid(1.0, 1.0, 1.0),
-            1.8,
-            2.0,
-            DVec3::Y * 1.5,
-            DVec3::ZERO,
-            10.0,
-        ),
-    ];
-    let energy = |b: &Body| {
-        0.5 * b.mass * b.velocity.length_squared()
-            + 0.5 * b.momentum.dot(b.world_inverse() * b.momentum)
-    };
-    let initial: f64 = bodies.iter().map(energy).sum();
-    let report = simulate(&mut bodies, 0.1);
-    let remaining: f64 = bodies.iter().map(energy).sum();
-    assert!(bodies.iter().all(|b| b.momentum.length() < 1e-8));
-    assert!((initial - remaining - report.dissipated_j).abs() < initial * 1e-8);
-    assert!(
-        (bodies.iter().map(|b| b.velocity * b.mass).sum::<DVec3>() - DVec3::X * 1000.0).length()
-            < 1e-8
-    );
-}
-
-#[test]
-fn spinning_spheres_keep_the_same_linear_cast_contact_normal() {
-    let mut world = World::new();
-    let original = vec![
-        object(
-            &mut world,
-            SharedShape::ball(1.0),
-            1.0,
-            2.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            10.0,
-        ),
-        object(
-            &mut world,
-            SharedShape::ball(1.0),
-            1.0,
-            2.0,
-            DVec3::X * 5.0,
-            -DVec3::X * 100.0,
-            10.0,
-        ),
-    ];
-    let mut resting = original.clone();
-    let expected = simulate(&mut resting, 0.1);
-    let mut spinning = original;
-    spinning[0].momentum = DVec3::Z * 10_000.0;
-    spinning[1].momentum = DVec3::Y * 20_000.0;
-    let actual = simulate(&mut spinning, 0.1);
-
-    assert!((actual.dissipated_j - expected.dissipated_j).abs() < 1e-6);
-    for (actual, expected) in spinning.iter().zip(&resting) {
-        assert!((actual.velocity - expected.velocity).length() < 1e-8);
-        assert!(actual.position.relative_to(expected.position).length() < 1e-5);
-    }
-}
-
-#[test]
-fn ordinary_impact_damage_destroys_fast_slugs_but_slow_glancing_slugs_bounce() {
-    for velocity in [DVec3::new(20.0, 0.0, 0.0), DVec3::new(5000.0, 50.0, 0.0)] {
-        let mut world = World::new();
-        let mut target = object(
-            &mut world,
-            SharedShape::ball(10.0),
-            10.0,
-            20.0,
-            DVec3::ZERO,
-            DVec3::ZERO,
-            10000.0,
-        );
-        target.members[0].model.shield_deployed_kg = 5.0;
-        target.members[0].thermal.shield_deployed_kg = 5.0;
-        target.members[0].thermal.shield_state = abi::SHIELD_ACTIVE;
-        let start = DVec3::new(-20.0, 5.0, 0.0);
-        let slug = weapons::projectile_body(
-            world.spawn_empty().id(),
-            GalacticPosition::from_meters(start),
-            velocity,
-            0.01,
-            0.005,
-            0.0,
-        );
-        let id = slug.entity;
-        let mut bodies = vec![target, slug];
-        let report = simulate(&mut bodies, 1.0);
-        assert_eq!(report.impact_events.len(), 1);
-        if velocity.length() < 100.0 {
-            assert!(bodies[1].alive());
-            assert!(report.destroyed.is_empty());
-            let damage = 0.01 - bodies[1].members[0].hull;
-            assert!(
-                (damage * osg_ships::thermal::JOULES_PER_HP - report.dissipated_j * 0.5).abs()
-                    < 1e-8
-            );
-            continue;
-        }
-        let death = report
-            .destroyed
-            .iter()
-            .find(|death| death.entity == id)
-            .unwrap();
-        assert!(death.time > 0.0 && death.time < 1.0);
-        assert_eq!(report.impact_events.len(), 1);
-        assert_eq!(death.time, report.impact_events[0].time);
-        assert!(
-            death
-                .position
-                .relative_to(GalacticPosition::from_meters(start + velocity * death.time))
-                .length()
-                < 1e-5
-        );
-        assert!(
-            report
-                .motion
-                .iter()
-                .filter(|s| s.entity == id)
-                .all(|s| s.end <= death.time)
-        );
-        assert!(!bodies[1].alive());
-        assert!(
-            (bodies[1].members[0].thermal.hull_energy_j - report.dissipated_j * 0.5).abs() < 1e-6
-        );
-        assert!(
-            (bodies[0].members[0].thermal.shield_energy_j - report.dissipated_j * 0.5).abs() < 1e-6
-        );
-    }
-}
-
-#[test]
-fn projectile_expires_at_two_seconds_without_hitting_a_later_target() {
-    let mut world = World::new();
-    let target = object(
-        &mut world,
-        SharedShape::ball(1.0),
-        1.0,
-        2.0,
-        DVec3::X * 11000.0,
-        DVec3::ZERO,
-        10000.0,
-    );
-    let slug = weapons::projectile_body(
-        world.spawn_empty().id(),
-        GalacticPosition::ZERO,
-        DVec3::X * 5000.0,
-        0.01,
-        0.005,
-        0.0,
-    );
-    let id = slug.entity;
-    let mut bodies = vec![target, slug];
-    let report = simulate(&mut bodies, 2.5);
-    let death = report
-        .destroyed
-        .iter()
-        .find(|death| death.entity == id)
-        .unwrap();
-    assert_eq!(death.time, 2.0);
-    assert!(
-        death
-            .position
-            .relative_to(GalacticPosition::from_meters(DVec3::X * 10000.0))
-            .length()
-            < 1e-5
-    );
-    assert!(report.impact_events.is_empty());
-}
-
-#[test]
 fn ablating_material_reduces_mass_and_inertia_without_accelerating_ship() {
     let mut world = World::new();
     let mut body = object(
         &mut world,
         SharedShape::ball(1.0),
         1.0,
-        2.0,
         DVec3::ZERO,
         DVec3::new(10.0, 20.0, 30.0),
         1000.0,
@@ -877,14 +216,134 @@ fn ablating_material_reduces_mass_and_inertia_without_accelerating_ship() {
     );
 }
 
+pub(super) fn next_tick(
+    bodies: &mut Vec<Body>,
+    spatial: &mut GalacticIndex<SpatialKey>,
+    workspace: &mut SolverWorkspace,
+) -> Report {
+    for body in bodies.iter_mut() {
+        body.time = 0.0;
+        body.impulse_dv = DVec3::ZERO;
+        for member in &mut body.members {
+            member.thermal_time = 0.0;
+        }
+    }
+    let report = simulate_with_workspace(bodies, 0.1, spatial, workspace, &mut || {
+        panic!("fixture has no weapons")
+    });
+    workspace.time_s += 0.1;
+    for body in bodies {
+        if let Some(remaining) = body.expires_at.as_mut() {
+            *remaining -= 0.1;
+        }
+    }
+    report
+}
+
 #[test]
-fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
+fn ccd_resolves_thin_hulls_at_the_boundary_and_misses_empty_bounds() {
+    for y in [0.0, 2.5] {
+        let mut world = World::new();
+        let wall = object(
+            &mut world,
+            SharedShape::cuboid(0.05, 2.0, 2.0),
+            3.0,
+            DVec3::ZERO,
+            DVec3::ZERO,
+            1e12,
+        );
+        let slug = object(
+            &mut world,
+            SharedShape::ball(0.01),
+            0.01,
+            DVec3::new(-1000.0, y, 0.0),
+            DVec3::X * 20_000.0,
+            1.0,
+        );
+        let mut bodies = vec![wall, slug];
+        let mut index = test_snapshot(&bodies, 0.1);
+        let mut workspace = SolverWorkspace::default();
+        let first = next_tick(&mut bodies, &mut index, &mut workspace);
+        if y == 0.0 {
+            assert_eq!(first.impacts, 1);
+            assert!(
+                bodies[1].position.relative_to(GalacticPosition::ZERO).x < 0.1,
+                "CCD must prevent tunnelling during the first tick"
+            );
+        }
+        let second = next_tick(&mut bodies, &mut index, &mut workspace);
+        if y == 0.0 {
+            assert_eq!(first.impacts + second.impacts, 1);
+            assert!(bodies[1].velocity.x < 0.0);
+            assert!(first.dissipated_j + second.dissipated_j > 0.0);
+            let third = next_tick(&mut bodies, &mut index, &mut workspace);
+            assert_eq!(third.impacts, 0, "one heat deposit per contact episode");
+        } else {
+            assert_eq!(first.impacts + second.impacts, 0);
+            assert!(bodies[1].position.relative_to(GalacticPosition::ZERO).x > 2500.0);
+        }
+    }
+}
+
+#[test]
+fn contact_preserves_momentum_and_is_invariant_under_galactic_translation_and_boost() {
+    let run = |origin: GalacticPosition, boost: DVec3| {
+        let mut world = World::new();
+        let mut bodies = vec![
+            object(
+                &mut world,
+                SharedShape::ball(1.0),
+                1.0,
+                -DVec3::X * 5.0,
+                DVec3::X * 100.0,
+                10.0,
+            ),
+            object(
+                &mut world,
+                SharedShape::ball(1.0),
+                1.0,
+                DVec3::X * 5.0,
+                -DVec3::X * 100.0,
+                20.0,
+            ),
+        ];
+        for body in &mut bodies {
+            body.position += origin;
+            body.velocity += boost;
+        }
+        let initial_momentum: DVec3 = bodies.iter().map(|body| body.velocity * body.mass).sum();
+        let mut index = test_snapshot(&bodies, 0.1);
+        let mut workspace = SolverWorkspace::default();
+        let mut energy = 0.0;
+        for _ in 0..3 {
+            energy += next_tick(&mut bodies, &mut index, &mut workspace).dissipated_j;
+        }
+        let momentum: DVec3 = bodies.iter().map(|body| body.velocity * body.mass).sum();
+        assert!((momentum - initial_momentum).length() < 1e-5);
+        let heat: f64 = bodies
+            .iter()
+            .map(|body| body.members[0].thermal.hull_energy_j)
+            .sum();
+        assert!((heat - energy).abs() < 1e-4 * energy.max(1.0));
+        (bodies[0].velocity - boost, energy)
+    };
+    let base = run(GalacticPosition::ZERO, DVec3::ZERO);
+    let translated = run(
+        GalacticPosition::splat(1_i128 << 100),
+        DVec3::new(1e6, 5e6, -2e6),
+    );
+    assert!((base.0 - translated.0).length() < 1e-5);
+    assert!((base.1 - translated.1).abs() < 1e-5 * base.1);
+    assert!(base.1 > 0.0);
+}
+
+#[test]
+fn isolated_bodies_do_not_allocate_collision_worlds_and_groups_can_merge_and_split() {
     let mut world = World::new();
     let mut bodies = vec![
         object(
             &mut world,
-            SharedShape::ball(0.5),
-            2.0,
+            SharedShape::ball(1.0),
             1.0,
             DVec3::ZERO,
             DVec3::ZERO,
@@ -892,178 +351,37 @@ fn deployment_waits_for_clearance_and_uses_stable_entity_order() {
         ),
         object(
             &mut world,
-            SharedShape::ball(0.5),
-            2.0,
+            SharedShape::ball(1.0),
             1.0,
-            DVec3::X,
+            DVec3::X * 100.0,
             DVec3::ZERO,
             1.0,
         ),
     ];
-    for body in &mut bodies {
-        let member = &mut body.members[0];
-        Arc::make_mut(&mut member.geometry).radius = 0.5;
-        member.model.shield_deployed_kg = 5.0;
-        member.thermal.shield_deployed_kg = 5.0;
-        member.thermal.shield_enabled = true;
-        member.thermal.shield_powered = true;
+    for id in 0..500 {
+        bodies.push(object(
+            &mut world,
+            SharedShape::ball(1.0),
+            1.0,
+            DVec3::X * (1e9 + id as f64 * 1e6),
+            DVec3::Y * 10.0,
+            1.0,
+        ));
     }
-    let spatial = test_snapshot(&bodies, 0.1);
-    activate(&mut bodies, &spatial);
-    assert!(
-        bodies
-            .iter()
-            .all(|b| b.members[0].thermal.shield_state == abi::SHIELD_BLOCKED)
-    );
-
-    bodies[1].position = GalacticPosition::from_meters(DVec3::X * 3.0);
-    let spatial = test_snapshot(&bodies, 0.1);
-    activate(&mut bodies, &spatial);
-    assert!(bodies[0].members[0].shielded());
+    let mut index = test_snapshot(&bodies, 0.1);
+    let mut workspace = SolverWorkspace::default();
+    let first = next_tick(&mut bodies, &mut index, &mut workspace);
+    assert_eq!(workspace.worlds.len(), 1);
+    assert_eq!(first.candidates, 1);
     assert_eq!(
-        bodies[1].members[0].thermal.shield_state,
-        abi::SHIELD_BLOCKED
+        bodies[2].position.relative_to(GalacticPosition::ZERO).y,
+        1.0
     );
-    bodies[1].position = GalacticPosition::from_meters(DVec3::X * 5.0);
-    let spatial = test_snapshot(&bodies, 0.1);
-    activate(&mut bodies, &spatial);
-    assert!(bodies[1].members[0].shielded());
-}
-
-#[test]
-fn persistent_three_body_cluster_stays_bounded_and_dissipates_energy() {
-    let mut outcomes = Vec::new();
-    for common_velocity in [DVec3::ZERO, DVec3::new(22_000.0, -2_000.0, 23_000.0)] {
-        let mut world = World::new();
-        let mut bodies: Vec<_> = [-1.0, 0.0, 1.0]
-            .into_iter()
-            .map(|x| {
-                object(
-                    &mut world,
-                    SharedShape::ball(1.0),
-                    1.0,
-                    1.0,
-                    DVec3::X * x * 2.00001,
-                    common_velocity - DVec3::X * x * 0.01,
-                    1000.0,
-                )
-            })
-            .collect();
-        let energy = |bodies: &[Body]| {
-            bodies
-                .iter()
-                .map(|body| {
-                    0.5 * body.mass * (body.velocity - common_velocity).length_squared()
-                        + 0.5 * body.momentum.dot(body.world_inverse() * body.momentum)
-                })
-                .sum::<f64>()
-        };
-        let mut previous_energy = energy(&bodies);
-        let mut total_impacts = 0;
-        for _ in 0..100 {
-            let report = simulate(&mut bodies, 0.1);
-            total_impacts += report.impacts;
-            assert!(report.impacts < 100 && report.detailed < 1000);
-            let current_energy = energy(&bodies);
-            assert!(current_energy <= previous_energy + 1e-10);
-            previous_energy = current_energy;
-            for pair in bodies.windows(2) {
-                assert!(pair[1].position.relative_to(pair[0].position).x >= 2.0 - 1e-5);
-            }
-            for body in &mut bodies {
-                body.time = 0.0;
-                body.members[0].thermal_time = 0.0;
-            }
-        }
-        assert!(total_impacts > 0);
-        outcomes.push(
-            bodies
-                .iter()
-                .map(|body| {
-                    (
-                        body.position.relative_to(bodies[1].position),
-                        body.velocity - common_velocity,
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
-    }
-    for (a, b) in outcomes[0].iter().zip(&outcomes[1]) {
-        assert!((a.0 - b.0).length() < 2e-4);
-        assert!((a.1 - b.1).length() < 1e-8);
-    }
-}
-
-#[test]
-fn extreme_rotation_cannot_change_sphere_sweeps() {
-    let mut world = World::new();
-    let mut rotor = object(
-        &mut world,
-        SharedShape::cuboid(2.0, 0.1, 0.1),
-        2.01,
-        0.2,
-        DVec3::ZERO,
-        DVec3::ZERO,
-        1000.0,
-    );
-    let geometry = Arc::make_mut(&mut rotor.members[0].geometry);
-    geometry.shield_radius = 3.0;
-    rotor.members[0].local_position = DVec3::X * 4.0;
-    let mut opposite = rotor.members[0].clone();
-    opposite.entity = world.spawn_empty().id();
-    opposite.local_position = -DVec3::X * 4.0;
-    rotor.members.push(opposite);
-    rotor.mass = 2000.0;
-    rotor.radius = 7.0;
-    rotor.momentum = DVec3::Z * 1e8;
-    rotor.prepare_rotation(0.1);
-    for member in 0..rotor.members.len() {
-        let hull = rotor.collision_radius(member, false);
-        let shield = rotor.collision_radius(member, true);
-        assert_eq!(hull, 6.01);
-        assert_eq!(shield, 7.0);
-        for step in 0..100 {
-            let rotation = rotor.orientation(step as f64 * 0.001).0;
-            for corner in [DVec3::new(2.0, 0.1, 0.1), -DVec3::new(2.0, 0.1, 0.1)] {
-                let point = rotation * (rotor.members[member].local_position + corner);
-                assert!(point.length() <= hull);
-            }
-        }
-    }
-    // Uneven mass loss shifts the COM while the same contact is being resolved.
-    // Its immediate correction must still see envelopes of the new offsets.
-    let mut ablated = rotor.clone();
-    ablated.members[0].mass = 400.0;
-    ablated.members[0].inertia *= 0.4;
-    ablated.sync_mass();
-    for (index, member) in ablated.members.iter().enumerate() {
-        let offset = member.local_position.length();
-        assert_eq!(
-            ablated.collision_radius(index, false),
-            offset + member.geometry.radius,
-        );
-        assert_eq!(
-            ablated.collision_radius(index, true),
-            offset + member.geometry.shield_radius,
-        );
-    }
-    let incoming = object(
-        &mut world,
-        SharedShape::ball(0.25),
-        0.25,
-        0.5,
-        DVec3::new(-15.0, 5.0, 0.0),
-        DVec3::X * 300.0,
-        10.0,
-    );
-    let mut bodies = vec![rotor, incoming];
-    let report = simulate(&mut bodies, 0.1);
-    assert!(report.impacts > 0);
-    assert!(report.detailed < 1000);
-    assert!(bodies[1].velocity.x < 300.0);
-    assert!(
-        bodies
-            .iter()
-            .all(|body| body.velocity.is_finite() && body.momentum.is_finite())
-    );
+    bodies[2].position = GalacticPosition::from_meters(DVec3::X * 200.0);
+    next_tick(&mut bodies, &mut index, &mut workspace);
+    assert_eq!(workspace.worlds.keys().next().unwrap().len(), 3);
+    bodies[1].position = GalacticPosition::from_meters(DVec3::X * 2e9);
+    bodies[2].position = GalacticPosition::from_meters(DVec3::X * 3e9);
+    next_tick(&mut bodies, &mut index, &mut workspace);
+    assert!(workspace.worlds.is_empty());
 }

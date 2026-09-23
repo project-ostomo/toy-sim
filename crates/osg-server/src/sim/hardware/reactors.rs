@@ -26,6 +26,8 @@ pub(crate) fn dock_heat_transfer(
     designs: Query<&ShipDesign>,
     mut thermal: Query<&mut ShipThermal>,
 ) {
+    let _profile =
+        crate::sim::diagnostics::ProfileScope::new("hardware.reactors.dock_heat_transfer");
     let Some(identities) = identities else {
         return;
     };
@@ -128,6 +130,7 @@ pub(crate) fn generate(
     )>,
     mut reactors: Query<(&mut Reactor, &mut Device)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.reactors.generate");
     let dt = time.delta_secs_f64();
     if reactors.is_empty() {
         return;
@@ -252,6 +255,7 @@ pub(crate) fn process(
     >,
     processors: Query<(&FuelProcessor, &Device)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.reactors.process");
     let dt = time.delta_secs_f64();
     for (design, mut hardware, mut outputs) in &mut ships {
         if hardware.hull.0 <= 0.0 {

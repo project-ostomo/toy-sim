@@ -28,9 +28,12 @@ impl Default for SlipDrive {
 #[derive(Component, Default)]
 pub struct SlipChargingPower(pub f64);
 
-/// Seconds after the beginning of this tick at which ordinary physics resumes.
-#[derive(Component, Clone, Copy, Debug)]
-pub struct ArrivalOffset(pub f64);
+/// Captures remain outside ordinary physics until the completed tick boundary.
+#[derive(Component)]
+struct PendingArrival {
+    transit: Transit,
+    capture: Capture,
+}
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct Preparation {
@@ -360,7 +363,7 @@ fn first_capture(
     duration: f64,
     start_epoch: Epoch,
     ship_radius: f64,
-) -> Option<Capture> {
+) -> Result<Option<Capture>, osg_space::spatial::QueryError> {
     let mut earliest: Option<Capture> = None;
     let mut consider = |seconds, body, radius_m, physical| {
         if earliest.is_none_or(|old| seconds < old.seconds || seconds == old.seconds && physical) {
@@ -373,10 +376,12 @@ fn first_capture(
         }
     };
     if let Some(universe) = world.get_resource::<crate::sim::orrery::Universe>() {
-        for index in universe
-            .index
-            .containing_segment(origin, velocity * duration)
-        {
+        for index in universe.capture_candidates(
+            origin,
+            velocity * duration,
+            ship_radius,
+            &mut osg_space::spatial::QueryBudget::new(1_000_000),
+        )? {
             let system = universe
                 .resolve_index(index)
                 .expect("valid capture candidate");
@@ -413,16 +418,19 @@ fn first_capture(
             }
         }
     } else {
-        let scene = world.get_resource::<crate::sim::spatial::SpatialIndex>()?;
-        for record in scene.service().segment_candidates(
-            origin.to_array(),
-            origin.offset_by(velocity * duration).to_array(),
+        let Some(scene) = world.get_resource::<crate::sim::spatial::SpatialIndex>() else {
+            return Ok(None);
+        };
+        for entity in scene.hash.segment_candidates(
+            origin,
+            velocity * duration,
             ship_radius,
-        ) {
-            if record.kind != osg_spatial_bvh::RecordKind::Body {
+            &mut osg_space::spatial::QueryBudget::new(1_000_000),
+        )? {
+            let crate::sim::spatial::SpatialKey::Entity(entity) = entity else {
                 continue;
-            }
-            let Some(celestial) = world.get::<CelestialState>(Entity::from_bits(record.id)) else {
+            };
+            let Some(celestial) = world.get::<CelestialState>(entity) else {
                 continue;
             };
             if matches!(
@@ -438,12 +446,11 @@ fn first_capture(
             ] {
                 if radius > 0.0
                     && let Some(seconds) = sphere_entry(
-                        origin.relative_to(GalacticPosition::new(
-                            record.position[0],
-                            record.position[1],
-                            record.position[2],
-                        )),
-                        velocity - scene.velocities.get(&Entity::from_bits(record.id)).copied().unwrap_or_default(),
+                        origin.relative_to(
+                            scene.objects[scene.object_index(entity).expect("indexed celestial")]
+                                .position,
+                        ),
+                        velocity - scene.velocities.get(&entity).copied().unwrap_or_default(),
                         radius,
                         duration,
                     )
@@ -453,7 +460,7 @@ fn first_capture(
             }
         }
     }
-    earliest
+    Ok(earliest)
 }
 
 /// A bounded forecast records risk without constraining controller commands.
@@ -557,7 +564,8 @@ fn depart(world: &mut World, ship: Entity, preparation: &Preparation) -> Result<
             math::MIN_TRANSIT_SECONDS,
             epoch(world),
             radius(world, ship)?,
-        ) else {
+        )?
+        else {
             break;
         };
         if capture.physical || capture.seconds >= math::MIN_TRANSIT_SECONDS - 1e-8 {
@@ -637,60 +645,6 @@ fn lose_beacon(world: &mut World, ship: Entity, transit: &mut Transit) {
     emit(world, ship, "slip-beacon-lost", Some(transit.position));
 }
 
-fn arrive(world: &mut World, ship: Entity, transit: &Transit, capture: Capture) {
-    crate::sim::slip_effects::record_transition(
-        world,
-        ship,
-        transit.position,
-        transit.retained_velocity,
-        transit.direction,
-        true,
-        tick(world) * osg_model::TICK_NS + (capture.seconds * 1e9).round() as u64,
-    );
-    world
-        .get_mut::<PreciseTransform>(ship)
-        .unwrap()
-        .translation_um = transit.position;
-    world.entity_mut(ship).remove::<Transit>();
-    world
-        .entity_mut(ship)
-        .insert(Velocity(DVec3::from_array(transit.retained_velocity)));
-    set_active(world, ship);
-    if let Some(mut software) = world.get_mut::<crate::sim::vessel::ShipSoftware>(ship) {
-        software.world_actions.clear();
-    }
-    world
-        .entity_mut(ship)
-        .insert(ArrivalOffset(capture.seconds));
-    let now = tick(world);
-    if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        let arrived_system = capture.body.is_some_and(|body| {
-            matches!(travel.0.goals.first(), Some(Order::TravelToSystem(system)) if *system == body.system)
-        });
-        let intended = capture.body == transit.intended_capture || arrived_system;
-        if intended {
-            let remaining_goals = travel.0.goals.len();
-            complete_order(&mut travel.0, now);
-            if arrived_system && travel.0.goals.len() == remaining_goals {
-                travel.0.goals.remove(0);
-            }
-        } else {
-            let index = travel.0.order;
-            if let Some(stage) = travel.0.orders.get_mut(index) {
-                if let Order::Slip { destination, .. } = &stage.action {
-                    stage.action = Order::TravelTo(destination.clone());
-                    stage.label = stage.action.label();
-                }
-            }
-        }
-        if travel.0.order < travel.0.orders.len() && travel.0.autopilot_enabled {
-            travel.0.status = Status::Planning;
-            travel.0.estimated_arrival_tick = None;
-        }
-    }
-    emit(world, ship, "slip-arrived", Some(transit.position));
-}
-
 fn walk_direction(transit: &Transit, distance: f64, samples: [f64; 2]) -> (DVec3, f64) {
     let axis = DVec3::from_array(transit.nominal_direction);
     let progress = transit
@@ -728,6 +682,7 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
     let speed = transit.speed_ly_s * math::LY_M;
     let mut elapsed = 0.0;
     let mut capture = None;
+    let mut query_stalled = false;
     while elapsed < duration {
         let mut step = duration - elapsed;
         // Sample at the target plane, even when a tick spans its entire sphere.
@@ -742,14 +697,21 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
         }
         let (direction, variance) = walk_direction(&transit, speed * step, gaussian_pair());
         let velocity = direction * speed;
-        let hit = first_capture(
+        let hit = match first_capture(
             world,
             transit.position,
             velocity,
             step,
             epoch(world) + Duration::from_seconds(elapsed),
             radius(world, ship).unwrap_or(0.0),
-        );
+        ) {
+            Ok(hit) => hit,
+            Err(error) => {
+                warn!(?ship, %error, "slip motion deferred: capture query incomplete");
+                query_stalled = true;
+                break;
+            }
+        };
         let travelled = hit.map_or(step, |hit| hit.seconds);
         let previous = transit.position;
         transit.position = transit.position.offset_by(velocity * travelled);
@@ -781,8 +743,8 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
     );
     transit.consumed_fuel_g = cumulative;
     transit.advanced_tick = now + 1;
-    // Account for only the time actually spent in slipspace, including arrivals
-    // partway through a tick. Ordinary physics handles the rest of that tick.
+    // Thermal exposure uses the actual time spent in slipspace. A captured ship
+    // remains dormant for the rest of this tick and materializes at its boundary.
     if let Ok((design, mut hull, mut thermal)) = world
         .query::<(
             &ShipDesign,
@@ -794,7 +756,11 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
         thermal.0.advance_in_environment(
             &mut hull.0,
             design.0.as_ref().into(),
-            elapsed,
+            if query_stalled {
+                osg_model::TICK_SECONDS
+            } else {
+                elapsed
+            },
             osg_ships::thermal::SLIPSPACE_K,
         );
     }
@@ -813,13 +779,140 @@ fn advance_transit(world: &mut World, ship: Entity, mut transit: Transit) {
             destroy(world, ship);
             emit(world, ship, "slip-collision", Some(transit.position));
         } else {
-            arrive(world, ship, &transit, capture);
+            world
+                .entity_mut(ship)
+                .insert(PendingArrival { transit, capture });
         }
     } else if seconds_left <= osg_model::TICK_SECONDS {
         destroy(world, ship);
         emit(world, ship, "slip-fuel-exhausted", Some(transit.position));
     } else {
         world.entity_mut(ship).insert(transit);
+    }
+}
+
+#[derive(bevy::ecs::query::QueryData)]
+#[query_data(mutable)]
+pub(crate) struct Arrival {
+    entity: Entity,
+    pending: &'static PendingArrival,
+    pose: &'static mut PreciseTransform,
+    design: &'static ShipDesign,
+    identity: Option<&'static Identity>,
+    motion: Option<&'static DormantMotion>,
+    travel: Option<&'static mut Travel>,
+    software: Option<&'static mut crate::sim::vessel::ShipSoftware>,
+    parts: Option<&'static crate::sim::hardware::PartDevices>,
+    hull: Option<&'static mut crate::sim::hardware::Hull>,
+    thermal: Option<&'static mut crate::sim::hardware::ShipThermal>,
+}
+
+pub(crate) fn finish_arrivals(
+    mut commands: Commands,
+    clock: Res<SimulationCounters>,
+    mut ships: Query<Arrival>,
+    mut observations: Query<(Entity, &mut crate::sim::sensors::Observations)>,
+    mut history: ResMut<crate::sim::slip_effects::SlipHistory>,
+    mut events: ResMut<TravelEvents>,
+) {
+    let now = clock.ticks + 1;
+    for mut ship in &mut ships {
+        let transit = &ship.pending.transit;
+        let capture = ship.pending.capture;
+        if let (Some(hull), Some(thermal)) = (ship.hull.as_mut(), ship.thermal.as_mut()) {
+            thermal.0.advance(
+                &mut hull.0,
+                ship.design.0.as_ref().into(),
+                (osg_model::TICK_SECONDS - capture.seconds).max(0.0),
+            );
+        }
+        history.push_transition(osg_model::slip_visual::SlipTransition {
+            view: 0,
+            id: Id::new(),
+            time_ns: now * osg_model::TICK_NS,
+            position: transit.position,
+            drift_m_s: transit.retained_velocity,
+            direction: transit.direction,
+            arriving: true,
+            radius_m: ship.design.0.radius,
+            seed: rand::random(),
+        });
+        ship.pose.translation_um = transit.position;
+        let mut entity = commands.entity(ship.entity);
+        entity
+            .remove::<(
+                Transit,
+                PendingArrival,
+                Dormant,
+                DormantMotion,
+                SystemsSuspended,
+            )>()
+            .insert((
+                Velocity(DVec3::from_array(transit.retained_velocity)),
+                PresenceState(Presence::Space),
+                identity::SpatialInstance(Id::new()),
+            ));
+        if let Some(motion) = ship.motion {
+            entity.insert(AngularVelocity(motion.angular_velocity));
+            if motion.rigid_body {
+                entity.insert(crate::sim::physics::RigidBody);
+            }
+            if motion.collision_body {
+                entity.insert(crate::sim::physics::collision::CollisionBody);
+            }
+            if let Some(spatial) = motion.spatial {
+                entity.insert(spatial);
+            }
+        }
+        for (observer, mut observation) in &mut observations {
+            crate::sim::sensors::invalidate_observation(
+                observer,
+                &mut observation,
+                ship.entity,
+                ship.identity.map(|id| id.0),
+            );
+        }
+        if let Some(parts) = ship.parts {
+            for &part in &parts.0 {
+                commands
+                    .entity(part)
+                    .insert(crate::sim::hardware::ActiveDevice);
+            }
+        }
+        if let Some(software) = ship.software.as_mut() {
+            software.world_actions.clear();
+        }
+        if let Some(travel) = ship.travel.as_mut() {
+            let arrived_system = capture.body.is_some_and(|body| {
+                matches!(
+                    travel.0.goals.first(),
+                    Some(Order::TravelToSystem(system)) if *system == body.system
+                )
+            });
+            let intended = capture.body == transit.intended_capture || arrived_system;
+            if intended {
+                let remaining_goals = travel.0.goals.len();
+                complete_order(&mut travel.0, now);
+                if arrived_system && travel.0.goals.len() == remaining_goals {
+                    travel.0.goals.remove(0);
+                }
+            } else {
+                let index = travel.0.order;
+                if let Some(stage) = travel.0.orders.get_mut(index) {
+                    if let Order::Slip { destination, .. } = &stage.action {
+                        stage.action = Order::TravelTo(destination.clone());
+                        stage.label = stage.action.label();
+                    }
+                }
+            }
+            if travel.0.order < travel.0.orders.len() && travel.0.autopilot_enabled {
+                travel.0.status = Status::Planning;
+                travel.0.estimated_arrival_tick = None;
+            }
+        }
+        events
+            .0
+            .push((ship.entity, "slip-arrived", Some(transit.position)));
     }
 }
 
@@ -966,6 +1059,8 @@ mod tests {
         inventory.energy_j = 1_000_000_000;
         let mut world = World::new();
         world.init_resource::<SimulationCounters>();
+        world.init_resource::<TravelEvents>();
+        world.init_resource::<crate::sim::slip_effects::SlipHistory>();
         world.init_resource::<identity::IdentityIndex>();
         world.insert_resource(ShipCatalogue(catalogue.clone()));
         let ship = world
@@ -1148,17 +1243,18 @@ mod tests {
         assert!(world.get::<Transit>(ship).is_some());
         world.resource_mut::<SimulationCounters>().ticks = 129;
         advance(&mut world);
+        world.run_system_cached(finish_arrivals).unwrap();
         if world.get::<Transit>(ship).is_some() {
             world.resource_mut::<SimulationCounters>().ticks = 130;
             advance(&mut world);
+            world.run_system_cached(finish_arrivals).unwrap();
         }
         assert!(world.get::<Transit>(ship).is_none());
         assert_eq!(world.get::<PresenceState>(ship).unwrap().0, Presence::Space);
         assert_eq!(world.get::<Velocity>(ship).unwrap().0, DVec3::Y * 7.0);
-        let elapsed = (world.resource::<SimulationCounters>().ticks - 100) as f64
-            * osg_model::TICK_SECONDS
-            + world.get::<ArrivalOffset>(ship).unwrap().0;
-        assert!((elapsed - 3.0).abs() < 1e-6);
+        let elapsed = (world.resource::<SimulationCounters>().ticks + 1 - 100) as f64
+            * osg_model::TICK_SECONDS;
+        assert!((3.0..=3.1).contains(&elapsed));
         let position = world.get::<PreciseTransform>(ship).unwrap().translation_um;
         assert!((position.to_meters_64().length() - 100.0).abs() < 1e-3);
     }
@@ -1181,8 +1277,10 @@ mod tests {
             ship,
             transit(start, 18_000.0 / math::LY_M, Some(target)),
         );
-        let elapsed = world.get::<ArrivalOffset>(ship).unwrap().0;
+        let elapsed = world.get::<PendingArrival>(ship).unwrap().capture.seconds;
         assert!((elapsed - 0.05).abs() < 1e-6);
+        assert!(world.get::<Dormant>(ship).is_some());
+        assert!(world.get::<crate::sim::physics::RigidBody>(ship).is_none());
         let mut expected = state;
         let mut hull = design.hull;
         expected.advance_in_environment(&mut hull, model, elapsed, osg_ships::thermal::SLIPSPACE_K);
@@ -1190,6 +1288,13 @@ mod tests {
         assert!(actual.hull_energy_j > 0.0);
         assert_eq!(actual.hull_energy_j, expected.hull_energy_j);
         assert_eq!(world.get::<Hull>(ship).unwrap().0, hull);
+        world.run_system_cached(finish_arrivals).unwrap();
+        expected.advance(&mut hull, model, osg_model::TICK_SECONDS - elapsed);
+        assert_eq!(
+            world.get::<ShipThermal>(ship).unwrap().0.hull_energy_j,
+            expected.hull_energy_j
+        );
+        assert!(world.get::<Dormant>(ship).is_none());
     }
 
     #[test]
@@ -1406,6 +1511,7 @@ mod tests {
             start_epoch,
             10.0,
         )
+        .unwrap()
         .unwrap();
         assert!((capture.seconds - 0.025).abs() < 1e-12);
         assert!(!capture.physical);

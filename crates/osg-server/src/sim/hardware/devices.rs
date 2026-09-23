@@ -173,6 +173,7 @@ pub(crate) fn prepare_engines(
     ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::Dormant>>,
     mut devices: Query<(&InstalledPart, &Engine, &mut Demand), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_engines");
     let dt = time.delta_secs_f64();
     devices
         .par_iter_mut()
@@ -229,6 +230,8 @@ pub(crate) fn prepare_micropulse_engines(
     mut devices: Query<(&MicropulseEngine, &Device, &mut Demand), With<ActiveDevice>>,
     other_demands: Query<(&Device, &Demand), Without<MicropulseEngine>>,
 ) {
+    let _profile =
+        crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_micropulse_engines");
     let dt = time.delta_secs_f64();
     let charge = catalogue
         .0
@@ -351,6 +354,7 @@ pub(crate) fn prepare_rcs(
     ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::Dormant>>,
     mut devices: Query<(&InstalledPart, &ReactionControl, &mut Demand), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_rcs");
     let dt = time.delta_secs_f64();
     devices
         .par_iter_mut()
@@ -397,6 +401,7 @@ pub(crate) fn prepare_torquers(
     ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::Dormant>>,
     mut devices: Query<(&InstalledPart, &Torquer, &mut Demand), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_torquers");
     let dt = time.delta_secs_f64();
     devices
         .par_iter_mut()
@@ -428,6 +433,7 @@ pub(crate) fn prepare_shields(
     ships: Query<(&ShipDesign, &DeviceSettings), Without<super::super::travel::SystemsSuspended>>,
     mut devices: Query<(&InstalledPart, &Shield, &mut Demand), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_shields");
     let dt = time.delta_secs_f64();
     devices
         .par_iter_mut()
@@ -456,6 +462,7 @@ pub(crate) fn prepare_weapons(
     ships: Query<(&ShipDesign, &DeviceSettings, &Hull), Without<super::super::travel::Dormant>>,
     mut weapons: Query<(&InstalledPart, &Device, &mut Weapon), With<ActiveDevice>>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_weapons");
     weapons
         .par_iter_mut()
         .for_each(|(installed, device, mut weapon)| {
@@ -486,6 +493,8 @@ pub(crate) fn prepare_thermal_engines(
     >,
     mut devices: Query<(&InstalledPart, &ThermalEngine, &mut Demand), With<ActiveDevice>>,
 ) {
+    let _profile =
+        crate::sim::diagnostics::ProfileScope::new("hardware.devices.prepare_thermal_engines");
     let dt = time.delta_secs_f64();
     devices
         .par_iter_mut()
@@ -580,6 +589,8 @@ pub(crate) fn thermal_engine_decay(
         Has<ActiveDevice>,
     )>,
 ) {
+    let _profile =
+        crate::sim::diagnostics::ProfileScope::new("hardware.devices.thermal_engine_decay");
     let dt = time.delta_secs_f64();
     for (installed, demand, mut engine, device, active) in &mut parts {
         let Ok((outputs, mut thermal, hull, dormant)) = ships.get_mut(installed.ship) else {

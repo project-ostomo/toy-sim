@@ -250,7 +250,7 @@ impl Session {
                 super::route_service::cancel(world, ship, id)?;
             }
             Action::ChatSubscribe(subscription) => {
-                super::chat::refresh(world);
+                world.run_system_cached(super::chat::refresh)?;
                 self.chat
                     .subscribe(world, self.account, &self.views, subscription)?;
             }
@@ -259,7 +259,7 @@ impl Session {
                 subscription_revision,
                 text,
             } => {
-                super::chat::refresh(world);
+                world.run_system_cached(super::chat::refresh)?;
                 self.chat.send(
                     world,
                     self.account,
@@ -516,7 +516,7 @@ impl Session {
                         .map(|stats| CollisionDiagnostics {
                             bodies: stats.bodies as u64,
                             candidates: stats.candidates,
-                            detailed_queries: stats.detailed_queries,
+                            contact_pairs: stats.contact_pairs,
                             impacts: stats.impacts,
                             dissipated_j: stats.dissipated_j,
                         }),

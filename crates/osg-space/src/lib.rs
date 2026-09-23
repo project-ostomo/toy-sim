@@ -3,6 +3,8 @@ use std::ops::{Add, AddAssign, Sub, SubAssign};
 use glam::{DVec3, Vec3};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub mod spatial;
+
 /// Absolute coordinates (or relative displacements) in integer micrometres.
 /// Subtract positions before converting to floating point to preserve local detail.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]

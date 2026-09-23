@@ -6,12 +6,12 @@
 use bevy_dylib as _;
 
 mod blueprint_uploads;
+#[cfg(feature = "collision-prototype")]
+pub mod collision_prototype;
 pub mod launch;
 pub mod persistence;
 pub mod provision;
 mod sim;
-#[cfg(feature = "collision-prototype")]
-pub mod collision_prototype;
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
 use blueprint_uploads::{BlueprintUploadBudget, BlueprintUploads};

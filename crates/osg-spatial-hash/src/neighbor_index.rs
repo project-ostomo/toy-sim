@@ -86,18 +86,31 @@ impl NeighborIndex {
         radius: i64,
         finer: usize,
     ) -> impl Iterator<Item = (&'a Record<T, M>, f64)> {
+        let radius_squared = (radius as f64) * (radius as f64);
+        self.candidates(records, position, radius, finer)
+            .filter(move |(_, distance)| *distance <= radius_squared)
+    }
+
+    /// Includes cell candidates outside the requested sphere so budgeted callers
+    /// can charge work before exact distance filtering.
+    pub(crate) fn candidates<'a, T, M>(
+        &'a self,
+        records: &'a Slab<Record<T, M>>,
+        position: Position,
+        radius: i64,
+        finer: usize,
+    ) -> impl Iterator<Item = (&'a Record<T, M>, f64)> {
         let shift = 64 - (radius.max(1) as u64 - 1).leading_zeros();
         let level = (shift
             .saturating_sub(self.minimum_shift)
             .div_ceil(SHIFT_STEP) as usize)
             .saturating_sub(finer);
-        let radius_squared = (radius as f64) * (radius as f64);
         self.hashes[level]
             .nearest(position, radius)
-            .filter_map(move |&key| {
+            .map(move |&key| {
                 let record = &records[key];
                 let distance = distance_squared(position, record.position);
-                (distance <= radius_squared).then_some((record, distance))
+                (record, distance)
             })
     }
 

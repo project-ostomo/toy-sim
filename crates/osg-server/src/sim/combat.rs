@@ -1,10 +1,7 @@
 use super::{
     hardware::ShipInventory,
     identity::{Appearance, Identity},
-    physics::{
-        Velocity,
-        collision::{Projectile, Report},
-    },
+    physics::{Velocity, collision::Projectile},
     session::Events,
 };
 use bevy::prelude::*;
@@ -12,7 +9,7 @@ use osg_model::{CombatEvent, CombatEventKind, Event, GalacticPosition, Id, Pose}
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 #[derive(Component, Clone, Copy)]
-struct TraceId(u64);
+pub(crate) struct TraceId(u64);
 
 #[derive(Resource, Default)]
 pub struct CombatHistory(VecDeque<Recorded>);
@@ -66,14 +63,29 @@ fn nanoseconds(seconds: f64) -> u64 {
     (seconds.max(0.0) * 1e9).round() as u64
 }
 
-pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
+pub fn ingest(
+    mut commands: Commands,
+    report: Res<super::physics::collision::CollisionReport>,
+    identities: Query<&Identity>,
+    velocities: Query<&Velocity>,
+    projectiles: Query<&Projectile>,
+    traces: Query<&TraceId>,
+    inventories: Query<&ShipInventory>,
+    appearances: Query<&Appearance>,
+    mut events: ResMut<Events>,
+    mut history: ResMut<CombatHistory>,
+) {
+    let epoch = report.epoch;
+    let report = &report.report;
+    let mut allocated = BTreeMap::new();
     let mut pending = Vec::new();
     for shot in &report.shots {
-        let Some(source) = world.get::<Identity>(shot.owner).map(|id| id.0) else {
+        let Some(source) = identities.get(shot.owner).ok().map(|id| id.0) else {
             continue;
         };
-        let velocity = world
-            .get::<Velocity>(shot.owner)
+        let velocity = velocities
+            .get(shot.owner)
+            .ok()
             .map_or(bevy::math::DVec3::ZERO, |v| v.0);
         pending.push((
             nanoseconds(epoch + shot.time),
@@ -85,7 +97,7 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         ));
     }
     for beam in &report.beam_traces {
-        let Some(source) = world.get::<Identity>(beam.owner).map(|id| id.0) else {
+        let Some(source) = identities.get(beam.owner).ok().map(|id| id.0) else {
             continue;
         };
         pending.push((
@@ -100,25 +112,29 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         ));
     }
     for segment in &report.motion {
-        let Some((owner, radius)) = world
-            .get::<Projectile>(segment.entity)
+        let Some((owner, radius)) = projectiles
+            .get(segment.entity)
+            .ok()
             .map(|projectile| (projectile.launch_owner, projectile.radius_m))
         else {
             continue;
         };
         let Some(source) = owner
-            .and_then(|owner| world.get::<Identity>(owner))
+            .and_then(|owner| identities.get(owner).ok())
             .map(|id| id.0)
         else {
             continue;
         };
-        let id = if let Some(id) = world.get::<TraceId>(segment.entity) {
-            id.0
-        } else {
-            let id = rand::random();
-            world.entity_mut(segment.entity).insert(TraceId(id));
-            id
-        };
+        let id = traces
+            .get(segment.entity)
+            .map(|id| id.0)
+            .unwrap_or_else(|_| {
+                *allocated.entry(segment.entity).or_insert_with(|| {
+                    let id = rand::random();
+                    commands.entity(segment.entity).insert(TraceId(id));
+                    id
+                })
+            });
         pending.push((
             nanoseconds(epoch + segment.start),
             RecordedKind::Projectile {
@@ -143,7 +159,7 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         }
         let targets = impact
             .entities
-            .map(|entity| world.get::<Identity>(entity).map(|id| id.0));
+            .map(|entity| identities.get(entity).ok().map(|id| id.0));
         if targets.iter().all(Option::is_none) {
             continue;
         }
@@ -163,11 +179,12 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         if death.projectile {
             continue;
         }
-        let Some(target) = world.get::<Identity>(death.entity).map(|id| id.0) else {
+        let Some(target) = identities.get(death.entity).ok().map(|id| id.0) else {
             continue;
         };
-        let electrical = world
-            .get::<ShipInventory>(death.entity)
+        let electrical = inventories
+            .get(death.entity)
+            .ok()
             .map_or(0.0, |inventory| inventory.0.energy_j as f64);
         pending.push((
             nanoseconds(epoch + death.time),
@@ -179,8 +196,9 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
                     velocity: death.velocity.to_array(),
                     angular_velocity: death.angular_velocity.to_array(),
                 },
-                appearance: world
-                    .get::<Appearance>(death.entity)
+                appearance: appearances
+                    .get(death.entity)
+                    .ok()
                     .map(|appearance| appearance.0),
                 energy: death.thermal.hull_energy_j
                     + death.thermal.shield_energy_j
@@ -192,53 +210,38 @@ pub fn ingest(world: &mut World, report: &Report, epoch: f64) {
         ));
     }
     pending.sort_by_key(|(time, _)| *time);
-    append(world, pending, "combat", None);
-}
-
-fn append(
-    world: &mut World,
-    pending: Vec<(u64, RecordedKind)>,
-    event_kind: &str,
-    subject: Option<Id>,
-) {
-    world.init_resource::<Events>();
-    world.init_resource::<CombatHistory>();
-    world.resource_scope(|world, mut history: Mut<CombatHistory>| {
-        let mut events = world.resource_mut::<Events>();
-        for (time_ns, kind) in pending {
-            let sequence = events.0.back().map_or(1, |event| event.sequence + 1);
-            events.0.push_back(Event {
-                sequence,
-                tick: time_ns.div_ceil(osg_model::TICK_NS),
-                subject,
-                kind: event_kind.into(),
-                position: None,
-            });
-            history.0.push_back(Recorded {
-                sequence,
-                time_ns,
-                kind,
-            });
-        }
-    });
-}
-
-pub fn flush_travel(world: &mut World) {
-    let Some(mut events) = world.get_resource_mut::<super::travel::TravelEvents>() else {
-        return;
-    };
-    let pending = std::mem::take(&mut events.0);
-    world.init_resource::<Events>();
-    for (entity, kind, _) in pending {
-        let subject = world.get::<Identity>(entity).map(|id| id.0);
-        let tick = world
-            .resource::<super::simulation::SimulationCounters>()
-            .ticks;
-        let mut events = world.resource_mut::<Events>();
+    for (time_ns, kind) in pending {
         let sequence = events.0.back().map_or(1, |event| event.sequence + 1);
         events.0.push_back(Event {
             sequence,
-            tick,
+            tick: time_ns.div_ceil(osg_model::TICK_NS),
+            subject: None,
+            kind: "combat".into(),
+            position: None,
+        });
+        history.0.push_back(Recorded {
+            sequence,
+            time_ns,
+            kind,
+        });
+    }
+}
+
+pub fn flush_travel(
+    pending: Option<ResMut<super::travel::TravelEvents>>,
+    mut events: ResMut<Events>,
+    clock: Res<super::simulation::SimulationCounters>,
+    identities: Query<&Identity>,
+) {
+    let Some(mut pending) = pending else {
+        return;
+    };
+    for (entity, kind, _) in pending.0.drain(..) {
+        let subject = identities.get(entity).ok().map(|id| id.0);
+        let sequence = events.0.back().map_or(1, |event| event.sequence + 1);
+        events.0.push_back(Event {
+            sequence,
+            tick: clock.ticks,
             subject,
             kind: kind.into(),
             position: None,
@@ -376,6 +379,7 @@ pub fn for_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::physics::collision::Report;
     use bevy::math::{DQuat, DVec3};
 
     fn observed(id: Id, _unused: f64) -> BTreeMap<Id, Id> {
@@ -423,7 +427,13 @@ mod tests {
                     ..Default::default()
                 },
             });
-        ingest(&mut world, &report, 10.0);
+        world.init_resource::<Events>();
+        world.init_resource::<CombatHistory>();
+        world.insert_resource(super::super::physics::collision::CollisionReport {
+            epoch: 10.0,
+            report,
+        });
+        world.run_system_cached(ingest).unwrap();
         world.despawn(ship);
         assert!(
             for_session(
@@ -517,7 +527,8 @@ mod tests {
             "gate-transferred",
             None,
         )]));
-        flush_travel(&mut world);
+        world.init_resource::<Events>();
+        world.run_system_cached(flush_travel).unwrap();
         assert!(
             world
                 .resource::<super::super::travel::TravelEvents>()
@@ -558,7 +569,13 @@ mod tests {
                 radius_m: 0.1,
             })
             .collect();
-        ingest(&mut world, &report, 0.0);
+        world.init_resource::<Events>();
+        world.init_resource::<CombatHistory>();
+        world.insert_resource(super::super::physics::collision::CollisionReport {
+            epoch: 0.0,
+            report,
+        });
+        world.run_system_cached(ingest).unwrap();
         let history = world.resource::<CombatHistory>();
         let markers = world.resource::<Events>();
         assert_eq!(history.0.len(), 8197);

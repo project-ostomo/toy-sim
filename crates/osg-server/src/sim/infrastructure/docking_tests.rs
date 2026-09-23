@@ -144,8 +144,15 @@ fn stock_computer_docks_from_default_spawn_without_entering_station() {
             status: osg_model::travel::Status::Planning,
             ..default()
         }),));
-    let minimum_distance = world.get::<vessel::ShipDesign>(station).unwrap().0.radius
-        + world.get::<vessel::ShipDesign>(player).unwrap().0.radius;
+    let player_shape = crate::sim::physics::collision::Geometry::ship(
+        &world.get::<vessel::ShipDesign>(player).unwrap().0,
+    )
+    .surface;
+    let station_shape = crate::sim::physics::collision::Geometry::ship(
+        &world.get::<vessel::ShipDesign>(station).unwrap().0,
+    )
+    .surface;
+    finish_route_planning(world, player);
     for _ in 0..3000 {
         app.update();
         if matches!(
@@ -157,13 +164,22 @@ fn stock_computer_docks_from_default_spawn_without_entering_station() {
         let world = app.world();
         let player_pose = super::super::session::ship_pose(world, player).unwrap();
         let station_pose = super::super::session::ship_pose(world, station).unwrap();
+        let intersects = rapier3d_f64::parry::query::intersection_test(
+            &crate::sim::physics::collision::pose(
+                player_pose.position.relative_to(station_pose.position),
+                bevy::math::DQuat::from_array(player_pose.rotation),
+            ),
+            player_shape.as_ref(),
+            &crate::sim::physics::collision::pose(
+                DVec3::ZERO,
+                bevy::math::DQuat::from_array(station_pose.rotation),
+            ),
+            station_shape.as_ref(),
+        )
+        .unwrap();
         assert!(
-            player_pose
-                .position
-                .relative_to(station_pose.position)
-                .length()
-                >= minimum_distance,
-            "autopilot entered station collision envelope: player {player_pose:?}, station {station_pose:?}, travel {:?}, navigation {:?}",
+            !intersects,
+            "autopilot entered station hull: player {player_pose:?}, station {station_pose:?}, travel {:?}, navigation {:?}",
             world.get::<travel::Travel>(player).unwrap().0,
             world
                 .get::<vessel::ShipSoftware>(player)

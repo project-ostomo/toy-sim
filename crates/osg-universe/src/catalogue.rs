@@ -1,9 +1,6 @@
 use crate::precision::GalacticPosition;
 use glam::DVec3;
-use osg_spatial_bvh::{
-    Aabb, BvhEntry, OPTICAL_LUMENS_PER_WATT, RecordKind, SpatialRecord, SpatialService,
-};
-use std::{f64::consts::PI, sync::Arc};
+use osg_space::spatial::{GalacticIndex, QueryBudget, SpatialRecord};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -15,52 +12,52 @@ pub struct Entry {
 
 pub struct CatalogueIndex {
     pub entries: Vec<Entry>,
-    pub spatial: Arc<SpatialService<SpatialRecord>>,
+    pub spatial: GalacticIndex<usize>,
 }
 
 impl CatalogueIndex {
     pub fn new(entries: Vec<Entry>) -> Self {
-        let spatial = Arc::new(SpatialService::new(entries.iter().enumerate().map(
-            |(slot, entry)| BvhEntry {
-                object: SpatialRecord {
-                    kind: RecordKind::Source,
-                    id: slot as u64,
-                    position: entry.position.to_array(),
-                    radius_m: entry.influence.max(entry.radius),
-                },
-                bounds: Aabb::sphere(entry.position.to_array(), entry.influence.max(entry.radius)),
-                luminosity: entry.luminosity / OPTICAL_LUMENS_PER_WATT,
-            },
-        )));
+        let mut spatial = GalacticIndex::new();
+        for (id, entry) in entries.iter().enumerate() {
+            spatial
+                .insert(
+                    id,
+                    SpatialRecord {
+                        position: entry.position,
+                        radius_m: entry.influence.max(entry.radius),
+                        luminosity: entry.luminosity,
+                    },
+                )
+                .expect("catalogue fits spatial coordinate range");
+        }
         Self { entries, spatial }
     }
 
     pub fn brightest(&self, origin: GalacticPosition) -> Option<usize> {
-        self.spatial
-            .brightest(origin.to_array(), |r| {
-                let luminosity = self.entries[r.id as usize].luminosity;
-                (r.kind == RecordKind::Source && luminosity > 0.0).then(|| {
-                    luminosity
-                        / (4.0
-                            * PI
-                            * OPTICAL_LUMENS_PER_WATT
-                            * r.distance(origin.to_array()).powi(2).max(1.0))
-                })
+        let nearest = self
+            .spatial
+            .nearest(origin, false, &mut QueryBudget::new(usize::MAX), |id| {
+                self.entries[id].luminosity > 0.0
             })
-            .map(|r| r.id as usize)
+            .expect("catalogue query coordinates")
+            .map(|(id, _)| id)?;
+        let flux = |id: usize| {
+            let entry = &self.entries[id];
+            entry.luminosity / entry.position.relative_to(origin).length_squared().max(1.0)
+        };
+        self.spatial
+            .visibility_candidates(origin, flux(nearest), 0.0)
+            .expect("catalogue query coordinates")
+            .into_iter()
+            .max_by(|&a, &b| flux(a).total_cmp(&flux(b)))
     }
 
     pub fn visible(&self, origin: GalacticPosition, min_brightness: f64) -> Vec<usize> {
         let mut found: Vec<_> = self
             .spatial
-            .visibility_candidates(
-                origin.to_array(),
-                0.0,
-                min_brightness.max(0.0) / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
-            )
+            .visibility_candidates(origin, min_brightness.max(0.0), 0.0)
+            .expect("catalogue query coordinates")
             .into_iter()
-            .filter(|r| r.kind == RecordKind::Source)
-            .map(|r| r.id as usize)
             .filter(|&id| {
                 let entry = &self.entries[id];
                 entry.luminosity
@@ -72,41 +69,26 @@ impl CatalogueIndex {
     }
 
     pub fn containing_segment(&self, start: GalacticPosition, displacement: DVec3) -> Vec<usize> {
-        let mut found: Vec<_> = self
+        if displacement == DVec3::ZERO {
+            return self.intersecting_sphere(start, 0.0);
+        }
+        let mut found = self
             .spatial
-            .segment_candidates(
-                start.to_array(),
-                start.offset_by(displacement).to_array(),
-                0.0,
-            )
-            .into_iter()
-            .filter(|r| r.kind == RecordKind::Source)
-            .filter(|r| {
-                let p = self.entries[r.id as usize].position.relative_to(start);
-                let t = if displacement.length_squared() > 0.0 {
-                    (p.dot(displacement) / displacement.length_squared()).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                (p - t * displacement).length_squared()
-                    <= r.radius_m.powi(2) * (1.0 + 64.0 * f64::EPSILON)
-            })
-            .map(|r| r.id as usize)
-            .collect();
+            .segment_candidates(start, displacement, 0.0, &mut QueryBudget::new(usize::MAX))
+            .expect("catalogue query coordinates");
         found.sort_unstable();
         found
     }
 
     pub fn intersecting_sphere(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
         self.spatial
-            .sphere_candidates(centre.to_array(), radius)
+            .within_radius(centre, radius, true)
+            .expect("catalogue query coordinates")
             .into_iter()
-            .filter(|r| {
-                r.kind == RecordKind::Source
-                    && r.distance(centre.to_array())
-                        <= radius + self.entries[r.id as usize].influence
+            .filter(|&id| {
+                self.entries[id].position.relative_to(centre).length()
+                    <= radius + self.entries[id].influence
             })
-            .map(|r| r.id as usize)
             .collect()
     }
 
@@ -121,19 +103,17 @@ impl CatalogueIndex {
         threshold: f64,
     ) -> Vec<usize> {
         self.spatial
-            .visibility_candidates(
-                origin.to_array(),
-                radius,
-                threshold / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
-            )
+            .visibility_candidates(origin, threshold, radius)
+            .expect("catalogue query coordinates")
             .into_iter()
-            .filter(|r| r.kind == RecordKind::Source)
-            .filter(|r| {
-                let distance = (r.distance(origin.to_array()) - radius - r.radius_m).max(0.0);
-                distance == 0.0
-                    || self.entries[r.id as usize].luminosity >= threshold * distance.powi(2)
+            .filter(|&id| {
+                let entry = &self.entries[id];
+                let distance = (entry.position.relative_to(origin).length()
+                    - radius
+                    - entry.influence.max(entry.radius))
+                .max(0.0);
+                distance == 0.0 || entry.luminosity >= threshold * distance.powi(2)
             })
-            .map(|r| r.id as usize)
             .collect()
     }
 
@@ -148,12 +128,10 @@ impl CatalogueIndex {
         accept: impl Fn(usize) -> bool,
     ) -> Vec<usize> {
         self.spatial
-            .nearest(origin.to_array(), f64::INFINITY, count, |r| {
-                (r.kind == RecordKind::Source && accept(r.id as usize))
-                    .then(|| r.distance(origin.to_array()))
-            })
+            .nearest_many(origin, count, &mut QueryBudget::new(usize::MAX), accept)
+            .expect("catalogue query coordinates")
             .into_iter()
-            .map(|r| r.id as usize)
+            .map(|(id, _)| id)
             .collect()
     }
 

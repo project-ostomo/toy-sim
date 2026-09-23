@@ -1,4 +1,4 @@
-//! Immutable star records and luminosity-bucket KD-trees. No Bevy or database dependency.
+//! Immutable star records indexed by luminosity and spatial hashes.
 mod catalogue;
 mod format;
 pub use catalogue::{StarCatalogue, VisibilityQuery, VisibleStars};

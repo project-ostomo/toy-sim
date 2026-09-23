@@ -1,20 +1,16 @@
 use crate::{GalacticPosition, Star, StarId, min_brightness};
 use anyhow::{Result, ensure};
-use osg_spatial_bvh::{
-    Aabb, BvhEntry, OPTICAL_LUMENS_PER_WATT, QueryBudget, RecordKind, SpatialQuery, SpatialRecord,
-    SpatialService,
-};
+use osg_space::spatial::{GalacticIndex, QueryBudget, SpatialRecord};
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap},
 };
-use std::{f64::consts::PI, sync::Arc};
 
 /// Immutable after construction; share with Arc for lock-free read-only queries.
 pub struct StarCatalogue {
     stars: Vec<Star>,
     identities: HashMap<StarId, usize>,
-    index: Arc<SpatialService<SpatialRecord>>,
+    index: GalacticIndex<usize>,
 }
 #[derive(Clone, Copy)]
 pub struct VisibilityQuery<'a> {
@@ -37,7 +33,6 @@ pub struct VisibleStars {
     pub indices: Vec<usize>,
     pub matched: usize,
     pub candidates: usize,
-    pub nodes_visited: usize,
 }
 #[derive(PartialEq)]
 struct Ranked {
@@ -63,27 +58,17 @@ impl StarCatalogue {
         for star in &stars {
             star.validate()?;
         }
-        let index = Arc::new(SpatialService::new(stars.iter().enumerate().map(
-            |(id, star)| BvhEntry {
-                object: SpatialRecord {
-                    kind: RecordKind::Source,
-                    id: id as u64,
-                    position: star.position.to_array(),
+        let mut index = GalacticIndex::new();
+        for (id, star) in stars.iter().enumerate() {
+            index.insert(
+                id,
+                SpatialRecord {
+                    position: star.position,
                     radius_m: 0.0,
+                    luminosity: star.luminosity,
                 },
-                bounds: Aabb::sphere(star.position.to_array(), 0.0),
-                luminosity: star.luminosity / OPTICAL_LUMENS_PER_WATT,
-            },
-        )));
-        Self::from_shared(stars, index)
-    }
-
-    /// Attach catalogue metadata to the universe's existing source records.
-    /// Source IDs must match the supplied star order.
-    pub fn from_shared(
-        stars: Vec<Star>,
-        index: Arc<SpatialService<SpatialRecord>>,
-    ) -> Result<Self> {
+            )?;
+        }
         ensure!(stars.len() <= u32::MAX as usize, "too many stars");
         let mut identities = HashMap::with_capacity(stars.len());
         for (index, star) in stars.iter().enumerate() {
@@ -109,9 +94,6 @@ impl StarCatalogue {
     pub fn is_empty(&self) -> bool {
         self.stars.is_empty()
     }
-    pub fn node_count(&self) -> usize {
-        self.index.node_count()
-    }
     pub fn star(&self, id: StarId) -> Option<&Star> {
         self.identities.get(&id).map(|&i| &self.stars[i])
     }
@@ -121,13 +103,7 @@ impl StarCatalogue {
             radius.is_finite() && radius >= 0.,
             "radius must be finite and nonnegative"
         );
-        let mut found: Vec<_> = self
-            .index
-            .sphere_candidates(origin.to_array(), radius)
-            .into_iter()
-            .filter(|r| r.kind == RecordKind::Source && r.distance(origin.to_array()) <= radius)
-            .map(|r| r.id as usize)
-            .collect();
+        let mut found: Vec<_> = self.index.within_radius(origin, radius, false)?;
         found.sort_unstable();
         Ok(found)
     }
@@ -135,17 +111,7 @@ impl StarCatalogue {
     pub fn nearest(&self, origin: GalacticPosition) -> Result<Option<(usize, f64)>> {
         Ok(self
             .index
-            .nearest(origin.to_array(), f64::INFINITY, 1, |r| {
-                (r.kind == RecordKind::Source).then(|| r.distance(origin.to_array()))
-            })
-            .first()
-            .map(|record| {
-                let index = record.id as usize;
-                (
-                    index,
-                    self.stars[index].position.relative_to(origin).length(),
-                )
-            }))
+            .nearest(origin, false, &mut QueryBudget::new(usize::MAX), |_| true)?)
     }
 
     pub fn visible(
@@ -157,26 +123,15 @@ impl StarCatalogue {
             query.min_brightness.is_finite() && query.min_brightness >= 0.,
             "brightness threshold must be finite and nonnegative"
         );
-        let mut cursor = self.index.query(SpatialQuery::Visibility {
-            observer: origin.to_array(),
-            observer_radius_m: 0.0,
-            min_flux_w_m2: query.min_brightness / (4.0 * PI * OPTICAL_LUMENS_PER_WATT),
-        });
-        let visible = cursor.advance(QueryBudget {
-            max_work: usize::MAX,
-            max_results: usize::MAX,
-        });
+        let visible = self
+            .index
+            .visibility_candidates(origin, query.min_brightness, 0.0)?;
         let mut result = VisibleStars {
-            candidates: visible.stats.objects_tested,
-            nodes_visited: visible.stats.nodes_visited,
+            candidates: visible.len(),
             ..Default::default()
         };
         let mut best = BinaryHeap::new();
-        for record in visible.objects {
-            if record.kind != RecordKind::Source {
-                continue;
-            }
-            let index = record.id as usize;
+        for index in visible {
             let star = &self.stars[index];
             if query.excluded.contains(&star.id) {
                 continue;

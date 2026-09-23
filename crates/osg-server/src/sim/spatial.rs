@@ -10,7 +10,7 @@ pub struct SpatialBody {
 
 mod index;
 mod lighting;
-pub use index::{SpatialIndex, SpatialObject, sphere_blocks, sphere_fully_blocks};
+pub use index::{SpatialIndex, SpatialKey, SpatialObject, sphere_blocks, sphere_fully_blocks};
 
 #[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SensorSystems {
@@ -25,36 +25,23 @@ impl Plugin for SpatialPlugin {
             FixedLast,
             (SensorSystems::Index, SensorSystems::Scan).chain(),
         );
+        app.add_systems(
+            FixedLast,
+            collect
+                .in_set(SensorSystems::Index)
+                .run_if(in_state(super::GameState::Game)),
+        );
     }
 }
 
 pub(crate) fn rebuild(world: &mut World) {
-    rebuild_with_collisions(world, Vec::new());
-}
-
-pub(crate) fn rebuild_with_collisions(
-    world: &mut World,
-    collisions: Vec<osg_spatial_bvh::DynamicEntry<osg_spatial_bvh::SpatialRecord>>,
-) {
-    let started = std::time::Instant::now();
     world.init_resource::<SpatialIndex>();
     world
         .run_system_cached(collect)
         .expect("collect spatial records");
-    let collect_ms = started.elapsed().as_secs_f64() * 1000.;
-    let mut index = world.resource_mut::<SpatialIndex>();
-    index.collision_entries = collisions;
-    index.finish_geometry();
-    debug!(
-        objects = index.objects.len(),
-        collisions = index.collision_entries.len(),
-        collect_ms,
-        total_ms = started.elapsed().as_secs_f64() * 1000.,
-        "spatial service rebuilt"
-    );
 }
 
-fn collect(
+pub(crate) fn collect(
     mut index: ResMut<SpatialIndex>,
     bodies: Query<
         (
@@ -75,6 +62,14 @@ fn collect(
         ),
     >,
     devices: Query<&super::hardware::Device>,
+    projectiles: Query<
+        (
+            Entity,
+            &super::physics::collision::Projectile,
+            &PreciseTransform,
+        ),
+        Without<super::travel::Dormant>,
+    >,
     universe: Option<Res<super::orrery::Universe>>,
     time: Option<Res<Time<Fixed>>>,
     clock: Option<Res<super::simulation::SimulationCounters>>,
@@ -84,6 +79,7 @@ fn collect(
     index
         .sky
         .set_universe(universe.map(|universe| universe.0.clone()));
+    index.seed_catalogue();
     index.sky.epoch = time.as_ref().map_or_else(hifitime::Epoch::default, |time| {
         super::physics::sim_time(&**time)
     });
@@ -142,6 +138,10 @@ fn collect(
             non_celestial = index.objects.len() - celestial_count,
             "spatial population");
     }
+    for (entity, projectile, pose) in &projectiles {
+        index.insert_collision(entity, pose.translation_um, projectile.radius_m);
+    }
+    index.finish_geometry();
     // Exact illumination is evaluated only when an optical observer requests it.
 }
 

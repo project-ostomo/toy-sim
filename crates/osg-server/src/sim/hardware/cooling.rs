@@ -66,6 +66,7 @@ pub fn run(
     >,
     mut parts: Query<(&mut Device, Option<&Radiator>, Option<&EmergencyCooling>)>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.cooling.run");
     let dt = time.delta_secs_f64();
     let water = cat.0.resources.iter().position(|r| r.id == "water");
     for (design, installed, hull, mut thermal, mut inventory, transit) in &mut ships {
