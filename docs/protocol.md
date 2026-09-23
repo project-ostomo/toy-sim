@@ -769,6 +769,41 @@ Each ship has a bounded request queue, and a compound request may need several
 free entries. Admission does not guarantee fuel, power, a firing solution or
 later physical completion.
 
+#### Example: engaging a target
+
+A ship can target only what its own sensors currently detect. It names the
+target by a `ContactRef` from `contacts`, not by the target's UUID. Combat is
+reported through optical IDs, so a client links shots to targets through the
+observation's `contact` field.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    Note over C: State: contacts[ship] includes handle 42
+    C->>S: Ship { ship, rev, MarkTarget { ContactRef(ship, 42), max flight 10 s } }
+    C->>S: Ship { ship, rev, StartFiring }
+    S->>C: State: two results, error = None
+    Note over C: Admission only. Firing needs a valid mark when it executes.
+    loop While firing
+        S->>C: State: presentation.combat Fired, Projectile, Beam, Impact
+        S->>C: State: weapon instrument inhibit flags and status (if subscribed)
+    end
+    alt Target destroyed
+        S->>C: State: combat Destroyed { target optical ID, pose, appearance }
+        S->>C: State: contact 42 absent from contacts
+    else Contact lost (occlusion, range, relocation)
+        S->>C: State: contact 42 absent from contacts
+        C->>S: Ship { ship, rev, Aim { ContactRef(ship, 42) } }
+        S->>C: State: result error (contact no longer current)
+    end
+    C->>S: Ship { ship, rev, UnmarkTarget }
+```
+
+The weapon-inhibit bits in the instrument data tell the client why a ship
+isn't firing, for example `cooldown`, `pointing` or `energy`
+([Appendix C](#appendix-c-numeric-codes)).
+
 ### Travel
 
 `SetTravel` replaces the ship's travel goals. It carries the expected current
@@ -839,6 +874,40 @@ revision changes alone do not expire a plan. A plan is advisory until it is
 committed, and physical admission is checked again during execution.
 
 Queue sizes, cache size and plan size are in [Appendix B](#appendix-b-limits).
+
+#### Example: plan a trip, then fly and dock
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    Note over C: Telemetry: authority_revision 5, travel.revision 12
+    C->>S: RouteRequest { ship, 5, id 7, [TravelTo(Beacon B), Dock(station)] }
+    S->>C: State: result reply Route { 7, Pending { progress } }
+    loop Until Ready or Failed
+        C->>S: RoutePoll { ship, 5, id 7 } with a new command ID
+        S->>C: State: result reply Route { 7, Pending, Ready { plan } or Failed }
+    end
+    Note over C: Show plan: orders, fuel budget, loss ppm, exotic fuel
+    C->>S: Ship { ship, 5, UseRoute { id 7, expected_revision 12, engage true } }
+    S->>C: State: result error = None
+    Note over C: travel.revision now 13
+    loop In flight
+        S->>C: State: travel.status Active, travel.order advances, estimates
+    end
+    opt Slip leg
+        S->>C: State: event slip-departed, presence SlipTransit
+        S->>C: State: event slip-arrived, presence Space
+    end
+    S->>C: State: event docked, presence Docked { station, bay }
+    S->>C: State: travel.status Completed
+```
+
+If another controller changes the travel queue first, the revision no longer
+matches and `UseRoute` fails with an action error. The client then re-reads
+`travel.revision` and plans again. Using `SetTravel` directly with the same
+orders skips the preview: the server plans and starts flying in one step, and
+planning progress appears in `travel.planning` and `travel.status`.
 
 ---
 
@@ -993,6 +1062,29 @@ the server.
 
 Remote management does not imply remote cargo movement. Failures are action
 errors. Jobs and reservations appear in later industry snapshots.
+
+#### Example: dock, trade and refuel
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    C->>S: Ship { ship, rev, Dock { station, bay 0 } }
+    S->>C: State: result error = None
+    S->>C: State: event docked, presence Docked { station, 0 }
+    C->>S: IndustrySubscribe { revision 1, inventories [ship, station], catalogue true }
+    S->>C: State: industry snapshot (stacks for ship and station, catalogue)
+    C->>S: Industry Transfer { source ship, target station, Resource(ore), 500 }
+    C->>S: Industry Refill { source station, ship, resource fuel, 200 }
+    S->>C: State: two results, error = None
+    S->>C: State: industry snapshot (updated stacks)
+    C->>S: Ship { ship, rev, Undock }
+    S->>C: State: event undocked, presence Space
+    Note over C: Transfers need physical reachability at both ends.
+```
+
+Resource names in the example (`ore`, `fuel`) are placeholders for IDs from the
+server's catalogue.
 
 ---
 
