@@ -56,18 +56,21 @@ Each connection is one TCP stream carrying these layers, outermost first:
 
 ```mermaid
 flowchart TB
-    tcp["TCP byte stream"]
-    rec["Plaintext hello, then ChaCha20-Poly1305 records<br/>(one sequence counter per direction)"]
-    zstd["Zstandard stream per direction<br/>(starts after authentication)"]
-    mux["picomux: independently half-closable logical streams"]
-    main["<code>main</code><br/>length-prefixed Postcard Messages"]
-    assets["<code>assets</code><br/>hash in → raw bytes out"]
-    upload["<code>blueprint-upload</code><br/>file in → Postcard ack out"]
-    tcp --> rec --> zstd --> mux
-    mux --> main
-    mux --> assets
-    mux --> upload
+    tcp[TCP] --> rec[Encrypted records] --> zstd[Zstandard] --> mux[picomux]
+    mux --> main[main]
+    mux --> assets[assets]
+    mux --> upload[blueprint-upload]
 ```
+
+| Layer | Role | Section |
+| --- | --- | --- |
+| TCP | One bidirectional byte stream per connection | — |
+| Encrypted records | Plaintext hellos, then ChaCha20-Poly1305 records with one sequence counter per direction | [Handshake](#handshake), [Encrypted records](#encrypted-records) |
+| Zstandard | One continuous compression stream per direction, starting after authentication | [Compression](#compression) |
+| picomux | Independently half-closable logical streams | [Multiplexing](#multiplexing) |
+| `main` | Length-prefixed Postcard Messages for the whole session | [The main stream](#the-main-stream) |
+| `assets` | Send a hash, receive raw bytes | [Asset downloads](#asset-downloads) |
+| `blueprint-upload` | Send a file, receive a Postcard acknowledgement | [Blueprint upload](#blueprint-upload) |
 
 TCP reads, encrypted records, compressed chunks, mux frames and application
 messages all have independent boundaries. At every layer, accumulate exact
