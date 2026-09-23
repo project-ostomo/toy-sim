@@ -331,7 +331,9 @@ fn benchmark_luminosity(c: &mut Criterion, stars: &[Star], random_points: &[Star
                 iterations,
                 map,
                 random_points,
-                |map, star| map.insert(star.id, star.position, star.brightness),
+                |map, star| {
+                    map.insert(star.id, star.position, star.brightness);
+                },
                 |map, id| map.remove(id),
             )
         });

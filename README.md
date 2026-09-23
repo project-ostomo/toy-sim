@@ -172,7 +172,8 @@ Assembly mode: click to place or select a part, right-drag to orbit, middle-drag
 
 | Guide | Topic |
 | --- | --- |
-| [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, wire format, handshake, sensor and visual observations, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
+| [docs/protocol.md](docs/protocol.md) | Independent network protocol specification, complete payload schemas, authentication, session behavior, assets and conformance vectors |
+| [docs/server-client.md](docs/server-client.md) | The server process, debug launcher, configuration, sensor and visual observations, presentation, display instances, docking and travel, client playback and UI, and the benchmark |
 | [docs/industry.md](docs/industry.md) | Factories, material reservations, ship construction, cargo transfers and commissioning |
 | [docs/persistence.md](docs/persistence.md) | SQLite world snapshots, restoration and durable ship programs |
 | [docs/inhabited-map.md](docs/inhabited-map.md) | Political geography, dynamic public inhabitation and shared universe generation |

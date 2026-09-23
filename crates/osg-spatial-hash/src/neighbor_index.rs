@@ -30,11 +30,11 @@ const SHIFT_STEP: u32 = if cfg!(feature = "spatial-scale-2") {
 } else {
     2
 };
-const LEVELS: usize = 63_u32.div_ceil(SHIFT_STEP) as usize + 1;
 
 pub(crate) struct NeighborIndex {
     // Include shift 63 even when the step does not divide it.
-    hashes: [SpatialHash<usize>; LEVELS],
+    hashes: Vec<SpatialHash<usize>>,
+    minimum_shift: u32,
 }
 
 fn distance_squared(a: Position, b: Position) -> f64 {
@@ -46,10 +46,17 @@ fn distance_squared(a: Position, b: Position) -> f64 {
 
 impl NeighborIndex {
     pub(crate) fn new() -> Self {
+        Self::with_minimum_cell_shift(0)
+    }
+
+    pub(crate) fn with_minimum_cell_shift(minimum_shift: u32) -> Self {
+        assert!(minimum_shift <= 63);
+        let levels = (63 - minimum_shift).div_ceil(SHIFT_STEP) + 1;
         Self {
-            hashes: std::array::from_fn(|level| {
-                SpatialHash::new((level as i64 * i64::from(SHIFT_STEP)).min(63))
-            }),
+            hashes: (0..levels)
+                .map(|level| SpatialHash::new((minimum_shift + level * SHIFT_STEP).min(63) as i64))
+                .collect(),
+            minimum_shift,
         }
     }
 
@@ -80,7 +87,10 @@ impl NeighborIndex {
         finer: usize,
     ) -> impl Iterator<Item = (&'a Record<T, M>, f64)> {
         let shift = 64 - (radius.max(1) as u64 - 1).leading_zeros();
-        let level = (shift.div_ceil(SHIFT_STEP) as usize).saturating_sub(finer);
+        let level = (shift
+            .saturating_sub(self.minimum_shift)
+            .div_ceil(SHIFT_STEP) as usize)
+            .saturating_sub(finer);
         let radius_squared = (radius as f64) * (radius as f64);
         self.hashes[level]
             .nearest(position, radius)
@@ -97,7 +107,7 @@ impl NeighborIndex {
         position: Position,
     ) -> impl Iterator<Item = (&'a Record<T, M>, f64)> {
         // Every record occurs once at each level; the coarsest has at most eight cells.
-        self.hashes[LEVELS - 1].iter().map(move |&key| {
+        self.hashes.last().unwrap().iter().map(move |&key| {
             let record = &records[key];
             (record, distance_squared(position, record.position))
         })

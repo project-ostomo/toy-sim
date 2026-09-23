@@ -4,10 +4,15 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+collision-prototype = ["dep:rapier3d", "dep:rapier3d-f64", "dep:osg-spatial-hash"]
+collision-prototype-allocations = ["collision-prototype"]
 dynamic_linking = ["dep:bevy_dylib"]
 profile = ["bevy/trace_chrome"]
 
 [dependencies]
+rapier3d = { version = "=0.34.0", optional = true }
+rapier3d-f64 = { version = "=0.34.0", optional = true }
+osg-spatial-hash = { path = "../osg-spatial-hash", optional = true }
 bevy = { version = "0.19.1", default-features = false, features = ["std", "multi_threaded", "bevy_state", "bevy_asset", "bevy_log", "serialize"] }
 parry3d-f64.workspace = true
 rayon = "1.12"
@@ -38,6 +43,10 @@ ed25519-dalek = "2.2"
 osg-example-controller = { path = "../osg-example-controller" }
 wat = "1.0"
 osg-client = { path = "../osg-client" }
+
+[[example]]
+name = "collision_prototype"
+required-features = ["collision-prototype"]
 
 [dependencies.rand]
 version = "0.10"

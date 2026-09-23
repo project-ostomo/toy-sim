@@ -30,16 +30,24 @@ fn brightness_bucket(brightness: f64) -> usize {
 
 impl<T: Eq + Hash> LuminosityMap<T> {
     pub fn new() -> Self {
+        Self::with_minimum_cell_shift(0)
+    }
+
+    /// Uses cells at least `2^shift` coordinate units wide, with `shift <= 63`.
+    /// Stored positions and exact query filtering retain their original precision.
+    /// Larger cells reduce update work at the cost of more query candidates.
+    pub fn with_minimum_cell_shift(shift: u32) -> Self {
         Self {
             records: Records::new(),
-            buckets: std::array::from_fn(|_| NeighborIndex::new()),
+            buckets: std::array::from_fn(|_| NeighborIndex::with_minimum_cell_shift(shift)),
             top_brightness_bound: 0.0,
         }
     }
 
     /// Inserts or updates a source's position and absolute brightness.
+    /// Returns whether the stored record changed.
     /// Panics unless brightness is finite and nonnegative.
-    pub fn insert(&mut self, item: T, position: Position, brightness: f64)
+    pub fn insert(&mut self, item: T, position: Position, brightness: f64) -> bool
     where
         T: Clone,
     {
@@ -48,6 +56,9 @@ impl<T: Eq + Hash> LuminosityMap<T> {
         self.top_brightness_bound = self.top_brightness_bound.max(brightness);
         if let Some(&key) = self.records.keys.get(&item) {
             let record = &mut self.records.slots[key];
+            if record.position == position && record.metadata == brightness {
+                return false;
+            }
             let old_bucket = brightness_bucket(record.metadata);
             let old = if bucket == old_bucket {
                 Some(record.position)
@@ -67,6 +78,15 @@ impl<T: Eq + Hash> LuminosityMap<T> {
             self.records.keys.insert(item, key);
             self.buckets[bucket].insert(key, position, None);
         }
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.records.keys.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.keys.is_empty()
     }
 
     /// Removes a source, if present.
@@ -84,7 +104,33 @@ impl<T: Eq + Hash> LuminosityMap<T> {
     /// A positive source at distance zero is always visible; zero brightness is never visible.
     /// Panics unless the threshold is finite and positive.
     pub fn nearest_visible(&self, position: Position, threshold: f64) -> impl Iterator<Item = &T> {
-        self.visible(position, threshold, 0)
+        self.visible(position, threshold, 0, 0.0)
+    }
+
+    /// Geometric radius query across all brightness buckets, including dark sources.
+    pub fn within_radius(
+        &self,
+        position: Position,
+        radius: i64,
+    ) -> impl Iterator<Item = (&T, &Position)> {
+        self.buckets.iter().flat_map(move |bucket| {
+            bucket
+                .nearest(&self.records.slots, position, radius, 0)
+                .map(|(record, _)| (&record.item, &record.position))
+        })
+    }
+
+    /// Conservative visibility candidates when stored/query positions have bounded error.
+    /// `padding` is the maximum combined position error, in index coordinate units.
+    /// Callers must apply their exact brightness test using authoritative positions.
+    pub fn visible_candidates(
+        &self,
+        position: Position,
+        threshold: f64,
+        padding: f64,
+    ) -> impl Iterator<Item = &T> {
+        assert!(padding.is_finite() && padding >= 0.0);
+        self.visible(position, threshold, 0, padding)
     }
 
     /// Uses one finer spatial level to trade more cell lookups for fewer candidates.
@@ -94,7 +140,7 @@ impl<T: Eq + Hash> LuminosityMap<T> {
         position: Position,
         threshold: f64,
     ) -> impl Iterator<Item = &T> {
-        self.visible(position, threshold, 1)
+        self.visible(position, threshold, 1, 0.0)
     }
 
     fn visible(
@@ -102,6 +148,7 @@ impl<T: Eq + Hash> LuminosityMap<T> {
         position: Position,
         threshold: f64,
         finer: usize,
+        padding: f64,
     ) -> impl Iterator<Item = &T> {
         assert!(threshold.is_finite() && threshold > 0.0);
         self.buckets
@@ -114,7 +161,9 @@ impl<T: Eq + Hash> LuminosityMap<T> {
                     2_f64.powi(((index + 1) * BRIGHTNESS_STEP) as i32)
                 };
                 // Round outward to retain floating-point boundary candidates.
-                let radius = (upper / threshold).next_up().sqrt().next_up().ceil();
+                let radius = ((upper / threshold).next_up().sqrt().next_up() + padding)
+                    .next_up()
+                    .ceil();
                 // Extreme coordinate separations can exceed every i64 radius.
                 let all = radius >= 2_f64.powi(63);
                 let nearby = (!all)
@@ -131,8 +180,14 @@ impl<T: Eq + Hash> LuminosityMap<T> {
                 nearby
                     .chain(unbounded)
                     .filter_map(move |(record, distance)| {
-                        (record.metadata > 0.0 && record.metadata / distance >= threshold)
-                            .then_some(&record.item)
+                        let visible = if padding == 0.0 {
+                            record.metadata / distance >= threshold
+                        } else {
+                            let minimum_distance = (distance.sqrt().next_down() - padding).max(0.0);
+                            let denominator = minimum_distance.powi(2).next_down().max(0.0);
+                            (record.metadata / denominator).next_up() >= threshold
+                        };
+                        (record.metadata > 0.0 && visible).then_some(&record.item)
                     })
             })
     }

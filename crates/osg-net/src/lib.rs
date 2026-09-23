@@ -142,8 +142,8 @@ mod tests {
     #[tokio::test]
     async fn handshake_rejects_other_game_versions() {
         let (mut client, mut server) = tokio::io::duplex(1024);
-        let mut hello = [0; 66];
-        hello[..2].copy_from_slice(&(osg_model::GAME_VERSION + 1).to_le_bytes());
+        let mut hello = [0; 34];
+        hello[..2].copy_from_slice(&(osg_model::GAME_VERSION + 1).to_be_bytes());
         client.write_all(&hello).await.unwrap();
 
         let error = crypto::server(
@@ -164,15 +164,85 @@ mod tests {
             .await
             .unwrap();
         assert!(crypto::read_record(&mut b, &[1; 32], 1).await.is_err());
-        crypto::write_record(&mut a, &[1; 32], 1 << 20, b"next epoch", false)
+        crypto::write_record(&mut a, &[1; 32], 1, b"payload", false)
             .await
             .unwrap();
-        assert_eq!(
-            crypto::read_record(&mut b, &[1; 32], 1 << 20)
+        assert!(crypto::read_record(&mut b, &[2; 32], 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn records_interoperate_with_the_directional_key_directly() {
+        use chacha20poly1305::{
+            ChaCha20Poly1305, KeyInit,
+            aead::{Aead, Payload},
+        };
+
+        let key = [1; 32];
+        let cipher = ChaCha20Poly1305::new((&key).into());
+        for sequence in [0_u64, 1, (1 << 20) - 1, 1 << 20, 1 << 32, u64::MAX - 1] {
+            let mut wire = Vec::new();
+            crypto::write_record(&mut wire, &key, sequence, b"payload", false)
                 .await
-                .unwrap()
-                .unwrap(),
-            b"next epoch"
-        );
+                .unwrap();
+
+            let mut nonce = [0; 12];
+            nonce[4..].copy_from_slice(&sequence.to_be_bytes());
+            assert_eq!(u32::from_be_bytes(wire[..4].try_into().unwrap()), 24);
+            let plaintext = cipher
+                .decrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: &wire[4..],
+                        aad: &[],
+                    },
+                )
+                .unwrap();
+            assert_eq!(plaintext, b"\0payload");
+
+            let ciphertext = cipher
+                .encrypt(
+                    (&nonce).into(),
+                    Payload {
+                        msg: b"\0payload",
+                        aad: &[],
+                    },
+                )
+                .unwrap();
+            let mut direct_record = wire[..4].to_vec();
+            direct_record.extend_from_slice(&ciphertext);
+            assert_eq!(
+                crypto::read_record(&mut direct_record.as_slice(), &key, sequence)
+                    .await
+                    .unwrap(),
+                Some(b"payload".to_vec())
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn altered_record_lengths_and_ciphertexts_fail_authentication() {
+        let mut wire = Vec::new();
+        crypto::write_record(&mut wire, &[1; 32], 1, b"payload", false)
+            .await
+            .unwrap();
+        let length = u32::from_be_bytes(wire[..4].try_into().unwrap());
+
+        let mut shortened = wire.clone();
+        shortened[..4].copy_from_slice(&(length - 1).to_be_bytes());
+        shortened.pop();
+
+        let mut extended = wire.clone();
+        extended[..4].copy_from_slice(&(length + 1).to_be_bytes());
+        extended.push(0);
+
+        let mut corrupted = wire;
+        corrupted[4] ^= 1;
+
+        for altered in [shortened, extended, corrupted] {
+            let error = crypto::read_record(&mut altered.as_slice(), &[1; 32], 1)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("record authentication failed"));
+        }
     }
 }

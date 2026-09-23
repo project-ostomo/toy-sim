@@ -5,12 +5,13 @@ use chacha20poly1305::{
 };
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 use osg_model::{AccountId, GAME_VERSION};
-use rand::{RngCore, rngs::OsRng};
+use rand::rngs::OsRng;
 use std::collections::BTreeMap;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 pub const MAX_RECORD: usize = 65536;
+const HELLO_SIZE: usize = 34;
 
 pub struct Keys {
     pub read: [u8; 32],
@@ -18,16 +19,15 @@ pub struct Keys {
     pub account: AccountId,
 }
 
-fn hello() -> (EphemeralSecret, [u8; 66]) {
+fn hello() -> (EphemeralSecret, [u8; HELLO_SIZE]) {
     let secret = EphemeralSecret::random_from_rng(OsRng);
-    let mut bytes = [0; 66];
-    bytes[..2].copy_from_slice(&GAME_VERSION.to_le_bytes());
-    OsRng.fill_bytes(&mut bytes[2..34]);
-    bytes[34..].copy_from_slice(PublicKey::from(&secret).as_bytes());
+    let mut bytes = [0; HELLO_SIZE];
+    bytes[..2].copy_from_slice(&GAME_VERSION.to_be_bytes());
+    bytes[2..].copy_from_slice(PublicKey::from(&secret).as_bytes());
     (secret, bytes)
 }
 
-fn transcript(client: &[u8; 66], server: &[u8; 66]) -> [u8; 32] {
+fn transcript(client: &[u8; HELLO_SIZE], server: &[u8; HELLO_SIZE]) -> [u8; 32] {
     let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame handshake");
     hash.update(client);
     hash.update(server);
@@ -67,19 +67,19 @@ pub async fn client<S: AsyncRead + AsyncWrite + Unpin>(
     let (secret, client) = hello();
     stream.write_all(&client).await?;
     stream.flush().await?;
-    let mut server = [0; 66];
+    let mut server = [0; HELLO_SIZE];
     let mut signature = [0; 64];
     stream.read_exact(&mut server).await?;
     stream.read_exact(&mut signature).await?;
     ensure!(
-        server[..2] == GAME_VERSION.to_le_bytes(),
+        server[..2] == GAME_VERSION.to_be_bytes(),
         "unsupported game version"
     );
     let transcript = transcript(&client, &server);
     server_key
         .verify_strict(&transcript, &Signature::from_bytes(&signature))
         .context("server identity mismatch")?;
-    let (write, read) = derive(secret, &server[34..], &transcript)?;
+    let (write, read) = derive(secret, &server[2..], &transcript)?;
     let mut auth = account.0.to_vec();
     auth.extend_from_slice(
         &account_key
@@ -106,15 +106,15 @@ pub async fn server<S: AsyncRead + AsyncWrite + Unpin>(
     server_key: &SigningKey,
     accounts: &BTreeMap<AccountId, VerifyingKey>,
 ) -> Result<Keys> {
-    let mut client = [0; 66];
+    let mut client = [0; HELLO_SIZE];
     stream.read_exact(&mut client).await?;
     ensure!(
-        client[..2] == GAME_VERSION.to_le_bytes(),
+        client[..2] == GAME_VERSION.to_be_bytes(),
         "unsupported game version"
     );
     let (secret, server) = hello();
     let transcript = transcript(&client, &server);
-    let (read, write) = derive(secret, &client[34..], &transcript)?;
+    let (read, write) = derive(secret, &client[2..], &transcript)?;
     stream.write_all(&server).await?;
     stream
         .write_all(&server_key.sign(&transcript).to_bytes())
@@ -139,15 +139,9 @@ pub async fn server<S: AsyncRead + AsyncWrite + Unpin>(
     })
 }
 
-fn cipher(root: &[u8; 32], sequence: u64) -> ChaCha20Poly1305 {
-    let epoch = sequence / (1 << 20);
-    let key = blake3::keyed_hash(root, &epoch.to_le_bytes());
-    ChaCha20Poly1305::new(key.as_bytes().into())
-}
-
 fn nonce(sequence: u64) -> [u8; 12] {
     let mut nonce = [0; 12];
-    nonce[4..].copy_from_slice(&sequence.to_le_bytes());
+    nonce[4..].copy_from_slice(&sequence.to_be_bytes());
     nonce
 }
 
@@ -166,18 +160,16 @@ pub async fn write_record<W: AsyncWrite + Unpin>(
     plaintext.push(u8::from(close));
     plaintext.extend_from_slice(data);
     let length = (plaintext.len() + 16) as u32;
-    let mut aad = length.to_le_bytes().to_vec();
-    aad.extend_from_slice(&sequence.to_le_bytes());
-    let ciphertext = cipher(key, sequence)
+    let ciphertext = ChaCha20Poly1305::new(key.into())
         .encrypt(
             (&nonce(sequence)).into(),
             Payload {
                 msg: &plaintext,
-                aad: &aad,
+                aad: &[],
             },
         )
         .map_err(|_| anyhow::anyhow!("encryption failed"))?;
-    stream.write_all(&length.to_le_bytes()).await?;
+    stream.write_all(&length.to_be_bytes()).await?;
     stream.write_all(&ciphertext).await?;
     stream.flush().await?;
     Ok(())
@@ -189,7 +181,7 @@ pub async fn read_record<R: AsyncRead + Unpin>(
     sequence: u64,
 ) -> Result<Option<Vec<u8>>> {
     let length = stream
-        .read_u32_le()
+        .read_u32()
         .await
         .context("truncated encrypted stream")?;
     ensure!(
@@ -198,14 +190,12 @@ pub async fn read_record<R: AsyncRead + Unpin>(
     );
     let mut bytes = vec![0; length as usize];
     stream.read_exact(&mut bytes).await?;
-    let mut aad = length.to_le_bytes().to_vec();
-    aad.extend_from_slice(&sequence.to_le_bytes());
-    let plaintext = cipher(key, sequence)
+    let plaintext = ChaCha20Poly1305::new(key.into())
         .decrypt(
             (&nonce(sequence)).into(),
             Payload {
                 msg: &bytes,
-                aad: &aad,
+                aad: &[],
             },
         )
         .map_err(|_| anyhow::anyhow!("record authentication failed"))?;

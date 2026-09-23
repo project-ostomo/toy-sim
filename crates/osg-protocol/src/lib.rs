@@ -23,7 +23,7 @@ pub enum Message {
 }
 
 pub fn payload_length(header: &[u8]) -> Result<usize> {
-    let length = u32::from_le_bytes(header.try_into()?) as usize;
+    let length = u32::from_be_bytes(header.try_into()?) as usize;
     ensure!(length <= MAX_FRAME, "application message exceeds limit");
     Ok(length)
 }
@@ -40,7 +40,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>> {
     };
     ensure!(body.len() <= maximum, "application message exceeds limit");
     let mut bytes = Vec::with_capacity(HEADER_SIZE + body.len());
-    bytes.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&body);
     Ok(bytes)
 }
@@ -376,7 +376,7 @@ mod tests {
         });
         assert!(encode(&message).is_err());
         let body = postcard::to_allocvec(&message).unwrap();
-        let mut wire = (body.len() as u32).to_le_bytes().to_vec();
+        let mut wire = (body.len() as u32).to_be_bytes().to_vec();
         wire.extend_from_slice(&body);
         assert!(decode(&wire).is_err());
     }

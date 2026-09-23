@@ -113,12 +113,13 @@ Screens execute in separate server display instances through `ship_display`. The
 
 ## Over the network
 
-The server path is described in full in [server-client.md](server-client.md#display-instances). In outline:
+The wire contract is defined in [the network protocol](protocol.md#instruments-and-displays).
+The server path is described in [server-client.md](server-client.md#display-instances). In outline:
 
-1. A client sends `ScreenSubscribe { ship, slot, hz }` for a ship its account controls. `hz` is 1 to 10.
+1. A client sends `ScreenSubscribe { ship, slot, hz }` for a ship its account can observe through View or Control permission. `hz` is 1 to 10.
 2. While the ship is in space and has at least one subscriber, the server keeps a display instance of the ship's firmware. The instance calls `ship_display` with the flight computer's latest observation. Its `requested_screens` holds the subscribed slots that are due at the highest requested rate.
 3. Each completed frame for a subscribed slot becomes a `ScreenUpdate` in the client's state frames. Its `revision` identifies the current display instance; ownership changes revoke that instance. A failed callback replaces the frame with an error string.
-4. `ScreenInput { slot, revision, kind, code, modifiers, xy, text }` queues a `ScreenEvent` on the display instance. The client must be subscribed, and `revision` must match the displayed update.
+4. `ScreenInput { slot, revision, kind, code, modifiers, xy, text }` queues a `ScreenEvent` on the display instance. The client must have Control permission and be subscribed; `revision` must match the displayed update.
 5. The instance is dropped 10 ticks after the last subscriber leaves, or when control of the ship changes.
 
 The display instance cannot write devices or issue world commands. It does not share memory with the flight instance. Firmware without a `ship_display` export gets no display instance; each subscribed slot is reported with no frame and the error "Display unavailable". The standard firmware exports a drawing-only `ship_display`: each requested slot becomes a 512 × 256 "Ship status" screen with simulation time, speed, mass and battery energy as text. It does not read screen events, so clicks on it do nothing.

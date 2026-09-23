@@ -111,13 +111,16 @@ A `ShipBlueprint` ([design.rs](../crates/osg-ships/src/design.rs)) contains:
 - A file must be 1 byte to 16 MiB with no trailing data. It may hold at most 4096 parts, and the controller program may be at most 1 MiB.
 - `save` writes `<name>.ship.tmp` and then renames it over the target.
 
-A design saved with an older format version fails with "incompatible ship format … (rebuild the design with standard avionics)".
+The complete CBOR field schema and network upload framing are specified in
+[the protocol's blueprint section](protocol.md#blueprint-upload). The file has
+no format-version field; controller compatibility is checked against the game
+version when the controller is validated.
 
 ## Compiling a design
 
 `ShipBlueprint::compile(&Catalogue)` checks the blueprint and produces a `CompiledShipDesign`. It fails if:
 
-- the catalogue is invalid, the format or catalogue revision does not match, or an orientation is out of range
+- the catalogue is invalid or an orientation is out of range
 - there are no parts or more than 4096, the controller is empty or larger than 1 MiB, or there are more than 4096 actuator exclusions
 - a part ID is duplicated, a prototype is unknown, or labels are invalid
 - part volumes overlap; the habitat hub/ring and hollow hangar profiles allow equipment in their open spaces

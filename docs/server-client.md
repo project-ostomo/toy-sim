@@ -1,6 +1,6 @@
 # Authoritative server and network client
 
-The simulation runs only in `osg-server`. Every UI is a network client: the standalone `osg-client`, and `osg-debug`, which starts its own server process and connects to it over loopback TCP. This guide describes the server process, its configuration, the transport and application protocol, the sensor and visual observations available to each ship, presentation data, display instances, docking and travel, client playback, the client UI, and the benchmark.
+The simulation runs only in `osg-server`. Every UI is a network client: the standalone `osg-client`, and `osg-debug`, which starts its own server process and connects to it over loopback TCP. This guide describes the current programs, configuration, observations, presentation, docking and travel, playback, UI and benchmark. The independent [network protocol specification](protocol.md) defines interoperability requirements, with complete schemas and conformance vectors.
 
 The server restores durable world state from SQLite checkpoints, including ownership, ships and installed WASM programs. Sessions reconnect after a restart. A debug reset creates a new world ID; inputs carrying another world ID are discarded so existing connections can survive a reset. Checkpoints default to every 900 seconds, with initial and graceful-shutdown saves. Unsupported or corrupt newest checkpoints stop startup explicitly.
 
@@ -122,269 +122,17 @@ Ship hardware lives in ECS components ([hardware.rs](../crates/osg-server/src/si
 
 Flight programs run in parallel across ships. A program is called only when the interval it set with `tick_set_interval` has elapsed or requests are waiting ([ship-abi.md](ship-abi.md#scheduling)). At most `MAX_BOOTS_PER_TICK` computers boot per tick.
 
-## Transport stack
+## Network protocol
 
-```
-TCP (TCP_NODELAY)
-└─ handshake: X25519 + Ed25519 server identity + Ed25519 account proof
-   └─ encrypted records: ChaCha20-Poly1305, implicit sequence numbers
-      └─ one Zstd stream per direction (level 3, window log 21)
-         └─ picomux
-            ├─ "main" stream: TSF1 Input frames ⇄ TSF1 State frames
-            └─ "assets" streams: 32-byte hash → asset bytes until EOF
-```
+The [network protocol specification](protocol.md) defines version 49 independently
+of the server and client architecture described in this guide. It covers the
+transport, authentication, messages, session lifecycle, validation, authorization,
+subscriptions, assets and uploads.
 
-Integers in the fixed-layout transport and protocol fields below (handshake hello, record length, key epoch, nonce and associated data, picomux frame header and `MORE` body, application message length) are little-endian. Message values are postcard-encoded, which uses its own variable-length integer encoding.
-
-### Handshake
-
-The handshake is in [crypto.rs](../crates/osg-net/src/crypto.rs). Both `connect` and `accept` enforce a 10 s timeout.
-
-A hello is 66 bytes: a `u16` shared `GAME_VERSION`, 32 random bytes, then a 32-byte X25519 ephemeral public key.
-
-1. The client sends its hello.
-2. The server checks the version and sends its own hello, followed by a 64-byte Ed25519 signature over the transcript hash:
-   `transcript = BLAKE3 derive_key("OpenSpaceGame transport v1 handshake", client_hello ‖ server_hello)`
-3. The client checks the version. It verifies the signature with `verify_strict` against the server key pinned in its configuration. A mismatch fails with "server identity mismatch".
-4. Both sides compute the X25519 shared secret and reject a non-contributory result. Key material is `shared_secret ‖ transcript`:
-   - client-to-server root key: `BLAKE3 derive_key("OpenSpaceGame transport v1 c2s", material)`
-   - server-to-client root key: `BLAKE3 derive_key("OpenSpaceGame transport v1 s2c", material)`
-5. The client sends the first encrypted record (sequence 0). It holds 80 bytes: the 16-byte account ID, then an Ed25519 signature over
-   `BLAKE3 derive_key("OpenSpaceGame transport v1 account authentication", account_id ‖ transcript)`.
-6. The server looks up the account's public key, verifies the signature with `verify_strict`, and replies with the encrypted record `authenticated` (sequence 0). An unknown account or a bad signature closes the connection without a reply.
-
-The account signature is bound to this connection's transcript, so it cannot be replayed on another connection.
-
-### Encrypted records
-
-Each direction uses its root key and its own sequence counter. Sequence 0 is the authentication record. Data records start at 1. Sequence numbers are never sent on the wire. A counter overflow is an error.
-
-| Part | Size | Contents |
-| --- | --- | --- |
-| Length | 4 | `u32`: ciphertext length including the 16-byte tag, from 17 to 65,552 |
-| Ciphertext | Length | ChaCha20-Poly1305 over the plaintext |
-
-- Plaintext: one type byte, `0` for data or `1` for close, followed by the data. Data is shorter than 65,536 bytes. A close record carries no data.
-- Key: `BLAKE3 keyed_hash(root_key, epoch as u64)`, where `epoch = sequence / 2^20`. The cipher key changes every 1,048,576 records.
-- Nonce: 4 zero bytes followed by the `u64` sequence.
-- Associated data: the `u32` length followed by the `u64` sequence.
-
-A replayed, reordered, truncated or modified record fails authentication, and the connection closes. Shutdown sends a close record, then shuts down the TCP write half.
-
-### Compression
-
-[pipe.rs](../crates/osg-net/src/pipe.rs) wraps the record layer in `AsyncRead`/`AsyncWrite`:
-
-- Each direction has one Zstd stream that lasts the whole connection. The encoder uses level 3 and window log 21 (2 MiB). The decoder sets `WindowLogMax(21)` and rejects streams that need a larger window. History carries across writes, so repeated frame content compresses against earlier frames.
-- Each `poll_write` takes up to 32,768 bytes. The pipe compresses the chunk, flushes the encoder so the peer can decode it immediately, and splits the output into records of at most 65,535 data bytes.
-- Decoding one record may produce at most 256 KiB of plaintext. More is a protocol error.
-- Streaming compression and decompression run directly in the async reader and writer tasks, in bounded chunks. Network I/O and downstream backpressure provide the await points; there is no blocking task pool or compression semaphore.
-- Writes are pipelined. `poll_write` queues the chunk and returns before it is sent. A write error is reported on the next write, flush or shutdown. Decoded bytes pass through a 64 KiB in-memory pipe to the reader.
-
-### Multiplexing (picomux)
-
-`osg-net` runs picomux over the pipe with debloat mode on. A picomux frame has an 8-byte header followed by the body:
-
-| Offset | Size | Field |
-| --- | --- | --- |
-| 0 | 1 | Version, which must be 1 |
-| 1 | 1 | Command: `SYN` 0 (body is the stream metadata), `FIN` 1, `PSH` 2, `NOP` 3, `MORE` 4 (body is a `u16` window increase), `PING` 0xa0 (JSON `{"next_ping_in_ms":…}`), `PONG` 0xa1 |
-| 2 | 2 | Body length (`u16`) |
-| 4 | 4 | Stream ID (`u32`, chosen at random by the opener) |
-
-The published picomux 0.3.1 crate provides per-stream flow control and concurrent streams:
-
-- Pending accepts have a 100-stream queue. Closed stream IDs remain reserved for 3600 s. A `SYN` for an open or reserved ID is a protocol error.
-- Outgoing data is split into frames of at most 8192 bytes (the MSS).
-- Flow control is per stream and counted in frames. The initial window is 10 and the maximum is 1500; debloat mode adjusts the receive window using measured throughput.
-- The outgoing queue accommodates concurrent senders. Each data writer waits until fewer than 10 frames are queued before continuing.
-- A `FIN` closes one direction of a stream. Shutdown drains buffered writes and queues `FIN` after the data; the opposite direction remains readable until its own EOF. Both peers need half-close support for response-after-EOF transfers.
-
-The default liveness settings are a ping every 1800 s with a 30 s timeout, plus a forced ping whenever a stream is opened.
-
-### Streams
-
-- **`main`.** The client opens it first. The server requires the first accepted stream to have metadata `main`. It carries application `Input` messages from the client and `Session`/`State` messages from the server. The server sends a universe descriptor before state for a world. The server's per-connection input queue holds 16 frames. If it is full, the connection closes with "input rate exceeded".
-- **`assets`.** Each download uses a separate stream with metadata `assets`.
-- **`blueprint-upload`.** Each private shipyard upload uses a separate stream with this metadata. Unknown labels end the connection. Transfers run independently on both peers, with no fixed transfer-count limit; dropping the connection cancels outstanding tasks.
-
-**Asset transfer.** The client opens a fresh stream, writes exactly the asset's 32-byte BLAKE3 hash and shuts down its write direction. The server streams the complete asset bytes and shuts down its write direction. EOF delimits the response. The client reads to EOF and verifies the complete asset's BLAKE3 hash. There are no application chunk messages, offsets, length headers or acknowledgements. Picomux and TCP provide transport framing and flow control. An unknown hash gets an empty response, which fails verification for a nonempty expected asset. Download and hash failures are delivered to the requesting UI through that asset's result; other transfers and the main stream continue.
-
-**Blueprint upload.** The client writes the 32-byte BLAKE3 hash followed by the
-complete canonical `.ship` file, then closes its write direction. EOF delimits
-the file. After checking its size and hash, the server stores the file privately
-in that authenticated session and sends one Postcard `BlueprintUploadAck`, then
-EOF. `Ready` contains the matching hash; `Rejected` contains a UTF-8 reason of
-at most 256 bytes. The complete acknowledgement is limited to 512 bytes. The
-client waits for `Ready` before sending a hash-only `BuildShip` command on `main`.
-
-Files are limited to 16 MiB. Receiving and staged file allocations share limits
-of 64 MiB per session, 128 MiB per account and 256 MiB per listener. Transfers
-have a 60-second deadline. Quota leases remain attached to bytes held by a
-validator after a disconnect. Uploads are not public assets and cannot be
-looked up by another session. A successful upload does not authorize construction:
-the subsequent command still checks authority, design, firmware, materials and
-facility capacity. Accepted jobs retain their full blueprint in world snapshots.
-
-The server and network tasks share a dynamic asset store. Its entries contain immutable bytes under their BLAKE3 hashes; newly published assets become available to existing connections immediately. A transfer holds a shared byte allocation after lookup and releases the store lock before awaiting network writes. Debug reset preserves the shared store and installs the new scenario's assets into it. The store holds:
-
-- **Ship appearances.** A TOML `ShipAppearance` containing the catalogue revision and visible part prototypes, IDs, positions and rotations. It contains no firmware, tank allocations or operational loadout. Its BLAKE3 hash is the `appearance` field of an optical observation or a `Destroyed` combat event. Sensor observations do not publish appearance hashes.
-- **The inhabited directory.** A Postcard-encoded `InhabitedDirectory`, referenced by `presentation.navigation.directory`. It contains system IDs, sovereignty ownership, and public sovereignty names and blocs. Ownership follows the organization with a strict majority of broadcasting installations.
-
-## Application messages
-
-The `main` stream carries a four-byte little-endian body length followed by one
-Postcard-encoded `Message`: `State`, `Input`, or `Session`. There are no section
-headers or per-message versions. The initial authenticated handshake checks the
-shared `GAME_VERSION`, also used by firmware and saved worlds. Field and enum
-ordering are part of that game version's wire format.
-
-Server states and assets are trusted after decoding. The client uses their
-sequence numbers, timestamps, geometry and identities directly. A `Session`
-describes the world, orbital epoch and simulation-time origin. A world reset
-sends a new descriptor before the new world's state.
-
-`PresentationFrame.navigation` contains the inhabited-directory asset hash and
-relevant live infrastructure. Clients resolve names and positions from their
-catalogue. Membership changes publish a new hash; orbital motion updates live
-poses independently. Obsolete asynchronous downloads cannot overwrite a newer
-publication.
-
-**Input frame limits.**
-
-- At most 256 actions, with unique command IDs.
-- Subscription queries: `limit` from 1 to 256, `work` at most 10,000,000, at most 32 tags in total and valid tags. A search sphere needs a valid centre and a radius from 0 to 1e22 m.
-- `ScreenSubscribe`: slot below 8 and `hz` from 1 to 10. `ScreenUnsubscribe`: slot below 8.
-- `MarkTarget`: maximum flight time from 0 to 3600 s; stock firmware further restricts this to [0.01, 60] s.
-- `Flight(AimDirection)`: finite and not zero length. `Flight(EngageNavigation)`: throttle limit from 0 to 1 and stand-off from 0 to 1e22 m.
-- `SetIff`: at most 16 valid labels, and range from 0 to 1e12 m.
-- `SetTravel`: at most 256 orders. Galactic and relative destinations need valid positions.
-- `ScreenInput`: slot below 8, kind at most 7, text at most 64 bytes, and coordinates at most 1e6 in magnitude.
-- Debug commands: `SetRate` finite, greater than zero and at most 100, `ConfigureSensor` range from 0 to 1e22 m, `Relocate` a valid pose, and heat injections from 0 to 1e30 J.
-
-## Sessions
-
-Each connection gets a `Session` entity ([session.rs](../crates/osg-server/src/sim/session.rs)). It receives observations from ships the account is authorized to inspect.
-
-### Input frames
-
-After protocol validation, a frame whose `world` differs from the current world is discarded without applying its actions or changing sequence state. This handles inputs already in transit when the debug server resets. For frames in the current world, any of these violations disconnects the session:
-
-- `sequence` must be strictly greater than the previous input frame's.
-
-Actions are applied in order before the next simulation tick, and each result's `effective_tick` is the current tick. The session remembers every command ID it has seen and ignores repeats. After 65,536 IDs, further input is refused ("session command history exhausted; reconnect"). An action error does not close the session. It is reported in `CommandResult.error`.
-
-### Results and events
-
-- Each command result is included once, in the next published frame. Its delivery uses the same reliable FIFO as the snapshot.
-- A frame includes new events whose `subject` is either an entity with a known ID in one of the frame's sensor observations, or a ship the account controls. Events with no subject are not sent. Each session advances a server-local publication cursor when building a frame. Event staging is pruned after sessions publish; its lifetime does not depend on client acknowledgements or network progress.
-- Event kinds with a subject: `docked`, `undocked`, `destroyed`, `slip-departed`, `slip-arrived` and `relocated`. Collision and weapon records use the kind `combat` with no subject; they reach clients only as presentation combat events.
-
-### Actions
-
-A session can request detailed data for at most eight distinct ships across focused views, instruments and MFD subscriptions. Lightweight owned-ship telemetry remains available for up to 64 ships. Detailed hardware publication is limited to subscribed ships.
-
-| Action | Effect |
-| --- | --- |
-| `Subscribe(ViewSubscription)` | Adds or replaces view `id`. A replacement must have a higher `revision`. At most 8 views. The account must have observe permission for the focused ship. |
-| `Unsubscribe(id)` | Removes a view |
-| `InstrumentSubscribe { ship }` / `InstrumentUnsubscribe` | Requests instrument presentation for a controlled ship. At most 8. |
-| `ScreenSubscribe { ship, slot, hz }` / `ScreenUnsubscribe` | Requests display frames for a controlled ship. At most 8 subscriptions. |
-| `IndustrySubscribe(IndustrySubscription)` / `IndustryUnsubscribe` | Requests an authorized directory page, selected inventories and optional manufacturing catalogue. Replacement revisions must increase. |
-| `Industry(IndustryCommand)` | Starts or cancels production, orders a ship, transfers cargo or refills tanks; permissions and physical transfer constraints are checked when applied. |
-| `Debug(command)` | Requires a debug account ([Debug accounts](#debug-accounts)) |
-| `Ship { ship, authority_revision, command }` | The account must control the ship, and `authority_revision` must equal the ship's current revision |
-
-Views with a focused ship, instrument subscriptions and screen subscriptions together may name at most 8 distinct ships ("detailed ship subscription limit").
-
-Player commands call `sim::commands::execute`
-function. It validates command payloads, checks the account's current permission
-and authority revision, and queues ordinary ship-computer requests. Network
-sessions also enforce ship permissions and display subscriptions.
-Target commands resolve a `ContactRef` only in the commanded ship's current sensor
-snapshot; knowing a physical entity UUID does not authorize a target. Two-request
-autopilot changes reserve both queue slots before changing pending travel state.
-Accepted external navigation commands wake the flight computer and pause any
-standing freight assignment.
-
-Director observation tools use the same owned-ship telemetry and hardware
-presentation as clients. Their `ScanSource` is rebuilt from the ship's current
-state, including its host-relative pose while docked, and exposes the existing
-current sensor snapshot and public navigation queries. Each new observation and
-command checks the officer account's authority; no network session or global
-entity-lookup tool is required.
-
-| `ShipCommand` | Effect |
-| --- | --- |
-| `SetTransponderEnabled(bool)` | Switches the IFF transponder |
-| `SetIff(IffIdentity)` | `owner` must identify the requesting controller. Configure permission is required; `faction` must be an organization the account belongs to or administers. Range is at most 1e8 m. |
-| `Flight(FlightCommand)` | `HoldAttitude`, `StopGuidance`, `AimDirection`, `SelectTarget(ContactRef)` or `EngageNavigation { throttle_limit, stand_off_m }`, queued to the flight computer as requests. `SelectTarget` resolves its contact like `Aim`. |
-| `MarkTarget { target, maximum_flight_time_s }`, `Aim { target }` | The contact must belong to the commanded ship and exist in its current sensor snapshot. |
-| `UnmarkTarget` | Clears the marked target and stops firing |
-| `StartFiring` | Enables weapons against the marked target; firmware rejects the request without a mark |
-| `StopFiring` | Stops firing while retaining the mark and aiming solutions |
-| `SetTravel { engage, expected_revision, orders }` | Requires the current travel revision. Replaces orders and increments the revision. `engage` enables autopilot; otherwise its current state is preserved. Status becomes `Planning` when enabled, or `Paused` when disabled. |
-| `SetAutopilot(bool)` | Disabling pauses the queue, cuts thrust and holds attitude. Enabling resumes planning. |
-| `SetThrottle(f64)` | Sets manual throttle in [0, 1]; rejected while autopilot is enabled. |
-| `Dock { station, bay }` / `Undock` | Direct docking operations ([Docking and travel](#docking-and-travel)) |
-| `ScreenInput { slot, revision, kind, code, modifiers, xy, text }` | Requires a subscription to the slot and a live display instance. `revision` must match the displayed frame. Queues a `ScreenEvent` on the display instance. |
-
-The flight computer's request queue accepts a command only while it holds fewer than 255 entries ("ship command queue full").
-
-### Industry and cargo subscriptions
-
-`IndustrySubscription` selects a directory page using `directory` and the
-exclusive `directory_after` ID, up to eight inventory IDs in priority order, and
-whether the manufacturing catalogue is needed. An optional `HangarSubscription`
-selects a focused ship and local docked-ship cursor. The server resolves its
-current host and filters host storage and docked ships by authority before
-pagination. This local list is independent of the global directory. The directory contains at most
-128 authorized summaries and a `directory_next` cursor. Selected facility views
-include ownership, permissions, installed capabilities, cargo stacks and jobs.
-The server rechecks access on every publication, so revocation removes private
-contents without requiring the client to resubscribe.
-
-`Frame.industry = None` means there is no industry update. A received snapshot
-replaces the directory and selected facility views for its
-`subscription_revision`. Its optional catalogue replaces the cached recipes and
-blueprints only when present; catalogue revisions are content hashes. Sessions
-send a catalogue once per subscription or catalogue change. Closing the windows
-unsubscribes; reconnecting or changing worlds clears retained industry data.
-Playback retains every industry update when consuming two snapshots to catch up,
-including a catalogue delivered in the earlier snapshot.
-
-Industry updates are limited to 512 KiB. Entire inventory views that do not fit
-are listed in `omitted_inventories`; their stack lists are never truncated.
-The client must clear omitted details and report the capacity limit. If one
-inventory or the requested catalogue alone cannot fit, a bounded `error` with
-the subscription revision replaces the details. Build commands carry a private
-upload hash within the normal 64 KiB input frame; recipe requests accept
-1–10,000 batches.
-
-`ShipPresentation.inventory` contains consumables. Its separate `cargo` list
-uses the same `CargoStack` records as facility views: a resource or part-kit ID,
-integer total and reserved quantities, display name, unit mass and unit volume.
-Reserved quantities remain physically stored and are unavailable to other jobs,
-transfers and refills. Cargo transfers use `IndustryCommand::Transfer` for both
-resources and kits. Refill requests identify the source inventory and target
-ship. Remote production management does not permit remote movement of cargo;
-the server checks both inventories' permissions and physical location.
-
-### State frames
-
-A session frame contains:
-
-- **Clock.** `world`, a per-session `sequence` starting at 1, `tick`, `sim_time_ns` (the fixed clock's elapsed time), and `rate`, the current debug clock rate (1 unless a debug account changed it).
-- **Views.** Each view names an authorized focused ship and reports its origin. Views and detail subscriptions are removed when observation permission is revoked.
-- **Contacts.** Current sensor detections for the authorized ships named by views and detail subscriptions, keyed by observing ship UUID.
-- **Ships.** Private telemetry for up to 64 ships the account controls. Ships named by a view focus, a screen subscription or an instrument subscription come first, then the rest, each part in ship ID order. Each record holds IFF identity, authority revision, presence, exact pose (only while in space), battery energy, hull heat, shield temperature, coolant reserve and travel state.
-- **Screens.** One update per subscribed slot: the latest display frame, or, if there is none, an update with no frame and the error "Display unavailable".
-- **Events and results**, as described above.
-- **Presentation** ([Presentation](#presentation)), plus per-view **optical observations** ([Optical replication](#optical-replication)).
-- **Society.** Ownership hierarchy, standing overrides and permitted asset access information.
-- **Calendar.** Authoritative real UTC plus 400 Gregorian years, independent of accelerated simulation time.
-
-Network views have no continuation. Each frame runs a fresh query, so a view that stops at `WorkLimit` or `ResultLimit` shows only its first page.
+Use the [complete payload schema](protocol-schema.md) for field order, types and
+enum discriminants, and [conformance examples](protocol-vectors.md) to check an
+independent implementation. The optional [Serde declarations](protocol-schema.rs)
+require no game engine. Shared universe generation is outside that specification.
 
 ## Inhabited map and generated systems
 
@@ -469,16 +217,16 @@ and velocities are relative to the ship. `contact_label` and `contact_iff`
 require a current handle. Sensors are required for contact guidance and weapons.
 ## Presentation
 
-Section 8 of a state frame is a `PresentationFrame` ([presentation.rs](../crates/osg-model/src/presentation.rs), built in [sim/presentation.rs](../crates/osg-server/src/sim/presentation.rs)). It carries what the shared client needs for the original rendering, flight instruments and windows, without exposing true state beyond what the session may already see.
+The `presentation` field of a state frame is a `PresentationFrame` ([presentation.rs](../crates/osg-model/src/presentation.rs), built in [sim/presentation.rs](../crates/osg-server/src/sim/presentation.rs)). It carries rendering data, flight instruments and telemetry authorized for the session. Its wire layout is defined in the [protocol schema](protocol-schema.md#presentationframe).
 
-- **`ships`.** One `ShipPresentation` per controlled ship that a view focuses, a screen subscribes or an instrument subscription names. It holds the authority revision, flight environment (altitude, airspeed, density, pressure), health, execution timings, mass, inertia, control rotation, heat and battery capacities, power flow, inventory, per-device telemetry, computer status and screen definitions. `instruments` (attitude, navigation, weapons, trajectories and markers published by the firmware) is included only for instrument subscriptions. Targets in instruments are `ContactRef`s.
+- **`ships`.** One `ShipPresentation` per observable ship that a view focuses, a screen subscribes or an instrument subscription names. It holds the authority revision, flight environment (altitude, airspeed, density, pressure), health, execution timings, mass, inertia, control rotation, heat and battery capacities, power flow, inventory, per-device telemetry, computer status and screen definitions. `instruments` (attitude, navigation, weapons, trajectories and markers published by the firmware) is included only for instrument subscriptions. Targets in instruments are `ContactRef`s.
 - **`combat`.** Shots, projectiles, impacts and destruction since the session's preceding publication. Publication requires optical visibility of its source or target. Destruction may use visibility from the preceding publication so removing a destroyed body does not erase its final effect. This grace is cleared when a view changes focus or spatial lifetime. The record names an opaque optical ID.
 - **`navigation`.** The dynamic inhabited-directory hash and bounded live public infrastructure for relevant views and destinations. Each live record carries containing-system IDs, pose, and docking/navigation capabilities. Usable docking bays and guidance permissions are checked for the requesting ship.
 - **`capabilities`** and **`diagnostics`** for debug sessions ([Debug accounts](#debug-accounts)).
 
 ### Optical replication
 
-Section 11 contains `OpticalObservation` records built in [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs). A view needs an authorized focused ship. Visibility is evaluated at that ship's position, independently of its sensor detections and the client's orbit-camera position. The focused ship is included for its own presentation. A dormant focused ship has no surrounding space observations.
+The `optical` field contains `OpticalObservation` records built in [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs). A view needs an authorized focused ship. Visibility is evaluated at that ship's position, independently of its sensor detections and the client's orbit-camera position. The focused ship is included for its own presentation. A dormant focused ship has no surrounding space observations.
 
 For other active ships, the server queries brightness buckets, computes the observer-dependent luminosity, and requires received flux of at least `1e-12 W/m²`. It rejects a body only when an intervening optical blocker covers its entire conservative angular disc; a body partly visible around a planetary limb remains eligible. Candidates are ordered by received flux. Each view receives an equal share of the frame's 8192-observation and 4 MiB optical budgets, with its focused ship first. Oversized records are skipped. Multiple views cannot let one dense scene consume every other view's allowance.
 
@@ -772,7 +520,7 @@ The client separates transport ingestion, replication and interpolation into the
 
 Ship, contact and optical entities hold pose samples and interpolated display components. Optical entities also interpolate luminosity. Radio contacts supply HUD/Overview entries; live ship geometry is sourced from the optical entities for that view, with private rendering for the focused ship in a hangar. Each view owns its camera, origin, exposure and sky state. `CameraOptions` holds the camera focus separately from the orbit data used to construct trajectories. Render instances relate to both their source observation and their view, allowing either lifetime to remove the associated visuals. Bevy asset handles own immutable downloaded assets; sky baking keeps its separate work budget. HUD overlays query presentation components, and scene alignment gestures enqueue navigation actions through the outgoing resource.
 
-Reception runs in `PreUpdate`, snapshot application in `FixedUpdate`, and input publication in `FixedPostUpdate`. `Update` then runs interpolation, celestial evaluation, view updates and rendering updates. World changes remove the old observations and reset selection. Missing observations remove their entities; a changed spatial lifetime creates fresh presentation samples. Docked ships retain private telemetry while their space pose is absent. MFD publications remain available in the wire protocol; the current UI does not subscribe to screens or replicate them into display entities.
+Reception runs in `PreUpdate`, snapshot application in `FixedUpdate`, and input publication in `FixedPostUpdate`. `Update` then runs interpolation, celestial evaluation, view updates and rendering updates. World changes remove the old observations and reset selection. Missing observations remove their entities; a changed spatial lifetime creates fresh presentation samples. Docked ships retain private telemetry, including a pose resolved from their host and bay. MFD publications remain available in the wire protocol; the current UI does not subscribe to screens or replicate them into display entities.
 
 CPU skybox bakes start at most once per ten seconds of real time across all views.
 The first bake can start immediately. Only one bake runs at a time; later work
@@ -840,7 +588,7 @@ Initial focus uses the per-session `ShipTelemetry.can_control` permission flag a
 | Location | Covers |
 | --- | --- |
 | `osg-protocol` unit tests | Whole-message round trips, framing, and validation of untrusted client commands |
-| `osg-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, epoch rekeying |
+| `osg-net` unit tests | Compressed stream history across flushes, clean shutdown, rejection of a wrong server pin and a wrong account key, replayed records, direct use of directional keys across sequence values |
 | `osg-spatial-bvh` unit tests | Brute-force agreement for spatial and brightness queries, large signed coordinates, boundary cases, retained snapshots, collision pairs and cursor budgets |
 | [session/optical.rs](../crates/osg-server/src/sim/session/optical.rs) tests | Focused-vantage visibility, anonymous objects, sensor-independent visibility, occlusion, per-view budgets and optical IDs |
 | [session.rs](../crates/osg-server/src/sim/session.rs) tests | Views require access to the focused ship, a control change rejects old-revision commands without rewriting IFF, a non-debug account cannot change the clock, repeated command IDs are idempotent and replayed frames are rejected |
