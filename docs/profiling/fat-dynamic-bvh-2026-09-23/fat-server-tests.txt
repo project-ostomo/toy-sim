@@ -1,0 +1,76 @@
+
+running 57 tests
+test sim::physics::collision::ecs::tests::active_collision_bodies_receive_one_full_tick_force_and_motion_interval ... ok
+test sim::physics::collision::ecs::tests::barrage_overwhelms_shield_and_leaves_a_dormant_wreck ... ok
+test sim::physics::collision::ecs::tests::ecs_materializes_timed_launches_and_writes_back_their_physics ... ok
+test sim::physics::collision::ecs::tests::expiring_slug_transfers_its_impulse_before_despawning ... ok
+test sim::physics::collision::solver_tests::ablating_material_reduces_mass_and_inertia_without_accelerating_ship ... ok
+test sim::physics::collision::solver_tests::ccd_resolves_thin_hulls_at_the_boundary_and_misses_empty_bounds ... ok
+test sim::physics::collision::solver_tests::contact_preserves_momentum_and_is_invariant_under_galactic_translation_and_boost ... ok
+test sim::physics::collision::solver_tests::destroying_a_docked_member_preserves_the_survivors_velocity_field ... ok
+test sim::physics::collision::solver_tests::isolated_bodies_do_not_allocate_collision_worlds_and_groups_can_merge_and_split ... ok
+test sim::physics::collision::solver_tests::nearest_queries_match_exhaustive_selection_across_regions_and_ties ... ok
+test sim::physics::collision::solver_tests::rapier_preserves_model_frame_with_nondiagonal_inertia ... ok
+test sim::physics::collision::weapons::shield_firing_tests::shots_cross_the_owners_shield_but_hit_another_ships_shield ... ok
+test sim::physics::collision::weapons::tests::a_ship_already_destroyed_at_the_boundary_does_not_fire ... ok
+test sim::physics::collision::weapons::tests::beam_hits_nearest_body_and_deposits_heat_without_projectiles ... ok
+test sim::physics::collision::weapons::tests::conventional_gun_fires_at_full_rate_without_battery_or_counter_propellant ... ok
+test sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts ... FAILED
+test sim::physics::collision::weapons::tests::energy_ammunition_propellant_and_barrel_obstruction_are_hard_interlocks ... ok
+test sim::physics::collision::weapons::tests::laser_consumes_only_electricity_and_heats_its_emitter ... ok
+test sim::physics::collision::weapons::tests::laser_respects_range_and_shields_absorb_before_hull ... ok
+test sim::physics::collision::weapons::tests::recoilless_launch_preserves_velocity_and_spin_and_consumes_propellant ... ok
+test sim::physics::collision::weapons::tests::simultaneous_guns_share_battery_in_device_order ... ok
+test sim::sensors::tests::huge_off_range_occluder_is_found_and_target_does_not_occlude_itself ... ok
+test sim::sensors::tests::indexed_visibility_matches_all_objects_brute_force ... ok
+test sim::sensors::tests::nearest_limit_is_applied_before_occlusion_without_backfill ... ok
+test sim::sensors::tests::observations_are_exact_private_and_disappear_with_detection ... ok
+test sim::sensors::tests::sphere_sightlines_handle_tangency_surface_and_blocker_depth ... ok
+test sim::session::optical::tests::dense_complex_ships_respect_serialized_budget_and_keep_each_views_focus ... ok
+test sim::session::optical::tests::destroyed_or_wreck_stored_focus_has_no_optical_mesh_or_remote_scene ... ok
+test sim::session::optical::tests::dormant_focus_receives_only_its_hangar_or_slip_scene ... ok
+test sim::session::optical::tests::heap_selection_matches_sorted_publication_with_occlusion_and_variable_byte_costs ... ok
+test sim::session::optical::tests::multiple_views_scope_visibility_and_transits_clear_previous_effect_access ... ok
+test sim::session::optical::tests::optical_access_depends_on_light_and_line_of_sight_not_shared_iff_or_sensors ... ok
+test sim::spatial::index::tests::optical_occlusion_keeps_limb_targets_and_ignores_hollow_ship_bounds ... ok
+test sim::spatial::index::tests::reflected_phase_changes_observed_brightness_without_hiding_candidate ... ok
+test sim::spatial::index::tests::segment_candidates_only_hide_target_after_exact_full_occlusion ... ok
+test sim::spatial::lighting::tests::engine_light_uses_delivered_scalar_thrust_and_all_firing_rcs_axes ... ok
+test sim::spatial::lighting::tests::optical_thermal_emission_tracks_temperature ... ok
+test sim::spatial::lighting::tests::planetary_shadow_removes_reflected_light_but_not_intrinsic_emission ... ok
+test sim::spatial::optical_tests::engine_activation_and_dormancy_change_optical_visibility ... ok
+test sim::spatial::optical_tests::moving_into_planetary_shadow_updates_brightness_each_tick ... ok
+test sim::spatial::optical_tests::ship_bounds_keep_sensor_occlusion_without_blocking_optical_sightlines ... ok
+test sim::spatial::projectile_visibility_tests::projectiles_neither_occupy_sensor_slots_nor_occlude_ships ... ok
+test sim::spatial::sensor_target_tests::celestial_centers_are_not_sensor_targets_but_still_occlude_ships ... ok
+test sim::spatial::tests::regional_queries_match_brute_force_at_negative_and_galactic_coordinates ... ok
+test sim::spatial::tests::uninstantiated_stars_illuminate_cold_ships ... ok
+test sim::travel::slip::tests::arrival_applies_slip_heat_only_until_capture ... ok
+test sim::travel::slip::tests::beacon_loss_changes_future_diffusion_once_and_survives_serialization ... ok
+test sim::travel::slip::tests::charged_drive_waits_until_ring_is_within_one_degree ... ok
+test sim::travel::slip::tests::conditional_risk_tracks_observed_drift_and_fresh_future_noise ... ok
+test sim::travel::slip::tests::controller_aim_can_miss_queued_target_and_exhaust_fuel ... ok
+test sim::travel::slip::tests::cumulative_fuel_keeps_fractional_grams_across_ticks_and_jumps ... ok
+test sim::travel::slip::tests::moving_body_intersection_follows_curved_ephemeris ... ok
+test sim::travel::slip::tests::physical_collision_and_exhaustion_precede_farther_captures ... ok
+test sim::travel::slip::tests::random_walk_matches_swept_capture_odds_across_step_sizes ... ok
+test sim::travel::slip::tests::retargeting_charge_scales_energy_with_distance_without_resetting_paid_work ... ok
+test sim::travel::slip::tests::short_slips_take_three_seconds_and_retain_velocity ... ok
+test sim::travel::slip::tests::transit_queries_dormant_system_without_spawning_celestials ... ok
+
+failures:
+
+---- sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts stdout ----
+
+thread 'sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts' (32) panicked at crates/osg-server/src/sim/physics/collision/weapons.rs:771:9:
+assertion `left == right` failed
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts
+
+test result: FAILED. 56 passed; 1 failed; 0 ignored; 0 measured; 248 filtered out; finished in 7.86s
+

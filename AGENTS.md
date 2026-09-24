@@ -10,6 +10,11 @@ Remove obsolete interfaces instead of retaining them behind an adapter.
 
 # Code style
 
+For monetary charges, round each charge up to the smallest currency unit.
+Do not implement fractional accumulation, carried remainders, or rounding-debt
+bookkeeping unless explicitly requested. This applies to turnover tax and
+demurrage as well as other charges.
+
 Write readable code with normal spacing, blank lines between logical steps, and
 multi-line functions where appropriate. Do not write compressed code and rely on
 rustfmt to make it readable; rustfmt does not supply logical separation.

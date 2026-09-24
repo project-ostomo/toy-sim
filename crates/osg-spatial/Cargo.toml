@@ -1,0 +1,10 @@
+[package]
+name = "osg-spatial"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+osg-space = { path = "../osg-space" }
+osg-spatial-hash = { path = "../osg-spatial-hash" }
+osg-spatial-bvh = { path = "../osg-spatial-bvh" }
+glam.workspace = true

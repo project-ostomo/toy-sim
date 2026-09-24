@@ -1,10 +1,7 @@
 use super::*;
 
-pub(super) fn planning_progress(ui: &mut egui::Ui, travel: &travel::TravelState) {
-    if travel.status != travel::Status::Planning {
-        return;
-    }
-    let Some(progress) = &travel.planning else {
+pub(super) fn planning_progress(ui: &mut egui::Ui, progress: Option<&travel::PlanningProgress>) {
+    let Some(progress) = progress else {
         ui.horizontal(|ui| {
             ui.add(egui::Spinner::new().size(12.));
             ui.weak("Starting route planner…");
@@ -66,7 +63,7 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                     .clicked()
                 {
                     intents.push(Intent::Command(
-                        ShipCommand::SetAutopilot(false),
+                        ShipCommand::SetGuidance(None),
                         "Stop guidance",
                     ));
                 }
@@ -81,36 +78,40 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     ui.small("Change the preference in Navigation and preview the destination to replan.");
     fuel_budget(ui, model);
     ui.separator();
-    ui.label(egui::RichText::new("Travel orders").color(ACCENT).strong());
-    ui.label(travel_status(&ship.travel.status));
-    if ship.travel.orders.is_empty() {
-        ui.weak("No route queued.");
+    ui.label(
+        egui::RichText::new("Autopilot itinerary")
+            .color(ACCENT)
+            .strong(),
+    );
+    ui.label(travel_status(&ship.travel));
+    if let Some(reason) = &ship.travel.failure {
+        ui.colored_label(THREAT, reason);
+    }
+    if !ship.travel.status.summary.is_empty() {
+        ui.label(&ship.travel.status.summary);
+    }
+    if ship.travel.itinerary.is_empty() {
+        ui.weak("No itinerary.");
     }
     let now = model.time_ns / osg_model::TICK_NS;
-    let arrivals = ship.travel.stage_arrivals(now);
+    let arrivals = stage_arrivals(&ship.travel, now);
     egui::ScrollArea::vertical()
         .max_height(180.)
         .show(ui, |ui| {
-            for (index, order) in ship
-                .travel
-                .orders
-                .iter()
-                .enumerate()
-                .skip(ship.travel.order)
-            {
+            for (index, order) in ship.travel.itinerary.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("{}  {}", index + 1, order.label)).color(
-                            if matches!(order.action, travel::Order::Slip { .. }) {
-                                crate::ui::travel_risk::color(order.estimated_loss_ppm)
-                            } else if index == ship.travel.order {
+                            if matches!(order.directive, travel::Directive::SlipToSystem(_)) {
+                                crate::ui::travel_risk::color(Some(order.max_loss_ppm))
+                            } else if index == 0 {
                                 ACCENT
                             } else {
                                 MUTED
                             },
                         ),
                     );
-                    ui.monospace(eta_label(order, arrivals[index - ship.travel.order], now));
+                    ui.monospace(eta_label(order, arrivals[index], now));
                     if ui
                         .small_button("×")
                         .on_hover_text("Remove command")
@@ -118,35 +119,31 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
                     {
                         let mut orders: Vec<_> = ship
                             .travel
-                            .orders
+                            .itinerary
                             .iter()
-                            .skip(ship.travel.order)
-                            .map(|stage| stage.action.clone())
+                            .map(|stage| stage.directive.clone())
                             .collect();
-                        orders.remove(index - ship.travel.order);
-                        intents.push(Intent::EditQueue(orders));
+                        orders.remove(index);
+                        intents.push(Intent::EditItinerary(orders));
                     }
-                    if index > ship.travel.order
-                        && ui.small_button("↑").on_hover_text("Move earlier").clicked()
-                    {
+                    if index > 0 && ui.small_button("↑").on_hover_text("Move earlier").clicked() {
                         let mut orders: Vec<_> = ship
                             .travel
-                            .orders
+                            .itinerary
                             .iter()
-                            .skip(ship.travel.order)
-                            .map(|stage| stage.action.clone())
+                            .map(|stage| stage.directive.clone())
                             .collect();
-                        orders.swap(index - ship.travel.order, index - ship.travel.order - 1);
-                        intents.push(Intent::EditQueue(orders));
+                        orders.swap(index, index - 1);
+                        intents.push(Intent::EditItinerary(orders));
                     }
                 });
             }
         });
-    if !ship.travel.orders.is_empty() {
-        if ui.button("Clear queue").clicked() {
-            intents.push(Intent::EditQueue(Vec::new()));
+    if !ship.travel.itinerary.is_empty() {
+        if ui.button("Clear itinerary").clicked() {
+            intents.push(Intent::EditItinerary(Vec::new()));
         }
-        let paused = ship.travel.status == travel::Status::Paused;
+        let paused = !ship.travel.enabled;
         if ui
             .add_enabled(
                 model.connected,
@@ -170,14 +167,9 @@ pub(super) fn navigation(ui: &mut egui::Ui, model: &FrameModel, intents: &mut Ve
     }
 }
 
-pub(super) fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: u64) -> String {
+pub(super) fn eta_label(_stage: &travel::ItineraryEntry, arrival: Option<u64>, now: u64) -> String {
     let Some(arrival) = arrival else {
-        return if matches!(&stage.action, travel::Order::Guidance(g) if g.mode == travel::GuidanceMode::KeepRange)
-        {
-            "Continuous".into()
-        } else {
-            "ETA —".into()
-        };
+        return "ETA —".into();
     };
     let seconds = arrival.saturating_sub(now).div_ceil(10);
     if seconds >= 3600 {
@@ -192,22 +184,47 @@ pub(super) fn eta_label(stage: &travel::QueuedOrder, arrival: Option<u64>, now: 
     }
 }
 
-pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::TravelState, now: u64) {
-    let remaining = &state.orders[state.order.min(state.orders.len())..];
+pub(super) fn stage_arrivals(state: &travel::AutopilotState, now: u64) -> Vec<Option<u64>> {
+    let mut arrival = Some(now);
+    state
+        .itinerary
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            arrival = if index == 0 && state.enabled {
+                state.status.estimated_arrival_tick.or_else(|| {
+                    arrival
+                        .zip(entry.estimated_duration_ticks)
+                        .map(|(tick, duration)| tick.saturating_add(duration))
+                })
+            } else {
+                arrival
+                    .zip(entry.estimated_duration_ticks)
+                    .map(|(tick, duration)| tick.saturating_add(duration))
+            };
+            arrival
+        })
+        .collect()
+}
+
+pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::AutopilotState, now: u64) {
+    let remaining = &state.itinerary;
     if remaining.is_empty() {
         return;
     }
-    let arrivals = state.stage_arrivals(now);
+    let arrivals = stage_arrivals(state, now);
     ui.add_space(6.);
     ui.label(
-        egui::RichText::new(format!("ROUTE · {} orders remaining", remaining.len()))
+        egui::RichText::new(format!("ROUTE · {} directives remaining", remaining.len()))
             .size(11.)
             .color(MUTED),
     );
     for (index, order) in remaining.iter().enumerate() {
         let current = index == 0;
-        let color = match &order.action {
-            travel::Order::Slip { .. } => crate::ui::travel_risk::color(order.estimated_loss_ppm),
+        let color = match &order.directive {
+            travel::Directive::SlipToSystem(_) => {
+                crate::ui::travel_risk::color(Some(order.max_loss_ppm))
+            }
             _ if current => TEXT,
             _ => MUTED,
         };
@@ -226,13 +243,10 @@ pub(super) fn itinerary(ui: &mut egui::Ui, state: &travel::TravelState, now: u64
             let fill = if current { color } else { egui::Color32::TRANSPARENT };
             ui.painter().rect(marker, 1., fill, egui::Stroke::new(1., color), egui::StrokeKind::Inside);
 
-            let name = format!("{}  {}", state.order + index + 1, order.label);
+            let name = format!("{}  {}", index + 1, order.label);
             let response = ui.label(egui::RichText::new(name).size(12.).color(color));
-            if matches!(order.action, travel::Order::Slip { .. }) {
-                response.on_hover_text(order.estimated_loss_ppm.map_or_else(
-                    || "Failure probability unknown".into(),
-                    |loss| format!("Estimated failure probability: {loss:.2} ppm"),
-                ));
+            if matches!(order.directive, travel::Directive::SlipToSystem(_)) {
+                response.on_hover_text(format!("Risk allowance: {:.2} ppm", order.max_loss_ppm));
             }
             ui.label(
                 egui::RichText::new(eta_label(order, arrivals[index], now))
@@ -249,7 +263,7 @@ pub(super) fn fuel_budget(ui: &mut egui::Ui, model: &FrameModel) {
     let Some(ship) = model.ship else {
         return;
     };
-    if ship.travel.order >= ship.travel.orders.len() {
+    if ship.travel.itinerary.is_empty() {
         return;
     }
     ui.label(
@@ -292,15 +306,19 @@ pub(super) fn fuel_estimate(
         } else if fraction > 0.8 {
             egui::Color32::from_rgb(255, 199, 98)
         } else {
-            ACCENT
+            POSITIVE
         };
-        ui.colored_label(
-            color,
-            format!(
-                "{name}: ~{} needed / {} aboard",
+        meter(
+            ui,
+            name,
+            requirement.required_kg,
+            available,
+            &format!(
+                "~{} / {} aboard",
                 osg_ui::units::mass(requirement.required_kg),
                 osg_ui::units::mass(available)
             ),
+            color,
         );
         if insufficient {
             ui.colored_label(
@@ -320,7 +338,7 @@ pub(super) fn fuel_estimate(
         );
     }
     ui.small(
-        "Slip preserves velocity; estimates include matching destination motion after arrival.",
+        "The flight computer budgets arrival velocity changes and local maneuvers during flight.",
     );
     ui.small("Allow reserves for steering, gravity and changing mass. Reactor fuel is additional.");
 }

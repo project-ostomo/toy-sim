@@ -128,6 +128,35 @@ fn pixel_rectangle_endpoints_and_draw_order_preserve_logical_coordinates() {
     }
 }
 #[test]
+fn cjk_text_advances_two_grid_cells_without_replacement() {
+    for dpi in [1.0, 1.5, 2.0] {
+        let ctx = context(dpi);
+        let mut frame = blank(0);
+        frame.draws.push(Draw::Text {
+            at: [0, 0],
+            text: "A中AあA한A".into(),
+            color: GREEN,
+        });
+        let output = render(&ctx, 512.0, &frame);
+        let text: Vec<_> = shapes(&output)
+            .filter_map(|shape| match shape {
+                egui::Shape::Text(text) => Some(text),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text.len(), 7);
+        for (shape, expected) in text.iter().zip("A中AあA한A".chars()) {
+            assert_eq!(shape.galley.text(), expected.to_string());
+        }
+        for pair in [0, 2, 4] {
+            // Identical ASCII glyphs enclose one CJK glyph: 1 + 2 cells.
+            assert!((text[pair + 2].pos.x - text[pair].pos.x - 24.0).abs() < 0.001);
+        }
+    }
+}
+
+#[test]
 fn grid_spacing_newlines_glyphs_and_dpi_are_independent_of_font_advances() {
     for dpi in [1., 2.] {
         for size in [256., 512., 1024.] {

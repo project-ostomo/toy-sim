@@ -17,6 +17,7 @@ record!(Bay {
 });
 record!(Beacon {
     entity: [u8; 16],
+    system: [u8; 16],
     pose: Pose,
     radius_m: f64,
     owner: [u8; 16],

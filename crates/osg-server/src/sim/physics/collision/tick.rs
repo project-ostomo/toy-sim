@@ -13,9 +13,9 @@ pub(super) fn advance(
 ) -> Report {
     let mut report = Report::default();
     synchronize(bodies, spatial);
+    spatial.rebuild();
     activate(bodies, spatial);
-    fire(bodies, dt, workspace, allocate, &mut report);
-    synchronize(bodies, spatial);
+    fire(bodies, dt, spatial, workspace, allocate, &mut report);
     for beam in std::mem::take(&mut report.beams) {
         weapons::resolve_beam(beam, bodies, spatial, 0.0, &mut report);
     }
@@ -24,7 +24,8 @@ pub(super) fn advance(
     report
 }
 
-pub(super) fn synchronize(bodies: &[Body], spatial: &mut GalacticIndex<SpatialKey>) {
+#[cfg(test)]
+fn synchronize(bodies: &[Body], spatial: &mut GalacticIndex<SpatialKey>) {
     for body in bodies {
         let key = SpatialKey::Entity(body.entity);
         let luminosity = spatial.get(&key).map_or(0.0, |record| record.luminosity);
@@ -44,6 +45,7 @@ pub(super) fn synchronize(bodies: &[Body], spatial: &mut GalacticIndex<SpatialKe
 pub(super) fn fire(
     bodies: &mut Vec<Body>,
     dt: f64,
+    spatial: &mut GalacticIndex<SpatialKey>,
     workspace: &mut SolverWorkspace,
     allocate: &mut dyn FnMut() -> Entity,
     report: &mut Report,
@@ -92,7 +94,24 @@ pub(super) fn fire(
             weapons::advance(ship, body, member, workspace.time_s, dt);
         }
     }
-    bodies.extend(projectiles);
+    if !projectiles.is_empty() {
+        // New slugs must be queryable before beams and collision grouping run.
+        // Pair deduplication assumes both bodies exist in the spatial snapshot.
+        for projectile in &projectiles {
+            spatial
+                .insert(
+                    SpatialKey::Entity(projectile.entity),
+                    osg_spatial::SpatialRecord {
+                        position: projectile.position,
+                        radius_m: projectile.radius,
+                        luminosity: 0.0,
+                    },
+                )
+                .expect("projectile coordinate range");
+        }
+        spatial.rebuild();
+        bodies.extend(projectiles);
+    }
 }
 
 fn root(parents: &mut [usize], mut id: usize) -> usize {

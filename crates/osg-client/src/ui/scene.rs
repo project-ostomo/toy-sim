@@ -6,6 +6,7 @@ mod glints;
 mod lighting;
 mod navigation_hud;
 mod projection;
+pub(crate) mod render_regressions;
 mod slip;
 mod transit;
 pub(super) use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
@@ -90,7 +91,12 @@ pub(super) fn install(app: &mut App) {
                 .chain()
                 .in_set(PresentationSet::Render),
         )
-        .add_systems(PostUpdate, propagate_layers);
+        .add_systems(
+            PostUpdate,
+            // World assets acquire mesh children asynchronously. Publish their
+            // view layers before camera and shadow visibility are collected.
+            propagate_layers.before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+        );
     app.add_systems(
         osg_ui::bevy_egui::EguiPrimaryContextPass,
         (
@@ -501,6 +507,40 @@ fn propagate_layers(
             }
             commands.entity(child).insert(desired);
         }
+    }
+}
+
+#[cfg(test)]
+mod layer_tests {
+    use super::*;
+    use bevy::camera::visibility::VisibilitySystems;
+
+    #[derive(Component)]
+    struct LoadedMesh;
+
+    fn collect_visibility(layers: Query<&RenderLayers, With<LoadedMesh>>) {
+        for layers in &layers {
+            assert_eq!(*layers, RenderLayers::layer(3));
+        }
+    }
+
+    #[test]
+    fn newly_loaded_mesh_layers_are_published_before_visibility_collection() {
+        let mut app = App::new();
+        app.add_systems(
+            PostUpdate,
+            propagate_layers.before(VisibilitySystems::CheckVisibility),
+        )
+        .add_systems(
+            PostUpdate,
+            collect_visibility.in_set(VisibilitySystems::CheckVisibility),
+        );
+        let root = app.world_mut().spawn(ViewLayer(3)).id();
+        app.update();
+        // A world asset loads its children after the ship root already exists.
+        app.world_mut()
+            .spawn((ChildOf(root), LoadedMesh, RenderLayers::default()));
+        app.update();
     }
 }
 

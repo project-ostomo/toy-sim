@@ -1,5 +1,7 @@
 use super::ViewCamera;
-use crate::state::{Celestial, CelestialSystem, DisplayPose, ViewSystems};
+use crate::state::{
+    Celestial, CelestialSystem, DisplayPose, OwnedShip, ViewObservation, ViewSystems,
+};
 use bevy::{
     light::{
         AtmosphereEnvironmentMapLight, EnvironmentMapLight, GeneratedEnvironmentMapLight,
@@ -96,11 +98,13 @@ fn update(
         &Transform,
         Option<&ViewAtmosphere>,
         &ViewSystems,
+        Option<&ViewObservation>,
         Option<&mut AtmosphereEnvironmentMapLight>,
         Option<&mut GeneratedEnvironmentMapLight>,
         Option<&mut EnvironmentMapLight>,
     )>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
+    ships: Query<&OwnedShip>,
     mut media: ResMut<Assets<ScatteringMedium>>,
 ) {
     for (
@@ -109,6 +113,7 @@ fn update(
         transform,
         previous,
         systems,
+        observation,
         environment_source,
         generated_environment,
         environment,
@@ -130,6 +135,22 @@ fn update(
         }
 
         let position = view.origin.offset_by(transform.translation.as_dvec3());
+        let contextual_body = observation
+            .and_then(|observation| observation.0.focused_ship)
+            .and_then(|focused| ships.iter().find(|ship| ship.0.ship == focused))
+            .and_then(|ship| {
+                ship.0
+                    .location
+                    .hierarchy
+                    .iter()
+                    .rev()
+                    .find_map(|reference| {
+                        bodies.iter().find_map(|(body, _, _)| {
+                            (body.0.reference == *reference && body.0.atmosphere.is_some())
+                                .then_some(body.0.entity)
+                        })
+                    })
+            });
         let selected = choose_atmosphere(
             bodies.iter().filter_map(|(body, pose, system)| {
                 let atmosphere = body.0.atmosphere.as_ref()?;
@@ -144,7 +165,7 @@ fn update(
                     )
                 })
             }),
-            previous.map(|atmosphere| atmosphere.body),
+            contextual_body.or_else(|| previous.map(|atmosphere| atmosphere.body)),
         );
         let body = selected.and_then(|id| bodies.iter().find(|(body, _, _)| body.0.entity == id));
         let Some((body, pose, _)) = body else {

@@ -17,6 +17,13 @@ pub struct CelestialState {
     pub influence: f64,
     pub velocity: DVec3,
 }
+
+/// A binary system's root membership region has no physical or rendered body.
+#[derive(Component)]
+pub struct SystemRegion {
+    pub system: usize,
+    pub name: smol_str::SmolStr,
+}
 #[derive(Resource, Default)]
 pub struct ActiveSystems {
     pub entities: BTreeMap<usize, Vec<Entity>>,
@@ -186,6 +193,27 @@ pub fn activate(
         let mut entities = Vec::new();
         for b in system.solver.iter() {
             if matches!(b.class_params, BodyClass::Barycenter) {
+                if b.name == system.root_name {
+                    let hill = crate::sim::location::HillSphere::for_body(&system, b)
+                        .expect("system root has valid membership bounds");
+                    let entity = commands
+                        .spawn((
+                            SystemRegion {
+                                system: id,
+                                name: b.name.clone(),
+                            },
+                            hill,
+                            PreciseTransform {
+                                translation_um: system
+                                    .solver
+                                    .solve_position(&b.name, epoch)
+                                    .unwrap(),
+                                ..Default::default()
+                            },
+                        ))
+                        .id();
+                    entities.push(entity);
+                }
                 continue;
             }
             let mut root = commands.spawn((
@@ -209,6 +237,9 @@ pub fn activate(
                     rotation: system.solver.solve_rotation(&b.name, epoch).unwrap(),
                 },
             ));
+            if let Some(hill) = crate::sim::location::HillSphere::for_body(&system, b) {
+                root.insert(hill);
+            }
             if let BodyClass::Star { lumens } = b.class_params {
                 root.insert(Star {
                     lumens,
@@ -257,6 +288,68 @@ pub fn arrival(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_barycenter_supplies_membership_without_physical_components() {
+        bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let mut config = osg_universe::example_config();
+        let primary = config
+            .bodies
+            .iter_mut()
+            .find(|body| body.parent.is_none())
+            .unwrap();
+        let mass = primary.mass;
+        primary.parent = Some("System centre".into());
+        primary.orbit.semi_major = 1.0e9;
+        primary.orbit.period = 1.0e6;
+        let mut companion = primary.clone();
+        companion.key = "binary-companion".into();
+        companion.name = "Binary companion".into();
+        companion.orbit.mean_anomaly += std::f64::consts::PI;
+        config.bodies.push(companion);
+        config.bodies.push(Body {
+            key: "system-centre".into(),
+            name: "System centre".into(),
+            class_params: BodyClass::Barycenter,
+            mass: mass * 2.0,
+            ..Default::default()
+        });
+        let universe = Universe::init(config).unwrap();
+        let mut app = App::new();
+        app.insert_resource(universe)
+            .init_resource::<Time<Fixed>>()
+            .init_resource::<ActiveSystems>()
+            .add_systems(Update, activate);
+        app.world_mut().spawn((
+            PreciseTransform::default(),
+            SpatialBody {
+                radius_m: 1.0,
+                occludes: true,
+            },
+        ));
+        app.update();
+        let world = app.world_mut();
+        let region = world
+            .query_filtered::<Entity, With<SystemRegion>>()
+            .single(world)
+            .unwrap();
+        assert!(world.get::<CelestialState>(region).is_none());
+        assert!(world.get::<Celestial>(region).is_none());
+        assert!(world.get::<SpatialBody>(region).is_none());
+        assert!(world.get::<RigidBody>(region).is_none());
+        let hill = world
+            .get::<crate::sim::location::HillSphere>(region)
+            .unwrap();
+        assert_eq!(hill.hierarchy, vec![hill.reference]);
+        assert!(hill.radius_m > 1.0e9);
+        crate::sim::location::refresh(world);
+        assert!(
+            world
+                .resource::<crate::sim::spatial::SpatialIndex>()
+                .containing_hill_spheres(osg_model::GalacticPosition::ZERO)
+                .contains(&region)
+        );
+    }
 
     #[test]
     fn physical_objects_control_activation_and_inspection_does_not() {

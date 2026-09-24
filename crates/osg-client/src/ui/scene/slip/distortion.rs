@@ -1,5 +1,6 @@
 use super::*;
 use bevy::{
+    camera::Exposure,
     core_pipeline::{Core3dSystems, FullscreenShader, schedule::Core3d},
     render::{
         RenderApp, RenderStartup,
@@ -55,6 +56,47 @@ impl Default for Distortion {
             streaks: [Streak::default(); STREAK_COUNT],
             wakes: [super::wakes::Ribbon::default(); super::wakes::WAKE_COUNT],
         }
+    }
+}
+
+/// Exercises the production postprocess shaders without a server connection.
+pub(super) fn regression(
+    mut commands: Commands,
+    phase: Res<super::super::render_regressions::RegressionPhase>,
+    cameras: Query<(Entity, &Transform, &Projection, &Exposure, &Camera), With<ViewCamera>>,
+) {
+    let elapsed = phase.frame.saturating_sub(270) as f32 / 60.0;
+    for (entity, transform, projection, exposure, camera) in &cameras {
+        let Projection::Perspective(projection) = projection else {
+            continue;
+        };
+        let size = camera
+            .physical_target_size()
+            .unwrap_or(UVec2::new(960, 640))
+            .as_vec2();
+        let tan = (projection.fov * 0.5).tan();
+        let frame = Quat::from_rotation_arc(Vec3::Z, transform.forward().as_vec3()).inverse();
+        let mut settings = Distortion {
+            viewport: Vec4::new(0.0, 0.0, 1.0, 1.0),
+            screen: Vec4::new(size.x, size.y, 0.0, 0.0),
+            eye: Vec4::new(0.0, 0.0, 0.0, projection.near),
+            right: (frame * transform.rotation * Vec3::X * tan * size.x / size.y).extend(0.0),
+            up: (frame * transform.rotation * Vec3::Y * tan).extend(0.0),
+            forward: (frame * transform.forward().as_vec3()).extend(
+                (exposure.exposure() / Exposure::SUNLIGHT.exposure())
+                    .sqrt()
+                    .clamp(0.25, 2.0),
+            ),
+            time: Vec4::new(
+                phase.frame as f32 / 60.0,
+                elapsed.clamp(0.0, 1.0),
+                elapsed * 3.0,
+                1.0,
+            ),
+            ..default()
+        };
+        super::streaks::prepare(&mut settings, elapsed as f64 * 3.0);
+        commands.entity(entity).insert(settings);
     }
 }
 
@@ -140,11 +182,13 @@ pub(super) fn prepare(
                 settings.right = (frame * transform.rotation * Vec3::X * tan * aspect).extend(0.0);
                 settings.up = (frame * transform.rotation * Vec3::Y * tan).extend(0.0);
                 settings.forward = (frame * transform.rotation * Vec3::NEG_Z).extend(
-                    exposure
+                    (exposure
                         .copied()
                         .unwrap_or(bevy::camera::Exposure::SUNLIGHT)
                         .exposure()
-                        * 35000.0,
+                        / bevy::camera::Exposure::SUNLIGHT.exposure())
+                    .sqrt()
+                    .clamp(0.25, 2.0),
                 );
                 settings.time.z = slip.flow as f32;
                 settings.time.w = 1.0;

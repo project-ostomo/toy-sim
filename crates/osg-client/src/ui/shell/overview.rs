@@ -1,39 +1,12 @@
 use super::*;
 
-pub(super) fn slip_to(
-    ui: &mut egui::Ui,
-    row: &Row,
-    can_control: bool,
-    intents: &mut Vec<Intent>,
-) -> bool {
-    if row.celestial.is_none() {
-        return false;
-    }
-    if ui
-        .add_enabled(
-            can_control && row.slip_order.is_some(),
-            egui::Button::new("Slip to"),
-        )
-        .on_disabled_hover_text(
-            "Requires a clear departure outside celestial exclusion zones and a reachable capture.",
-        )
-        .clicked()
-    {
-        intents.push(Intent::Queue(
-            vec![row.slip_order.clone().unwrap()],
-            ui.input(|input| input.modifiers.shift),
-        ));
-        return true;
-    }
-    false
-}
-
 pub(super) fn selected_item(
     ui: &mut egui::Ui,
     row: Option<&Row>,
     can_control: bool,
     weapons: Option<&WeaponsInstrument>,
     rows: &[Row],
+    society: &ownership::SocietySnapshot,
     stand_off: &mut f64,
     intents: &mut Vec<Intent>,
 ) {
@@ -66,21 +39,45 @@ pub(super) fn selected_item(
                 super::super::standing::label(row.standing)
             ),
         )
-        .on_hover_text("Standing follows the identity broadcast by IFF.");
+        .on_hover_text("Standing follows the identity broadcast by IFF. Open affiliation to inspect the directory's standing rules.");
     }
     ui.separator();
     if let Some(principal) = row.and_then(|row| row.affiliation) {
-        if ui.small_button("Show affiliation").clicked() {
-            intents.push(Intent::InspectAffiliation(principal));
-        }
+        ui.menu_button("Show affiliation", |ui| {
+            ui.set_width(375.);
+            if let Some(row) = row {
+                ui.heading(&row.name);
+                ui.weak(format!(
+                    "{} · {} · IFF broadcasting",
+                    row.kind,
+                    distance(row.distance)
+                ));
+                ui.separator();
+            }
+            let (standing, source) = society
+                .directory
+                .standing_with_source(ownership::Principal::Player(society.account), principal);
+            society::contact_card(
+                ui,
+                society,
+                &ownership::StandingReport {
+                    target: principal,
+                    standing,
+                    source,
+                },
+                intents,
+            );
+            if let Some(row) = row.filter(|row| row.can_look) {
+                if ui.small_button("Look at").clicked() {
+                    intents.push(Intent::Look(Some(row.target)));
+                }
+            }
+        });
     }
     let target = row.map(|row| row.target);
     let contact = row.and_then(|row| row.contact);
     let marked = weapons.and_then(|weapons| weapons.target);
     let firing = weapons.is_some_and(|weapons| weapons.firing);
-    if let Some(row) = row {
-        slip_to(ui, row, can_control, intents);
-    }
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 4.;
         if action_button(
@@ -188,22 +185,22 @@ pub(super) fn selected_item(
                 .add_enabled(can_control, egui::Button::new("Approach"))
                 .clicked()
             {
-                intents.push(Intent::Queue(
-                    vec![travel::Order::Guidance(travel::Guidance {
+                intents.push(Intent::Command(
+                    ShipCommand::SetGuidance(Some(travel::Guidance {
                         mode: travel::GuidanceMode::Approach,
                         target: travel::Target::Destination(travel::Destination::Beacon(id)),
                         range_m: row.map_or(100., |row| row.radius + 100.),
-                    })],
-                    append,
+                    })),
+                    "Approach",
                 ));
             }
             if ui
                 .add_enabled(can_control, egui::Button::new("Dock"))
                 .clicked()
             {
-                intents.push(Intent::Queue(vec![travel::Order::Dock(id)], append));
+                intents.push(Intent::Navigate(vec![travel::Directive::DockAt(id)], append));
             }
-            ui.weak("Shift: add to queue");
+            ui.weak("Shift: append to itinerary");
         });
     }
     ui.horizontal(|ui| {
@@ -220,7 +217,7 @@ pub(super) fn selected_item(
             .clicked()
         {
             intents.push(Intent::Command(
-                ShipCommand::SetAutopilot(false),
+                ShipCommand::SetGuidance(None),
                 "Stop guidance",
             ));
         }

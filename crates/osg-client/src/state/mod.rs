@@ -6,15 +6,15 @@ mod calendar;
 mod chat;
 pub(super) use calendar::CalendarClock;
 pub(crate) use chat::{ChatFocus, ChatState};
-mod commands;
 mod diagnostics;
 pub(super) use diagnostics::ClientDiagnostics;
 mod presentation;
-pub(crate) use commands::Outgoing;
+pub(crate) use crate::Outgoing;
 mod replication;
+pub(crate) mod requests;
 mod transport;
 
-use crate::{Endpoint, playback::Playback};
+use crate::{EventSubscription, OsgNetClient, playback::Playback};
 use bevy::prelude::*;
 use osg_model::*;
 use presentation::interpolate;
@@ -104,7 +104,19 @@ pub(super) struct SessionInfo {
     pub navigation_hash: Option<[u8; 32]>,
     pub navigation_status: NavigationStatus,
     pub society: ownership::SocietySnapshot,
+    pub directory_entries: Vec<ownership::Principal>,
+    pub directory_next: Option<ownership::Principal>,
+    pub society_assets_next: Option<Id>,
+    pub society_asset_loaded: Option<Id>,
+    pub declaration_history: Vec<osg_model::diplomacy::Declaration>,
+    pub declaration_history_next: Option<u64>,
+    pub declaration_history_key: Option<(ownership::Principal, osg_model::diplomacy::DeclarationCategory, ownership::Principal)>,
+    pub society_error: Option<String>,
+    pub wallet: Option<economy::WalletSnapshot>,
+    pub market: Option<osg_model::market::MarketSnapshot>,
+    pub assets: Option<osg_model::assets::AssetsSnapshot>,
     pub industry: IndustryState,
+    pub services: requests::services::View,
     pub chat: ChatState,
     pub results: Vec<CommandResult>,
     pub events: Vec<osg_model::Event>,
@@ -116,7 +128,7 @@ pub(super) struct SessionInfo {
 #[derive(Default)]
 pub(super) struct IndustryState {
     pub snapshot: industry::IndustrySnapshot,
-    subscription: Option<industry::IndustrySubscription>,
+    subscription: Option<industry::IndustryQuery>,
     revision: u64,
 }
 
@@ -129,8 +141,8 @@ impl IndustryState {
 
     pub fn subscribe(
         &mut self,
-        mut wanted: Option<industry::IndustrySubscription>,
-        outgoing: &mut Outgoing,
+        mut wanted: Option<industry::IndustryQuery>,
+        requests: &mut requests::Requests,
     ) {
         if let Some(wanted) = &mut wanted {
             let mut seen = std::collections::BTreeSet::new();
@@ -148,10 +160,10 @@ impl IndustryState {
                 .checked_add(1)
                 .expect("industry revision exhausted");
             wanted.revision = self.revision;
-            outgoing.push(Action::IndustrySubscribe(wanted.clone()));
+            requests.industry = Some(wanted.clone());
             self.subscription = Some(wanted);
         } else {
-            outgoing.push(Action::IndustryUnsubscribe);
+            requests.industry = None;
             self.subscription = None;
             self.snapshot = Default::default();
         }
@@ -193,8 +205,9 @@ pub(crate) fn reset_resource<T: Resource<Mutability = bevy::ecs::component::Muta
 
 #[derive(Resource)]
 struct Transport {
-    endpoint: Endpoint,
-    input_sequence: u64,
+    client: OsgNetClient,
+    events: EventSubscription,
+    failed: bool,
 }
 
 #[derive(Resource)]
@@ -217,11 +230,15 @@ pub(super) enum PresentationSet {
     Render,
 }
 
-pub(super) fn install(app: &mut App, endpoint: Endpoint, local: bool) {
+pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
+    app.insert_resource(requests::NetworkClient(client.clone()))
+        .init_resource::<requests::Requests>()
+        .add_systems(Update, requests::update);
     app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
         .insert_resource(Transport {
-            endpoint,
-            input_sequence: 0,
+            events: client.subscribe_events(),
+            client,
+            failed: false,
         })
         .insert_resource(BufferedPlayback(Playback::new(local)))
         .init_resource::<ClientDiagnostics>()

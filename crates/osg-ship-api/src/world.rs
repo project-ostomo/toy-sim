@@ -9,23 +9,11 @@ pub const AXES_BODY_FIXED: u64 = 1;
 pub const TARGET_DIRECTION: u64 = 0;
 pub const TARGET_DESTINATION: u64 = 1;
 pub const TARGET_CONTACT: u64 = 2;
-pub const ORDER_GUIDANCE: u64 = 1;
-pub const ORDER_TRAVEL: u64 = 2;
-pub const ORDER_SUBLIGHT: u64 = 3;
-pub const ORDER_SLIP: u64 = 4;
-pub const ORDER_DOCK: u64 = 5;
-pub const ORDER_UNDOCK: u64 = 6;
-pub const ORDER_WAIT: u64 = 7;
-pub const ORDER_TRAVEL_SYSTEM: u64 = 8;
+pub const DIRECTIVE_SLIP_TO_SYSTEM: u64 = 0;
+pub const DIRECTIVE_DOCK_AT: u64 = 1;
 pub const GUIDANCE_ALIGN: u64 = 0;
 pub const GUIDANCE_APPROACH: u64 = 1;
 pub const GUIDANCE_KEEP_RANGE: u64 = 2;
-pub const TRAVEL_IDLE: u64 = 0;
-pub const TRAVEL_PLANNING: u64 = 1;
-pub const TRAVEL_ACTIVE: u64 = 2;
-pub const TRAVEL_PAUSED: u64 = 3;
-pub const TRAVEL_BLOCKED: u64 = 4;
-pub const TRAVEL_COMPLETED: u64 = 5;
 pub const ROUTE_UNKNOWN: u64 = 0;
 pub const ROUTE_PENDING: u64 = 1;
 pub const ROUTE_READY: u64 = 2;
@@ -69,27 +57,23 @@ record!(Target {
     destination: Destination,
     contact: ContactRef
 });
-record!(Order {
+record!(Guidance {
+    present: u64,
+    mode: u64,
+    target: Target,
+    range_m: f64
+});
+record!(Directive {
     kind: u64,
     entity: [u8; 16],
-    destination: Destination,
-    target: Target,
-    mode: u64,
-    range_m: f64,
-    tick: u64,
-    navigation_beacon_present: u64,
-    navigation_beacon: [u8; 16],
 });
-record!(QueuedOrder {
+record!(ItineraryEntry {
     label: Text<256>,
-    action: Order,
-    seconds_per_kg: f64,
+    directive: Directive,
+    max_loss_ppm: f64,
+    fuel_allowance_kg: f64,
     duration_present: u64,
     duration_ticks: u64,
-    propellant_present: u64,
-    propellant_kg: f64,
-    loss_present: u64,
-    loss_ppm: f64,
 });
 record!(Preferences {
     fuel_fraction: f64,
@@ -98,6 +82,10 @@ record!(Preferences {
 });
 record!(OrreryQuery {
     reference: Position
+});
+record!(OrrerySystemQuery {
+    system: [u8; 16],
+    after_seconds: f64
 });
 record!(LocalObstacle {
     reference: Target,
@@ -118,20 +106,43 @@ record!(SlipEligibilityQuery {
     arrival_after_seconds: f64,
     navigation_beacon_present: u64,
     navigation_beacon: [u8; 16],
+    arrival_velocity_present: u64,
+    arrival_velocity: [f64; 3],
 });
 record!(SlipEligibilityReply {
     ready: u64,
     preparation_s: f64,
     duration_s: f64
 });
+record!(SlipProbeReply { result: SlipEligibilityReply, error: Text<256> });
 record!(ResolveQuery {
     destination: Destination,
     after_seconds: f64
 });
+pub const MAX_STATUS_MARKERS: usize = 8;
+record!(CelestialRef {
+    system: [u8; 16],
+    body: [u8; 16]
+});
+record!(PlanMarker { position: Position, label: Text<64> });
+record!(FirmwareStatus {
+    phase: u64, waiting_until_present: u64, waiting_until: u64, waiting_reason: Text<256>,
+    summary: Text<256>, arrival_present: u64, arrival_tick: u64,
+    capture_present: u64, capture_body: CelestialRef,
+    aim_present: u64, aim_offset_m: [f64; 3], departure_present: u64, departure_tick: u64,
+    planned_delta_v_m_s: f64, planned_loss_ppm: f64, spent_loss_ppm: f64,
+    planned_exotic_fuel_kg: f64, spent_exotic_fuel_kg: f64,
+    marker_count: u64, markers: [PlanMarker; MAX_STATUS_MARKERS],
+});
 record!(TravelReply {
-    autopilot_enabled: u64, preferences: Preferences, revision: u64, index: u64,
-    order_present: u64, order: QueuedOrder, status: u64, reason: Text<256>,
-    arrival_present: u64, arrival_tick: u64, pose: Pose, slip_ready: u64, slip_axis: [f64; 3],
+    enabled: u64, preferences: Preferences, directive_revision: u64,
+    itinerary_count: u64, fuel_present: u64, fuel_count: u64, fuel_complete: u64,
+    max_log_loss: f64, spent_log_loss: f64, status: FirmwareStatus,
+    failure_present: u64, failure: Text<256>, pose: Pose, slip_ready: u64, slip_axis: [f64; 3],
+    presence: u64, host: [u8; 16], bay: u64,
+    region: u64, system_present: u64, system: [u8; 16], primary_present: u64,
+    primary: CelestialRef, hierarchy_count: u64, sample_tick: u64, tick: u64,
+    exotic_fuel_kg: f64,
 });
 record!(RouteRequest {
     id: u64,
@@ -141,51 +152,41 @@ record!(RoutePoll { id: u64 });
 record!(FuelRequirement { resource: Text<64>, required_kg: f64, available_kg: f64 });
 record!(RouteReply {
     id: u64, status: u64, stage: u64, completed: u64, total_present: u64, total: u64,
-    planned_tick: u64, travel_revision: u64, topology_revision: u64,
-    order_count: u64, fuel_count: u64, fuel_complete: u64, reason: Text<256>,
+    planned_tick: u64, directive_revision: u64, topology_revision: u64,
+    itinerary_count: u64, fuel_count: u64, fuel_complete: u64, reason: Text<256>,
     estimated_loss_ppm: f64, exotic_fuel_kg: f64,
 });
 record!(UseRoute {
     id: u64,
-    revision: u64,
+    directive_revision: u64,
     engage: u64
 });
-record!(Block { revision: u64, order: u64, reason: Text<256> });
-record!(Estimate {
-    revision: u64,
-    order: u64,
-    ticks_present: u64,
-    remaining_ticks: u64,
-    propellant_present: u64,
-    remaining_propellant_kg: f64,
+record!(Fail { directive_revision: u64, reason: Text<256> });
+record!(PublishStatus {
+    directive_revision: u64,
+    status: FirmwareStatus
 });
-record!(CompleteOrder {
-    revision: u64,
-    order: u64
+record!(Complete {
+    directive_revision: u64
 });
 record!(Slip {
-    revision: u64,
-    order: u64,
     destination: Position,
     navigation_beacon_present: u64,
     navigation_beacon: [u8; 16],
+    arrival_velocity_present: u64,
+    arrival_velocity: [f64; 3],
+    not_before_present: u64,
+    not_before_tick: u64,
 });
 record!(ReserveBay {
-    revision: u64,
-    order: u64,
     station: [u8; 16],
     bay: u64
 });
 record!(Dock {
-    revision: u64,
-    order: u64,
     station: [u8; 16],
     bay: u64
 });
-record!(Undock {
-    revision: u64,
-    order: u64
-});
+record!(Undock { reserved: u64 });
 
 #[cfg(target_arch = "wasm32")]
 pub mod raw {
@@ -199,19 +200,38 @@ pub mod raw {
             capacity: u32,
             reply: *mut OrreryReply,
         ) -> i32;
+        pub fn orrery_system_read(
+            query: *const OrrerySystemQuery,
+            output: *mut LocalObstacle,
+            capacity: u32,
+            reply: *mut OrreryReply,
+        ) -> i32;
         pub fn contact_get(query: *const ContactRef, reply: *mut ContactReply) -> i32;
         pub fn slip_eligibility(
             query: *const SlipEligibilityQuery,
             reply: *mut SlipEligibilityReply,
         ) -> i32;
-        pub fn travel_read(reply: *mut TravelReply) -> i32;
+        pub fn slip_eligibility_batch(
+            queries: *const SlipEligibilityQuery,
+            count: u32,
+            output: *mut SlipProbeReply,
+        ) -> i32;
+        pub fn travel_read(
+            reply: *mut TravelReply,
+            itinerary: *mut ItineraryEntry,
+            capacity: u32,
+            fuels: *mut FuelRequirement,
+            fuel_capacity: u32,
+            hierarchy: *mut CelestialRef,
+            hierarchy_capacity: u32,
+        ) -> i32;
         pub fn destination_resolve(query: *const ResolveQuery, reply: *mut Pose) -> i32;
         pub fn route_request(
             query: *const RouteRequest,
-            orders: *const Order,
+            directives: *const Directive,
             count: u32,
             reply: *mut RouteReply,
-            output: *mut QueuedOrder,
+            output: *mut ItineraryEntry,
             capacity: u32,
             fuels: *mut FuelRequirement,
             fuel_capacity: u32,
@@ -219,16 +239,17 @@ pub mod raw {
         pub fn route_poll(
             id: u64,
             reply: *mut RouteReply,
-            output: *mut QueuedOrder,
+            output: *mut ItineraryEntry,
             capacity: u32,
             fuels: *mut FuelRequirement,
             fuel_capacity: u32,
         ) -> i32;
         pub fn travel_use_route(action: *const UseRoute) -> i32;
-        pub fn travel_block(action: *const Block) -> i32;
-        pub fn travel_estimate(action: *const Estimate) -> i32;
-        pub fn travel_complete(action: *const CompleteOrder) -> i32;
+        pub fn travel_fail(action: *const Fail) -> i32;
+        pub fn travel_publish_status(action: *const PublishStatus) -> i32;
+        pub fn travel_complete(action: *const Complete) -> i32;
         pub fn travel_slip(action: *const Slip) -> i32;
+        pub fn travel_cancel_slip() -> i32;
         pub fn travel_reserve_bay(action: *const ReserveBay) -> i32;
         pub fn travel_dock(action: *const Dock) -> i32;
         pub fn travel_undock(action: *const Undock) -> i32;

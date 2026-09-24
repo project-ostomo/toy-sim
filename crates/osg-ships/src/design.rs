@@ -145,7 +145,7 @@ pub struct CompiledShipDesign {
     pub active_parts: Vec<usize>,
     pub weapon_parts: Vec<usize>,
     pub part_weapons: Vec<Option<usize>>,
-    pub weapon_specs: Vec<osg_ship_api::abi::WeaponSpec>,
+    pub weapon_specs: Vec<crate::weapons::WeaponSpec>,
     pub max_torque: f64,
     pub device_catalogue: Vec<crate::DeviceDescriptor>,
     pub device_sources: Vec<DeviceSource>,

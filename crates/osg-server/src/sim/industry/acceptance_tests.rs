@@ -164,6 +164,193 @@ impl Fixture {
     }
 }
 
+#[test]
+fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
+    use crate::sim::{economy::Economy, infrastructure::Landmark};
+    use osg_model::{
+        economy::{Currency, MONEY_SCALE},
+        industry::{CustomerMatch, CustomerTier, ServicePolicy, ServiceRate, ServiceWork},
+    };
+
+    let mut fixture = Fixture::new();
+    let customer = Id::new();
+    identity::add_account(&mut fixture.world, customer, false);
+    let facility = fixture.id(fixture.facility);
+    fixture.world.entity_mut(fixture.facility).insert(Landmark {
+        system: Id::new(),
+        name: "Public works".into(),
+    });
+    let recipe = fixture.recipe(IndustryCapability::Fabricator);
+    fixture.put(fixture.facility, &recipe.inputs);
+    let payer = Principal::Player(customer);
+    let operator = Principal::Player(fixture.account);
+    for input in &recipe.inputs {
+        fixture
+            .world
+            .get_mut::<hardware::ShipInventory>(fixture.facility)
+            .unwrap()
+            .0
+            .custody
+            .insert(input.item.clone(), input.quantity);
+        fixture
+            .world
+            .resource_mut::<Economy>()
+            .storage
+            .entry((facility, payer))
+            .or_default()
+            .insert(input.item.clone(), input.quantity);
+    }
+    let now = osg_model::calendar::now_unix_ms();
+    fixture
+        .world
+        .resource_mut::<Economy>()
+        .issue(payer, Currency::Uec, 1_000_000 * MONEY_SCALE, now)
+        .unwrap();
+    let rate = ServiceRate {
+        capability: recipe.capability,
+        energy_per_mj: MONEY_SCALE,
+        time_per_hour: MONEY_SCALE,
+        public_lanes: 1,
+    };
+    service::publish(
+        &mut fixture.world,
+        fixture.account,
+        facility,
+        ServicePolicy {
+            revision: 0,
+            accepting: true,
+            currency: Currency::Uec,
+            rates: vec![rate],
+            tiers: vec![CustomerTier {
+                customer: CustomerMatch::Principal(payer),
+                price_basis_points: Some(8_000),
+            }],
+        },
+    )
+    .unwrap();
+    let uploads = crate::blueprint_uploads::BlueprintUploads::default();
+    let work = ServiceWork::Recipe {
+        recipe: recipe.id,
+        batches: 1,
+    };
+    let public = service::list(&fixture.world, customer, String::new(), None, 32).unwrap();
+    assert_eq!(public.items.len(), 1);
+    let quote = service::quote(
+        &mut fixture.world,
+        customer,
+        facility,
+        payer,
+        work,
+        &uploads,
+    )
+    .unwrap();
+    assert_eq!(quote.price_basis_points, 8_000);
+    assert!(quote.total > 0);
+    let mut stale = quote.clone();
+    stale.policy_revision += 1;
+    assert!(service::order(&mut fixture.world, customer, stale, &uploads).is_err());
+    let before = fixture
+        .world
+        .resource::<Economy>()
+        .available(payer, Currency::Uec);
+    service::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
+    let first = service::jobs(&fixture.world, customer, facility).unwrap()[0].id;
+    assert_eq!(
+        fixture
+            .world
+            .resource::<Economy>()
+            .available(payer, Currency::Uec),
+        before - quote.total
+    );
+    assert!(service::order(&mut fixture.world, customer, quote.clone(), &uploads).is_err());
+    assert!(service::cancel(&mut fixture.world, fixture.account, facility, first).is_ok());
+    assert_eq!(
+        fixture
+            .world
+            .resource::<Economy>()
+            .available(payer, Currency::Uec),
+        before
+    );
+    for input in &quote.inputs {
+        assert_eq!(
+            fixture.world.resource::<Economy>().storage[&(facility, payer)][&input.item],
+            input.quantity
+        );
+    }
+    service::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
+    let second = service::jobs(&fixture.world, customer, facility).unwrap()[0].id;
+    let before_operator = fixture
+        .world
+        .resource::<Economy>()
+        .balances
+        .get(&operator)
+        .cloned()
+        .unwrap_or_default();
+    advance(&mut fixture.world);
+    let job = &fixture
+        .world
+        .get::<IndustryFacility>(fixture.facility)
+        .unwrap()
+        .jobs[0];
+    assert!(job.view.payment.as_ref().unwrap().charged);
+    assert!(
+        !fixture
+            .world
+            .resource::<Economy>()
+            .service_holds
+            .contains_key(&second)
+    );
+    assert!(fixture.world.resource::<Economy>().balances[&operator].uec > 0);
+    let received_uec =
+        fixture.world.resource::<Economy>().balances[&operator].uec - before_operator.uec;
+    assert_eq!(
+        fixture
+            .world
+            .get::<IndustryFacility>(fixture.facility)
+            .unwrap()
+            .outside_revenue
+            .uec,
+        received_uec
+    );
+    assert!(service::cancel(&mut fixture.world, customer, facility, second).is_err());
+
+    for _ in 1..quote.duration_ticks {
+        advance(&mut fixture.world);
+    }
+    assert!(
+        fixture
+            .world
+            .get::<IndustryFacility>(fixture.facility)
+            .unwrap()
+            .jobs
+            .is_empty()
+    );
+    let completed = fixture
+        .world
+        .get::<IndustryFacility>(fixture.facility)
+        .unwrap();
+    assert_eq!(completed.outside_revenue.uec, received_uec);
+    assert_eq!(completed.outside_revenue.lat, 0);
+    let saved = postcard::to_allocvec(completed).unwrap();
+    let restored: IndustryFacility = postcard::from_bytes(&saved).unwrap();
+    assert_eq!(restored.outside_revenue.uec, received_uec);
+    for output in &quote.outputs {
+        assert_eq!(
+            fixture.world.resource::<Economy>().storage[&(facility, payer)][&output.item],
+            output.quantity
+        );
+        assert_eq!(
+            fixture
+                .world
+                .get::<hardware::ShipInventory>(fixture.facility)
+                .unwrap()
+                .0
+                .custody[&output.item],
+            output.quantity
+        );
+    }
+}
+
 async fn stage_blueprint(
     uploads: &crate::blueprint_uploads::BlueprintUploads,
     bytes: &[u8],
@@ -442,7 +629,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
         .is_err()
     );
     assert_eq!(fixture.inventory_bytes(fixture.facility), before);
-    let subscription = IndustrySubscription {
+    let subscription = IndustryQuery {
         directory: true,
         inventories: vec![facility_id],
         ..Default::default()

@@ -1,0 +1,131 @@
+
+running 1 test
+test sim::benchmark::production_tick_and_publication ... setup players=32 scene=sparse repeat=0 seconds=2.800 catalogue=1001760 records=3040
+first simulation tick ms=867.433
+progress frame=0 total_ms=978.513 physics_ms=345.601 groups=0 bodies=3033 grouped=0
+progress frame=50 total_ms=77.097 physics_ms=11.558 groups=0 bodies=3033 grouped=0
+progress frame=100 total_ms=80.644 physics_ms=10.832 groups=0 bodies=3033 grouped=0
+progress frame=150 total_ms=78.880 physics_ms=11.082 groups=0 bodies=3033 grouped=0
+progress frame=200 total_ms=79.314 physics_ms=11.005 groups=0 bodies=3033 grouped=0
+progress frame=250 total_ms=99.445 physics_ms=13.043 groups=0 bodies=3033 grouped=0
+progress frame=300 total_ms=78.500 physics_ms=10.790 groups=0 bodies=3033 grouped=0
+progress frame=350 total_ms=82.314 physics_ms=12.351 groups=0 bodies=3033 grouped=0
+breakdown scope=COLLISION_TOTAL mean_ms=11.4322 p50_ms=11.2543 p95_ms=12.8376 samples=300
+breakdown scope=PUBLICATION_TOTAL mean_ms=23.4427 p50_ms=23.3127 p95_ms=25.3202 samples=300
+breakdown scope=SIMULATION_TOTAL mean_ms=57.3965 p50_ms=55.8091 p95_ms=69.1839 samples=300
+breakdown scope=SIMULATION_UNSCOPED mean_ms=1.6247 p50_ms=1.5123 p95_ms=2.1345 samples=300
+breakdown scope=activate_systems mean_ms=2.3548 p50_ms=2.2694 p95_ms=2.9444 samples=300
+breakdown scope=aperture_indexes mean_ms=0.0168 p50_ms=0.0124 p95_ms=0.0518 samples=300
+breakdown scope=chat.refresh mean_ms=2.1013 p50_ms=2.0258 p95_ms=2.8188 samples=300
+breakdown scope=collision.discovery mean_ms=8.1226 p50_ms=7.9851 p95_ms=8.8960 samples=300
+breakdown scope=collision.index_sync mean_ms=0.0000 p50_ms=0.0000 p95_ms=0.0000 samples=300
+breakdown scope=collision.solver mean_ms=0.3492 p50_ms=0.3185 p95_ms=0.4980 samples=300
+breakdown scope=hardware.actuate mean_ms=0.0715 p50_ms=0.0681 p95_ms=0.0931 samples=300
+breakdown scope=hardware.advance_computer_clock mean_ms=0.0040 p50_ms=0.0038 p95_ms=0.0056 samples=300
+breakdown scope=hardware.apply_impacts mean_ms=0.0239 p50_ms=0.0210 p95_ms=0.0328 samples=300
+breakdown scope=hardware.avionics mean_ms=0.1543 p50_ms=0.1443 p95_ms=0.2049 samples=300
+breakdown scope=hardware.begin mean_ms=0.0522 p50_ms=0.0501 p95_ms=0.0711 samples=300
+breakdown scope=hardware.cooling.run mean_ms=0.2833 p50_ms=0.2339 p95_ms=0.4281 samples=300
+breakdown scope=hardware.devices.prepare_engines mean_ms=0.0010 p50_ms=0.0008 p95_ms=0.0018 samples=300
+breakdown scope=hardware.devices.prepare_micropulse_engines mean_ms=0.2238 p50_ms=0.1991 p95_ms=0.3469 samples=300
+breakdown scope=hardware.devices.prepare_rcs mean_ms=0.0006 p50_ms=0.0005 p95_ms=0.0011 samples=300
+breakdown scope=hardware.devices.prepare_shields mean_ms=0.0090 p50_ms=0.0083 p95_ms=0.0142 samples=300
+breakdown scope=hardware.devices.prepare_thermal_engines mean_ms=0.0007 p50_ms=0.0006 p95_ms=0.0013 samples=300
+breakdown scope=hardware.devices.prepare_torquers mean_ms=0.0157 p50_ms=0.0132 p95_ms=0.0251 samples=300
+breakdown scope=hardware.devices.prepare_weapons mean_ms=0.0099 p50_ms=0.0093 p95_ms=0.0153 samples=300
+breakdown scope=hardware.devices.thermal_engine_decay mean_ms=0.0004 p50_ms=0.0003 p95_ms=0.0010 samples=300
+breakdown scope=hardware.dormant_thermal mean_ms=0.0009 p50_ms=0.0008 p95_ms=0.0015 samples=300
+breakdown scope=hardware.finish_electrical_tick mean_ms=0.0482 p50_ms=0.0463 p95_ms=0.0668 samples=300
+breakdown scope=hardware.generators mean_ms=0.1927 p50_ms=0.1799 p95_ms=0.2554 samples=300
+breakdown scope=hardware.initialize mean_ms=0.0006 p50_ms=0.0006 p95_ms=0.0010 samples=300
+breakdown scope=hardware.power_totals mean_ms=0.1087 p50_ms=0.1019 p95_ms=0.1498 samples=300
+breakdown scope=hardware.publish_devices mean_ms=0.2195 p50_ms=0.1996 p95_ms=0.3269 samples=300
+breakdown scope=hardware.publish_mass mean_ms=0.3735 p50_ms=0.3411 p95_ms=0.6096 samples=300
+breakdown scope=hardware.reactors.dock_heat_transfer mean_ms=0.0003 p50_ms=0.0003 p95_ms=0.0007 samples=300
+breakdown scope=hardware.reactors.generate mean_ms=0.4992 p50_ms=0.4898 p95_ms=0.6356 samples=300
+breakdown scope=hardware.reactors.process mean_ms=0.0316 p50_ms=0.0305 p95_ms=0.0425 samples=300
+breakdown scope=hardware.reset_demands mean_ms=0.0030 p50_ms=0.0028 p95_ms=0.0045 samples=300
+breakdown scope=hardware.reset_weapons mean_ms=0.0518 p50_ms=0.0464 p95_ms=0.0687 samples=300
+breakdown scope=hardware.sensor_overrides mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=hardware.transit_thermal mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0003 samples=300
+breakdown scope=hardware.utilities.run mean_ms=0.6071 p50_ms=0.6008 p95_ms=0.7444 samples=300
+breakdown scope=hardware.utilities.service_docked mean_ms=0.0003 p50_ms=0.0002 p95_ms=0.0005 samples=300
+breakdown scope=industry.advance mean_ms=0.2523 p50_ms=0.2400 p95_ms=0.3219 samples=300
+breakdown scope=move_orrery mean_ms=11.7575 p50_ms=11.7771 p95_ms=14.0561 samples=300
+breakdown scope=physics.aerodynamics.aero_env.update_aero_env mean_ms=2.8349 p50_ms=2.8298 p95_ms=3.4383 samples=300
+breakdown scope=physics.aerodynamics.aero_model.calc_aerodynamics mean_ms=0.0385 p50_ms=0.0348 p95_ms=0.0630 samples=300
+breakdown scope=physics.apply_forces mean_ms=0.0004 p50_ms=0.0004 p95_ms=0.0009 samples=300
+breakdown scope=physics.collision.ecs.activate_shields mean_ms=0.0927 p50_ms=0.0886 p95_ms=0.1218 samples=300
+breakdown scope=physics.collision.ecs.beams mean_ms=0.0001 p50_ms=0.0000 p95_ms=0.0001 samples=300
+breakdown scope=physics.collision.ecs.damage mean_ms=0.4799 p50_ms=0.4637 p95_ms=0.6021 samples=300
+breakdown scope=physics.collision.ecs.integrate mean_ms=8.4728 p50_ms=8.3087 p95_ms=9.3079 samples=300
+breakdown scope=physics.collision.ecs.kick mean_ms=0.5118 p50_ms=0.4807 p95_ms=0.6430 samples=300
+breakdown scope=physics.collision.ecs.launch mean_ms=0.1363 p50_ms=0.1399 p95_ms=0.1789 samples=300
+breakdown scope=physics.collision.ecs.prepare mean_ms=0.8416 p50_ms=0.8069 p95_ms=1.0539 samples=300
+breakdown scope=physics.collision.ecs.prepare_weapons mean_ms=0.1294 p50_ms=0.0844 p95_ms=0.1253 samples=300
+breakdown scope=physics.collision.ecs.publish mean_ms=0.0033 p50_ms=0.0024 p95_ms=0.0081 samples=300
+breakdown scope=physics.collision.ecs.write_physics mean_ms=0.7018 p50_ms=0.6856 p95_ms=0.8981 samples=300
+breakdown scope=physics.collision.ecs.write_weapons mean_ms=0.0286 p50_ms=0.0273 p95_ms=0.0442 samples=300
+breakdown scope=physics.gravity mean_ms=2.8506 p50_ms=2.8428 p95_ms=3.4899 samples=300
+breakdown scope=publication.displays mean_ms=0.7601 p50_ms=0.7583 p95_ms=1.0623 samples=300
+breakdown scope=publication.navigation mean_ms=5.7342 p50_ms=5.4886 p95_ms=6.8176 samples=300
+breakdown scope=publication.optical_observe mean_ms=0.0049 p50_ms=0.0046 p95_ms=0.0064 samples=300
+breakdown scope=publication.sensor_contact_selection mean_ms=0.3279 p50_ms=0.3227 p95_ms=0.3631 samples=300
+breakdown scope=publication.sensor_detection mean_ms=7.5009 p50_ms=7.4080 p95_ms=7.9466 samples=300
+breakdown scope=publication.sensor_occlusion_and_results mean_ms=6.7673 p50_ms=6.7127 p95_ms=7.0298 samples=300
+breakdown scope=publication.sensor_range_query mean_ms=0.2735 p50_ms=0.2695 p95_ms=0.3018 samples=300
+breakdown scope=publication.sensor_segment_query mean_ms=6.6809 p50_ms=6.6259 p95_ms=6.9255 samples=300
+breakdown scope=publication.sensor_sort_truncate mean_ms=0.0485 p50_ms=0.0475 p95_ms=0.0542 samples=300
+breakdown scope=publication.session.account_cache mean_ms=5.9808 p50_ms=5.9937 p95_ms=6.6396 samples=300
+breakdown scope=publication.session.chat_industry mean_ms=0.0029 p50_ms=0.0028 p95_ms=0.0038 samples=300
+breakdown scope=publication.session.contacts_and_events mean_ms=7.5973 p50_ms=7.4998 p95_ms=8.0754 samples=300
+breakdown scope=publication.session.diagnostics mean_ms=0.0137 p50_ms=0.0137 p95_ms=0.0158 samples=300
+breakdown scope=publication.session.frame mean_ms=16.0717 p50_ms=16.0620 p95_ms=17.4133 samples=300
+breakdown scope=publication.session.navigation mean_ms=1.4288 p50_ms=1.3818 p95_ms=1.7108 samples=300
+breakdown scope=publication.session.observable_ships mean_ms=3.1467 p50_ms=3.2248 p95_ms=3.3910 samples=300
+breakdown scope=publication.session.optical_combat mean_ms=0.0120 p50_ms=0.0114 p95_ms=0.0160 samples=300
+breakdown scope=publication.session.prune_events mean_ms=0.0075 p50_ms=0.0073 p95_ms=0.0105 samples=300
+breakdown scope=publication.session.screens mean_ms=0.0308 p50_ms=0.0310 p95_ms=0.0467 samples=300
+breakdown scope=publication.session.serialization mean_ms=0.7102 p50_ms=0.7004 p95_ms=0.7751 samples=300
+breakdown scope=publication.session.ship_presentation mean_ms=0.2928 p50_ms=0.2874 p95_ms=0.3517 samples=300
+breakdown scope=publication.session.slip mean_ms=0.0058 p50_ms=0.0056 p95_ms=0.0072 samples=300
+breakdown scope=publication.session.society mean_ms=3.4419 p50_ms=3.4366 p95_ms=3.9007 samples=300
+breakdown scope=publication.session.telemetry mean_ms=0.0281 p50_ms=0.0260 p95_ms=0.0345 samples=300
+breakdown scope=publication.snapshots_serialization_pruning mean_ms=16.9481 p50_ms=16.9342 p95_ms=18.3607 samples=300
+breakdown scope=publish_indexes mean_ms=3.4194 p50_ms=3.3290 p95_ms=4.4723 samples=300
+breakdown scope=route_service.advance mean_ms=0.0033 p50_ms=0.0031 p95_ms=0.0048 samples=300
+breakdown scope=sensor_contact_selection mean_ms=0.0122 p50_ms=0.0112 p95_ms=0.0182 samples=300
+breakdown scope=sensor_detection mean_ms=0.0143 p50_ms=0.0132 p95_ms=0.0216 samples=300
+breakdown scope=sensor_occlusion_and_results mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=sensor_publish mean_ms=0.0618 p50_ms=0.0571 p95_ms=0.0938 samples=300
+breakdown scope=sensor_range_query mean_ms=0.0113 p50_ms=0.0103 p95_ms=0.0171 samples=300
+breakdown scope=sensor_sort_truncate mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=services.dispatch_actions mean_ms=0.0171 p50_ms=0.0168 p95_ms=0.0264 samples=300
+breakdown scope=services.prepare_sources mean_ms=0.0173 p50_ms=0.0162 p95_ms=0.0256 samples=300
+breakdown scope=spatial.ecs_collection mean_ms=5.3934 p50_ms=5.0292 p95_ms=6.8560 samples=300
+breakdown scope=spatial.prepare_records mean_ms=2.1048 p50_ms=1.9920 p95_ms=2.7124 samples=300
+breakdown scope=spatial.projectiles mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=spatial.replace mean_ms=13.7980 p50_ms=12.3866 p95_ms=23.4211 samples=300
+breakdown scope=spatial_clear mean_ms=0.1030 p50_ms=0.0915 p95_ms=0.1684 samples=300
+breakdown scope=spatial_collect_loop mean_ms=21.3016 p50_ms=19.8774 p95_ms=31.2302 samples=300
+breakdown scope=spatial_finish_geometry mean_ms=15.9034 p50_ms=14.4459 p95_ms=26.1341 samples=300
+breakdown scope=spatial_luminosity_bounds mean_ms=0.5931 p50_ms=0.5718 p95_ms=0.7186 samples=300
+breakdown scope=travel.advance mean_ms=0.0255 p50_ms=0.0239 p95_ms=0.0361 samples=300
+breakdown scope=travel.plan_orders mean_ms=0.0240 p50_ms=0.0224 p95_ms=0.0338 samples=300
+breakdown scope=vessel.run mean_ms=1.5831 p50_ms=1.4816 p95_ms=2.1592 samples=300
+query_count name=segment.candidates_examined per_tick=11904.000
+query_count name=segment.intersections per_tick=11904.000
+query_count name=segment.probes per_tick=55544.000
+query_count name=segment.rays per_tick=992.000
+query_count name=sensor.range_results per_tick=1025.000
+query_count name=sensor.scans per_tick=33.000
+query_count name=sensor.selected_contacts per_tick=992.000
+query_count name=spatial.celestials_collected per_tick=43891.000
+query_count name=spatial.collections per_tick=1.000
+query_count name=spatial.objects_collected per_tick=46924.000
+population records=46924 entities=131072
+result players=32 scene=sparse repeat=0 frames=300 total_p50_ms=79.336 total_p95_ms=92.433 physics_p50_ms=11.254 discovery_p50_ms=7.985 solver_p50_ms=0.319 bodies=3033.0 grouped=0.0 groups=0.0 reused=0.0 contact_pairs=0.0
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 315 filtered out; finished in 33.82s
+

@@ -79,7 +79,7 @@ fn refresh_views(
                 ..default()
             };
         }
-        let Some((_, details, Some(ship_pose))) = ships
+        let Some((ship, details, Some(ship_pose))) = ships
             .iter()
             .find(|(ship, _, _)| Some(ship.0.ship) == view.focused_ship)
         else {
@@ -100,20 +100,10 @@ fn refresh_views(
         });
         let primary = celestials
             .iter()
-            .filter(|(body, system, _)| {
+            .find(|(body, system, _)| {
                 body.0.gravitational_parameter > 0.
                     && systems.0.iter().any(|reference| *reference == system.0)
-            })
-            .max_by(|(a, _, a_pose), (b, _, b_pose)| {
-                let acceleration = |body: &CelestialPresentation, pose: &Pose| {
-                    body.gravitational_parameter
-                        / pose
-                            .position
-                            .relative_to(ship_pose.0.position)
-                            .length_squared()
-                            .max(body.radius_m.powi(2))
-                };
-                acceleration(&a.0, &a_pose.0).total_cmp(&acceleration(&b.0, &b_pose.0))
+                    && Some(body.0.reference) == ship.0.location.primary
             })
             .map(|(body, _, pose)| (&body.0, &pose.0));
         if let Some((body, pose)) = primary {

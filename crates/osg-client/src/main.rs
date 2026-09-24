@@ -24,11 +24,16 @@ fn key(value: &str) -> Result<[u8; 32]> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    if std::env::args().nth(1).as_deref() == Some("--render-regressions") {
+        osg_client::ui::run_render_regressions()?;
+        return Ok(());
+    }
+
     let path = std::env::args()
         .nth(1)
         .context("usage: osg-client <config.toml>")?;
     let config: Config = toml::from_str(&std::fs::read_to_string(path)?)?;
-    let endpoint = osg_client::connect(
+    let endpoint = osg_client::OsgNetClient::connect(
         &config.address,
         ed25519_dalek::VerifyingKey::from_bytes(&key(&config.server_public_key)?)?,
         config.account.parse()?,

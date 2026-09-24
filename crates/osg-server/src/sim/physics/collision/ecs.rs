@@ -92,19 +92,19 @@ struct TickState {
     epoch: f64,
     dt: f64,
     started: Option<std::time::Instant>,
+    preparation_time: std::time::Duration,
 }
 
 fn schedule() -> Schedule {
     let mut schedule = Schedule::new(CollisionTick);
     schedule.add_systems(
         (
-            crate::sim::spatial::collect,
             prepare,
-            synchronize,
+            crate::sim::spatial::collect,
+            begin_detection,
             activate_shields,
             prepare_weapons,
             launch,
-            synchronize,
             beams,
             kick,
             integrate,
@@ -165,6 +165,7 @@ struct PhysicalSource {
 }
 
 fn prepare(
+    mut spatial: ResMut<crate::sim::spatial::SpatialIndex>,
     time: Res<Time<Fixed>>,
     sources: Query<PhysicalSource, (With<CollisionBody>, Without<crate::sim::travel::Dormant>)>,
     ships: Query<(&ShipDesign, &Hull, &ShipThermal)>,
@@ -173,6 +174,7 @@ fn prepare(
 ) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.prepare");
     state.started = Some(std::time::Instant::now());
+    spatial.collision_radii.clear();
     state.dt = time.delta_secs_f64();
     state.epoch = time.elapsed_secs_f64() - state.dt;
     state.bodies.clear();
@@ -256,27 +258,21 @@ fn prepare(
                 gravity: source.gravity.map_or(DVec3::ZERO, |gravity| gravity.0),
             },
         );
+        spatial.collision_radii.insert(body.entity, body.radius);
         state.bodies.push(body);
     }
+    state.preparation_time = state.started.unwrap().elapsed();
 }
 
-fn synchronize(
-    mut spatial: ResMut<crate::sim::spatial::SpatialIndex>,
-    mut state: ResMut<TickState>,
-) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.synchronize");
-    let started = std::time::Instant::now();
-    for body in &state.bodies {
-        spatial.insert_collision(body.entity, body.position, body.radius);
-    }
-    tick::synchronize(&state.bodies, &mut spatial.hash.write().unwrap());
-    state.report.index_seconds += started.elapsed().as_secs_f64();
+fn begin_detection(mut state: ResMut<TickState>) {
+    // Keep spatial collection in its own timing category.
+    state.started = Some(std::time::Instant::now() - state.preparation_time);
 }
 
 fn activate_shields(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<TickState>) {
     let _profile =
         crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.activate_shields");
-    activate(&mut state.bodies, &spatial.hash.read().unwrap());
+    activate(&mut state.bodies, &spatial.geometry);
 }
 
 fn prepare_weapons(
@@ -327,6 +323,7 @@ fn prepare_weapons(
 
 fn launch(
     mut commands: Commands,
+    mut spatial: ResMut<crate::sim::spatial::SpatialIndex>,
     mut state: ResMut<TickState>,
     mut workspace: ResMut<SolverWorkspace>,
 ) {
@@ -335,6 +332,7 @@ fn launch(
     tick::fire(
         &mut state.bodies,
         state.dt,
+        &mut spatial.geometry,
         &mut workspace,
         &mut || commands.spawn_empty().id(),
         &mut state.report,
@@ -368,7 +366,7 @@ fn beams(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<Tick
         weapons::resolve_beam(
             beam,
             &mut state.bodies,
-            &spatial.hash.read().unwrap(),
+            &spatial.geometry,
             0.0,
             &mut state.report,
         );
@@ -385,7 +383,7 @@ fn integrate(
     state.impacts = tick::integrate(
         &mut state.bodies,
         state.dt,
-        &spatial.hash.read().unwrap(),
+        &spatial.geometry,
         &mut workspace,
         &mut state.report,
     );

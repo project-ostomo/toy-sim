@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod construction;
 mod publication;
+pub mod service;
 mod validation;
 
 pub use publication::snapshot;
@@ -34,6 +35,8 @@ const MAX_QUEUED_BLUEPRINT_BYTES: usize = 64 * 1024 * 1024;
 pub struct IndustryFacility {
     pub jobs: Vec<IndustryJob>,
     pub seeded: bool,
+    pub service: ServicePolicy,
+    pub outside_revenue: super::economy::Balance,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -261,6 +264,22 @@ pub fn execute(
         ),
         IndustryCommand::CancelJob { facility, job } => {
             let facility = identity::lookup(world, facility)?;
+            if world
+                .get::<IndustryFacility>(facility)
+                .is_some_and(|queue| {
+                    queue
+                        .jobs
+                        .iter()
+                        .any(|entry| entry.view.id == job && entry.view.payment.is_some())
+                })
+            {
+                return service::cancel(
+                    world,
+                    account,
+                    world.get::<identity::Identity>(facility).unwrap().0,
+                    job,
+                );
+            }
             ownership::authorize(world, account, facility, Permission::Industry)?;
             let queue = world
                 .get::<IndustryFacility>(facility)
@@ -339,6 +358,7 @@ pub fn execute(
                     module_part: None,
                     requested_power_w: 0,
                     supplied_power_w: 0,
+                    payment: None,
                 },
                 inputs: scale(recipe.inputs)?,
                 output: JobOutput::Cargo(scale(recipe.outputs)?),
@@ -553,6 +573,13 @@ fn refill(
 
 fn admit(world: &mut World, account: AccountId, facility: Entity, job: IndustryJob) -> Result<()> {
     ownership::authorize(world, account, facility, Permission::Industry)?;
+    ensure!(
+        world
+            .get::<IndustryFacility>(facility)
+            .is_none_or(|facility| !facility.service.accepting)
+            || service::operator(world, account, facility),
+        "outside customers must request a service quote"
+    );
     ensure!(available(world, facility), "facility unavailable");
     ensure!(
         world
@@ -686,6 +713,7 @@ pub fn advance(world: &mut World) {
             }
         }
         let mut completed = Vec::new();
+        let mut public_lanes = BTreeMap::<IndustryCapability, u32>::new();
         for (index, job) in queue.jobs.iter_mut().enumerate() {
             let was_awaiting_berth = job.view.status == JobStatus::AwaitingBerth;
             job.view.module_part = None;
@@ -694,6 +722,20 @@ pub fn advance(world: &mut World) {
             if !available(world, entity) || world.get::<travel::Dormant>(entity).is_some() {
                 job.view.status = JobStatus::ModuleUnavailable;
                 continue;
+            }
+            if job.view.payment.is_some() {
+                let limit = queue
+                    .service
+                    .rates
+                    .iter()
+                    .find(|rate| rate.capability == job.view.capability)
+                    .map_or(1, |rate| rate.public_lanes.max(1));
+                let used = public_lanes.entry(job.view.capability).or_default();
+                if *used >= limit {
+                    job.view.status = JobStatus::Queued;
+                    continue;
+                }
+                *used += 1;
             }
             let Some(lane_index) = available_lanes.iter().position(|lane| suitable(lane, job))
             else {
@@ -722,7 +764,7 @@ pub fn advance(world: &mut World) {
                 if let Some(mut power) = world.get_mut::<hardware::DevicePower>(lane.device) {
                     power.requested_w += job.view.requested_power_w as f64;
                 }
-                let Some(mut inventory) = world.get_mut::<hardware::ShipInventory>(entity) else {
+                let Some(inventory) = world.get::<hardware::ShipInventory>(entity) else {
                     job.view.status = JobStatus::ModuleUnavailable;
                     continue;
                 };
@@ -730,6 +772,11 @@ pub fn advance(world: &mut World) {
                     job.view.status = JobStatus::AwaitingPower;
                     continue;
                 }
+                if service::charge(world, job, &mut queue.outside_revenue).is_err() {
+                    job.view.status = JobStatus::AwaitingPayment;
+                    continue;
+                }
+                let mut inventory = world.get_mut::<hardware::ShipInventory>(entity).unwrap();
                 inventory.0.energy_j -= energy;
                 job.view.progress_ticks += 1;
                 job.view.supplied_power_w = job.view.requested_power_w;
@@ -772,6 +819,23 @@ pub fn advance(world: &mut World) {
                     {
                         job.view.status = JobStatus::AwaitingCargoSpace;
                         continue;
+                    }
+                    if let Some(payment) = &job.view.payment {
+                        let mut economy = world.resource::<super::economy::Economy>().clone();
+                        let station = world.get::<identity::Identity>(entity).unwrap().0;
+                        if service::credit_storage(
+                            &mut economy,
+                            &mut inventory,
+                            station,
+                            payment.payer,
+                            outputs,
+                        )
+                        .is_err()
+                        {
+                            job.view.status = JobStatus::AwaitingCargoSpace;
+                            continue;
+                        }
+                        world.insert_resource(economy);
                     }
                 }
                 JobOutput::Ship(_) => {

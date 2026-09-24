@@ -25,7 +25,7 @@ fn access(world: &World, account: AccountId, entity: Entity) -> Option<(bool, bo
     (manage || transfer || view).then_some((manage, transfer))
 }
 
-fn name(world: &World, entity: Entity) -> String {
+pub(super) fn name(world: &World, entity: Entity) -> String {
     let name = world
         .get::<vessel::Vessel>(entity)
         .map_or_else(|| "Inventory".into(), |ship| ship.vessel_name.to_string());
@@ -43,7 +43,7 @@ fn name(world: &World, entity: Entity) -> String {
     }
 }
 
-fn capabilities(world: &World, entity: Entity) -> Vec<FacilityCapability> {
+pub(super) fn capabilities(world: &World, entity: Entity) -> Vec<FacilityCapability> {
     let Some(design) = world.get::<vessel::ShipDesign>(entity) else {
         return Vec::new();
     };
@@ -96,7 +96,7 @@ fn capabilities(world: &World, entity: Entity) -> Vec<FacilityCapability> {
         .collect()
 }
 
-fn summary(
+pub(super) fn summary(
     world: &World,
     entity: Entity,
     can_manage: bool,
@@ -112,6 +112,7 @@ fn summary(
         .collect();
 
     Some(FacilitySummary {
+        metrics: metrics(world, entity),
         entity: id,
         owner,
         name: name(world, entity),
@@ -122,7 +123,58 @@ fn summary(
     })
 }
 
-fn hangar(world: &World, account: AccountId, interest: &HangarSubscription) -> Option<HangarView> {
+fn berth_counts(world: &World, entity: Entity) -> (Option<u32>, Option<u32>) {
+    let Some(bays) = world.get::<travel::DockingBays>(entity) else {
+        return (None, None);
+    };
+    let used = world
+        .get::<travel::StoredShips>(entity)
+        .map_or(0, |ships| ships.iter().count() as u32);
+    (Some(used), Some(bays.0.len() as u32))
+}
+
+fn metrics(world: &World, entity: Entity) -> FacilityMetrics {
+    let power = world.get::<hardware::PowerFlow>(entity);
+    let (berths_used, berths_total) = berth_counts(world, entity);
+    let mut metrics = FacilityMetrics {
+        system: world
+            .get::<crate::sim::infrastructure::Landmark>(entity)
+            .map(|landmark| landmark.system),
+        power_generated_w: power.map(|flow| flow.generated_w),
+        power_consumed_w: power.map(|flow| flow.supplied_w),
+        total_lanes: capabilities(world, entity)
+            .iter()
+            .map(|module| module.lanes)
+            .sum(),
+        berths_used,
+        berths_total,
+        ..Default::default()
+    };
+    if let Some(facility) = world.get::<IndustryFacility>(entity) {
+        metrics.outside_revenue = Some(vec![
+            (
+                osg_model::economy::Currency::Uec,
+                facility.outside_revenue.uec,
+            ),
+            (
+                osg_model::economy::Currency::Lat,
+                facility.outside_revenue.lat,
+            ),
+        ]);
+        for job in &facility.jobs {
+            metrics.busy_lanes += u32::from(job.view.module_part.is_some());
+            metrics.outside_jobs += u32::from(job.view.payment.is_some());
+            match job.view.status {
+                JobStatus::Queued => metrics.queued_jobs += 1,
+                JobStatus::Running => {}
+                _ => metrics.stalled_jobs += 1,
+            }
+        }
+    }
+    metrics
+}
+
+fn hangar(world: &World, account: AccountId, interest: &HangarQuery) -> Option<HangarView> {
     use osg_model::travel::Presence;
 
     let ship = crate::sim::commands::observe(world, account, interest.ship).ok()?;
@@ -189,7 +241,10 @@ fn hangar(world: &World, account: AccountId, interest: &HangarSubscription) -> O
     let more = entries.len() > MAX_DIRECTORY_ENTRIES;
     entries.truncate(MAX_DIRECTORY_ENTRIES);
     let next = more.then(|| entries.last().unwrap().inventory.entity);
+    let (berths_used, berths_total) = berth_counts(world, host);
     Some(HangarView {
+        berths_used,
+        berths_total,
         ship: interest.ship,
         host: host_id,
         host_name: name(world, host),
@@ -202,7 +257,7 @@ fn hangar(world: &World, account: AccountId, interest: &HangarSubscription) -> O
 pub fn snapshot(
     world: &World,
     account: AccountId,
-    subscription: &IndustrySubscription,
+    subscription: &IndustryQuery,
 ) -> IndustrySnapshot {
     let mut snapshot = IndustrySnapshot {
         subscription_revision: subscription.revision,
@@ -265,6 +320,7 @@ pub fn snapshot(
             .cargo_stacks(catalogue)
             .expect("valid authoritative cargo inventory");
         snapshot.facilities.push(FacilityView {
+            metrics: metrics(world, entity),
             entity: *id,
             owner: owner.0,
             name: name(world, entity),
@@ -283,6 +339,11 @@ pub fn snapshot(
                 .unwrap_or_default(),
             capabilities: capabilities(world, entity),
             location: inventory_location(world, entity),
+            service: world
+                .get::<IndustryFacility>(entity)
+                .map(|facility| facility.service.clone())
+                .unwrap_or_default(),
+            can_configure_service: service::operator(world, account, entity),
         });
     }
 

@@ -6,11 +6,11 @@ Interstellar travel uses committed slip trajectories that end at the first natur
 
 ## Client controls
 
-- Select a ship in Overview to align, approach or keep range. These actions replace the navigation queue. Keep range continues until interrupted; approach and align finish when their conditions are met. Mark target and Start firing are separate weapons actions. Stop firing retains the mark; Unmark target clears it and stops firing. Navigation never enables firing.
-- Celestial selections offer **Slip to** in Selected Item and the Overview context menu. It queues a natural capture at that body and is disabled while the ship intersects a celestial exclusion sphere. Hold Shift to append it to the queue.
+- Select a ship in Overview to align, approach or keep range. These manual assists disengage autopilot and retain its itinerary. Keep range continues until interrupted; approach and align finish when their conditions are met. Mark target and Start firing are separate weapons actions. Stop firing retains the mark; Unmark target clears it and stops firing. Navigation never enables firing.
+- System travel requests create a SlipToSystem directive. Firmware selects the capture body and plans departure clearance.
 - Select a public installation to approach or dock when it offers docking service. Hold Shift to append these orders.
 - Open Navigation map from the left toolbar. Search or select a system to preview a route, then use Set destination or Add waypoint. Drag empty map space to pan and scroll to zoom. Celestial positions and definitions come from the client's shared catalogue; the server supplies the current inhabited directory and gameplay infrastructure.
-- The browser, search and Fit view show inhabited systems plus active or preview route stops and the ship's current system. Uninhabited intermediate stops appear while their route is displayed. Slip legs use their planned failure probability: green through 100 ppm, yellow through 1,000 ppm, orange through 10,000 ppm, and red above that; gray means unknown. Map labels and preview rows show the numerical risk. Each map leg also shows its planned speed in multiples of light speed (`c`).
+- The browser, search and Fit view show inhabited systems plus active or preview route stops and the ship's current system. Uninhabited intermediate stops appear while their route is displayed. Slip legs display their allocated risk allowance: green through 100 ppm, yellow through 1,000 ppm, orange through 10,000 ppm, and red above that; gray means unknown. Map labels and preview rows show the numerical risk. Each map leg also shows its planned speed in multiples of light speed (`c`).
 - Set Maximum ship-destruction risk in ppm for the complete itinerary. The decimal input and logarithmic slider control the same value. Route previews show estimated loss, the selected maximum, beacon assumptions, exotic fuel and the conventional fuel budget. The default is 100 ppm. Change the preference and request a new route to apply it.
 - Fuel allowance limits estimated use of each remaining propulsion resource. Required fuel and available balances appear in the route preview and Navigation, with an exhaustion warning and estimated shortfalls. Partial estimates are labelled. Departure clearance, charging and matching destination motion contribute to travel estimates.
 - Open Navigation to inspect, remove or move pending commands earlier. Pause and resume preserve the queue. Clear queue cancels it.
@@ -59,7 +59,7 @@ flight, and dormant systems participate in capture queries. Physical collision
 destroys the ship; a body whose surface extends outside its exclusion sphere is
 an unsafe target.
 
-Arrival retains the ship's galactic velocity. The next stage may require a burn
+Arrival applies departure velocity plus the requested change earned by actual travel distance, capped at 10 km/s per light-year. Its exotic fuel cost scales linearly with mass and velocity change. The next stage may require a burn
 to match the destination's motion, clear an exclusion sphere, or travel around a
 region that would intercept the onward trajectory. Docking and movement deep
 inside a gravitational well use ordinary propulsion. Cancelling or pausing a
@@ -160,7 +160,7 @@ The habitat ring speed is `sqrt(g / 94 m)` in opposite directions. GLB node extr
 
 ## Runtime contracts
 
-The host owns `TravelState`, strategic route planning, the remaining risk allowance and presence changes. Standard firmware executes local guidance, target tracking, slip preparation and docking approach. Revision checks reject stale queue edits. Contact guidance uses the ship's current sensor detections. An unavailable target blocks and retries the command.
+The host owns AutopilotState, strategic system routing, itinerary budgets and physical presence. Firmware owns departure/capture planning and local guidance. Directive generations reject stale status and completion. Physical actions validate resources and geometry; reported navigation risk remains firmware-owned.
 
 Directory and navigation capabilities come from installed, functioning equipment. Any host with an operational directory transmitter and a lit transponder publicly inhabits every system whose gravitational influence contains it. A conventional ship transponder alone does not advertise a system. The same hardware rules apply when a player builds or moves an installation; no separate station category determines membership. The last qualifying broadcaster going dark, leaving or being destroyed removes public membership.
 
@@ -210,9 +210,9 @@ controller aim remains unrestricted by route feasibility or risk forecasts.
 
 Ship Status has been removed. The bottom HUD shows thrust, torque, electrical balance, hull integrity and thermal condition. Consumable depletion turns bars amber at or below 25% and red at or below 10%; heat uses amber from 75% and red from 100% of its displayed scale. Shield temperature uses the model's 6000 K vaporization reference, not a hard collapse temperature. Inventory holds the detailed resource list, transponder switch and computer status. Empty storage for reactor waste is not treated as depleted fuel.
 
-The bottom HUD also shows CPU consumption for the last simulation tick. Hover for the gas counts and reserve balance. Faults replace the meter with a red `FAULTED` label and a reboot countdown; the tooltip contains the fault message. An unpowered fault waits for power. Startup and suspended computers show `BOOTING` and `PAUSED`. A fault clears AP, its queue and targets rather than leaving an obsolete route on screen.
+The bottom HUD also shows CPU consumption for the last simulation tick. Hover for the gas counts and reserve balance. Faults replace the meter with a red `FAULTED` label and a reboot countdown; the tooltip contains the fault message. An unpowered fault waits for power. Startup and suspended computers show `BOOTING` and `PAUSED`. A fault disables autopilot, retains its itinerary and records the failure. Private plan markers and targets are cleared.
 
-The autopilot panel lists the remaining orders and names their target systems.
+The autopilot panel lists the remaining directives and names their target systems.
 Navigation lets the player remove or reorder pending commands. A journey to
 Terminus may combine conventional departure clearance, one or more natural
 captures and final local approach, depending on the selected risk, available

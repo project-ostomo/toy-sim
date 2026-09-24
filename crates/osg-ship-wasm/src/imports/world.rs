@@ -9,27 +9,29 @@ pub(super) fn prepare(
     input_bytes: usize,
     output_budget: usize,
 ) -> CallResult<CallPlan> {
-    let source = caller.data().source.as_ref().ok_or(w::ERR_UNAVAILABLE)?;
-    let output_budget = source
-        .query_output_bytes(&query, caller.data().display_only, capacity, output_budget)
-        .map_err(world_query_error)?
-        .min(output_budget);
-    let base = w::CALL_GAS + words(input_bytes) + words(output_budget);
-    let maximum = caller.data().gas_per_tick.saturating_sub(base);
-    let work = source
-        .query_work(&query)
-        .map_err(|error| world_query_error(error).priced(w::CALL_GAS + words(input_bytes)))?;
-    if work > maximum {
-        return Err(w::ERR_LIMIT.into());
-    }
-    Ok(CallPlan {
-        gas: base + work,
-        query: Some(PreparedWorldQuery {
-            query,
-            work,
-            capacity,
-            output_budget,
-        }),
+    crate::scan_scope::with(|source| {
+        let source = source.ok_or(w::ERR_UNAVAILABLE)?;
+        let output_budget = source
+            .query_output_bytes(&query, caller.data().display_only, capacity, output_budget)
+            .map_err(world_query_error)?
+            .min(output_budget);
+        let base = w::CALL_GAS + words(input_bytes) + words(output_budget);
+        let maximum = caller.data().gas_per_tick.saturating_sub(base);
+        let work = source
+            .query_work(&query)
+            .map_err(|error| world_query_error(error).priced(w::CALL_GAS + words(input_bytes)))?;
+        if work > maximum {
+            return Err(w::ERR_LIMIT.into());
+        }
+        Ok(CallPlan {
+            gas: base + work,
+            query: Some(PreparedWorldQuery {
+                query,
+                work,
+                capacity,
+                output_budget,
+            }),
+        })
     })
 }
 
@@ -39,12 +41,13 @@ pub(super) fn execute(caller: &mut Caller<'_, Host>) -> CallResult<ProgramReply>
         .prepared_query
         .take()
         .expect("admitted world query");
-    let source = caller.data().source.clone().ok_or(w::ERR_UNAVAILABLE)?;
-    let result = source.query(
-        prepared.query,
-        caller.data().display_only,
-        prepared.capacity,
-    );
+    let result = crate::scan_scope::with(|source| -> CallResult<_> {
+        Ok(source.ok_or(w::ERR_UNAVAILABLE)?.query(
+            prepared.query,
+            caller.data().display_only,
+            prepared.capacity,
+        ))
+    })?;
     let used = prepared.work;
     assert!(
         used <= prepared.work,
@@ -101,20 +104,65 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
     metered!(
         linker,
         "travel_read",
-        |mut caller: Caller<'_, Host>, output: u32| {
+        |mut caller: Caller<'_, Host>,
+         output: u32,
+         itinerary: u32,
+         capacity: u32,
+         fuels: u32,
+         fuel_capacity: u32,
+         hierarchy: u32,
+         hierarchy_capacity: u32| {
             validate_array::<a::TravelReply>(&caller, output, 1)?;
+            validate_array::<a::ItineraryEntry>(&caller, itinerary, capacity)?;
+            validate_array::<a::FuelRequirement>(&caller, fuels, fuel_capacity)?;
+            validate_array::<a::CelestialRef>(&caller, hierarchy, hierarchy_capacity)?;
             prepare(
                 &caller,
                 ProgramQuery::Travel,
-                ReplyCapacity::default(),
+                ReplyCapacity {
+                    records: capacity as usize,
+                    auxiliary: fuel_capacity as usize,
+                    bytes: hierarchy_capacity as usize * size_of::<a::CelestialRef>(),
+                },
                 0,
-                size_of::<a::TravelReply>(),
+                size_of::<a::TravelReply>()
+                    + (capacity as usize).min(osg_model::routing::MAX_DIRECTIVES)
+                        * size_of::<a::ItineraryEntry>()
+                    + (fuel_capacity as usize).min(256) * size_of::<a::FuelRequirement>()
+                    + (hierarchy_capacity as usize)
+                        .min(osg_model::local_space::MAX_LOCAL_OBSTACLES)
+                        * size_of::<a::CelestialRef>(),
             )
         },
         {
             status((|| {
                 let reply = execute(&mut caller)?;
                 let value = a::TravelReply::try_from(&reply).map_err(|_| w::ERR_ARGUMENT)?;
+                let ProgramReply::Travel {
+                    state, location, ..
+                } = &reply
+                else {
+                    return Err(w::ERR_ARGUMENT.into());
+                };
+                let entries: Vec<a::ItineraryEntry> =
+                    state.itinerary.iter().map(Into::into).collect();
+                let resources: Vec<a::FuelRequirement> = state
+                    .fuel_budget
+                    .iter()
+                    .flat_map(|budget| &budget.resources)
+                    .map(Into::into)
+                    .collect();
+                let ancestors: Vec<a::CelestialRef> =
+                    location.hierarchy.iter().map(Into::into).collect();
+                if entries.len() > capacity as usize
+                    || resources.len() > fuel_capacity as usize
+                    || ancestors.len() > hierarchy_capacity as usize
+                {
+                    return Err(w::ERR_BUFFER.into());
+                }
+                emit_array(&mut caller, itinerary, &entries)?;
+                emit_array(&mut caller, fuels, &resources)?;
+                emit_array(&mut caller, hierarchy, &ancestors)?;
                 emit_record(&mut caller, output, &value)
             })())
         }
@@ -198,6 +246,91 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
 
     metered!(
         linker,
+        "orrery_system_read",
+        |mut caller: Caller<'_, Host>, pointer: u32, output: u32, capacity: u32, header: u32| {
+            let record: a::OrrerySystemQuery = read(&caller, pointer)?;
+            let query = ProgramQuery::from(&record);
+            validate_array::<a::LocalObstacle>(&caller, output, capacity)?;
+            validate_array::<a::OrreryReply>(&caller, header, 1)?;
+            let limit = (capacity as usize).min(osg_model::local_space::MAX_LOCAL_OBSTACLES);
+            prepare(
+                &caller,
+                query,
+                ReplyCapacity {
+                    records: capacity as usize,
+                    ..Default::default()
+                },
+                size_of::<a::OrrerySystemQuery>(),
+                size_of::<a::OrreryReply>() + limit * size_of::<a::LocalObstacle>(),
+            )
+        },
+        {
+            status((|| {
+                let ProgramReply::Orrery(obstacles) = execute(&mut caller)? else {
+                    return Err(w::ERR_ARGUMENT.into());
+                };
+                if obstacles.len() > capacity as usize {
+                    return Err(w::ERR_BUFFER.into());
+                }
+                let values: Vec<a::LocalObstacle> = obstacles.iter().map(Into::into).collect();
+                emit_array(&mut caller, output, &values)?;
+                emit_record(
+                    &mut caller,
+                    header,
+                    &a::OrreryReply {
+                        count: values.len() as u64,
+                    },
+                )
+            })())
+        }
+    )?;
+
+    metered!(
+        linker,
+        "slip_eligibility_batch",
+        |mut caller: Caller<'_, Host>, pointer: u32, count: u32, output: u32| {
+            if count > 256 {
+                return Err(w::ERR_LIMIT.into());
+            }
+            validate_array::<a::SlipEligibilityQuery>(&caller, pointer, count)?;
+            validate_array::<a::SlipProbeReply>(&caller, output, count)?;
+            let probes = (0..count)
+                .map(|index| {
+                    let record: a::SlipEligibilityQuery = read(
+                        &caller,
+                        pointer + index * size_of::<a::SlipEligibilityQuery>() as u32,
+                    )?;
+                    osg_model::SlipProbe::try_from(&record)
+                        .map_err(|_| CallError::from(w::ERR_ARGUMENT))
+                })
+                .collect::<CallResult<Vec<_>>>()?;
+            prepare(
+                &caller,
+                ProgramQuery::SlipEligibilityBatch(probes),
+                ReplyCapacity {
+                    records: count as usize,
+                    ..Default::default()
+                },
+                count as usize * size_of::<a::SlipEligibilityQuery>(),
+                count as usize * size_of::<a::SlipProbeReply>(),
+            )
+        },
+        {
+            status((|| {
+                let ProgramReply::SlipEligibilityBatch(results) = execute(&mut caller)? else {
+                    return Err(w::ERR_ARGUMENT.into());
+                };
+                if results.len() != count as usize {
+                    return Err(w::ERR_ARGUMENT.into());
+                }
+                let records: Vec<a::SlipProbeReply> = results.iter().map(Into::into).collect();
+                emit_array(&mut caller, output, &records)
+            })())
+        }
+    )?;
+
+    metered!(
+        linker,
         "route_request",
         |mut caller: Caller<'_, Host>,
          pointer: u32,
@@ -208,16 +341,16 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
          capacity: u32,
          fuels: u32,
          fuel_capacity: u32| {
-            if count as usize > osg_model::routing::MAX_ORDERS {
+            if count as usize > osg_model::routing::MAX_DIRECTIVES {
                 return Err(w::ERR_LIMIT.into());
             }
             let record: a::RouteRequest = read(&caller, pointer)?;
-            validate_array::<a::Order>(&caller, orders, count)?;
+            validate_array::<a::Directive>(&caller, orders, count)?;
             let actions: Result<Vec<_>, _> = (0..count)
                 .map(|index| {
-                    let record: a::Order =
-                        read(&caller, orders + index * size_of::<a::Order>() as u32)?;
-                    osg_model::travel::Order::try_from(&record)
+                    let record: a::Directive =
+                        read(&caller, orders + index * size_of::<a::Directive>() as u32)?;
+                    osg_model::travel::Directive::try_from(&record)
                         .map_err(|_| CallError::from(w::ERR_ARGUMENT))
                 })
                 .collect();
@@ -226,7 +359,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 preferences: (&record.preferences)
                     .try_into()
                     .map_err(|_| w::ERR_ARGUMENT)?,
-                orders: actions?,
+                directives: actions?,
             };
             route_plan(
                 &caller,
@@ -236,7 +369,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 capacity,
                 fuels,
                 fuel_capacity,
-                size_of::<a::RouteRequest>() + count as usize * size_of::<a::Order>(),
+                size_of::<a::RouteRequest>() + count as usize * size_of::<a::Directive>(),
             )
         },
         {
@@ -311,13 +444,36 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         };
     }
     action!("travel_use_route", a::UseRoute);
-    action!("travel_block", a::Block);
-    action!("travel_estimate", a::Estimate);
-    action!("travel_complete", a::CompleteOrder);
+    action!("travel_fail", a::Fail);
+    action!("travel_publish_status", a::PublishStatus);
+    action!("travel_complete", a::Complete);
     action!("travel_slip", a::Slip);
     action!("travel_reserve_bay", a::ReserveBay);
     action!("travel_dock", a::Dock);
     action!("travel_undock", a::Undock);
+    metered!(
+        linker,
+        "travel_cancel_slip",
+        |mut caller: Caller<'_, Host>| {
+            Ok(CallPlan {
+                gas: w::CALL_GAS + 1000,
+                query: None,
+            })
+        },
+        {
+            status((|| {
+                if caller.data().display_only || caller.data().output.world_actions.len() >= 8 {
+                    return Err(w::ERR_UNAVAILABLE.into());
+                }
+                caller
+                    .data_mut()
+                    .output
+                    .world_actions
+                    .push(osg_model::ProgramAction::CancelSlip);
+                Ok(())
+            })())
+        }
+    )?;
     Ok(())
 }
 
@@ -332,9 +488,9 @@ fn route_plan(
     input_bytes: usize,
 ) -> CallResult<CallPlan> {
     validate_array::<a::RouteReply>(caller, header, 1)?;
-    validate_array::<a::QueuedOrder>(caller, orders, capacity)?;
+    validate_array::<a::ItineraryEntry>(caller, orders, capacity)?;
     validate_array::<a::FuelRequirement>(caller, fuels, fuel_capacity)?;
-    let order_limit = (capacity as usize).min(osg_model::routing::MAX_ORDERS);
+    let order_limit = (capacity as usize).min(osg_model::routing::MAX_DIRECTIVES);
     let fuel_limit = (fuel_capacity as usize).min(256);
     prepare(
         caller,
@@ -346,7 +502,7 @@ fn route_plan(
         },
         input_bytes,
         size_of::<a::RouteReply>()
-            + order_limit * size_of::<a::QueuedOrder>()
+            + order_limit * size_of::<a::ItineraryEntry>()
             + fuel_limit * size_of::<a::FuelRequirement>(),
     )
 }
@@ -369,7 +525,7 @@ fn write_route(
         ..
     } = &reply
     {
-        if plan.orders.len() > capacity as usize
+        if plan.itinerary.len() > capacity as usize
             || plan.fuel_budget.resources.len() > fuel_capacity as usize
         {
             return Err(w::ERR_BUFFER.into());

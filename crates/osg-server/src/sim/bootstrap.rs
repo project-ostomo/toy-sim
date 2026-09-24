@@ -111,7 +111,9 @@ fn provision_inner(
             super::hardware::generators,
             super::hardware::avionics,
             super::hardware::utilities::run,
+            super::orrery::activity::activate,
             super::spatial::rebuild,
+            super::location::refresh,
             identity::identify_celestials,
             sensors::publish,
         )

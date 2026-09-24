@@ -56,7 +56,6 @@ pub(super) fn install(app: &mut App) {
 
 fn manual(ship: &ShipTelemetry, details: &ShipPresentation, connected: bool) -> bool {
     connected
-        && !ship.travel.autopilot_enabled
         && ship.presence == travel::Presence::Space
         && matches!(details.computer, ComputerStatus::Running { .. })
         && details.propulsion.rated_forward_n > 0.

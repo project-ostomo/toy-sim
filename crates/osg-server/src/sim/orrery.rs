@@ -62,11 +62,15 @@ impl Plugin for OrreryPlugin {
 fn move_orrery(
     active: Res<activity::ActiveSystems>,
     time: Res<Time<Fixed>>,
-    mut bodies: Query<(
-        &Celestial,
-        &mut PreciseTransform,
-        &mut activity::CelestialState,
-    )>,
+    mut bodies: Query<
+        (
+            &Celestial,
+            &mut PreciseTransform,
+            &mut activity::CelestialState,
+        ),
+        Without<activity::SystemRegion>,
+    >,
+    mut regions: Query<(&activity::SystemRegion, &mut PreciseTransform), Without<Celestial>>,
 ) {
     let epoch = sim_time(&time);
     let _profile = super::diagnostics::ProfileScope::new("move_orrery");
@@ -82,6 +86,16 @@ fn move_orrery(
             pose.rotation = solver.solve_rotation(&body.0, epoch).unwrap();
             state.velocity = solver.solve_velocity(&body.0, epoch).unwrap();
         });
+    regions.par_iter_mut().for_each(|(region, mut pose)| {
+        let definition = active
+            .definitions
+            .get(&region.system)
+            .expect("active root region");
+        pose.translation_um = definition
+            .solver
+            .solve_position(&region.name, epoch)
+            .unwrap();
+    });
 }
 #[derive(Component, Default)]
 pub struct Celestial(pub SmolStr);

@@ -49,7 +49,7 @@ pub struct ShipSoftware {
     pub schedule: osg_ship_wasm::CallbackSchedule,
     pub request_id: u64,
     pub(crate) last_weapon_request_id: u64,
-    pub world_source: Option<Arc<dyn osg_ship_wasm::ScanSource>>,
+    pub world_source: Option<Arc<super::services::ShipScan<'static>>>,
     pub world_actions: Vec<osg_model::ProgramAction>,
     pub last_input: Option<Input>,
     pub last_gas_used: u64,
@@ -297,6 +297,7 @@ fn flight_allowance(
 }
 
 pub(crate) fn run(
+    sensors: super::sensors::SensorAccess,
     ledger: Res<super::gas::GasLedger>,
     chat: Option<Res<super::chat::ChatService>>,
     epoch: Res<super::identity::WorldEpoch>,
@@ -412,7 +413,7 @@ pub(crate) fn run(
     }
     ships.par_iter_mut().for_each(
         |(
-            _,
+            entity,
             d,
             mut h,
             mut software,
@@ -519,6 +520,10 @@ pub(crate) fn run(
                     input.dt = std::mem::take(&mut software.callback_dt);
                 }
                 let source = software.world_source.clone();
+                let observe = || sensors.observe(entity, h.range.0);
+                let source = source
+                    .as_ref()
+                    .map(|source| source.borrow_sensors(&observe));
                 let services = program_services::Services::new(
                     chat.as_ref().map(|service| (**service).clone()),
                     epoch.0,
@@ -529,9 +534,14 @@ pub(crate) fn run(
                 );
                 software.controller.set_services(Some(Arc::new(services)));
                 let limit = software.last_gas_limit;
-                let result = software
-                    .controller
-                    .run_slice(input.clone(), source, grant, limit);
+                let result = software.controller.run_slice(
+                    input.clone(),
+                    source
+                        .as_ref()
+                        .map(|source| source as &dyn osg_ship_wasm::ScanSource),
+                    grant,
+                    limit,
+                );
                 let used = software.controller.last_gas_used;
                 software.last_gas_used += used;
                 timings.scan += software.controller.last_scan_seconds;
@@ -613,10 +623,14 @@ fn clear_computer_resets(
         software.results.clear();
         software.last_input = None;
         if let Some(mut travel) = travel {
-            travel.0 = osg_model::travel::TravelState {
-                revision: travel.0.revision + 1,
+            travel.0.enabled = false;
+            travel.0.directive_revision = travel.0.directive_revision.wrapping_add(1);
+            travel.0.status = osg_model::travel::FirmwareStatus {
+                spent_loss_ppm: travel.0.status.spent_loss_ppm,
+                spent_exotic_fuel_kg: travel.0.status.spent_exotic_fuel_kg,
                 ..Default::default()
             };
+            travel.0.failure = Some("Flight computer restarted".into());
         }
         if let Some(mut drive) = drive {
             drive.preparation = None;

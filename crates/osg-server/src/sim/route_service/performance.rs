@@ -212,20 +212,16 @@ pub(super) fn request(
         matches!(presence, Presence::Space | Presence::Docked { .. }),
         "ship cannot plan during transit or destruction"
     );
-    let docked_at = if let Presence::Docked { host, .. } = presence {
+    if let Presence::Docked { host, .. } = presence {
         let host_entity = identity::lookup(world, host)?;
         origin = super::super::session::ship_pose(world, host_entity)
             .context("docking host pose unavailable")?;
-        Some(host)
-    } else {
-        None
-    };
+    }
     Ok(routing::RouteRequest {
         origin,
         performance,
         preferences: request.preferences,
         tick: world.resource::<SimulationCounters>().ticks,
-        orders: request.orders.clone(),
-        docked_at,
+        directives: request.directives.clone(),
     })
 }

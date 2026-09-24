@@ -146,62 +146,19 @@ impl Cache {
         matches
     }
 
-    fn order_system(&self, catalogue: &NavigationCatalogue, order: &travel::Order) -> Option<Id> {
-        if let travel::Order::TravelToSystem(id) = order {
+    fn order_system(
+        &self,
+        catalogue: &NavigationCatalogue,
+        order: &travel::Directive,
+    ) -> Option<Id> {
+        if let travel::Directive::SlipToSystem(id) = order {
             return Some(*id);
         }
-        use travel::{Destination, Order, Reference};
         match order {
-            Order::Dock(id)
-            | Order::TravelTo(Destination::Beacon(id))
-            | Order::Sublight(Destination::Beacon(id))
-            | Order::Slip {
-                destination: Destination::Beacon(id),
-                ..
-            }
-            | Order::TravelTo(Destination::Relative {
-                reference: Reference::Beacon(id),
-                ..
-            })
-            | Order::Sublight(Destination::Relative {
-                reference: Reference::Beacon(id),
-                ..
-            })
-            | Order::Slip {
-                destination:
-                    Destination::Relative {
-                        reference: Reference::Beacon(id),
-                        ..
-                    },
-                ..
-            } => self
+            travel::Directive::DockAt(id) => self
                 .beacons
                 .get(id)
                 .and_then(|&index| catalogue.beacons[index].systems.first().copied()),
-            Order::Slip {
-                destination: Destination::Galactic(destination),
-                ..
-            }
-            | Order::TravelTo(Destination::Galactic(destination))
-            | Order::Sublight(Destination::Galactic(destination)) => {
-                self.nearest(catalogue, *destination)
-            }
-            Order::TravelTo(Destination::Relative {
-                reference: Reference::Celestial(id),
-                ..
-            })
-            | Order::Sublight(Destination::Relative {
-                reference: Reference::Celestial(id),
-                ..
-            })
-            | Order::Slip {
-                destination:
-                    Destination::Relative {
-                        reference: Reference::Celestial(id),
-                        ..
-                    },
-                ..
-            } => Some(id.system),
             _ => None,
         }
     }
@@ -210,9 +167,9 @@ impl Cache {
 #[derive(Default)]
 pub(super) struct ActiveRoute {
     origin: Option<Id>,
-    orders: Vec<travel::QueuedOrder>,
+    orders: Vec<travel::ItineraryEntry>,
     pub systems: BTreeSet<usize>,
-    pub slips: Vec<(usize, usize, f64, Option<f64>)>,
+    pub slips: Vec<(usize, usize, Option<f64>)>,
     pub stops: Vec<(usize, usize)>,
 }
 
@@ -222,7 +179,7 @@ impl ActiveRoute {
         cache: &Cache,
         catalogue: &NavigationCatalogue,
         origin: Option<Id>,
-        orders: &[travel::QueuedOrder],
+        orders: &[travel::ItineraryEntry],
     ) -> bool {
         if self.origin == origin && self.orders == orders {
             return false;
@@ -234,7 +191,7 @@ impl ActiveRoute {
         self.stops.clear();
         let mut cursor = origin;
         for (order_index, stage) in self.orders.iter().enumerate() {
-            let action = &stage.action;
+            let action = &stage.directive;
             let next = cache.order_system(catalogue, action);
             if let Some(&system_index) = next.and_then(|id| cache.systems.get(&id)) {
                 if self
@@ -250,17 +207,10 @@ impl ActiveRoute {
                 .and_then(|(a, b)| cache.systems.get(&a).zip(cache.systems.get(&b)))
             {
                 self.systems.extend([a, b]);
-                if let travel::Order::Slip {
-                    navigation_beacon, ..
-                } = action
+                if let travel::Directive::SlipToSystem(_) = action
                     && a != b
                 {
-                    self.slips.push((
-                        a,
-                        b,
-                        travel::slip::cruise_speed_ly_s(navigation_beacon.is_some()),
-                        stage.estimated_loss_ppm,
-                    ));
+                    self.slips.push((a, b, Some(stage.max_loss_ppm)));
                 }
             }
             cursor = next.or(cursor);

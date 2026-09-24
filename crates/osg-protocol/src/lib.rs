@@ -1,4 +1,4 @@
-mod industry;
+pub mod industry;
 pub mod navigation;
 pub mod routing;
 
@@ -66,34 +66,25 @@ fn position_valid(position: GalacticPosition) -> bool {
         .all(|x| x.unsigned_abs() <= 1_u128 << 110)
 }
 
-pub fn validate_order(order: &travel::Order) -> Result<()> {
-    let destination = match order {
-        travel::Order::TravelTo(destination) | travel::Order::Sublight(destination) => {
-            Some(destination)
-        }
-        travel::Order::Slip { destination, .. } => Some(destination),
-        travel::Order::Guidance(guidance) => {
+pub fn validate_guidance(guidance: &travel::Guidance) -> Result<()> {
+    ensure!(
+        guidance.range_m.is_finite() && (0. ..=1e12).contains(&guidance.range_m),
+        "invalid guidance range"
+    );
+    let destination = match &guidance.target {
+        travel::Target::Destination(destination) => Some(destination),
+        travel::Target::Contact(_) => None,
+        travel::Target::Direction(direction) => {
+            let length_squared = direction.iter().map(|n| n * n).sum::<f64>();
             ensure!(
-                guidance.range_m.is_finite() && (0. ..=1e12).contains(&guidance.range_m),
-                "invalid guidance range"
+                guidance.mode == travel::GuidanceMode::Align
+                    && direction.iter().all(|n| n.is_finite())
+                    && length_squared.is_finite()
+                    && length_squared > 1e-12,
+                "invalid alignment direction"
             );
-            match &guidance.target {
-                travel::Target::Destination(destination) => Some(destination),
-                travel::Target::Contact(_) => None,
-                travel::Target::Direction(direction) => {
-                    let length_squared = direction.iter().map(|n| n * n).sum::<f64>();
-                    ensure!(
-                        guidance.mode == travel::GuidanceMode::Align
-                            && direction.iter().all(|n| n.is_finite())
-                            && length_squared.is_finite()
-                            && length_squared > 1e-12,
-                        "invalid alignment direction"
-                    );
-                    None
-                }
-            }
+            None
         }
-        _ => None,
     };
     if let Some(destination) = destination {
         validate_destination(destination)?;
@@ -101,18 +92,20 @@ pub fn validate_order(order: &travel::Order) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_queued_order(order: &travel::QueuedOrder) -> Result<()> {
+pub fn validate_itinerary_entry(entry: &travel::ItineraryEntry) -> Result<()> {
     ensure!(
-        order
-            .estimated_loss_ppm
-            .is_none_or(|loss| loss.is_finite() && (0.0..=1_000_000.0).contains(&loss)),
-        "invalid waypoint failure probability"
+        entry.max_loss_ppm.is_finite() && (0.0..=1_000_000.0).contains(&entry.max_loss_ppm),
+        "invalid directive failure probability"
     );
     ensure!(
-        !order.label.trim().is_empty() && order.label.len() <= 256,
-        "invalid waypoint label"
+        !entry.label.trim().is_empty() && entry.label.len() <= 256,
+        "invalid directive label"
     );
-    validate_order(&order.action)
+    ensure!(
+        entry.fuel_allowance_kg.is_finite() && entry.fuel_allowance_kg >= 0.,
+        "invalid directive fuel allowance"
+    );
+    Ok(())
 }
 
 pub fn validate_destination(destination: &travel::Destination) -> Result<()> {
@@ -143,10 +136,6 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
     for (id, action) in &input.actions {
         ensure!(ids.insert(*id), "duplicate command id");
         match action {
-            Action::RouteRequest { request, .. } => routing::validate_request(request)?,
-            Action::RoutePoll { id, .. } | Action::RouteCancel { id, .. } => {
-                ensure!(*id != 0, "invalid route request id")
-            }
             Action::ChatSubscribe(subscription) => ensure!(
                 subscription.revision > 0,
                 "invalid chat subscription revision"
@@ -158,21 +147,6 @@ pub fn validate_input(input: &InputFrame) -> Result<()> {
                 *subscription_revision > 0 && osg_model::chat::valid_text(text),
                 "invalid chat message"
             ),
-            Action::Industry(command) => industry::validate_command(command)?,
-            Action::IndustrySubscribe(subscription) => {
-                industry::validate_subscription(subscription)?
-            }
-            Action::Society(ownership::SocietyCommand::CreateOrganization { name }) => {
-                ensure!(
-                    !name.trim().is_empty()
-                        && name.len() <= 128
-                        && !name.chars().any(char::is_control),
-                    "invalid organization name"
-                );
-            }
-            Action::Society(ownership::SocietyCommand::SetAssetAccess { policy, .. }) => {
-                ensure!(policy.valid(), "invalid asset access policy");
-            }
             Action::Subscribe(_) => {}
             Action::ScreenSubscribe { slot, hz, .. } => ensure!(
                 *slot < 8 && (1..=10).contains(hz),
@@ -253,17 +227,18 @@ pub fn validate_ship_command(command: &ShipCommand) -> Result<()> {
                 "invalid throttle"
             );
         }
-        ShipCommand::SetTravel {
-            orders,
+        ShipCommand::SetItinerary {
+            itinerary,
             preferences,
             ..
         } => {
             ensure!(preferences.valid(), "invalid planning preference");
-            ensure!(orders.len() <= 256, "too many waypoints");
-            for order in orders {
-                validate_order(order)?;
-            }
+            ensure!(
+                itinerary.len() <= osg_model::routing::MAX_DIRECTIVES,
+                "too many directives"
+            );
         }
+        ShipCommand::SetGuidance(Some(guidance)) => validate_guidance(guidance)?,
         ShipCommand::ScreenInput {
             slot,
             kind,
@@ -334,16 +309,11 @@ mod tests {
                 Action::Ship {
                     ship: Id::new(),
                     authority_revision: 0,
-                    command: ShipCommand::SetTravel {
-                        preferences: Default::default(),
-                        engage: true,
-                        expected_revision: 0,
-                        orders: vec![travel::Order::Guidance(travel::Guidance {
-                            mode,
-                            target: travel::Target::Direction(direction),
-                            range_m: 0.,
-                        })],
-                    },
+                    command: ShipCommand::SetGuidance(Some(travel::Guidance {
+                        mode,
+                        target: travel::Target::Direction(direction),
+                        range_m: 0.,
+                    })),
                 },
             )];
             assert_eq!(encode(&Message::Input(input.clone())).is_ok(), valid);

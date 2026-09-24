@@ -49,6 +49,22 @@ impl ViewCamera {
     }
 }
 
+pub(super) fn regression_camera(layer: usize) -> ViewCamera {
+    ViewCamera {
+        view: layer as u64,
+        origin: GalacticPosition::default(),
+        layer,
+        yaw: 0.0,
+        pitch: 0.0,
+        distance: 100.0,
+        radius: 10.0,
+        private: false,
+        followed: None,
+        aligned_to_sun: false,
+        smoothed_angles: None,
+    }
+}
+
 fn smooth_angles(current: &mut Option<Vec2>, target: Vec2, dt: f32) -> Vec2 {
     let current = current.get_or_insert(target);
     let blend = -(-dt / 0.04).exp_m1();
@@ -392,7 +408,7 @@ pub(super) fn align_on_double_click(
         else {
             continue;
         };
-        if ship.0.travel.autopilot_enabled || ship.0.presence != travel::Presence::Space {
+        if ship.0.presence != travel::Presence::Space {
             continue;
         }
         let Ok(ray) = camera.viewport_to_world(transform, cursor) else {

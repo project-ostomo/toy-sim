@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::requests::{Requests, RouteCall};
 use osg_model::routing;
 use std::time::Duration;
 
@@ -13,9 +14,26 @@ pub(in super::super) struct Preview {
 }
 
 impl Preview {
-    pub fn cancel_action(&mut self) -> Option<Action> {
+    #[cfg(test)]
+    pub(in super::super) fn gallery(ship: &ShipTelemetry) -> Self {
+        Self {
+            status: Some(routing::Status::Ready {
+                plan: routing::Plan {
+                    planned_tick: 0,
+                    directive_revision: ship.travel.directive_revision,
+                    topology_revision: 0,
+                    itinerary: ship.travel.itinerary.clone(),
+                    fuel_budget: ship.travel.fuel_budget.clone().unwrap_or_default(),
+                    estimated_loss_ppm: 300.4,
+                    exotic_fuel_kg: 1.25,
+                },
+            }),
+            ..Default::default()
+        }
+    }
+    pub fn cancel_action(&mut self) -> Option<RouteCall> {
         let action = self.context.zip(self.request.as_ref()).map(
-            |((ship, authority_revision, _), request)| Action::RouteCancel {
+            |((ship, authority_revision, _), request)| RouteCall::Cancel {
                 ship,
                 authority_revision,
                 id: request.id,
@@ -28,35 +46,38 @@ impl Preview {
     pub fn begin(
         &mut self,
         ship: &ShipTelemetry,
-        orders: Vec<travel::Order>,
+        orders: Vec<travel::Directive>,
         append: bool,
         preferences: travel::PlanningPreferences,
-        outgoing: &mut Outgoing,
+        outgoing: &mut Requests,
     ) {
         if let Some(action) = self.cancel_action() {
-            outgoing.push(action);
+            outgoing.route(action);
         }
         let mut queue = if append {
             ship.travel
-                .orders
+                .itinerary
                 .iter()
-                .skip(ship.travel.order)
-                .map(|stage| stage.action.clone())
+                .map(|stage| stage.directive.clone())
                 .collect::<Vec<_>>()
         } else {
             Vec::new()
         };
         queue.extend(orders);
 
-        self.context = Some((ship.ship, ship.authority_revision, ship.travel.revision));
+        self.context = Some((
+            ship.ship,
+            ship.authority_revision,
+            ship.travel.directive_revision,
+        ));
         self.pending = None;
         self.committing = None;
         self.request = None;
-        if queue.len() > routing::MAX_ORDERS {
+        if queue.len() > routing::MAX_DIRECTIVES {
             self.status = Some(routing::Status::Failed {
                 reason: format!(
-                    "A route can contain at most {} orders.",
-                    routing::MAX_ORDERS
+                    "A route can contain at most {} directives.",
+                    routing::MAX_DIRECTIVES
                 ),
             });
             return;
@@ -64,10 +85,10 @@ impl Preview {
 
         let request = routing::Request {
             id: u64::from_le_bytes(Id::new().0[..8].try_into().unwrap()).max(1),
-            orders: queue,
+            directives: queue,
             preferences,
         };
-        self.pending = Some(outgoing.push(Action::RouteRequest {
+        self.pending = Some(outgoing.route(RouteCall::Request {
             ship: ship.ship,
             authority_revision: ship.authority_revision,
             request: request.clone(),
@@ -80,13 +101,19 @@ impl Preview {
         &mut self,
         ship: Option<&ShipTelemetry>,
         results: &[CommandResult],
-        outgoing: &mut Outgoing,
+        outgoing: &mut Requests,
         now: Duration,
     ) {
-        let context = ship.map(|ship| (ship.ship, ship.authority_revision, ship.travel.revision));
+        let context = ship.map(|ship| {
+            (
+                ship.ship,
+                ship.authority_revision,
+                ship.travel.directive_revision,
+            )
+        });
         if self.context != context {
             if let Some(action) = self.cancel_action() {
-                outgoing.push(action);
+                outgoing.route(action);
             }
             return;
         }
@@ -107,16 +134,14 @@ impl Preview {
 
         if let Some(result) = self
             .pending
-            .and_then(|id| results.iter().find(|result| result.id == id))
+            .and_then(|id| outgoing.route_results.iter().find(|result| result.id == id))
         {
             self.pending = None;
-            self.status = Some(match (&result.error, &result.reply, &self.request) {
-                (Some(error), _, _) => routing::Status::Failed {
+            self.status = Some(match &result.result {
+                Err(error) => routing::Status::Failed {
                     reason: error.clone(),
                 },
-                (_, Some(Reply::Route { id, status }), Some(request)) if *id == request.id => {
-                    status.clone()
-                }
+                Ok(Some(status)) => status.clone(),
                 _ => routing::Status::Failed {
                     reason: "The routing service returned an invalid response. Please retry."
                         .into(),
@@ -129,7 +154,7 @@ impl Preview {
             && matches!(self.status, Some(routing::Status::Pending { .. }))
         {
             if let (Some(ship), Some(request)) = (ship, &self.request) {
-                self.pending = Some(outgoing.push(Action::RoutePoll {
+                self.pending = Some(outgoing.route(RouteCall::Status {
                     ship: ship.ship,
                     authority_revision: ship.authority_revision,
                     id: request.id,
@@ -142,9 +167,15 @@ impl Preview {
         self.committing = Some(id);
     }
 
-    pub fn retry(&mut self, ship: &ShipTelemetry, outgoing: &mut Outgoing) {
+    pub fn retry(&mut self, ship: &ShipTelemetry, outgoing: &mut Requests) {
         if let Some(request) = self.request.clone() {
-            self.begin(ship, request.orders, false, request.preferences, outgoing);
+            self.begin(
+                ship,
+                request.directives,
+                false,
+                request.preferences,
+                outgoing,
+            );
         }
     }
 
@@ -164,11 +195,11 @@ impl Preview {
         let (owner, authority, revision) = self.context?;
         (owner == ship.ship
             && authority == ship.authority_revision
-            && revision == ship.travel.revision
-            && plan.travel_revision == ship.travel.revision)
+            && revision == ship.travel.directive_revision
+            && plan.directive_revision == ship.travel.directive_revision)
             .then_some(ShipCommand::UseRoute {
                 id: self.request.as_ref()?.id,
-                expected_revision: plan.travel_revision,
+                expected_revision: plan.directive_revision,
                 engage: true,
             })
     }
@@ -192,12 +223,7 @@ pub(super) fn draw(
             ui.weak("Submitting route request…");
         }
         Some(routing::Status::Pending { progress }) => {
-            let travel = travel::TravelState {
-                status: travel::Status::Planning,
-                planning: Some(*progress),
-                ..Default::default()
-            };
-            instruments::planning_progress(ui, &travel);
+            instruments::planning_progress(ui, Some(progress));
         }
         Some(routing::Status::Unknown) | Some(routing::Status::Failed { .. }) => {
             let reason = match &preview.status {
@@ -213,7 +239,7 @@ pub(super) fn draw(
             }
         }
         Some(routing::Status::Ready { plan }) => {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let can_commit = model.connected
                     && model
                         .ship
@@ -224,22 +250,16 @@ pub(super) fn draw(
                 {
                     intents.push(Intent::CommitRoute);
                 }
-                let total_ticks = plan
-                    .orders
-                    .iter()
-                    .try_fold(0_u64, |elapsed, stage| match stage.action {
-                        travel::Order::WaitUntil(until) => {
-                            Some(elapsed.max(until.saturating_sub(plan.planned_tick)))
-                        }
-                        _ => elapsed.checked_add(stage.estimated_duration_ticks?),
-                    });
+                let total_ticks = plan.itinerary.iter().try_fold(0_u64, |elapsed, stage| {
+                    elapsed.checked_add(stage.estimated_duration_ticks?)
+                });
                 ui.weak(total_ticks.map_or_else(
-                    || format!("{} stages · duration partly unknown", plan.orders.len()),
+                    || format!("{} stages · duration partly unknown", plan.itinerary.len()),
                     |ticks| {
                         let seconds = (ticks as f64 * osg_model::TICK_SECONDS) as u64;
                         format!(
                             "{} stages · estimated duration {}m {:02}s",
-                            plan.orders.len(),
+                            plan.itinerary.len(),
                             seconds / 60,
                             seconds % 60
                         )
@@ -255,12 +275,6 @@ pub(super) fn draw(
                 ));
             }
             ui.label(format!("Exotic fuel: {:.3} kg", plan.exotic_fuel_kg));
-            if !plan.beacon_assumptions.is_empty() {
-                ui.small(format!(
-                    "Estimate assumes {} navigation beacon(s) remain available throughout their assisted jumps.",
-                    plan.beacon_assumptions.len(),
-                ));
-            }
             if plan.fuel_budget.exhausted() {
                 ui.colored_label(
                     THREAT,
@@ -271,23 +285,17 @@ pub(super) fn draw(
             instruments::fuel_estimate(ui, &plan.fuel_budget, model, false);
             let mut arrival = Some(plan.planned_tick);
 
-            for (index, stage) in plan.orders.iter().enumerate() {
-                arrival = match stage.action {
-                    travel::Order::WaitUntil(until) => arrival.map(|tick| tick.max(until)),
-                    _ => arrival
-                        .zip(stage.estimated_duration_ticks)
-                        .map(|(tick, duration)| tick.saturating_add(duration)),
-                };
+            for (index, stage) in plan.itinerary.iter().enumerate() {
+                arrival = arrival
+                    .zip(stage.estimated_duration_ticks)
+                    .map(|(tick, duration)| tick.saturating_add(duration));
 
                 ui.horizontal_wrapped(|ui| {
                     ui.label(format!("{}  {}", index + 1, &stage.label));
-                    if matches!(stage.action, travel::Order::Slip { .. }) {
+                    if matches!(stage.directive, travel::Directive::SlipToSystem(_)) {
                         ui.colored_label(
-                            crate::ui::travel_risk::color(stage.estimated_loss_ppm),
-                            stage.estimated_loss_ppm.map_or_else(
-                                || "risk unknown".into(),
-                                |loss| format!("{loss:.2} ppm"),
-                            ),
+                            crate::ui::travel_risk::color(Some(stage.max_loss_ppm)),
+                            format!("Risk allowance: {:.2} ppm", stage.max_loss_ppm),
                         );
                     }
                     ui.monospace(instruments::eta_label(stage, arrival, plan.planned_tick));
@@ -309,9 +317,12 @@ mod tests {
         routing::Status::Ready {
             plan: routing::Plan {
                 planned_tick: 100,
-                travel_revision: ship.travel.revision,
+                directive_revision: ship.travel.directive_revision,
                 topology_revision: 1,
-                orders: vec![travel::QueuedOrder::estimated(travel::Order::Undock, 20.)],
+                itinerary: vec![crate::ui::shell::tests::entry(
+                    travel::Directive::DockAt(Id([1; 16])),
+                    20.,
+                )],
                 fuel_budget: travel::FuelBudget {
                     complete: true,
                     resources: vec![travel::FuelRequirement {
@@ -321,43 +332,38 @@ mod tests {
                     }],
                 },
                 estimated_loss_ppm: 42.,
-                beacon_assumptions: Vec::new(),
                 exotic_fuel_kg: 1.25,
             },
         }
     }
 
-    fn result(preview: &Preview, status: routing::Status) -> CommandResult {
-        CommandResult {
+    fn result(preview: &Preview, status: routing::Status) -> crate::state::requests::RouteResponse {
+        crate::state::requests::RouteResponse {
             id: preview.pending.unwrap(),
-            effective_tick: 100,
-            error: None,
-            reply: Some(Reply::Route {
-                id: preview.request.as_ref().unwrap().id,
-                status,
-            }),
+            result: Ok(Some(status)),
         }
     }
 
     #[test]
     fn cancelling_preview_rejects_late_results_and_cancels_server_work() {
         let ship = ship();
-        let mut outgoing = Outgoing::default();
+        let mut outgoing = Requests::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
-            vec![travel::Order::Undock],
+            vec![travel::Directive::DockAt(Id([1; 16]))],
             false,
             Default::default(),
             &mut outgoing,
         );
         let late = result(&preview, ready(&ship));
+        outgoing.route_results.push(late);
         let request_id = preview.request.as_ref().unwrap().id;
 
         assert!(
-            matches!(preview.cancel_action(), Some(Action::RouteCancel { id, .. }) if id == request_id)
+            matches!(preview.cancel_action(), Some(RouteCall::Cancel { id, .. }) if id == request_id)
         );
-        preview.update(Some(&ship), &[late], &mut outgoing, Duration::ZERO);
+        preview.update(Some(&ship), &[], &mut outgoing, Duration::ZERO);
         assert!(preview.commit(&ship).is_none());
         assert!(preview.plan().is_none());
     }
@@ -368,23 +374,28 @@ mod tests {
         let routing::Status::Ready { mut plan } = ready(&ship) else {
             unreachable!();
         };
-        plan.orders = vec![travel::QueuedOrder::estimated(travel::Order::Undock, 20.); 24];
-        ship.travel.orders = vec![travel::QueuedOrder::estimated(travel::Order::Undock, 20.)];
+        plan.itinerary =
+            vec![crate::ui::shell::tests::entry(travel::Directive::DockAt(Id([1; 16])), 20.); 24];
+        ship.travel.itinerary = vec![crate::ui::shell::tests::entry(
+            travel::Directive::DockAt(Id([1; 16])),
+            20.,
+        )];
         ship.travel.fuel_budget = Some(plan.fuel_budget.clone());
 
         let mut state = super::super::State::default();
-        let mut outgoing = Outgoing::default();
+        let mut outgoing = Requests::default();
         state.route.begin(
             &ship,
-            vec![travel::Order::Undock],
+            vec![travel::Directive::DockAt(Id([1; 16]))],
             false,
             Default::default(),
             &mut outgoing,
         );
         let response = result(&state.route, routing::Status::Ready { plan });
+        outgoing.route_results.push(response);
         state
             .route
-            .update(Some(&ship), &[response], &mut outgoing, Duration::ZERO);
+            .update(Some(&ship), &[], &mut outgoing, Duration::ZERO);
 
         let catalogue = NavigationCatalogue::default();
         let society = ownership::SocietySnapshot::default();
@@ -401,7 +412,7 @@ mod tests {
         for frame in 0..90 {
             let events = if frame >= 12 {
                 vec![
-                    egui::Event::PointerMoved(egui::pos2(canvas.center().x, canvas.bottom() + 80.)),
+                    egui::Event::PointerMoved(egui::pos2(canvas.right() + 100., canvas.center().y)),
                     egui::Event::MouseWheel {
                         unit: egui::MouseWheelUnit::Point,
                         phase: egui::TouchPhase::Move,
@@ -438,19 +449,36 @@ mod tests {
                     }
                     egui::Shape::Text(text) if text.galley.job.text.starts_with("24  ") => {
                         let bounds = egui::Rect::from_min_size(text.pos, text.galley.size());
-                        final_stage_visible |= shape.clip_rect.contains(bounds.center());
+                        final_stage_visible |= shape.clip_rect.contains_rect(bounds);
                     }
                     _ => {}
                 }
             }
 
             if frame >= 8 {
-                assert!(canvas.height() >= 220., "map squeezed to {canvas:?}");
-                let size = desktop.rect(MAP).unwrap().size();
-                let expected = *settled.get_or_insert(size);
+                assert!(
+                    canvas.width() >= 500. && canvas.height() >= 500.,
+                    "desktop map canvas squeezed to {canvas:?}"
+                );
+                let window = desktop.rect(MAP).unwrap();
+                assert!(window.contains_rect(canvas), "canvas escaped map window");
+                assert!(
+                    window.right() - canvas.right() >= 260.,
+                    "route details must occupy their own column beside the canvas"
+                );
+                let size = window.size();
+                assert!(
+                    (size - MAP.size).length() < 1.,
+                    "map grew beyond its specification: {size:?}"
+                );
+                let (expected, expected_canvas) = *settled.get_or_insert((size, canvas));
                 assert!(
                     (size - expected).length() < 1.,
                     "map grew from {expected:?} to {size:?}"
+                );
+                assert!(
+                    (canvas.size() - expected_canvas.size()).length() < 1.,
+                    "scrolling route details resized the canvas from {expected_canvas:?} to {canvas:?}"
                 );
             }
         }
@@ -464,18 +492,16 @@ mod tests {
     #[test]
     fn route_preview_appends_remaining_queue_and_correlates_poll_and_commit() {
         let mut ship = ship();
-        ship.travel.orders = vec![
-            travel::Order::Undock.into(),
-            travel::Order::TravelTo(travel::Destination::Beacon(Id([2; 16]))).into(),
-            travel::Order::Dock(Id([3; 16])).into(),
+        ship.travel.itinerary = vec![
+            crate::ui::shell::tests::entry(travel::Directive::SlipToSystem(Id([2; 16])), 20.),
+            crate::ui::shell::tests::entry(travel::Directive::DockAt(Id([3; 16])), 20.),
         ];
-        ship.travel.order = 1;
-        let destination = travel::Order::TravelTo(travel::Destination::Beacon(Id([4; 16])));
+        let destination = travel::Directive::DockAt(Id([4; 16]));
         let preference = travel::PlanningPreferences {
             fuel_fraction: 0.42,
             ..Default::default()
         };
-        let mut outgoing = Outgoing::default();
+        let mut outgoing = Requests::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
@@ -485,15 +511,15 @@ mod tests {
             &mut outgoing,
         );
 
-        let (_, Action::RouteRequest { request, .. }) = &outgoing.pending()[0] else {
+        let (_, RouteCall::Request { request, .. }) = &outgoing.routes.as_slice()[0] else {
             panic!("preview must use the public routing API");
         };
         assert_eq!(request.preferences, preference);
         assert_eq!(
-            request.orders,
+            request.directives,
             vec![
-                travel::Order::TravelTo(travel::Destination::Beacon(Id([2; 16]))),
-                travel::Order::Dock(Id([3; 16])),
+                travel::Directive::SlipToSystem(Id([2; 16])),
+                travel::Directive::DockAt(Id([3; 16])),
                 destination,
             ]
         );
@@ -501,13 +527,11 @@ mod tests {
 
         let unrelated = CommandResult {
             id: Id([90; 16]),
-            effective_tick: 100,
             error: None,
-            reply: None,
         };
         preview.update(Some(&ship), &[unrelated], &mut outgoing, Duration::ZERO);
         assert!(preview.pending.is_some());
-        assert_eq!(outgoing.pending().len(), 1);
+        assert_eq!(outgoing.routes.as_slice().len(), 1);
 
         let pending = result(
             &preview,
@@ -519,31 +543,31 @@ mod tests {
                 },
             },
         );
-        preview.update(Some(&ship), &[pending], &mut outgoing, Duration::ZERO);
+        outgoing.route_results.push(pending);
+        preview.update(Some(&ship), &[], &mut outgoing, Duration::ZERO);
         preview.update(Some(&ship), &[], &mut outgoing, Duration::from_millis(249));
-        assert_eq!(outgoing.pending().len(), 1);
+        assert_eq!(outgoing.routes.as_slice().len(), 1);
         preview.update(Some(&ship), &[], &mut outgoing, Duration::from_millis(250));
-        assert!(matches!(outgoing.pending()[1].1, Action::RoutePoll { .. }));
+        assert!(matches!(
+            outgoing.routes.as_slice()[1].1,
+            RouteCall::Status { .. }
+        ));
 
         let response = result(&preview, ready(&ship));
-        preview.update(
-            Some(&ship),
-            &[response],
-            &mut outgoing,
-            Duration::from_millis(300),
-        );
+        outgoing.route_results.push(response);
+        preview.update(Some(&ship), &[], &mut outgoing, Duration::from_millis(300));
         assert!(preview.plan().unwrap().fuel_budget.exhausted());
         assert!(matches!(
             preview.commit(&ship),
             Some(ShipCommand::UseRoute { engage: true, .. })
         ));
         assert_eq!(
-            outgoing.pending().len(),
+            outgoing.routes.as_slice().len(),
             2,
             "ready does not engage until the user commits"
         );
 
-        let id = outgoing.ship(&ship, preview.commit(&ship).unwrap());
+        let id = Id::new();
         preview.sent_commit(id);
         assert!(
             preview.commit(&ship).is_none(),
@@ -553,8 +577,6 @@ mod tests {
             Some(&ship),
             &[CommandResult {
                 id,
-                effective_tick: 103,
-                reply: None,
                 error: Some("Ship configuration changed; request another plan".into()),
             }],
             &mut outgoing,
@@ -573,25 +595,26 @@ mod tests {
     fn route_preview_rejects_stale_ship_authority_and_queue() {
         for change in 0..4 {
             let mut ship = ship();
-            let mut outgoing = Outgoing::default();
+            let mut outgoing = Requests::default();
             let mut preview = Preview::default();
             preview.begin(
                 &ship,
-                vec![travel::Order::Undock],
+                vec![travel::Directive::DockAt(Id([1; 16]))],
                 false,
                 Default::default(),
                 &mut outgoing,
             );
             let old = result(&preview, ready(&ship));
+            outgoing.route_results.push(old);
             match change {
                 0 => ship.ship = Id([80; 16]),
                 1 => ship.authority_revision += 1,
-                2 => ship.travel.revision += 1,
+                2 => ship.travel.directive_revision += 1,
                 _ => {}
             }
             let focused = (change != 3).then_some(&ship);
-            preview.update(focused, &[old.clone()], &mut outgoing, Duration::ZERO);
-            preview.update(focused, &[old], &mut outgoing, Duration::from_secs(1));
+            preview.update(focused, &[], &mut outgoing, Duration::ZERO);
+            preview.update(focused, &[], &mut outgoing, Duration::from_secs(1));
             assert!(preview.plan().is_none());
             assert!(preview.request.is_none());
         }
@@ -600,17 +623,18 @@ mod tests {
     #[test]
     fn strategic_preview_survives_motion_time_and_map_catalogue_updates() {
         let mut ship = ship();
-        let mut outgoing = Outgoing::default();
+        let mut outgoing = Requests::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
-            vec![travel::Order::Undock],
+            vec![travel::Directive::DockAt(Id([1; 16]))],
             false,
             Default::default(),
             &mut outgoing,
         );
         let response = result(&preview, ready(&ship));
-        preview.update(Some(&ship), &[response], &mut outgoing, Duration::ZERO);
+        outgoing.route_results.push(response);
+        preview.update(Some(&ship), &[], &mut outgoing, Duration::ZERO);
 
         ship.pose = Some(Pose {
             position: GalacticPosition::from_meters(glam::DVec3::splat(1e8)),
@@ -660,17 +684,18 @@ mod tests {
     #[test]
     fn ready_preview_displays_server_stages_eta_and_fuel_warning_before_engage() {
         let ship = ship();
-        let mut outgoing = Outgoing::default();
+        let mut outgoing = Requests::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
-            vec![travel::Order::Undock],
+            vec![travel::Directive::DockAt(Id([1; 16]))],
             false,
             Default::default(),
             &mut outgoing,
         );
         let response = result(&preview, ready(&ship));
-        preview.update(Some(&ship), &[response], &mut outgoing, Duration::ZERO);
+        outgoing.route_results.push(response);
+        preview.update(Some(&ship), &[], &mut outgoing, Duration::ZERO);
 
         let catalogue = NavigationCatalogue::default();
         let society = ownership::SocietySnapshot::default();
@@ -701,7 +726,7 @@ mod tests {
         assert!(intents.is_empty());
         for expected in [
             "Engage route",
-            "1  Undock",
+            "1  Dock at station",
             "ETA ~00:20",
             "FUEL EXHAUSTION",
             "Estimated slip loss: 42.000 ppm · maximum 100.000 ppm",

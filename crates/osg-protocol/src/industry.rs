@@ -1,6 +1,5 @@
 use anyhow::{Result, ensure};
 use osg_model::industry::*;
-use std::collections::BTreeSet;
 
 pub fn encode_blueprint_upload_ack(ack: &BlueprintUploadAck) -> Result<Vec<u8>> {
     Ok(postcard::to_allocvec(ack)?)
@@ -20,25 +19,7 @@ fn item_valid(item: &CargoItem) -> bool {
     }
 }
 
-pub(super) fn validate_subscription(subscription: &IndustrySubscription) -> Result<()> {
-    ensure!(
-        subscription.inventories.len() <= MAX_SUBSCRIBED_INVENTORIES
-            && subscription
-                .inventories
-                .iter()
-                .collect::<BTreeSet<_>>()
-                .len()
-                == subscription.inventories.len(),
-        "invalid industry inventory subscription"
-    );
-    ensure!(
-        subscription.directory || subscription.directory_after.is_none(),
-        "industry cursor requires directory subscription"
-    );
-    Ok(())
-}
-
-pub(super) fn validate_command(command: &IndustryCommand) -> Result<()> {
+pub fn validate_command(command: &IndustryCommand) -> Result<()> {
     match command {
         IndustryCommand::Refill {
             resource, quantity, ..
@@ -82,7 +63,7 @@ mod tests {
     use osg_model::Id;
 
     #[test]
-    fn transfer_and_subscription_inputs_reject_invalid_quantities_and_duplicate_interest() {
+    fn transfer_inputs_reject_zero_quantities() {
         let mut command = IndustryCommand::Transfer {
             source: Id([1; 16]),
             target: Id([2; 16]),
@@ -95,19 +76,5 @@ mod tests {
         };
         *quantity = 0;
         assert!(validate_command(&command).is_err());
-        assert!(
-            validate_subscription(&IndustrySubscription {
-                inventories: vec![Id([1; 16]); 2],
-                ..Default::default()
-            })
-            .is_err()
-        );
-        assert!(
-            validate_subscription(&IndustrySubscription {
-                directory_after: Some(Id([1; 16])),
-                ..Default::default()
-            })
-            .is_err()
-        );
     }
 }

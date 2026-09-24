@@ -348,6 +348,7 @@ mod tests {
                     optical_luminosity_w: luminosity,
                 });
             }
+            index.finish_geometry();
             world.insert_resource(index);
             Self {
                 app,
@@ -447,6 +448,7 @@ mod tests {
             optical_occludes: true,
             optical_luminosity_w: 0.,
         });
+        world.resource_mut::<SpatialIndex>().finish_geometry();
         let (occluded, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
         assert_eq!(occluded.len(), 1);
         assert_eq!(occluded[0].known_entity, Some(fixture.own_id));

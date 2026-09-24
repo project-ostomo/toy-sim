@@ -33,7 +33,6 @@ pub(super) struct SlipView {
     pub entering: bool,
     direction: Vec3,
     flow: f64,
-    flow_step: f32,
 }
 
 pub(super) fn prepare(
@@ -108,7 +107,6 @@ pub(super) fn prepare(
         state.coverage = state.progress * state.progress * (3.0 - 2.0 * state.progress);
         let flow_step = dt * 3.0 * f64::from((previous_coverage + state.coverage) * 0.5);
         state.flow += flow_step;
-        state.flow_step = flow_step as f32;
     }
 }
 
@@ -171,12 +169,6 @@ struct Effect {
     material: Handle<SlipMaterial>,
 }
 
-#[derive(Component)]
-struct SlipLight(f32);
-
-#[derive(Component)]
-struct RuptureLight(f32);
-
 pub(super) fn install(app: &mut App) {
     embedded_asset!(app, "slip.wgsl");
     app.init_resource::<SlipEffects>()
@@ -184,6 +176,15 @@ pub(super) fn install(app: &mut App) {
         .add_systems(Startup, setup)
         .add_systems(Update, draw.in_set(PresentationSet::Render));
     distortion::install(app);
+}
+
+pub(super) fn install_regression(app: &mut App) {
+    app.init_resource::<RenderTime>();
+    install(app);
+    app.add_systems(
+        PostUpdate,
+        distortion::regression.after(distortion::prepare),
+    );
 }
 
 fn setup(mut commands: Commands, mut meshes: ResMut<bevy::asset::Assets<Mesh>>) {
@@ -211,10 +212,8 @@ fn draw(
     rings: Query<(Entity, &osg_ship_view::slip::SlipRing, &GlobalTransform)>,
     parents: Query<&ChildOf>,
     members: Query<&ViewMember>,
-    mut flashes: Query<(&ChildOf, &RuptureLight, &mut PointLight)>,
     mut effects: Query<(Entity, &ViewMember, &Effect, &mut Transform)>,
     mut materials: ResMut<bevy::asset::Assets<SlipMaterial>>,
-    mut lights: Query<(&ChildOf, &SlipLight, &mut DirectionalLight)>,
 ) {
     let mut retained = HashSet::new();
     let existing: HashMap<_, _> = effects
@@ -250,36 +249,6 @@ fn draw(
                 ),
                 detail: Vec4::ZERO,
             });
-        }
-        if state.coverage > 0.0 {
-            if let Some((ship, pose)) = ships
-                .iter()
-                .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship)
-            {
-                let pose = &pose.0;
-                let rotation = Quat::from_rotation_arc(
-                    Vec3::Z,
-                    state.direction.try_normalize().unwrap_or(Vec3::Z),
-                );
-                let center = pose.position.relative_to(camera.origin).as_vec3();
-                for (mode, scale) in [(1, ship.0.radius_m as f32 * 1.6)] {
-                    requested.push(Requested {
-                        mode,
-                        event: None,
-                        piece: (0, 0),
-                        transform: Transform::from_translation(center)
-                            .with_rotation(rotation)
-                            .with_scale(Vec3::splat(scale)),
-                        parameters: Vec4::new(
-                            (state.flow % 4096.0) as f32,
-                            state.coverage,
-                            mode as f32,
-                            state.flow_step,
-                        ),
-                        detail: Vec4::new(19.0, 0.0, 0.0, ship.0.radius_m as f32),
-                    });
-                }
-            }
         }
         if !camera.private {
             let own_ship = ships
@@ -385,61 +354,7 @@ fn draw(
                         bevy::camera::visibility::NoFrustumCulling,
                     ))
                     .id();
-                if request.mode == 3 {
-                    let radius = request.detail.w;
-                    commands.entity(entity).with_children(|parent| {
-                        parent.spawn((
-                            RuptureLight(radius * radius * 4e7),
-                            RenderLayers::layer(camera.layer),
-                            PointLight {
-                                color: Color::srgb(0.25, 0.6, 1.0),
-                                intensity: 0.0,
-                                range: radius * 20.0,
-                                shadow_maps_enabled: false,
-                                ..default()
-                            },
-                            Transform::default(),
-                        ));
-                    });
-                }
-                if request.mode == 1 {
-                    commands.entity(entity).with_children(|parent| {
-                        for (direction, strength) in [
-                            (Vec3::new(1.0, 2.0, 3.0), 180_000.0),
-                            (Vec3::new(-1.0, -1.0, -2.0), 55_000.0),
-                        ] {
-                            parent.spawn((
-                                SlipLight(strength),
-                                RenderLayers::layer(camera.layer),
-                                bevy::light::SunDisk::OFF,
-                                DirectionalLight {
-                                    color: Color::srgb(0.82, 0.8, 0.74),
-                                    illuminance: strength * state.coverage,
-                                    shadow_maps_enabled: false,
-                                    ..default()
-                                },
-                                Transform::from_translation(direction)
-                                    .looking_at(Vec3::ZERO, Vec3::Y),
-                            ));
-                        }
-                    });
-                }
                 retained.insert(entity);
-            }
-        }
-    }
-    for (parent, light, mut point) in &mut flashes {
-        if let Ok((_, _, effect, _)) = effects.get(parent.parent()) {
-            if let Some(material) = materials.get(&effect.material) {
-                point.intensity = light.0 * (-material.parameters.y * 7.0).exp();
-            }
-        }
-    }
-    for (parent, light, mut directional) in &mut lights {
-        if let Ok((_, member, _, _)) = effects.get(parent.parent()) {
-            if let Ok((_, _, _, state, _)) = views.get(member.0) {
-                directional.illuminance =
-                    light.0 * state.coverage * (0.85 + 0.15 * (state.flow as f32 * 0.7).sin());
             }
         }
     }

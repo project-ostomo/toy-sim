@@ -8,6 +8,11 @@ pub const THREAT: egui::Color32 = egui::Color32::from_rgb(242, 92, 92);
 pub const TEXT: egui::Color32 = egui::Color32::from_rgb(217, 226, 235);
 pub const MUTED: egui::Color32 = egui::Color32::from_rgb(141, 159, 177);
 pub const SURFACE: egui::Color32 = egui::Color32::from_rgb(15, 22, 31);
+pub const SURFACE_RAISED: egui::Color32 = egui::Color32::from_rgb(21, 31, 40);
+pub const INFO: egui::Color32 = egui::Color32::from_rgb(120, 184, 255);
+pub const POSITIVE: egui::Color32 = egui::Color32::from_rgb(101, 224, 145);
+pub const MINT: egui::Color32 = egui::Color32::from_rgb(99, 216, 181);
+pub const WARNING: egui::Color32 = egui::Color32::from_rgb(242, 180, 75);
 pub const BORDER: egui::Color32 = egui::Color32::from_rgb(54, 73, 89);
 
 #[derive(Clone, Copy)]
@@ -24,6 +29,7 @@ pub struct WindowSpec {
 #[derive(Default)]
 struct WindowState {
     open: bool,
+    loading: bool,
     rect: Option<egui::Rect>,
     move_to: Option<egui::Pos2>,
     dragged: bool,
@@ -37,7 +43,72 @@ pub struct Desktop {
     pub locked: bool,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedLayout {
+    pub locked: bool,
+    pub windows: std::collections::BTreeMap<String, SavedWindow>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SavedWindow {
+    pub open: bool,
+    pub rect: Option<[f32; 4]>,
+    pub user_placed: bool,
+}
+
 impl Desktop {
+    pub fn save_layout(&self) -> SavedLayout {
+        SavedLayout {
+            locked: self.locked,
+            windows: self
+                .windows
+                .iter()
+                .map(|(id, state)| {
+                    (
+                        (*id).into(),
+                        SavedWindow {
+                            open: state.open,
+                            rect: state
+                                .rect
+                                .map(|rect| [rect.min.x, rect.min.y, rect.width(), rect.height()]),
+                            user_placed: state.user_placed,
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    pub fn restore_layout(&mut self, saved: &SavedLayout, specs: &[WindowSpec]) {
+        self.reset();
+        self.locked = saved.locked;
+        for spec in specs {
+            let Some(window) = saved.windows.get(spec.id) else {
+                continue;
+            };
+            let rect = window
+                .rect
+                .filter(|rect| {
+                    rect.iter().all(|value| value.is_finite()) && rect[2] > 0. && rect[3] > 0.
+                })
+                .map(|rect| {
+                    egui::Rect::from_min_size(
+                        egui::pos2(rect[0], rect[1]),
+                        egui::vec2(rect[2], rect[3]),
+                    )
+                });
+            self.windows.insert(
+                spec.id,
+                WindowState {
+                    open: window.open,
+                    rect,
+                    user_placed: window.user_placed,
+                    ..Default::default()
+                },
+            );
+        }
+    }
+
     fn state(&mut self, spec: WindowSpec) -> &mut WindowState {
         self.windows.entry(spec.id).or_insert_with(|| WindowState {
             open: spec.open,
@@ -65,6 +136,10 @@ impl Desktop {
 
     pub fn open(&mut self, spec: WindowSpec) {
         self.state(spec).open = true;
+    }
+
+    pub fn set_loading(&mut self, spec: WindowSpec, loading: bool) {
+        self.state(spec).loading = loading;
     }
 
     pub fn reset(&mut self) {
@@ -109,10 +184,17 @@ impl Desktop {
             .anchor
             .align_size_within_rect(size, bounds)
             .translate(spec.offset);
-        let initial = fit_rect(initial, bounds);
+        let initial = fit_rect(
+            if state.user_placed {
+                state.rect.unwrap_or(initial)
+            } else {
+                initial
+            },
+            bounds,
+        );
         let mut window = egui::Window::new(egui::RichText::new(spec.title).size(12.).strong())
             .id(id)
-            .open(&mut state.open)
+            .title_bar(false)
             .default_rect(initial)
             .min_size(spec.min_size.min(bounds.size()))
             .max_size(maximum)
@@ -121,16 +203,11 @@ impl Desktop {
             .movable(!locked)
             .resizable(!locked)
             .collapsible(false)
-            .title_frame(
-                egui::Frame::new()
-                    .fill(egui::Color32::from_rgb(25, 37, 49))
-                    .inner_margin(egui::Margin::symmetric(8, 3)),
-            )
             .frame(
                 egui::Frame::window(&ctx.style_of(egui::Theme::Dark))
                     .fill(SURFACE)
                     .stroke(egui::Stroke::new(1., BORDER))
-                    .inner_margin(10.)
+                    .inner_margin(0.)
                     .corner_radius(0.),
             );
 
@@ -158,12 +235,25 @@ impl Desktop {
             window = window.current_pos(position);
         }
 
+        let mut close = false;
         let output = window.show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(8., 6.);
-            ui.spacing_mut().button_padding = egui::vec2(8., 4.);
+            ui.spacing_mut().item_spacing = egui::vec2(8., 4.);
+            ui.spacing_mut().button_padding = egui::vec2(8., 3.);
             ui.visuals_mut().override_text_color = Some(TEXT);
-            contents(ui)
+            close = window_title(ui, spec.title, state.loading);
+            egui::Frame::new()
+                .inner_margin(10.)
+                .show(ui, |ui| {
+                    // Reserve the painted surface even when a short page does
+                    // not fill the requested window height.
+                    ui.set_min_size(ui.available_size());
+                    contents(ui)
+                })
+                .inner
         })?;
+        if close {
+            state.open = false;
+        }
         let rect = output.response.rect;
         if state.rect.is_some_and(|previous| {
             previous.min.distance(rect.min) > 0.1 || (previous.size() - rect.size()).length() > 0.1
@@ -179,6 +269,65 @@ impl Desktop {
         state.rect = Some(rect);
         output.inner
     }
+}
+
+/// Compact chrome shared by workspace windows and transient dialogs.
+pub fn window_title(ui: &mut egui::Ui, title: &str, loading: bool) -> bool {
+    let (rect, _) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.), egui::Sense::hover());
+    ui.painter()
+        .rect_filled(rect, 0., egui::Color32::from_rgb(25, 37, 49));
+    if loading {
+        loading_border(ui, rect);
+    }
+    ui.painter().text(
+        rect.left_center() + egui::vec2(8., 0.),
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(12.),
+        TEXT,
+    );
+    let close_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - 24., rect.top()),
+        rect.right_bottom(),
+    );
+    let response = ui.interact(
+        close_rect,
+        ui.id().with("window_close"),
+        egui::Sense::click(),
+    );
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Close"));
+    let color = if response.hovered() { TEXT } else { MUTED };
+    let center = close_rect.center();
+    for sign in [-1., 1.] {
+        ui.painter().line_segment(
+            [
+                center + egui::vec2(-3., -3. * sign),
+                center + egui::vec2(3., 3. * sign),
+            ],
+            egui::Stroke::new(1., color),
+        );
+    }
+    response.on_hover_text("Close").clicked()
+}
+
+/// Paint an indeterminate progress bar over the title's bottom border.
+fn loading_border(ui: &egui::Ui, title: egui::Rect) {
+    let track = egui::Rect::from_min_max(
+        egui::pos2(title.left(), title.bottom() - 2.),
+        title.right_bottom(),
+    );
+    let phase = ui.input(|input| (input.time / 1.6).rem_euclid(1.)) as f32;
+    let length = track.width() * 0.24;
+    let left = track.left() - length + phase * (track.width() + length);
+    let segment = egui::Rect::from_min_size(
+        egui::pos2(left, track.top()),
+        egui::vec2(length, track.height()),
+    );
+    ui.painter().rect_filled(track, 0., ACCENT.gamma_multiply(0.12));
+    ui.painter()
+        .rect_filled(segment.intersect(track), 0., ACCENT.gamma_multiply(0.65));
+    ui.ctx().request_repaint();
 }
 
 pub fn workspace_in(ctx: &egui::Context) -> egui::Rect {
@@ -372,6 +521,104 @@ pub fn meter(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loading_title_animates_without_changing_layout() {
+        let ctx = egui::Context::default();
+        let draw = |loading, time| {
+            let mut layout = egui::Rect::NOTHING;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| {
+                    window_title(ui, "Loading test", loading);
+                    layout = ui.min_rect();
+                },
+            );
+            output.textures_delta.clear();
+            (layout, output.shapes)
+        };
+        let (idle, _) = draw(false, 0.);
+        let (loading, first) = draw(true, 0.4);
+        let (later, second) = draw(true, 0.8);
+        assert_eq!(idle, loading);
+        assert_eq!(loading, later);
+
+        let segment = |shapes: Vec<egui::epaint::ClippedShape>| {
+            shapes
+                .into_iter()
+                .find_map(|shape| match shape.shape {
+                    egui::Shape::Rect(rect) if rect.fill == ACCENT.gamma_multiply(0.65) => {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .unwrap()
+        };
+        let first = segment(first);
+        let second = segment(second);
+        assert!(second.left() > first.left());
+        assert_eq!(first.height(), 2.);
+        assert_eq!(first.bottom(), idle.bottom());
+    }
+
+    #[test]
+    fn compact_window_chrome_closes_the_correct_window() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        ctx.style_mut_of(egui::Theme::Dark, |style| style.animation_time = 0.);
+        let mut desktop = Desktop::default();
+        let spec = WindowSpec {
+            id: "chrome_test",
+            title: "TEST WINDOW",
+            size: egui::vec2(300., 180.),
+            min_size: egui::vec2(200., 100.),
+            anchor: egui::Align2::LEFT_TOP,
+            offset: egui::Vec2::ZERO,
+            open: true,
+        };
+        let draw = |desktop: &mut Desktop, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900., 650.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    desktop.show(ui.ctx(), spec, |ui| {
+                        ui.label("Window contents");
+                    });
+                },
+            );
+            output.textures_delta.clear();
+        };
+        for _ in 0..4 {
+            draw(&mut desktop, Vec::new());
+        }
+        let rect = desktop.rect(spec).unwrap();
+        assert!(workspace_in(&ctx).contains_rect(rect));
+        let position = egui::pos2(rect.right() - 13., rect.top() + 13.);
+        for pressed in [true, false] {
+            draw(
+                &mut desktop,
+                vec![
+                    egui::Event::PointerMoved(position),
+                    egui::Event::PointerButton {
+                        pos: position,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(!desktop.is_open(spec));
+    }
 
     #[test]
     fn windows_snap_to_neighbors_and_remain_accessible_after_resize() {

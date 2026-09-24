@@ -52,6 +52,21 @@ impl ProfileScope {
     pub(crate) fn new(name: &'static str) -> Self {
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let enabled = *ENABLED.get_or_init(|| std::env::var_os("OSG_SPATIAL_PROFILE").is_some());
+        static SCOPES: std::sync::OnceLock<Option<Vec<String>>> = std::sync::OnceLock::new();
+        let scopes = SCOPES.get_or_init(|| {
+            std::env::var("OSG_SPATIAL_PROFILE_SCOPES")
+                .ok()
+                .map(|value| {
+                    value
+                        .split(',')
+                        .map(|name| name.trim().to_owned())
+                        .collect()
+                })
+        });
+        let enabled = enabled
+            && scopes
+                .as_ref()
+                .is_none_or(|scopes| scopes.iter().any(|scope| scope == name));
         #[cfg(test)]
         let enabled = enabled || samples::enabled();
         Self {

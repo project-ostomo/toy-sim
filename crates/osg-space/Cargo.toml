@@ -3,7 +3,6 @@ name = "osg-space"
 version = "0.1.0"
 edition = "2024"
 [dependencies]
-osg-spatial-hash = { path = "../osg-spatial-hash" }
 glam = "0.32.1"
 serde = { version = "1.0.229", features = ["derive"] }
 [dev-dependencies]

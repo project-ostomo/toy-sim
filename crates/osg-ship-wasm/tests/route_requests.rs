@@ -26,7 +26,10 @@ impl ScanSource for JobSource {
         };
         self.calls.fetch_add(1, Ordering::SeqCst);
         assert_eq!(request.id, 42);
-        assert_eq!(request.orders, vec![travel::Order::WaitUntil(10)]);
+        assert_eq!(
+            request.directives,
+            vec![travel::Directive::SlipToSystem(osg_model::Id([10; 16]))]
+        );
         Ok(ProgramReply::Route {
             id: request.id,
             status: routing::Status::Pending {
@@ -49,7 +52,7 @@ fn program(header: u32) -> Vec<u8> {
             allow_slipdrive: 1,
         },
     };
-    let order = world::Order::from(&travel::Order::WaitUntil(10));
+    let order = world::Directive::from(&travel::Directive::SlipToSystem(osg_model::Id([10; 16])));
     let mut bytes = request.bytes().to_vec();
     bytes.extend_from_slice(order.bytes());
     let data: String = bytes.iter().map(|byte| format!("\\{byte:02x}")).collect();
@@ -87,7 +90,7 @@ fn route_request_prepays_bounded_admission_and_resumes_exactly_once() {
         calls: AtomicUsize::new(0),
     });
     let first = computer
-        .run_slice(Input::default(), Some(source.clone()), 8192, FUEL_PER_TICK)
+        .run_slice(Input::default(), Some(source.as_ref()), 8192, FUEL_PER_TICK)
         .unwrap();
     assert!(!first.callback_completed);
     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
@@ -95,7 +98,7 @@ fn route_request_prepays_bounded_admission_and_resumes_exactly_once() {
     assert!(computer.last_gas_used <= 8192);
 
     let second = computer
-        .run_slice(Input::default(), Some(source.clone()), 9000, FUEL_PER_TICK)
+        .run_slice(Input::default(), Some(source.as_ref()), 9000, FUEL_PER_TICK)
         .unwrap();
     assert!(second.callback_completed);
     assert_eq!(source.calls.load(Ordering::SeqCst), 1);
@@ -122,7 +125,7 @@ fn invalid_route_output_range_never_submits_a_job() {
     });
     let result = computer.run_slice(
         Input::default(),
-        Some(source.clone()),
+        Some(source.as_ref()),
         FUEL_PER_TICK,
         FUEL_PER_TICK,
     );

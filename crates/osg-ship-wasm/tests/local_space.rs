@@ -95,7 +95,7 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
     let waiting = computer
         .run_slice(
             Input::default(),
-            Some(source.clone()),
+            Some(source.as_ref()),
             200_000,
             FUEL_PER_TICK,
         )
@@ -108,7 +108,7 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
     let complete = computer
         .run_slice(
             Input::default(),
-            Some(source.clone()),
+            Some(source.as_ref()),
             300_000,
             FUEL_PER_TICK,
         )

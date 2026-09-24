@@ -1,13 +1,5 @@
 //! Emissive channels on the fixed slipdrive model, shared with the ship editor.
-use bevy::{camera::Exposure, prelude::*};
-
-/// Emissive values below are tuned as if unexposed; scale them into physical
-/// units so they read the same under the default camera exposure but still
-/// follow manual and automatic exposure changes.
-fn emissive(red: f32, green: f32, blue: f32) -> LinearRgba {
-    let scale = 1.0 / Exposure::SUNLIGHT.exposure();
-    LinearRgba::rgb(red * scale, green * scale, blue * scale)
-}
+use bevy::prelude::*;
 
 #[derive(Component, Default)]
 pub struct SlipRing {
@@ -31,14 +23,20 @@ impl Plugin for SlipRingPlugin {
 fn discover(
     mut commands: Commands,
     nodes: Query<
-        (Entity, &Name, &MeshMaterial3d<StandardMaterial>),
+        (
+            Entity,
+            &Name,
+            &Mesh3d,
+            &MeshMaterial3d<StandardMaterial>,
+            Option<&bevy::camera::visibility::RenderLayers>,
+        ),
         (Added<MeshMaterial3d<StandardMaterial>>, Without<Emitter>),
     >,
     parents: Query<&ChildOf>,
     rings: Query<(), With<SlipRing>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    for (entity, name, material) in &nodes {
+    for (entity, name, mesh, material, layers) in &nodes {
         if !name.as_str().starts_with("slip_emitter") {
             continue;
         }
@@ -51,11 +49,29 @@ fn discover(
         let Some(mut instance) = materials.get(&material.0).cloned() else {
             continue;
         };
-        instance.emissive = emissive(1.0, 4.0, 8.0);
-        instance.emissive_exposure_weight = 1.0;
+        // The solid channel remains a normal metered surface. Its glow is a
+        // separate transparent draw, after the exposure meter samples it.
+        instance.emissive = LinearRgba::BLACK;
         commands
             .entity(entity)
-            .insert((Emitter { ring }, MeshMaterial3d(materials.add(instance))));
+            .insert(MeshMaterial3d(materials.add(instance)));
+        commands.spawn((
+            ChildOf(entity),
+            Emitter { ring },
+            mesh.clone(),
+            MeshMaterial3d(materials.add(StandardMaterial {
+                base_color: Color::BLACK,
+                emissive: LinearRgba::BLACK,
+                emissive_exposure_weight: 0.0,
+                reflectance: 0.0,
+                alpha_mode: AlphaMode::Add,
+                depth_bias: 1.0,
+                ..default()
+            })),
+            layers.cloned().unwrap_or_default(),
+            bevy::light::NotShadowCaster,
+            Transform::default(),
+        ));
     }
 }
 
@@ -80,9 +96,10 @@ fn animate(
         };
         let phase = time.elapsed_secs() * 2.7;
         let surge = 0.8 + 0.2 * (phase + (phase * 0.37).sin()).sin();
-        let power = 8.0 + 18_000.0 * ring.displayed.powi(2) * surge;
+        let power = 0.08 + 3.0 * ring.displayed.powi(2) * surge;
         if let Some(mut material) = materials.get_mut(&material.0) {
-            material.emissive = emissive(power * (0.22 + 0.1 * phase.sin()), power * 0.55, power);
+            material.emissive =
+                LinearRgba::rgb(power * (0.22 + 0.1 * phase.sin()), power * 0.55, power);
         }
     }
 }

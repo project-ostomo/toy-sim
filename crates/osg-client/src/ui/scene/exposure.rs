@@ -6,7 +6,11 @@
 use super::ViewCamera;
 use bevy::{
     camera::{CameraUpdateSystems, Exposure},
-    core_pipeline::{Core3dSystems, schedule::Core3d, tonemapping::tonemapping},
+    core_pipeline::{
+        Core3dSystems,
+        core_3d::{main_opaque_pass_3d, main_transparent_pass_3d},
+        schedule::Core3d,
+    },
     prelude::*,
     render::{
         RenderApp, RenderStartup,
@@ -74,7 +78,7 @@ pub(super) struct ExposureSettings {
 
 #[derive(Component)]
 struct Meter {
-    target_ev: Option<f32>,
+    target_ev: Option<(f32, bool)>,
     settled: bool,
 }
 
@@ -110,12 +114,12 @@ pub(super) fn install(app: &mut App) {
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.add_systems(RenderStartup, pipeline).add_systems(
             Core3d,
-            // Meter the scene itself: bloom would spread faint glow over black
-            // space and pull the median down.
+            // Sample physical surfaces before transparent rings, ruptures,
+            // star sprites and other decorative emission cover their pixels.
             render
-                .before(bevy::post_process::bloom::bloom)
-                .before(tonemapping)
-                .in_set(Core3dSystems::PostProcess),
+                .after(main_opaque_pass_3d)
+                .before(main_transparent_pass_3d)
+                .in_set(Core3dSystems::MainPass),
         );
     }
 }
@@ -157,7 +161,7 @@ fn receive(readback: On<ReadbackComplete>, mut meters: Query<&mut Meter>) {
         .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
         .collect();
     if let Some(reading) = Reading::from_histogram(&histogram) {
-        meter.target_ev = Some(reading.target_ev());
+        meter.target_ev = Some((reading.target_ev(), reading.median_log_luminance.is_some()));
     }
 }
 
@@ -166,13 +170,16 @@ fn adapt(
     mut cameras: Query<(&mut Meter, &mut Exposure, &Camera, &mut MeterUniform)>,
 ) {
     for (mut meter, mut exposure, camera, mut uniform) in &mut cameras {
-        if let Some(target) = meter.target_ev {
-            exposure.ev100 = if meter.settled {
-                adapt_ev(exposure.ev100, target, time.delta_secs())
-            } else {
+        if let Some((target, has_geometry)) = meter.target_ev {
+            // An empty startup frame often precedes asynchronous ship assets.
+            // Do not snap to night and then spend seconds recovering once the
+            // sunlit hull loads. The first physical reading initializes it.
+            exposure.ev100 = if !meter.settled && has_geometry {
                 target
+            } else {
+                adapt_ev(exposure.ev100, target, time.delta_secs())
             };
-            meter.settled = true;
+            meter.settled |= has_geometry;
         }
         let viewport = camera.physical_viewport_rect().map_or(Vec4::ZERO, |rect| {
             Vec4::new(
@@ -381,6 +388,36 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_startup_does_not_snap_to_night_before_the_ship_loads() {
+        use bevy::ecs::system::RunSystemOnce;
+
+        let mut world = World::new();
+        world.insert_resource(Time::<()>::default());
+        let camera = world
+            .spawn((
+                Meter {
+                    target_ev: Some((NIGHT_EV, false)),
+                    settled: false,
+                },
+                Exposure::SUNLIGHT,
+                Camera::default(),
+                MeterUniform::default(),
+            ))
+            .id();
+        world.run_system_once(adapt).unwrap();
+        assert_eq!(
+            world.get::<Exposure>(camera).unwrap().ev100,
+            Exposure::SUNLIGHT.ev100
+        );
+        assert!(!world.get::<Meter>(camera).unwrap().settled);
+
+        world.get_mut::<Meter>(camera).unwrap().target_ev = Some((14.0, true));
+        world.run_system_once(adapt).unwrap();
+        assert_eq!(world.get::<Exposure>(camera).unwrap().ev100, 14.0);
+        assert!(world.get::<Meter>(camera).unwrap().settled);
+    }
 
     fn bin_for(log_luminance: f32) -> usize {
         ((log_luminance - MIN_LOG_LUMINANCE) * BINS_PER_STOP + 1.0) as usize

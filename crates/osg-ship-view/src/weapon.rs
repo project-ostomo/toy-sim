@@ -21,7 +21,14 @@ pub fn spawn(
     materials: &mut Assets<StandardMaterial>,
 ) {
     let length = bevy::math::DVec3::from_array(definition.muzzle_offset_m).length() as f32;
-    let radius = (definition.projectile_radius_m as f32 * 1.5).max(0.06);
+    let aperture = match definition.mechanism {
+        osg_ships::weapons::WeaponMechanism::Gun {
+            projectile_radius_m,
+            ..
+        } => projectile_radius_m,
+        osg_ships::weapons::WeaponMechanism::Laser { beam_waist_m, .. } => beam_waist_m,
+    };
+    let radius = (aperture as f32 * 1.5).max(0.06);
     let mesh = meshes.add(Cuboid::new(radius * 2.0, radius * 2.0, length));
     let material = materials.add(StandardMaterial {
         base_color: Color::srgb(0.16, 0.19, 0.23),

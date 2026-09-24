@@ -175,7 +175,7 @@ pub fn navigation_snapshot(
     views: &[ViewState],
     ships: &[Entity],
 ) -> Arc<NavigationSnapshot> {
-    use osg_model::travel::{Destination, Order, Reference};
+    use osg_model::travel::Directive;
 
     if !world.contains_resource::<NavigationPublication>() {
         publish_navigation(world);
@@ -204,32 +204,20 @@ pub fn navigation_snapshot(
         let Some(travel) = world.get::<travel::Travel>(ship) else {
             continue;
         };
-        for order in travel.0.orders.iter().skip(travel.0.order) {
-            let destination = match &order.action {
-                Order::Dock(id) => {
-                    targets.insert(*id);
-                    None
-                }
-                Order::TravelTo(destination) | Order::Sublight(destination) => Some(destination),
-                Order::Slip {
-                    destination,
-                    navigation_beacon,
-                    ..
-                } => {
-                    targets.extend(*navigation_beacon);
-                    Some(destination)
-                }
-                _ => None,
-            };
-            match destination {
-                Some(Destination::Beacon(id))
-                | Some(Destination::Relative {
-                    reference: Reference::Beacon(id),
-                    ..
-                }) => {
+        for entry in &travel.0.itinerary {
+            match &entry.directive {
+                Directive::DockAt(id) => {
                     targets.insert(*id);
                 }
-                _ => {}
+                Directive::SlipToSystem(system) => {
+                    targets.extend(
+                        publication
+                            .beacons
+                            .values()
+                            .filter(|beacon| beacon.systems.contains(system))
+                            .map(|beacon| beacon.id),
+                    );
+                }
             }
         }
     }

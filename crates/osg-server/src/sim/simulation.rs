@@ -50,7 +50,6 @@ impl Plugin for SimulationPlugin {
                 FixedLast,
                 (|mut counters: ResMut<SimulationCounters>| counters.ticks += 1)
                     .in_set(SimulationSystems::Complete)
-                    .after(crate::sim::spatial::SensorSystems::Index)
                     .run_if(in_state(GameState::Game)),
             );
     }

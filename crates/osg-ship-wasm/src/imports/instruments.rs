@@ -31,8 +31,10 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                     )
                     .ok_or(w::ERR_BUFFER)?;
                     let device = device_index(&caller, row.device)?;
-                    if caller.data().catalogue[device].kind.abi_tag() != w::DEVICE_WEAPON
-                        || !ids.insert(row.device)
+                    if !matches!(
+                        caller.data().catalogue[device].kind.abi_tag(),
+                        w::DEVICE_GUN | w::DEVICE_LASER
+                    ) || !ids.insert(row.device)
                         || row.solution_flags > w::WEAPON_SOLUTION
                     {
                         return Err(w::ERR_ARGUMENT.into());

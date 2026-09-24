@@ -36,6 +36,10 @@ impl Fixture {
 
     fn model(&self) -> FrameModel<'_> {
         FrameModel {
+            services: empty_services(),
+            declaration_history: &[],
+            declaration_history_next: None,
+            declaration_history_key: None,
             industry: &self.industry,
             industry_ready: true,
             society: &self.society,
@@ -43,7 +47,6 @@ impl Fixture {
             inhabited: Default::default(),
             navigation_status: &NavigationStatus::Ready,
             navigation_hash: None,
-            ships: vec![&self.ship],
             rows: Vec::new(),
             ship: Some(&self.ship),
             details: None,

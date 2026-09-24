@@ -1,0 +1,199 @@
+   Compiling osg-ships v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-ships)
+warning: method `reset_navigation_reference` is never used
+   --> crates/osg-example-controller/src/lib.rs:195:8
+    |
+186 | impl Pilot {
+    | ---------- method in this implementation
+...
+195 |     fn reset_navigation_reference(&mut self) {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `osg-example-controller` (lib) generated 1 warning
+   Compiling osg-ship-wasm v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-ship-wasm)
+   Compiling osg-client v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-client)
+   Compiling osg-server v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-server)
+warning: value assigned to `hardware` is never read
+   --> crates/osg-server/src/sim/firmware_tests.rs:502:9
+    |
+502 |         hardware = fixture.snapshot();
+    |         ^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/osg-server/src/sim/physics/collision/weapons.rs:412:13
+    |
+412 |         let mut spatial = test_snapshot(&bodies, 0.1);
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates/osg-server/src/sim/physics/collision/weapons.rs:507:13
+    |
+507 |         let mut spatial = test_snapshot(&bodies, 0.1);
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates/osg-server/src/sim/physics/rendezvous_tests.rs:144:13
+    |
+144 |         let mut blueprint = starter(EXAMPLE_CONTROLLER.to_vec());
+    |             ----^^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: field `reference` is never read
+   --> crates/osg-server/src/sim/services.rs:349:5
+    |
+348 | struct Aperture {
+    |        -------- field in this struct
+349 |     reference: Option<Reference>,
+    |     ^^^^^^^^^
+    |
+    = note: `Aperture` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `resolve_handle` is never used
+   --> crates/osg-server/src/sim/services.rs:895:8
+    |
+895 | pub fn resolve_handle(world: &World, ship: Entity, handle: u64) -> Option<Entity> {
+    |        ^^^^^^^^^^^^^^
+
+warning: field `radius_m` is never read
+   --> crates/osg-server/src/sim/travel/slip.rs:257:5
+    |
+254 | struct Capture {
+    |        ------- field in this struct
+...
+257 |     radius_m: f64,
+    |     ^^^^^^^^
+    |
+    = note: `Capture` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `color_temp` is never read
+  --> crates/osg-server/src/sim/orrery.rs:93:9
+   |
+91 | pub struct Star {
+   |            ---- field in this struct
+92 |     pub lumens: f64,
+93 |     pub color_temp: f64,
+   |         ^^^^^^^^^^
+
+warning: constant `GRAVITY_CUTOFF` is never used
+  --> crates/osg-server/src/sim/physics.rs:21:11
+   |
+21 | pub const GRAVITY_CUTOFF: f64 = 1e-8;
+   |           ^^^^^^^^^^^^^^
+
+warning: field `position` is never read
+   --> crates/osg-server/src/sim/physics/collision/mod.rs:317:9
+    |
+314 | pub struct ImpactEvent {
+    |            ----------- field in this struct
+...
+317 |     pub position: GalacticPosition,
+    |         ^^^^^^^^
+    |
+    = note: `ImpactEvent` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `device` is never read
+  --> crates/osg-server/src/sim/physics/collision/weapons.rs:21:9
+   |
+18 | pub struct ShotEvent {
+   |            --------- field in this struct
+...
+21 |     pub device: u64,
+   |         ^^^^^^
+   |
+   = note: `ShotEvent` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: method `look_at` is never used
+  --> crates/osg-server/src/sim/precision.rs:32:12
+   |
+16 | impl PreciseTransform {
+   | --------------------- method in this implementation
+...
+32 |     pub fn look_at(&mut self, target: GalacticPosition, up: DVec3) {
+   |            ^^^^^^^
+
+warning: associated function `nearest_traffic` is never used
+   --> crates/osg-server/src/sim/scenario.rs:145:12
+    |
+144 | impl InitialScenario {
+    | -------------------- associated function in this implementation
+145 |     pub fn nearest_traffic(states: &[(DVec3, DVec3)]) -> Option<usize> {
+    |            ^^^^^^^^^^^^^^^
+
+warning: field `tick` is never read
+  --> crates/osg-server/src/sim/sensors.rs:10:9
+   |
+ 9 | pub struct ObservationSnapshot {
+   |            ------------------- field in this struct
+10 |     pub tick: u64,
+   |         ^^^^
+   |
+   = note: `ObservationSnapshot` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: field `occluders` is never read
+   --> crates/osg-server/src/sim/sensors.rs:390:9
+    |
+386 | pub struct SensorContacts {
+    |            -------------- field in this struct
+...
+390 |     pub occluders: usize,
+    |         ^^^^^^^^^
+
+warning: variant `Catalogue` is never constructed
+ --> crates/osg-server/src/sim/spatial/index.rs:8:5
+  |
+7 | pub enum SpatialKey {
+  |          ---------- variant in this enum
+8 |     Catalogue(usize),
+  |     ^^^^^^^^^
+  |
+  = note: `SpatialKey` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: `osg-server` (lib test) generated 16 warnings (run `cargo fix --lib -p osg-server --tests` to apply 3 suggestions)
+    Finished `release` profile [optimized] target(s) in 42.84s
+     Running unittests src/lib.rs (target/release/deps/osg_server-505a05606d0c1953)
+
+running 29 tests
+test sim::ownership::tests::captured_iff_does_not_grant_access_to_previous_owner ... ok
+test sim::ownership::tests::founders_administer_organization_assets_and_keep_office_when_reselecting_membership ... ok
+test sim::ownership::tests::gas_balances_are_visible_only_to_the_owner_or_current_administrators ... ok
+test sim::ownership::tests::last_officer_can_leave_without_taking_organization_assets_or_gas ... ok
+test sim::ownership::tests::membership_and_access_changes_require_authority ... ok
+test sim::ownership::tests::permission_profiles_require_both_profile_and_asset_authority ... ok
+test sim::ownership::tests::personal_overrides_are_private_and_membership_does_not_rewrite_iff ... ok
+test sim::ownership::tests::public_organization_profiles_seed_exact_owners_and_directed_standings ... ok
+test sim::session::cache::tests::account_is_pruned_only_after_its_last_session_leaves ... ok
+test sim::session::cache::tests::cached_accounts_follow_permissions_names_and_removal ... ok
+test sim::session::cache::tests::connected_accounts_above_old_limit_keep_their_views ... ok
+test sim::session::chat::tests::focused_chat_requires_control_and_drops_history_on_focus_or_permission_change ... ok
+test sim::session::industry::tests::hangar_summaries_count_toward_the_shared_snapshot_byte_budget ... ok
+test sim::session::industry::tests::industry_byte_budget_omits_whole_inventories_in_requested_priority_order ... ok
+test sim::session::industry::tests::oversized_catalogue_returns_a_bounded_revisioned_error ... ok
+test sim::session::optical::tests::dense_complex_ships_respect_serialized_budget_and_keep_each_views_focus ... ok
+test sim::session::optical::tests::destroyed_or_wreck_stored_focus_has_no_optical_mesh_or_remote_scene ... ok
+test sim::session::optical::tests::dormant_focus_receives_only_its_hangar_or_slip_scene ... ok
+test sim::session::optical::tests::heap_selection_matches_sorted_publication_with_occlusion_and_variable_byte_costs ... ok
+test sim::session::optical::tests::multiple_views_scope_visibility_and_transits_clear_previous_effect_access ... ok
+test sim::session::optical::tests::optical_access_depends_on_light_and_line_of_sight_not_shared_iff_or_sensors ... ok
+test sim::session::tests::capture_revokes_commands_without_rewriting_iff ... ok
+test sim::session::tests::client_cannot_grant_itself_debug_clock_control ... ok
+test sim::session::tests::permissions_admit_only_their_command_classes_and_enforce_revision ... ok
+test sim::session::tests::publication_keeps_controllable_living_ship_ahead_of_more_than_64_view_only_assets ... ok
+test sim::session::tests::publications_deliver_events_and_results_once_without_client_acknowledgements ... ok
+test sim::session::tests::repeated_commands_are_idempotent_and_frames_reject_replay ... ok
+test sim::session::tests::telemetry_control_fact_is_per_account_and_tracks_acl_changes ... ok
+test sim::session::tests::views_require_access_to_the_focused_ship ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 294 filtered out; finished in 10.78s
+

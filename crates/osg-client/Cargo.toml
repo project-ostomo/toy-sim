@@ -40,3 +40,4 @@ required-features = ["ui"]
 
 [dev-dependencies]
 serde_json = "1"
+png = "0.18.1"

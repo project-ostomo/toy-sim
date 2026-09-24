@@ -1,0 +1,16 @@
+frames=240 first_records=4096 first_queries=256 initial_frame_excluded=true
+backend=static repeat=0 frames=239 update_ms=1.4848 query_ms=3.1303 total_ms=4.6152 early_query_ms=3.1608 late_query_ms=2.9712 nodes=28510.5 leaves=1838.2
+backend=static tree_storage_bytes=1703728
+backend=dynamic repeat=0 frames=239 update_ms=2.6679 query_ms=5.8424 total_ms=8.5103 early_query_ms=3.1876 late_query_ms=7.1351 nodes=53976.3 leaves=1838.2
+backend=dynamic tree_storage_bytes=3812863
+work unchanged=0.0 bounds_updates=622.5 reinserted=4.6 luminosity=3968.0 inserted=128.0 removed=128.0 rotations=134.8 max_height=14 tree_storage_bytes=3812863
+backend=static repeat=1 frames=239 update_ms=1.3869 query_ms=2.9280 total_ms=4.3149 early_query_ms=3.3912 late_query_ms=2.7391 nodes=28510.5 leaves=1838.2
+backend=static tree_storage_bytes=1703728
+backend=dynamic repeat=1 frames=239 update_ms=2.5335 query_ms=5.6139 total_ms=8.1474 early_query_ms=3.6450 late_query_ms=6.7497 nodes=55040.3 leaves=1838.2
+backend=dynamic tree_storage_bytes=3812863
+work unchanged=0.0 bounds_updates=622.5 reinserted=4.5 luminosity=3968.0 inserted=128.0 removed=128.0 rotations=130.1 max_height=14 tree_storage_bytes=3812863
+backend=static repeat=2 frames=239 update_ms=1.3405 query_ms=2.8800 total_ms=4.2205 early_query_ms=2.6719 late_query_ms=2.7585 nodes=28510.5 leaves=1838.2
+backend=static tree_storage_bytes=1703728
+backend=dynamic repeat=2 frames=239 update_ms=2.5255 query_ms=5.6156 total_ms=8.1410 early_query_ms=2.9230 late_query_ms=6.4453 nodes=54518.8 leaves=1838.2
+backend=dynamic tree_storage_bytes=3812863
+work unchanged=0.0 bounds_updates=622.5 reinserted=4.5 luminosity=3968.0 inserted=128.0 removed=128.0 rotations=133.3 max_height=14 tree_storage_bytes=3812863

@@ -8,6 +8,11 @@ pub(super) struct State {
 }
 
 impl State {
+    #[cfg(test)]
+    pub(super) fn show_consumables(&mut self) {
+        self.consumables = true;
+    }
+
     pub fn focus(&mut self) {
         *self = Self::default();
     }
@@ -107,7 +112,7 @@ fn consumables_body(
             ship.battery_j as f64,
             details.battery_capacity_j as f64,
             &format!("{} / {} J", ship.battery_j, details.battery_capacity_j),
-            osg_ui::gauges::Tone::Reserve.color(fraction),
+            reserve_color(fraction),
         );
     }
 
@@ -160,6 +165,16 @@ fn consumables_body(
     }
 }
 
+fn reserve_color(fraction: f64) -> egui::Color32 {
+    if fraction <= 0.1 {
+        THREAT
+    } else if fraction <= 0.35 {
+        WARNING
+    } else {
+        POSITIVE
+    }
+}
+
 fn tank(
     ui: &mut egui::Ui,
     name: &str,
@@ -180,7 +195,7 @@ fn tank(
                 amount,
                 capacity,
                 detail,
-                osg_ui::gauges::Tone::Reserve.color(amount / capacity),
+                reserve_color(amount / capacity.max(f64::MIN_POSITIVE)),
             );
             refill_from_own_cargo(ui, model, ship, resource, intents);
         });

@@ -86,6 +86,19 @@ pub(super) fn install(app: &mut App) {
     );
 }
 
+pub(super) fn install_regression(app: &mut App) {
+    install(app);
+    if std::env::var_os("OSG_CAPTURE_NO_SHADOWS").is_some() {
+        app.add_systems(PostUpdate, disable_regression_shadows.after(update));
+    }
+}
+
+fn disable_regression_shadows(mut lights: Query<&mut DirectionalLight>) {
+    for mut light in &mut lights {
+        light.shadow_maps_enabled = false;
+    }
+}
+
 fn update(
     mut commands: Commands,
     cameras: Query<
@@ -143,8 +156,7 @@ fn update(
 
         let mut light = DirectionalLight {
             shadow_maps_enabled: true,
-            // Needs the view cameras' TAA to resolve its per-frame jitter.
-            contact_shadows_enabled: true,
+            contact_shadows_enabled: false,
             ..default()
         };
         let mut transform = Transform::default();

@@ -1,13 +1,7 @@
 use super::{ViewCamera, projection};
-use crate::{
-    state::{
-        Celestial, DisplayPose, NavigationObject, OwnedShip, RenderTime, ShipDetails,
-        ViewObservation,
-    },
-    ui::{SelectedTarget, Selection},
-};
-use bevy::{math::DQuat, prelude::*};
-use osg_model::{GalacticPosition, Id, Pose, travel};
+use crate::state::{DisplayPose, OwnedShip, RenderTime, ShipDetails, ViewObservation};
+use bevy::prelude::*;
+use osg_model::{GalacticPosition, Pose, travel};
 use osg_ui::{
     bevy_egui::{EguiContexts, EguiPrimaryContextPass},
     egui,
@@ -33,6 +27,7 @@ fn slip_destination(
     });
     let eta = ship
         .travel
+        .status
         .estimated_arrival_tick
         .filter(|_| details.slip_navigation_lock != Some(false))
         .map(|tick| (tick as f64 * osg_model::TICK_SECONDS - display_ns as f64 * 1e-9).max(0.0))
@@ -50,68 +45,12 @@ pub(super) fn install(app: &mut App) {
 struct Waypoint {
     position: GalacticPosition,
     name: String,
-    target: Option<SelectedTarget>,
-}
-
-fn waypoint(
-    order: &travel::Order,
-    label: &str,
-    beacon: impl Fn(Id) -> Option<Pose>,
-    celestial: impl Fn(travel::CelestialRef) -> Option<(Id, Pose)>,
-) -> Option<Waypoint> {
-    use travel::{Axes, Destination, Order, Reference, Target};
-
-    let destination = match order {
-        Order::Dock(id) => Destination::Beacon(*id),
-        Order::TravelTo(destination)
-        | Order::Sublight(destination)
-        | Order::Slip { destination, .. } => destination.clone(),
-        Order::Guidance(travel::Guidance {
-            target: Target::Destination(destination),
-            ..
-        }) => destination.clone(),
-        _ => return None,
-    };
-    let (position, target) = match destination {
-        Destination::Beacon(id) => {
-            let pose = beacon(id)?;
-            (pose.position, Some(SelectedTarget::Beacon(id)))
-        }
-        Destination::Galactic(position) => (position, None),
-        Destination::Relative {
-            reference,
-            offset,
-            axes,
-        } => {
-            let (pose, target) = match reference {
-                Reference::Beacon(id) => (beacon(id)?, SelectedTarget::Beacon(id)),
-                Reference::Celestial(reference) => {
-                    let (id, pose) = celestial(reference)?;
-                    (pose, SelectedTarget::Celestial(id))
-                }
-            };
-            let offset = offset.relative_to(GalacticPosition::ZERO);
-            let offset = match axes {
-                Axes::Galactic => offset,
-                Axes::BodyFixed => DQuat::from_array(pose.rotation) * offset,
-            };
-            (pose.position.offset_by(offset), Some(target))
-        }
-    };
-    Some(Waypoint {
-        position,
-        name: label.to_owned(),
-        target,
-    })
 }
 
 fn draw(
     mut contexts: EguiContexts,
-    mut selected: ResMut<Selection>,
     clock: Res<RenderTime>,
     details: Query<&ShipDetails>,
-    beacons: Query<(&NavigationObject, &DisplayPose)>,
-    celestials: Query<(&Celestial, &DisplayPose)>,
     cameras: Query<(
         &Camera,
         &GlobalTransform,
@@ -156,38 +95,16 @@ fn draw(
         });
         let queue: Vec<_> = ship
             .into_iter()
-            .flat_map(|(ship, _)| {
-                ship.0
-                    .travel
-                    .orders
-                    .iter()
-                    .enumerate()
-                    .skip(ship.0.travel.order)
-            })
-            .map(|(index, order)| {
+            .filter(|(ship, _)| ship.0.travel.enabled)
+            .flat_map(|(ship, _)| ship.0.travel.status.markers.iter().enumerate())
+            .map(|(index, marker)| {
                 (
                     index,
-                    waypoint(
-                        &order.action,
-                        &order.label,
-                        |id| {
-                            beacons
-                                .iter()
-                                .find(|(b, _)| b.0.id == id)
-                                .map(|(_, p)| p.0.clone())
-                        },
-                        |id| {
-                            celestials
-                                .iter()
-                                .find(|(c, _)| c.0.reference == id)
-                                .map(|(c, p)| (c.0.entity, p.0.clone()))
-                        },
-                    ),
-                    if matches!(order.action, travel::Order::Slip { .. }) {
-                        crate::ui::travel_risk::color(order.estimated_loss_ppm)
-                    } else {
-                        ROUTE_COLOR
-                    },
+                    Some(Waypoint {
+                        position: marker.position,
+                        name: marker.label.clone(),
+                    }),
+                    ROUTE_COLOR,
                 )
             })
             .collect();
@@ -221,7 +138,7 @@ fn draw(
             .into_iter()
             .filter_map(|(i, w, color)| w.map(|w| (i, w, color)))
         {
-            if transit.is_some() && ship.is_some_and(|(ship, _)| index == ship.0.travel.order) {
+            if transit.is_some() && index == 0 {
                 continue;
             }
             let (point, offscreen) = projection.marker(waypoint.position.relative_to(view.origin));
@@ -253,7 +170,6 @@ fn draw(
                 ),
                 color,
             );
-            select(ctx, &mut selected, point, waypoint.target, view.view);
         }
         if let Some((destination, remaining, eta, failure_ppm)) = transit {
             let (point, offscreen) = projection.marker(destination.relative_to(view.origin));
@@ -340,29 +256,11 @@ fn label(
     painter.galley(egui::pos2(x, point.y - size.y * 0.5), galley, color);
 }
 
-fn select(
-    ctx: &egui::Context,
-    selected: &mut Selection,
-    point: egui::Pos2,
-    target: Option<SelectedTarget>,
-    view: u64,
-) {
-    if let Some(pointer) = ctx.input(|i| i.pointer.interact_pos()) {
-        if crate::ui::input::pointer_available(ctx)
-            && target.is_some()
-            && ctx.input(|i| i.pointer.primary_clicked())
-            && pointer.distance(point) < 13.
-        {
-            selected.target = target;
-            selected.view = Some(view);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::math::DVec3;
+    use osg_model::Id;
 
     #[test]
     fn active_slip_destination_survives_missing_route_and_updates_eta_after_beacon_loss() {
@@ -370,6 +268,7 @@ mod tests {
         let mut pose = Pose::default();
         pose.velocity = [1000.0, 0.0, 0.0];
         let mut ship = osg_model::ShipTelemetry {
+            location: Default::default(),
             can_control: true,
             appearance: None,
             radius_m: 10.0,
@@ -404,7 +303,7 @@ mod tests {
             Some((destination, 10000.0, Some(10.0), 5000.0))
         );
 
-        ship.travel.estimated_arrival_tick = Some(100);
+        ship.travel.status.estimated_arrival_tick = Some(100);
         pose.position = pose.position.offset_by(DVec3::X * 2000.0);
         assert_eq!(
             slip_destination(&ship, &pose, &details, 2_000_000_000),
@@ -458,115 +357,5 @@ mod tests {
             }
         }
         assert_eq!(labels, 4);
-    }
-
-    #[test]
-    fn slip_waypoints_follow_moving_and_rotating_references() {
-        let id = Id([7; 16]);
-        let initial = GalacticPosition::new(1_i128 << 100, 0, 0);
-        let offset = GalacticPosition::ZERO.offset_by(DVec3::X * 1000.);
-        for reference in [
-            travel::Reference::Beacon(id),
-            travel::Reference::Celestial(travel::CelestialRef {
-                system: id,
-                body: id,
-            }),
-        ] {
-            let action = travel::Order::Slip {
-                navigation_beacon: None,
-                destination: travel::Destination::Relative {
-                    reference,
-                    offset,
-                    axes: travel::Axes::BodyFixed,
-                },
-            };
-            let mut pose = Pose {
-                position: initial,
-                ..Default::default()
-            };
-            let point = waypoint(
-                &action,
-                "Authored waypoint",
-                |_| Some(pose.clone()),
-                |_| Some((id, pose.clone())),
-            )
-            .unwrap();
-            assert_eq!(point.position, initial.offset_by(DVec3::X * 1000.));
-
-            pose.position = initial.offset_by(DVec3::Z * 5e6);
-            pose.rotation = DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array();
-            let point = waypoint(
-                &action,
-                "Authored waypoint",
-                |_| Some(pose.clone()),
-                |_| Some((id, pose.clone())),
-            )
-            .unwrap();
-            assert!(
-                point
-                    .position
-                    .relative_to(pose.position)
-                    .distance(DVec3::Y * 1000.)
-                    < 1e-5
-            );
-            assert_eq!(point.name, "Authored waypoint");
-        }
-    }
-
-    #[test]
-    fn resolves_each_spatial_order_including_rotated_relative_waypoints() {
-        let id = Id([1; 16]);
-        let anchor = GalacticPosition::new(1_i128 << 100, 0, 0);
-        let pose = Pose {
-            position: anchor,
-            rotation: DQuat::from_rotation_z(std::f64::consts::FRAC_PI_2).to_array(),
-            ..Default::default()
-        };
-        let lookup = |key| (key == id).then(|| pose.clone());
-        let celestial = |key: travel::CelestialRef| {
-            (key.body == id && key.system == id).then(|| (id, pose.clone()))
-        };
-        for action in [
-            travel::Order::Dock(id),
-            travel::Order::TravelTo(travel::Destination::Beacon(id)),
-        ] {
-            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
-            assert_eq!(point.position, anchor);
-            assert_eq!(point.target, Some(SelectedTarget::Beacon(id)));
-        }
-        let far = anchor.offset_by(DVec3::Z * 9_460_730_472_580_800.);
-        for action in [
-            travel::Order::Slip {
-                navigation_beacon: None,
-                destination: travel::Destination::Galactic(far),
-            },
-            travel::Order::Sublight(travel::Destination::Galactic(far)),
-        ] {
-            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
-            assert_eq!(point.position, far);
-            assert!(point.target.is_none());
-            assert_eq!(
-                distance(point.position.relative_to(anchor).length()),
-                "1.00 ly"
-            );
-        }
-        for (axes, expected) in [
-            (travel::Axes::Galactic, DVec3::X * 10.),
-            (travel::Axes::BodyFixed, DVec3::Y * 10.),
-        ] {
-            let action = travel::Order::Sublight(travel::Destination::Relative {
-                reference: travel::Reference::Celestial(travel::CelestialRef {
-                    system: id,
-                    body: id,
-                }),
-                offset: GalacticPosition::ZERO.offset_by(DVec3::X * 10.),
-                axes,
-            });
-            let point = waypoint(&action, "Authored waypoint", lookup, celestial).unwrap();
-            assert!(point.position.relative_to(anchor).distance(expected) < 1e-5);
-            assert_eq!(point.target, Some(SelectedTarget::Celestial(id)));
-        }
-        assert!(waypoint(&travel::Order::WaitUntil(100), "Wait", lookup, celestial).is_none());
-        assert!(waypoint(&travel::Order::Dock(Id([2; 16])), "Dock", lookup, celestial).is_none());
     }
 }

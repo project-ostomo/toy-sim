@@ -399,6 +399,7 @@ mod tests {
                 ShipInventory(osg_ships::Inventory {
                     packaged_parts: Default::default(),
                     reservations: Default::default(),
+                    custody: Default::default(),
                     tank_capacities_m3: Vec::new(),
                     quantities: Vec::new(),
                     cargo: Vec::new(),

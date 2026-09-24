@@ -194,7 +194,14 @@ pub fn identify_celestials(
 }
 
 pub fn clean_indexes(mut identities: ResMut<IdentityIndex>, alive: Query<Entity>) {
-    identities.0.retain(|_, entity| alive.contains(*entity));
+    let previous_len = identities.0.len();
+    identities
+        .bypass_change_detection()
+        .0
+        .retain(|_, entity| alive.contains(*entity));
+    if identities.0.len() != previous_len {
+        identities.set_changed();
+    }
 }
 
 pub fn pose(

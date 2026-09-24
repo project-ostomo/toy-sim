@@ -17,7 +17,7 @@ use super::{
 pub struct DisplayEnvironment {
     pub firmware: Arc<[u8]>,
     pub input: Option<Input>,
-    pub source: Option<Arc<dyn ScanSource>>,
+    pub source: Option<Arc<super::services::ShipScan<'static>>>,
     pub powered: bool,
     pub origin: [i128; 3],
 }
@@ -158,6 +158,8 @@ fn prepare(
 }
 
 fn execute(
+    sensors: super::sensors::SensorAccess,
+    ranges: Query<&super::hardware::SensorRange>,
     clock: Res<SimulationCounters>,
     ledger: Res<super::gas::GasLedger>,
     epoch: Res<super::identity::WorldEpoch>,
@@ -262,9 +264,16 @@ fn execute(
             true,
         );
         display.program.set_services(Some(Arc::new(services)));
-        let result = display
-            .program
-            .run_slice(input, source, grant, physical_limit);
+        let observe = || sensors.observe(ship, ranges.get(ship).map_or(0.0, |range| range.0));
+        let source = source
+            .as_ref()
+            .map(|source| source.borrow_sensors(&observe));
+        let result = display.program.run_slice(
+            input,
+            source.as_ref().map(|source| source as &dyn ScanSource),
+            grant,
+            physical_limit,
+        );
         let used = display.program.last_gas_used;
         if let Some(reservation) = reservation.as_mut() {
             reservation

@@ -28,18 +28,18 @@ use osg_model::{AccountId, EntityId, GalacticPosition, Id, Pose, travel::*};
 use std::collections::BTreeSet;
 
 #[derive(Component, Default)]
-pub struct Travel(pub TravelState);
+pub struct Travel(pub AutopilotState);
 
 #[derive(Debug)]
-pub struct StaleOrder;
+pub struct StaleDirective;
 
-impl std::fmt::Display for StaleOrder {
+impl std::fmt::Display for StaleDirective {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("stale or inactive order")
+        formatter.write_str("stale or inactive directive")
     }
 }
 
-impl std::error::Error for StaleOrder {}
+impl std::error::Error for StaleDirective {}
 
 #[derive(Component)]
 pub struct PresenceState(pub Presence);
@@ -153,12 +153,21 @@ fn emit(world: &mut World, entity: Entity, kind: &'static str, position: Option<
         .0
         .push((entity, kind, position));
 }
-fn blocked(world: &mut World, entity: Entity, reason: String) {
+fn blocked(world: &mut World, entity: Entity, mut reason: String) {
+    let mut end = reason.len().min(256);
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    reason.truncate(end);
     cancel_pending(world, entity);
     if let Some(mut travel) = world.get_mut::<Travel>(entity) {
-        travel.0.planning = None;
-        travel.0.status = Status::Blocked(reason);
-        travel.0.estimated_arrival_tick = None;
+        travel.0.enabled = false;
+        travel.0.failure = Some(reason);
+        travel.0.status = FirmwareStatus {
+            spent_loss_ppm: travel.0.status.spent_loss_ppm,
+            spent_exotic_fuel_kg: travel.0.status.spent_exotic_fuel_kg,
+            ..Default::default()
+        };
     }
 }
 
@@ -249,19 +258,6 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
     let mut bays = world.get_mut::<DockingBays>(host).unwrap();
     bays.0[bay as usize].reservation = None;
     world.entity_mut(ship).insert(DockedIn(host));
-    let now = tick(world);
-    if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        if matches!(
-            travel
-                .0
-                .orders
-                .get(travel.0.order)
-                .map(|stage| &stage.action),
-            Some(Order::Dock(_))
-        ) {
-            complete_order(&mut travel.0, now);
-        }
-    }
     emit(world, ship, "docked", None);
     Ok(())
 }
@@ -476,7 +472,7 @@ fn celestial_conditions(
     let Some(scene) = world.get_resource::<super::spatial::SpatialIndex>() else {
         return (false, false);
     };
-    let hash = scene.hash.read().unwrap();
+    let hash = &scene.geometry;
     let Ok(candidates) = hash.within_radius(position, radius, true) else {
         return (false, false);
     };
@@ -518,104 +514,110 @@ pub fn apply_plan(
     plan: osg_model::routing::Plan,
     preferences: PlanningPreferences,
     engage: bool,
-    goals: Vec<Order>,
-    new_itinerary: bool,
 ) -> Result<()> {
     ensure!(preferences.valid(), "invalid planning preference");
     ensure!(
-        plan.travel_revision == expected_revision,
+        plan.directive_revision == expected_revision,
         "stale route plan"
     );
-    ensure!(plan.orders.len() <= 256, "invalid route length");
+    ensure!(
+        plan.itinerary.len() <= osg_model::routing::MAX_DIRECTIVES,
+        "invalid itinerary length"
+    );
     ensure!(plan.fuel_budget.valid(), "invalid fuel budget");
-    for stage in &plan.orders {
-        osg_protocol::validate_queued_order(stage)?;
-        ensure!(
-            !matches!(stage.action, Order::TravelTo(_) | Order::TravelToSystem(_)),
-            "route contains an unplanned destination"
-        );
-        ensure!(
-            stage
-                .estimated_propellant_kg
-                .is_none_or(|kg| kg.is_finite() && kg >= 0.),
-            "invalid fuel estimate"
-        );
-    }
     ensure!(
         world
             .get::<Travel>(ship)
-            .is_some_and(|travel| travel.0.revision == expected_revision),
-        "stale travel revision"
+            .is_some_and(|travel| travel.0.directive_revision == expected_revision),
+        "stale directive revision"
     );
     ensure!(
         world.get::<Transit>(ship).is_none(),
-        "wait for slip arrival before changing the queue"
+        "wait for slip arrival before replacing itinerary"
     );
-
+    for entry in &plan.itinerary {
+        ensure!(
+            entry.max_loss_ppm.is_finite() && (0.0..=1_000_000.0).contains(&entry.max_loss_ppm),
+            "invalid risk allowance"
+        );
+        ensure!(
+            entry.fuel_allowance_kg.is_finite() && entry.fuel_allowance_kg >= 0.0,
+            "invalid fuel allowance"
+        );
+    }
     cancel_pending(world, ship);
-    let now = tick(world);
-    let enabled = engage || world.get::<Travel>(ship).unwrap().0.autopilot_enabled;
-    let estimated_arrival_tick = enabled
-        .then(|| {
-            plan.orders
-                .first()
-                .and_then(|stage| stage.estimated_duration_ticks)
-                .map(|duration| now.saturating_add(duration))
-        })
-        .flatten();
-    let status = if plan.orders.is_empty() {
-        Status::Completed
-    } else if enabled {
-        Status::Active
-    } else {
-        Status::Paused
-    };
-    let previous = &world.get::<Travel>(ship).unwrap().0;
-    let risk_budget = if new_itinerary {
-        RiskBudget::new(preferences.max_loss_ppm)
-    } else {
-        previous.risk_budget
-    };
-    let preferences = if new_itinerary {
-        preferences
-    } else {
-        previous.preferences
-    };
-    world.get_mut::<Travel>(ship).unwrap().0 = TravelState {
-        autopilot_enabled: enabled,
+    let enabled = engage && !plan.itinerary.is_empty();
+    world.get_mut::<Travel>(ship).unwrap().0 = AutopilotState {
+        enabled,
+        directive_revision: expected_revision.wrapping_add(1),
+        itinerary: plan.itinerary,
         preferences,
+        risk_budget: RiskBudget::new(preferences.max_loss_ppm),
         fuel_budget: Some(plan.fuel_budget),
-        revision: expected_revision.wrapping_add(1),
-        orders: plan.orders,
-        status,
-        estimated_arrival_tick,
-        risk_budget,
-        goals,
-        ..Default::default()
+        status: FirmwareStatus {
+            phase: if enabled {
+                FirmwarePhase::Planning
+            } else {
+                FirmwarePhase::Idle
+            },
+            ..Default::default()
+        },
+        failure: None,
     };
+    validate_active_directive(world, ship);
     if let Some(mut software) = world.get_mut::<super::vessel::ShipSoftware>(ship) {
         software.schedule.wake();
     }
     Ok(())
 }
 
-fn active_order(world: &World, ship: Entity, revision: u64, index: usize) -> Result<&Order> {
-    let travel = &world
+fn active_directive(world: &World, ship: Entity, revision: u64) -> Result<()> {
+    let state = &world
         .get::<Travel>(ship)
-        .ok_or_else(|| anyhow::anyhow!("travel unavailable"))?
+        .ok_or_else(|| anyhow::anyhow!("autopilot unavailable"))?
         .0;
-    if travel.revision != revision
-        || travel.order != index
-        || !travel.autopilot_enabled
-        || travel.status != Status::Active
-    {
-        return Err(StaleOrder.into());
+    ensure!(
+        state.enabled && !state.itinerary.is_empty() && state.directive_revision == revision,
+        StaleDirective
+    );
+    Ok(())
+}
+
+pub fn validate_active_directive(world: &mut World, ship: Entity) {
+    let Some(Directive::DockAt(station)) = world
+        .get::<Travel>(ship)
+        .filter(|travel| travel.0.enabled)
+        .and_then(|travel| travel.0.itinerary.first())
+        .map(|entry| entry.directive.clone())
+    else {
+        return;
+    };
+    let station_entity = identity::lookup(world, station).ok();
+    let same_system = world
+        .get::<super::location::SpatialLocation>(ship)
+        .and_then(|location| {
+            let ship_system = location.0.system?;
+            let station_system = world
+                .get::<super::location::SpatialLocation>(station_entity?)?
+                .0
+                .system?;
+            Some(ship_system == station_system)
+        })
+        .unwrap_or(false);
+    let known = world
+        .get::<super::sensors::Observations>(ship)
+        .is_some_and(|observations| observations.0.targets.contains_key(&station))
+        || station_entity.is_some_and(|entity| world.get::<DirectoryEmitter>(entity).is_some());
+    let already_docked = world.get::<PresenceState>(ship).is_some_and(
+        |presence| matches!(presence.0, Presence::Docked { host, .. } if host == station),
+    );
+    if !(same_system && known) && !already_docked {
+        blocked(
+            world,
+            ship,
+            "Docking station is not known in the current system".into(),
+        );
     }
-    travel
-        .orders
-        .get(index)
-        .map(|stage| &stage.action)
-        .ok_or_else(|| anyhow::anyhow!("no active order"))
 }
 
 pub fn bay_pose(host: &Pose, bay: &Bay) -> Pose {
@@ -648,7 +650,7 @@ impl DormantMotion {
 
 pub(crate) fn set_dormant(world: &mut World, ship: Entity, presence: Presence) {
     identity::renew_spatial_instance(world, ship);
-    if matches!(presence, Presence::SlipTransit(_)) {
+    if matches!(presence, Presence::SlipTransit(_) | Presence::Docked { .. }) {
         world.entity_mut(ship).remove::<SystemsSuspended>();
     } else {
         super::hardware::shutdown(world, ship);
@@ -722,270 +724,117 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
     match action {
         ProgramAction::UseRoute {
             id,
-            revision,
+            directive_revision,
             engage,
         } => {
-            if world
-                .get::<Travel>(ship)
-                .is_none_or(|state| state.0.revision != revision)
-            {
-                return Err(StaleOrder.into());
-            }
-            super::commands::use_route(world, ship, id, revision, engage)
-        }
-        ProgramAction::Estimate {
-            revision,
-            order,
-            remaining_ticks,
-            remaining_propellant_kg,
-        } => {
-            active_order(world, ship, revision, order)?;
             ensure!(
-                remaining_propellant_kg.is_none_or(|kg| kg.is_finite() && kg >= 0.),
-                "invalid fuel estimate"
+                world
+                    .get::<Travel>(ship)
+                    .is_some_and(|state| state.0.directive_revision == directive_revision),
+                StaleDirective
             );
-            let total = world
-                .get::<Travel>(ship)
-                .unwrap()
-                .0
-                .orders
-                .iter()
-                .skip(order + 1)
-                .fold(remaining_propellant_kg, |sum, stage| {
-                    sum.zip(stage.estimated_propellant_kg)
-                        .map(|(sum, fuel)| sum + fuel)
-                });
-            let fuel_budget = super::route_service::fuel_budget(world, ship, total);
-            let now = tick(world);
-            let mut travel = world.get_mut::<Travel>(ship).unwrap();
-            travel.0.estimated_arrival_tick =
-                remaining_ticks.map(|remaining| now.saturating_add(remaining));
-            travel.0.fuel_budget = Some(fuel_budget);
+            super::commands::use_route(world, ship, id, directive_revision, engage)
+        }
+        ProgramAction::Complete { directive_revision } => {
+            active_directive(world, ship, directive_revision)?;
+            cancel_pending(world, ship);
+            complete_directive(&mut world.get_mut::<Travel>(ship).unwrap().0);
+            validate_active_directive(world, ship);
             Ok(())
         }
-        ProgramAction::Block {
-            revision,
-            order,
+        ProgramAction::Fail {
+            directive_revision,
             reason,
         } => {
-            active_order(world, ship, revision, order)?;
-            blocked(world, ship, reason.chars().take(256).collect());
+            active_directive(world, ship, directive_revision)?;
+            blocked(world, ship, reason);
             Ok(())
         }
-        ProgramAction::CompleteOrder { revision, order } => {
-            active_order(world, ship, revision, order)?;
-            let now = tick(world);
-            complete_order(&mut world.get_mut::<Travel>(ship).unwrap().0, now);
+        ProgramAction::PublishStatus {
+            directive_revision,
+            status,
+        } => {
+            active_directive(world, ship, directive_revision)?;
+            ensure!(
+                status.summary.len() <= 256
+                    && status.markers.len() <= osg_ship_api::world::MAX_STATUS_MARKERS
+                    && status.markers.iter().all(|marker| marker.label.len() <= 64)
+                    && !matches!(&status.phase, FirmwarePhase::Waiting { why, .. } if why.len() > 256),
+                "firmware status too large"
+            );
+            ensure!(
+                [
+                    status.planned_delta_v_m_s,
+                    status.planned_loss_ppm,
+                    status.spent_loss_ppm,
+                    status.planned_exotic_fuel_kg,
+                    status.spent_exotic_fuel_kg,
+                ]
+                .into_iter()
+                .all(|value| value.is_finite() && value >= 0.0),
+                "invalid firmware status"
+            );
+            ensure!(
+                status.planned_loss_ppm <= 1_000_000.0
+                    && status.spent_loss_ppm <= 1_000_000.0
+                    && status
+                        .aim_offset_m
+                        .is_none_or(|offset| offset.into_iter().all(f64::is_finite)),
+                "invalid firmware status"
+            );
+            world.get_mut::<Travel>(ship).unwrap().0.status = status;
             Ok(())
         }
         ProgramAction::Slip {
-            revision,
-            order,
             destination,
             navigation_beacon,
-        } => {
-            ensure!(
-                matches!(
-                    active_order(world, ship, revision, order)?,
-                    Order::Slip { .. }
-                ),
-                "current order is not slip transit"
-            );
-            prepare_slip(world, ship, destination, navigation_beacon)
-        }
-        ProgramAction::ReserveBay {
-            revision,
-            order,
-            station,
-            bay,
-        } => {
-            ensure!(
-                matches!(active_order(world, ship, revision, order)?, Order::Dock(target) if *target == station),
-                "current order is not docking here"
-            );
+            arrival_velocity,
+            not_before_tick,
+        } => prepare_slip(
+            world,
+            ship,
+            destination,
+            navigation_beacon,
+            arrival_velocity,
+            not_before_tick,
+        ),
+        ProgramAction::ReserveBay { station, bay } => {
             let host = entity(world, station)?;
             reserve_bay(world, ship, host, bay).map(|_| ())
         }
-        ProgramAction::Dock {
-            revision,
-            order,
-            station,
-            bay,
-        } => {
-            ensure!(
-                matches!(active_order(world, ship, revision, order)?, Order::Dock(target) if *target == station),
-                "current order is not docking here"
-            );
+        ProgramAction::Dock { station, bay } => {
             let host = entity(world, station)?;
             dock(world, ship, host, bay)
         }
-        ProgramAction::Undock { revision, order } => {
-            ensure!(
-                matches!(active_order(world, ship, revision, order)?, Order::Undock),
-                "current order is not undocking"
-            );
-            undock(world, ship)?;
-            let now = tick(world);
-            complete_order(&mut world.get_mut::<Travel>(ship).unwrap().0, now);
+        ProgramAction::Undock => undock(world, ship),
+        ProgramAction::CancelSlip => {
+            cancel_pending(world, ship);
             Ok(())
         }
     }
 }
 
-fn complete_order(travel: &mut TravelState, now: u64) {
-    if let (Some(goal), Some(stage)) = (travel.goals.first(), travel.orders.get(travel.order)) {
-        let completed = match (goal, &stage.action) {
-            (
-                Order::TravelToSystem(system),
-                Order::Slip {
-                    destination:
-                        Destination::Relative {
-                            reference: Reference::Celestial(reference),
-                            ..
-                        },
-                    ..
-                },
-            ) => *system == reference.system,
-            (Order::TravelTo(goal), Order::Sublight(destination)) => goal == destination,
-            (goal, actual) => goal == actual,
-        };
-        if completed {
-            travel.goals.remove(0);
-        }
-    }
-    travel.order += 1;
-    travel.revision = travel.revision.wrapping_add(1);
-    travel.estimated_arrival_tick = travel
-        .orders
-        .get(travel.order)
-        .and_then(|stage| stage.estimated_duration_ticks)
-        .map(|duration| now.saturating_add(duration));
-    travel.planning = None;
-    travel.status = if travel.order >= travel.orders.len() {
-        travel.fuel_budget = Some(FuelBudget {
-            resources: Vec::new(),
-            complete: true,
-        });
-        travel.estimated_arrival_tick = None;
-        Status::Completed
-    } else if travel.autopilot_enabled {
-        Status::Active
-    } else {
-        travel.estimated_arrival_tick = None;
-        Status::Paused
+fn complete_directive(state: &mut AutopilotState) {
+    state.risk_budget.spend(state.status.spent_loss_ppm);
+    state.itinerary.remove(0);
+    state.directive_revision = state.directive_revision.wrapping_add(1);
+    state.status = FirmwareStatus {
+        phase: if state.itinerary.is_empty() {
+            FirmwarePhase::Completed
+        } else {
+            FirmwarePhase::Planning
+        },
+        ..Default::default()
     };
-}
-
-pub fn plan_orders(world: &mut World) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("travel.plan_orders");
-    use osg_model::routing::{Request, Status as RouteStatus};
-
-    let planning: Vec<_> = world
-        .query::<(Entity, &Travel)>()
-        .iter(world)
-        .filter(|(_, travel)| travel.0.status == Status::Planning)
-        .map(|(ship, travel)| (ship, travel.0.clone()))
-        .collect();
-    let mut admissions = 0;
-    for (ship, state) in planning {
-        let request_id = state.revision.saturating_add(1);
-        let status = super::route_service::poll_automatic(world, ship, request_id);
-        let result = match status {
-            Ok(RouteStatus::Unknown) if admissions < 8 => {
-                admissions += 1;
-                super::route_service::submit_automatic(
-                    world,
-                    ship,
-                    Request {
-                        id: request_id,
-                        orders: state.goals.clone(),
-                        preferences: state.preferences,
-                    },
-                )
-                .map(|_| ())
-            }
-            Ok(RouteStatus::Unknown) => Ok(()),
-            Ok(RouteStatus::Pending { progress }) => {
-                world.get_mut::<Travel>(ship).unwrap().0.planning = Some(progress);
-                Ok(())
-            }
-            Ok(RouteStatus::Ready { .. }) => {
-                super::route_service::ready_automatic(world, ship, request_id, state.revision)
-                    .and_then(|route| {
-                        apply_plan(
-                            world,
-                            ship,
-                            state.revision,
-                            route.plan,
-                            route.preferences,
-                            false,
-                            route.goals,
-                            false,
-                        )
-                    })
-            }
-            Ok(RouteStatus::Failed { reason }) => Err(anyhow::anyhow!(reason)),
-            Err(error) => Err(error),
-        };
-        if let Err(error) = result {
-            blocked(world, ship, error.to_string());
-        }
+    if state.itinerary.is_empty() {
+        state.enabled = false;
     }
 }
 
 pub fn advance(world: &mut World) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("travel.advance");
     for mut power in world.query::<&mut SlipChargingPower>().iter_mut(world) {
-        power.0 = 0.;
+        power.0 = 0.0;
     }
-    let now = tick(world);
-    let dormant_orders: Vec<_> = world
-        .query::<(Entity, &PresenceState, &Travel)>()
-        .iter(world)
-        .filter(|(_, presence, travel)| {
-            matches!(presence.0, Presence::Docked { .. })
-                && travel.0.autopilot_enabled
-                && travel.0.status == Status::Active
-        })
-        .map(|(entity, _, travel)| {
-            (
-                entity,
-                travel
-                    .0
-                    .orders
-                    .get(travel.0.order)
-                    .map(|stage| &stage.action)
-                    .cloned(),
-            )
-        })
-        .collect();
-    for (ship, order) in dormant_orders {
-        let already_docked = match (&order, &world.get::<PresenceState>(ship).unwrap().0) {
-            (Some(Order::Dock(station)), Presence::Docked { host, .. }) => station == host,
-            _ => false,
-        };
-        let completes =
-            already_docked || matches!(order, Some(Order::Undock | Order::WaitUntil(_)));
-        let result = if already_docked {
-            Some(Ok(()))
-        } else {
-            match order {
-                Some(Order::WaitUntil(until)) => (now >= until).then_some(Ok(())),
-                Some(_) => Some(undock(world, ship)),
-                None => None,
-            }
-        };
-        if let Some(result) = result {
-            match result {
-                Ok(()) if completes => {
-                    complete_order(&mut world.get_mut::<Travel>(ship).unwrap().0, now)
-                }
-                Ok(()) => world.get_mut::<Travel>(ship).unwrap().0.status = Status::Active,
-                Err(error) => blocked(world, ship, error.to_string()),
-            }
-        }
-    }
-
     slip::advance(world);
 }
 
@@ -993,8 +842,7 @@ pub fn destroy(world: &mut World, ship: Entity) {
     cancel_pending(world, ship);
     world.entity_mut(ship).remove::<Transit>();
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        travel.0.planning = None;
-        travel.0.status = Status::Paused;
+        travel.0.enabled = false;
     }
     if let Ok(uuid) = id(world, ship) {
         let children: Vec<_> = world
@@ -1047,23 +895,16 @@ pub(crate) fn destroy_collisions(
     )>,
     mut observations: Query<(Entity, &mut super::sensors::Observations)>,
     sensors: Option<Res<super::sensors::SensorService>>,
-    mut spatial: ResMut<super::spatial::SpatialIndex>,
     mut events: ResMut<TravelEvents>,
 ) {
     for death in &report.report.destroyed {
         let entity = death.entity;
-        spatial
-            .hash
-            .write()
-            .unwrap()
-            .remove(&super::spatial::SpatialKey::Entity(entity));
         let Ok(mut target) = targets.get_mut(entity) else {
             commands.entity(entity).despawn();
             continue;
         };
         if let Some(travel) = target.travel.as_mut() {
-            travel.0.planning = None;
-            travel.0.status = Status::Paused;
+            travel.0.enabled = false;
         }
         if let Some(drive) = target.drive.as_mut() {
             drive.preparation = None;
@@ -1192,8 +1033,7 @@ pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
     cancel_pending(world, ship);
     world.entity_mut(ship).remove::<Transit>();
     if let Some(mut travel) = world.get_mut::<Travel>(ship) {
-        travel.0.planning = None;
-        travel.0.status = Status::Paused;
+        travel.0.enabled = false;
     }
     if let Some(mut software) = world.get_mut::<super::vessel::ShipSoftware>(ship) {
         software.controller.reboot();

@@ -35,6 +35,20 @@ pub(super) struct Transfers {
 }
 
 impl Transfers {
+    #[cfg(test)]
+    pub(super) fn gallery_quantity(&mut self, source: Id, target: Id, item: CargoItem) {
+        self.pending = Some(Transfer {
+            cargo: DraggedCargo {
+                source,
+                storage: Storage::Cargo,
+                item,
+            },
+            target,
+            tank: None,
+            quantity: 250,
+        });
+    }
+
     pub fn inventories(&self) -> impl Iterator<Item = Id> {
         let endpoints = self
             .pending
@@ -324,13 +338,29 @@ pub(super) fn draw_dialog(
 
     let mut open = true;
     let mut finished = false;
-    egui::Window::new("Transfer quantity")
+    egui::Window::new(egui::RichText::new("Transfer quantity").size(12.))
         .id(egui::Id::new("cargo_quantity"))
         .collapsible(false)
+        .title_bar(false)
         .resizable(false)
-        .default_width(330.0)
+        .default_width(300.0)
+        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+        .frame(
+            egui::Frame::new()
+                .fill(SURFACE_RAISED)
+                .stroke(egui::Stroke::new(1., BORDER))
+                .inner_margin(10.),
+        )
+        .title_frame(
+            egui::Frame::new()
+                .fill(SURFACE_RAISED)
+                .inner_margin(egui::Margin::symmetric(8, 2)),
+        )
         .open(&mut open)
         .show(ctx, |ui| {
+            if window_title(ui, "Transfer quantity", false) {
+                finished = true;
+            }
             let cargo = &pending.cargo;
             if let Some(stack) = available_stack(model, cargo.source, cargo.storage, &cargo.item) {
                 ui.strong(&stack.name);
@@ -368,7 +398,7 @@ pub(super) fn draw_dialog(
 
 fn quantity_editor(ui: &mut egui::Ui, quantity: &mut u64, stack: &CargoStack, maximum: u64) {
     ui.horizontal(|ui| {
-        if matches!(stack.item, CargoItem::Resource(_)) && stack.unit_mass_kg < 1e-5 {
+        if matches!(stack.item, CargoItem::Resource(_)) && stack.unit_mass_kg > 0. {
             let mut mass_kg = *quantity as f64 * stack.unit_mass_kg;
             if ui
                 .add(
@@ -425,11 +455,18 @@ pub(super) fn available(stack: &CargoStack) -> u64 {
     stack.quantity.saturating_sub(stack.reserved)
 }
 
+pub(super) fn item_label(item: &CargoItem) -> String {
+    match item {
+        CargoItem::Resource(id) => id.replace('_', " "),
+        CargoItem::Part(id) => format!("{} kit", id.replace('_', " ")),
+    }
+}
+
 pub(super) fn quantity_label(item: &CargoItem, quantity: u64, unit_mass_kg: f64) -> String {
-    if matches!(item, CargoItem::Resource(_)) && unit_mass_kg < 1e-5 {
+    if matches!(item, CargoItem::Resource(_)) && unit_mass_kg > 0. {
         osg_ui::units::mass(quantity as f64 * unit_mass_kg)
     } else {
-        quantity.to_string()
+        format!("×{quantity}")
     }
 }
 

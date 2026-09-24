@@ -23,6 +23,16 @@ pub(super) fn job(
             "output owner not administered by requester"
         );
     }
+    prepare(world, account, facility, owner, blueprint_bytes)
+}
+
+pub(super) fn prepare(
+    world: &mut World,
+    account: AccountId,
+    facility: Entity,
+    owner: Principal,
+    blueprint_bytes: &[u8],
+) -> Result<IndustryJob> {
     ensure!(
         blueprint_bytes.len() <= osg_ships::MAX_FILE,
         "ship blueprint too large"
@@ -50,6 +60,7 @@ pub(super) fn job(
             }),
         "no docking aperture fits this design"
     );
+    travel::construction_bay(world, facility, owner, design.radius, design.dry_mass)?;
     Ok(IndustryJob {
         view: JobView {
             id: Id::new(),
@@ -63,6 +74,7 @@ pub(super) fn job(
             module_part: None,
             requested_power_w: 0,
             supplied_power_w: 0,
+            payment: None,
         },
         inputs: requirements.inputs,
         output: JobOutput::Ship(blueprint_bytes.to_vec()),

@@ -1,0 +1,505 @@
+
+running 1 test
+bvh_build entries=1001760 payload_ms=52.246 keys_ms=19.334 partition_ms=83.183 assembly_ms=150.173 cleanup_ms=0.915 node_bytes=256450432 total_ms=305.852
+bvh_build entries=3024 payload_ms=0.558 keys_ms=0.039 partition_ms=0.593 assembly_ms=0.401 cleanup_ms=0.002 node_bytes=774016 total_ms=1.592
+bvh_build entries=3024 payload_ms=0.319 keys_ms=0.038 partition_ms=0.584 assembly_ms=0.130 cleanup_ms=0.001 node_bytes=774016 total_ms=1.072
+setup players=16 scene=sparse repeat=0 seconds=2.625 catalogue=1001760 records=3024
+bvh_build entries=46908 payload_ms=4.308 keys_ms=0.591 partition_ms=3.244 assembly_ms=4.432 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.580
+first simulation tick ms=874.322
+progress frame=0 total_ms=929.537 physics_ms=359.620 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=8.778 keys_ms=0.564 partition_ms=3.114 assembly_ms=4.120 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.579
+bvh_build entries=46908 payload_ms=8.599 keys_ms=0.589 partition_ms=2.725 assembly_ms=3.644 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.560
+bvh_build entries=46908 payload_ms=4.335 keys_ms=0.582 partition_ms=2.551 assembly_ms=2.028 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.500
+bvh_build entries=46908 payload_ms=6.767 keys_ms=0.585 partition_ms=2.779 assembly_ms=4.150 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.284
+bvh_build entries=46908 payload_ms=8.711 keys_ms=0.630 partition_ms=2.651 assembly_ms=3.647 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.643
+bvh_build entries=46908 payload_ms=4.782 keys_ms=0.632 partition_ms=2.676 assembly_ms=4.239 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.332
+bvh_build entries=46908 payload_ms=4.315 keys_ms=0.555 partition_ms=2.737 assembly_ms=1.881 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.491
+bvh_build entries=46908 payload_ms=5.235 keys_ms=0.693 partition_ms=3.267 assembly_ms=3.565 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.764
+bvh_build entries=46908 payload_ms=7.708 keys_ms=0.561 partition_ms=2.865 assembly_ms=3.482 cleanup_ms=0.003 node_bytes=12008320 total_ms=14.619
+bvh_build entries=46908 payload_ms=4.246 keys_ms=0.795 partition_ms=2.622 assembly_ms=3.055 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.723
+bvh_build entries=46908 payload_ms=7.015 keys_ms=0.579 partition_ms=2.704 assembly_ms=3.444 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.745
+bvh_build entries=46908 payload_ms=5.579 keys_ms=0.599 partition_ms=2.631 assembly_ms=4.009 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.823
+bvh_build entries=46908 payload_ms=10.330 keys_ms=0.760 partition_ms=2.750 assembly_ms=5.335 cleanup_ms=0.003 node_bytes=12008320 total_ms=19.179
+bvh_build entries=46908 payload_ms=9.076 keys_ms=0.673 partition_ms=2.702 assembly_ms=3.281 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.737
+bvh_build entries=46908 payload_ms=4.837 keys_ms=0.617 partition_ms=2.623 assembly_ms=1.951 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.032
+bvh_build entries=46908 payload_ms=4.436 keys_ms=1.323 partition_ms=2.901 assembly_ms=3.271 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.936
+bvh_build entries=46908 payload_ms=5.490 keys_ms=1.120 partition_ms=3.757 assembly_ms=2.329 cleanup_ms=0.006 node_bytes=12008320 total_ms=12.703
+bvh_build entries=46908 payload_ms=7.452 keys_ms=0.707 partition_ms=2.794 assembly_ms=5.061 cleanup_ms=0.006 node_bytes=12008320 total_ms=16.019
+bvh_build entries=46908 payload_ms=5.365 keys_ms=0.600 partition_ms=3.133 assembly_ms=2.072 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.174
+bvh_build entries=46908 payload_ms=4.248 keys_ms=0.600 partition_ms=2.784 assembly_ms=1.918 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.553
+bvh_build entries=46908 payload_ms=4.370 keys_ms=0.564 partition_ms=2.812 assembly_ms=3.069 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.819
+bvh_build entries=46908 payload_ms=7.644 keys_ms=1.016 partition_ms=2.883 assembly_ms=4.638 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.185
+bvh_build entries=46908 payload_ms=6.552 keys_ms=0.763 partition_ms=2.695 assembly_ms=3.150 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.164
+bvh_build entries=46908 payload_ms=4.789 keys_ms=0.659 partition_ms=3.451 assembly_ms=2.520 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.422
+bvh_build entries=46908 payload_ms=5.449 keys_ms=0.911 partition_ms=4.329 assembly_ms=1.891 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.582
+bvh_build entries=46908 payload_ms=7.750 keys_ms=0.780 partition_ms=2.883 assembly_ms=3.838 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.254
+bvh_build entries=46908 payload_ms=4.220 keys_ms=0.626 partition_ms=2.631 assembly_ms=1.832 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.314
+bvh_build entries=46908 payload_ms=5.944 keys_ms=0.607 partition_ms=2.642 assembly_ms=4.105 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.301
+bvh_build entries=46908 payload_ms=4.255 keys_ms=0.590 partition_ms=3.107 assembly_ms=2.030 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.986
+bvh_build entries=46908 payload_ms=4.226 keys_ms=0.605 partition_ms=2.833 assembly_ms=1.947 cleanup_ms=0.006 node_bytes=12008320 total_ms=9.618
+bvh_build entries=46908 payload_ms=4.241 keys_ms=0.558 partition_ms=2.724 assembly_ms=1.895 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.423
+bvh_build entries=46908 payload_ms=4.243 keys_ms=0.624 partition_ms=2.692 assembly_ms=1.878 cleanup_ms=0.002 node_bytes=12008320 total_ms=9.439
+bvh_build entries=46908 payload_ms=5.484 keys_ms=0.661 partition_ms=2.693 assembly_ms=1.861 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.705
+bvh_build entries=46908 payload_ms=4.304 keys_ms=0.728 partition_ms=2.881 assembly_ms=2.820 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.737
+bvh_build entries=46908 payload_ms=9.113 keys_ms=0.593 partition_ms=3.298 assembly_ms=3.997 cleanup_ms=0.005 node_bytes=12008320 total_ms=17.005
+bvh_build entries=46908 payload_ms=4.839 keys_ms=1.078 partition_ms=4.003 assembly_ms=4.002 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.927
+bvh_build entries=46908 payload_ms=5.861 keys_ms=0.631 partition_ms=3.133 assembly_ms=2.416 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.045
+bvh_build entries=46908 payload_ms=6.941 keys_ms=1.107 partition_ms=2.783 assembly_ms=4.421 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.257
+bvh_build entries=46908 payload_ms=5.950 keys_ms=0.947 partition_ms=4.420 assembly_ms=3.146 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.468
+bvh_build entries=46908 payload_ms=5.238 keys_ms=0.947 partition_ms=3.179 assembly_ms=2.444 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.813
+bvh_build entries=46908 payload_ms=4.282 keys_ms=0.651 partition_ms=4.381 assembly_ms=2.293 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.612
+bvh_build entries=46908 payload_ms=4.532 keys_ms=0.698 partition_ms=2.747 assembly_ms=2.358 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.338
+bvh_build entries=46908 payload_ms=4.386 keys_ms=0.641 partition_ms=4.333 assembly_ms=3.311 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.676
+bvh_build entries=46908 payload_ms=4.272 keys_ms=0.691 partition_ms=2.872 assembly_ms=2.268 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.107
+bvh_build entries=46908 payload_ms=4.345 keys_ms=0.653 partition_ms=2.947 assembly_ms=3.081 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.031
+bvh_build entries=46908 payload_ms=7.454 keys_ms=0.793 partition_ms=4.579 assembly_ms=5.089 cleanup_ms=0.003 node_bytes=12008320 total_ms=17.918
+bvh_build entries=46908 payload_ms=8.939 keys_ms=1.293 partition_ms=4.083 assembly_ms=2.657 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.975
+bvh_build entries=46908 payload_ms=4.760 keys_ms=0.942 partition_ms=3.750 assembly_ms=2.942 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.398
+bvh_build entries=46908 payload_ms=4.503 keys_ms=0.917 partition_ms=2.785 assembly_ms=1.854 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.062
+bvh_build entries=46908 payload_ms=5.245 keys_ms=0.816 partition_ms=2.615 assembly_ms=1.997 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.676
+progress frame=50 total_ms=65.469 physics_ms=10.724 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=4.208 keys_ms=0.787 partition_ms=2.762 assembly_ms=2.481 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.241
+bvh_build entries=46908 payload_ms=4.747 keys_ms=0.609 partition_ms=2.738 assembly_ms=3.966 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.064
+bvh_build entries=46908 payload_ms=4.256 keys_ms=0.564 partition_ms=2.689 assembly_ms=2.289 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.803
+bvh_build entries=46908 payload_ms=4.313 keys_ms=0.582 partition_ms=2.572 assembly_ms=3.423 cleanup_ms=0.006 node_bytes=12008320 total_ms=10.897
+bvh_build entries=46908 payload_ms=4.333 keys_ms=0.582 partition_ms=3.377 assembly_ms=3.566 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.865
+bvh_build entries=46908 payload_ms=4.197 keys_ms=0.566 partition_ms=4.116 assembly_ms=3.163 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.046
+bvh_build entries=46908 payload_ms=4.187 keys_ms=0.621 partition_ms=3.268 assembly_ms=2.516 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.597
+bvh_build entries=46908 payload_ms=4.303 keys_ms=0.724 partition_ms=4.480 assembly_ms=2.449 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.963
+bvh_build entries=46908 payload_ms=6.793 keys_ms=0.588 partition_ms=2.814 assembly_ms=4.394 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.593
+bvh_build entries=46908 payload_ms=4.990 keys_ms=0.648 partition_ms=3.729 assembly_ms=2.508 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.880
+bvh_build entries=46908 payload_ms=6.457 keys_ms=0.725 partition_ms=4.373 assembly_ms=2.075 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.635
+bvh_build entries=46908 payload_ms=4.450 keys_ms=0.577 partition_ms=3.276 assembly_ms=4.164 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.473
+bvh_build entries=46908 payload_ms=4.651 keys_ms=0.671 partition_ms=2.646 assembly_ms=2.972 cleanup_ms=0.006 node_bytes=12008320 total_ms=10.945
+bvh_build entries=46908 payload_ms=4.242 keys_ms=0.652 partition_ms=2.728 assembly_ms=2.017 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.643
+bvh_build entries=46908 payload_ms=4.243 keys_ms=0.826 partition_ms=2.840 assembly_ms=2.793 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.705
+bvh_build entries=46908 payload_ms=4.245 keys_ms=0.564 partition_ms=2.977 assembly_ms=2.064 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.853
+bvh_build entries=46908 payload_ms=4.156 keys_ms=0.562 partition_ms=2.736 assembly_ms=3.448 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.906
+bvh_build entries=46908 payload_ms=4.206 keys_ms=0.637 partition_ms=3.158 assembly_ms=1.945 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.951
+bvh_build entries=46908 payload_ms=4.313 keys_ms=0.549 partition_ms=2.815 assembly_ms=1.831 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.514
+bvh_build entries=46908 payload_ms=5.166 keys_ms=0.660 partition_ms=3.137 assembly_ms=4.127 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.094
+bvh_build entries=46908 payload_ms=6.769 keys_ms=0.569 partition_ms=2.547 assembly_ms=6.194 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.083
+bvh_build entries=46908 payload_ms=5.499 keys_ms=0.610 partition_ms=2.696 assembly_ms=3.239 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.047
+bvh_build entries=46908 payload_ms=4.357 keys_ms=0.683 partition_ms=2.698 assembly_ms=1.831 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.573
+bvh_build entries=46908 payload_ms=5.687 keys_ms=0.555 partition_ms=4.524 assembly_ms=2.437 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.206
+bvh_build entries=46908 payload_ms=8.454 keys_ms=0.695 partition_ms=2.769 assembly_ms=4.379 cleanup_ms=0.006 node_bytes=12008320 total_ms=16.303
+bvh_build entries=46908 payload_ms=4.311 keys_ms=0.629 partition_ms=4.350 assembly_ms=2.179 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.477
+bvh_build entries=46908 payload_ms=4.221 keys_ms=0.565 partition_ms=4.372 assembly_ms=1.812 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.972
+bvh_build entries=46908 payload_ms=6.880 keys_ms=0.942 partition_ms=3.507 assembly_ms=3.256 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.589
+bvh_build entries=46908 payload_ms=4.929 keys_ms=1.154 partition_ms=3.262 assembly_ms=5.332 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.682
+bvh_build entries=46908 payload_ms=7.585 keys_ms=1.499 partition_ms=3.269 assembly_ms=3.599 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.957
+bvh_build entries=46908 payload_ms=4.482 keys_ms=0.652 partition_ms=2.597 assembly_ms=2.046 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.781
+bvh_build entries=46908 payload_ms=5.259 keys_ms=0.605 partition_ms=2.653 assembly_ms=1.888 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.408
+bvh_build entries=46908 payload_ms=5.467 keys_ms=0.617 partition_ms=2.638 assembly_ms=1.832 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.557
+bvh_build entries=46908 payload_ms=5.076 keys_ms=0.753 partition_ms=2.851 assembly_ms=2.349 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.034
+bvh_build entries=46908 payload_ms=4.619 keys_ms=0.836 partition_ms=2.716 assembly_ms=2.317 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.493
+bvh_build entries=46908 payload_ms=5.834 keys_ms=0.733 partition_ms=2.712 assembly_ms=2.310 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.593
+bvh_build entries=46908 payload_ms=6.839 keys_ms=0.716 partition_ms=2.638 assembly_ms=5.633 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.830
+bvh_build entries=46908 payload_ms=5.171 keys_ms=0.580 partition_ms=2.648 assembly_ms=2.032 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.435
+bvh_build entries=46908 payload_ms=7.951 keys_ms=0.907 partition_ms=2.737 assembly_ms=3.708 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.308
+bvh_build entries=46908 payload_ms=4.417 keys_ms=0.640 partition_ms=2.672 assembly_ms=1.857 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.589
+bvh_build entries=46908 payload_ms=4.264 keys_ms=1.026 partition_ms=2.558 assembly_ms=1.962 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.814
+bvh_build entries=46908 payload_ms=4.301 keys_ms=0.605 partition_ms=4.604 assembly_ms=1.926 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.440
+bvh_build entries=46908 payload_ms=4.557 keys_ms=0.850 partition_ms=2.671 assembly_ms=2.114 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.197
+bvh_build entries=46908 payload_ms=7.018 keys_ms=0.793 partition_ms=2.560 assembly_ms=4.865 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.240
+bvh_build entries=46908 payload_ms=4.204 keys_ms=0.579 partition_ms=2.700 assembly_ms=3.382 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.869
+bvh_build entries=46908 payload_ms=4.185 keys_ms=0.601 partition_ms=2.573 assembly_ms=3.571 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.934
+bvh_build entries=46908 payload_ms=4.230 keys_ms=0.587 partition_ms=2.557 assembly_ms=2.141 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.519
+bvh_build entries=46908 payload_ms=4.210 keys_ms=0.553 partition_ms=2.614 assembly_ms=1.852 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.233
+bvh_build entries=46908 payload_ms=4.349 keys_ms=0.829 partition_ms=2.703 assembly_ms=2.441 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.327
+bvh_build entries=46908 payload_ms=4.153 keys_ms=0.596 partition_ms=3.039 assembly_ms=2.327 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.119
+progress frame=100 total_ms=65.491 physics_ms=12.315 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=5.946 keys_ms=0.995 partition_ms=2.734 assembly_ms=4.111 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.791
+bvh_build entries=46908 payload_ms=4.346 keys_ms=0.566 partition_ms=2.867 assembly_ms=1.921 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.705
+bvh_build entries=46908 payload_ms=4.308 keys_ms=0.621 partition_ms=2.896 assembly_ms=2.630 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.461
+bvh_build entries=46908 payload_ms=4.276 keys_ms=0.648 partition_ms=2.800 assembly_ms=4.394 cleanup_ms=0.006 node_bytes=12008320 total_ms=12.123
+bvh_build entries=46908 payload_ms=4.189 keys_ms=0.603 partition_ms=2.842 assembly_ms=2.571 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.210
+bvh_build entries=46908 payload_ms=4.239 keys_ms=0.573 partition_ms=2.800 assembly_ms=1.868 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.484
+bvh_build entries=46908 payload_ms=7.231 keys_ms=0.773 partition_ms=2.680 assembly_ms=5.076 cleanup_ms=0.003 node_bytes=12008320 total_ms=15.764
+bvh_build entries=46908 payload_ms=4.482 keys_ms=0.829 partition_ms=2.896 assembly_ms=2.123 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.334
+bvh_build entries=46908 payload_ms=5.868 keys_ms=0.582 partition_ms=3.056 assembly_ms=3.833 cleanup_ms=0.006 node_bytes=12008320 total_ms=13.345
+bvh_build entries=46908 payload_ms=4.300 keys_ms=0.675 partition_ms=2.623 assembly_ms=1.976 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.578
+bvh_build entries=46908 payload_ms=4.790 keys_ms=0.594 partition_ms=2.683 assembly_ms=4.243 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.314
+bvh_build entries=46908 payload_ms=4.171 keys_ms=0.588 partition_ms=2.621 assembly_ms=3.583 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.968
+bvh_build entries=46908 payload_ms=6.065 keys_ms=0.670 partition_ms=2.623 assembly_ms=3.027 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.387
+bvh_build entries=46908 payload_ms=9.388 keys_ms=0.879 partition_ms=2.683 assembly_ms=6.414 cleanup_ms=0.004 node_bytes=12008320 total_ms=19.368
+bvh_build entries=46908 payload_ms=4.772 keys_ms=0.581 partition_ms=2.900 assembly_ms=4.103 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.360
+bvh_build entries=46908 payload_ms=4.224 keys_ms=0.751 partition_ms=2.640 assembly_ms=3.192 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.810
+bvh_build entries=46908 payload_ms=4.369 keys_ms=0.604 partition_ms=2.676 assembly_ms=2.023 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.676
+bvh_build entries=46908 payload_ms=7.124 keys_ms=0.791 partition_ms=2.707 assembly_ms=5.885 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.512
+bvh_build entries=46908 payload_ms=6.972 keys_ms=0.575 partition_ms=2.742 assembly_ms=4.107 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.400
+bvh_build entries=46908 payload_ms=4.278 keys_ms=0.562 partition_ms=2.806 assembly_ms=1.943 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.595
+bvh_build entries=46908 payload_ms=4.197 keys_ms=0.534 partition_ms=2.756 assembly_ms=1.856 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.347
+bvh_build entries=46908 payload_ms=4.512 keys_ms=0.818 partition_ms=2.630 assembly_ms=2.592 cleanup_ms=0.020 node_bytes=12008320 total_ms=10.570
+bvh_build entries=46908 payload_ms=4.769 keys_ms=0.616 partition_ms=2.686 assembly_ms=4.476 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.551
+bvh_build entries=46908 payload_ms=4.914 keys_ms=0.780 partition_ms=2.722 assembly_ms=3.526 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.948
+bvh_build entries=46908 payload_ms=7.266 keys_ms=1.503 partition_ms=2.730 assembly_ms=2.878 cleanup_ms=0.008 node_bytes=12008320 total_ms=14.384
+bvh_build entries=46908 payload_ms=5.117 keys_ms=1.046 partition_ms=2.741 assembly_ms=2.619 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.528
+bvh_build entries=46908 payload_ms=5.297 keys_ms=0.736 partition_ms=2.699 assembly_ms=4.481 cleanup_ms=0.006 node_bytes=12008320 total_ms=13.220
+bvh_build entries=46908 payload_ms=7.684 keys_ms=0.645 partition_ms=2.690 assembly_ms=2.560 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.584
+bvh_build entries=46908 payload_ms=9.971 keys_ms=0.734 partition_ms=2.493 assembly_ms=4.390 cleanup_ms=0.004 node_bytes=12008320 total_ms=17.591
+bvh_build entries=46908 payload_ms=4.996 keys_ms=0.581 partition_ms=2.664 assembly_ms=3.614 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.862
+bvh_build entries=46908 payload_ms=4.476 keys_ms=0.686 partition_ms=2.681 assembly_ms=2.235 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.083
+bvh_build entries=46908 payload_ms=4.810 keys_ms=0.754 partition_ms=3.173 assembly_ms=3.641 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.382
+bvh_build entries=46908 payload_ms=12.586 keys_ms=0.847 partition_ms=2.627 assembly_ms=4.770 cleanup_ms=0.004 node_bytes=12008320 total_ms=20.833
+bvh_build entries=46908 payload_ms=4.226 keys_ms=0.576 partition_ms=2.852 assembly_ms=2.797 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.455
+bvh_build entries=46908 payload_ms=4.212 keys_ms=0.564 partition_ms=2.697 assembly_ms=1.835 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.311
+bvh_build entries=46908 payload_ms=4.790 keys_ms=0.582 partition_ms=2.692 assembly_ms=4.037 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.106
+bvh_build entries=46908 payload_ms=4.494 keys_ms=0.589 partition_ms=2.833 assembly_ms=2.129 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.050
+bvh_build entries=46908 payload_ms=5.492 keys_ms=0.586 partition_ms=2.702 assembly_ms=3.397 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.180
+bvh_build entries=46908 payload_ms=4.416 keys_ms=0.588 partition_ms=2.643 assembly_ms=1.884 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.535
+bvh_build entries=46908 payload_ms=4.583 keys_ms=0.843 partition_ms=2.635 assembly_ms=2.108 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.173
+bvh_build entries=46908 payload_ms=6.922 keys_ms=0.771 partition_ms=2.703 assembly_ms=5.318 cleanup_ms=0.006 node_bytes=12008320 total_ms=15.721
+bvh_build entries=46908 payload_ms=4.204 keys_ms=0.564 partition_ms=2.662 assembly_ms=2.074 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.508
+bvh_build entries=46908 payload_ms=5.244 keys_ms=0.593 partition_ms=2.573 assembly_ms=4.467 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.880
+bvh_build entries=46908 payload_ms=4.498 keys_ms=0.852 partition_ms=2.600 assembly_ms=3.361 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.315
+bvh_build entries=46908 payload_ms=4.325 keys_ms=0.579 partition_ms=2.646 assembly_ms=2.021 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.575
+bvh_build entries=46908 payload_ms=4.533 keys_ms=0.844 partition_ms=2.678 assembly_ms=3.732 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.794
+bvh_build entries=46908 payload_ms=4.419 keys_ms=0.925 partition_ms=2.716 assembly_ms=2.608 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.672
+bvh_build entries=46908 payload_ms=4.725 keys_ms=1.464 partition_ms=3.229 assembly_ms=2.955 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.377
+bvh_build entries=46908 payload_ms=9.663 keys_ms=0.843 partition_ms=2.669 assembly_ms=3.520 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.700
+bvh_build entries=46908 payload_ms=6.934 keys_ms=1.055 partition_ms=2.729 assembly_ms=2.984 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.706
+progress frame=150 total_ms=69.350 physics_ms=10.779 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=4.504 keys_ms=0.888 partition_ms=2.881 assembly_ms=2.352 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.628
+bvh_build entries=46908 payload_ms=8.328 keys_ms=0.572 partition_ms=2.602 assembly_ms=4.427 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.932
+bvh_build entries=46908 payload_ms=4.373 keys_ms=0.856 partition_ms=3.587 assembly_ms=2.391 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.212
+bvh_build entries=46908 payload_ms=5.836 keys_ms=0.713 partition_ms=2.638 assembly_ms=5.569 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.763
+bvh_build entries=46908 payload_ms=4.743 keys_ms=0.967 partition_ms=3.257 assembly_ms=4.472 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.443
+bvh_build entries=46908 payload_ms=4.592 keys_ms=0.728 partition_ms=2.615 assembly_ms=2.264 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.203
+bvh_build entries=46908 payload_ms=4.621 keys_ms=0.750 partition_ms=2.671 assembly_ms=2.729 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.776
+bvh_build entries=46908 payload_ms=4.560 keys_ms=0.767 partition_ms=2.781 assembly_ms=2.571 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.683
+bvh_build entries=46908 payload_ms=5.329 keys_ms=0.996 partition_ms=3.611 assembly_ms=3.681 cleanup_ms=0.006 node_bytes=12008320 total_ms=13.624
+bvh_build entries=46908 payload_ms=5.515 keys_ms=0.558 partition_ms=2.659 assembly_ms=2.463 cleanup_ms=0.008 node_bytes=12008320 total_ms=11.203
+bvh_build entries=46908 payload_ms=4.627 keys_ms=0.925 partition_ms=3.752 assembly_ms=2.703 cleanup_ms=0.006 node_bytes=12008320 total_ms=12.013
+bvh_build entries=46908 payload_ms=4.526 keys_ms=0.667 partition_ms=2.761 assembly_ms=2.273 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.232
+bvh_build entries=46908 payload_ms=4.202 keys_ms=0.577 partition_ms=2.809 assembly_ms=1.843 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.436
+bvh_build entries=46908 payload_ms=4.532 keys_ms=0.851 partition_ms=2.754 assembly_ms=2.064 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.204
+bvh_build entries=46908 payload_ms=4.174 keys_ms=0.548 partition_ms=2.642 assembly_ms=1.806 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.175
+bvh_build entries=46908 payload_ms=5.462 keys_ms=0.585 partition_ms=2.596 assembly_ms=3.278 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.926
+bvh_build entries=46908 payload_ms=4.236 keys_ms=0.597 partition_ms=2.606 assembly_ms=2.358 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.800
+bvh_build entries=46908 payload_ms=4.175 keys_ms=0.563 partition_ms=2.638 assembly_ms=1.887 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.266
+bvh_build entries=46908 payload_ms=4.308 keys_ms=0.582 partition_ms=2.704 assembly_ms=1.901 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.500
+bvh_build entries=46908 payload_ms=4.743 keys_ms=0.644 partition_ms=2.667 assembly_ms=4.373 cleanup_ms=0.007 node_bytes=12008320 total_ms=12.434
+bvh_build entries=46908 payload_ms=4.236 keys_ms=0.557 partition_ms=2.627 assembly_ms=1.850 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.274
+bvh_build entries=46908 payload_ms=7.222 keys_ms=0.701 partition_ms=2.639 assembly_ms=4.010 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.578
+bvh_build entries=46908 payload_ms=5.758 keys_ms=1.022 partition_ms=2.729 assembly_ms=5.436 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.950
+bvh_build entries=46908 payload_ms=4.384 keys_ms=0.551 partition_ms=2.754 assembly_ms=3.377 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.071
+bvh_build entries=46908 payload_ms=4.349 keys_ms=0.577 partition_ms=2.837 assembly_ms=3.560 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.328
+bvh_build entries=46908 payload_ms=4.829 keys_ms=1.577 partition_ms=2.695 assembly_ms=3.448 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.553
+bvh_build entries=46908 payload_ms=8.951 keys_ms=0.627 partition_ms=2.689 assembly_ms=4.557 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.828
+bvh_build entries=46908 payload_ms=4.491 keys_ms=0.972 partition_ms=2.737 assembly_ms=1.954 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.158
+bvh_build entries=46908 payload_ms=4.378 keys_ms=0.564 partition_ms=2.638 assembly_ms=1.868 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.452
+bvh_build entries=46908 payload_ms=7.194 keys_ms=0.748 partition_ms=2.683 assembly_ms=3.929 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.560
+bvh_build entries=46908 payload_ms=11.938 keys_ms=0.927 partition_ms=2.810 assembly_ms=4.911 cleanup_ms=0.005 node_bytes=12008320 total_ms=20.590
+bvh_build entries=46908 payload_ms=6.950 keys_ms=0.637 partition_ms=2.750 assembly_ms=4.131 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.472
+bvh_build entries=46908 payload_ms=4.245 keys_ms=0.564 partition_ms=2.687 assembly_ms=2.070 cleanup_ms=0.006 node_bytes=12008320 total_ms=9.571
+bvh_build entries=46908 payload_ms=4.991 keys_ms=0.577 partition_ms=2.662 assembly_ms=2.246 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.482
+bvh_build entries=46908 payload_ms=7.001 keys_ms=1.203 partition_ms=2.794 assembly_ms=4.525 cleanup_ms=0.007 node_bytes=12008320 total_ms=15.531
+bvh_build entries=46908 payload_ms=4.200 keys_ms=0.634 partition_ms=2.692 assembly_ms=1.825 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.355
+bvh_build entries=46908 payload_ms=4.258 keys_ms=0.664 partition_ms=2.695 assembly_ms=1.798 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.419
+bvh_build entries=46908 payload_ms=5.798 keys_ms=1.127 partition_ms=2.765 assembly_ms=5.385 cleanup_ms=0.007 node_bytes=12008320 total_ms=15.081
+bvh_build entries=46908 payload_ms=9.373 keys_ms=0.887 partition_ms=3.096 assembly_ms=2.500 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.860
+bvh_build entries=46908 payload_ms=10.720 keys_ms=0.746 partition_ms=2.724 assembly_ms=5.258 cleanup_ms=0.005 node_bytes=12008320 total_ms=19.452
+bvh_build entries=46908 payload_ms=5.218 keys_ms=0.699 partition_ms=2.729 assembly_ms=3.080 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.731
+bvh_build entries=46908 payload_ms=5.665 keys_ms=0.664 partition_ms=2.687 assembly_ms=3.582 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.602
+bvh_build entries=46908 payload_ms=4.350 keys_ms=0.638 partition_ms=2.654 assembly_ms=1.896 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.541
+bvh_build entries=46908 payload_ms=5.013 keys_ms=0.634 partition_ms=2.700 assembly_ms=4.506 cleanup_ms=0.007 node_bytes=12008320 total_ms=12.859
+bvh_build entries=46908 payload_ms=4.220 keys_ms=0.616 partition_ms=2.732 assembly_ms=3.187 cleanup_ms=0.007 node_bytes=12008320 total_ms=10.761
+bvh_build entries=46908 payload_ms=4.311 keys_ms=0.579 partition_ms=2.746 assembly_ms=1.944 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.585
+bvh_build entries=46908 payload_ms=4.662 keys_ms=0.795 partition_ms=2.712 assembly_ms=2.341 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.514
+bvh_build entries=46908 payload_ms=8.702 keys_ms=0.992 partition_ms=2.816 assembly_ms=4.358 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.873
+bvh_build entries=46908 payload_ms=5.551 keys_ms=0.587 partition_ms=2.807 assembly_ms=3.583 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.531
+bvh_build entries=46908 payload_ms=4.395 keys_ms=0.807 partition_ms=2.711 assembly_ms=2.270 cleanup_ms=0.006 node_bytes=12008320 total_ms=10.188
+progress frame=200 total_ms=74.231 physics_ms=11.117 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=4.191 keys_ms=0.556 partition_ms=2.777 assembly_ms=1.875 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.403
+bvh_build entries=46908 payload_ms=6.683 keys_ms=0.620 partition_ms=2.961 assembly_ms=3.958 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.226
+bvh_build entries=46908 payload_ms=7.149 keys_ms=0.620 partition_ms=2.840 assembly_ms=4.032 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.647
+bvh_build entries=46908 payload_ms=4.186 keys_ms=0.810 partition_ms=2.713 assembly_ms=1.985 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.699
+bvh_build entries=46908 payload_ms=4.163 keys_ms=0.586 partition_ms=2.588 assembly_ms=1.927 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.268
+bvh_build entries=46908 payload_ms=4.786 keys_ms=0.584 partition_ms=2.887 assembly_ms=4.292 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.552
+bvh_build entries=46908 payload_ms=4.137 keys_ms=0.577 partition_ms=2.642 assembly_ms=2.547 cleanup_ms=0.006 node_bytes=12008320 total_ms=9.909
+bvh_build entries=46908 payload_ms=4.304 keys_ms=0.563 partition_ms=2.703 assembly_ms=1.809 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.382
+bvh_build entries=46908 payload_ms=4.697 keys_ms=1.163 partition_ms=3.294 assembly_ms=3.579 cleanup_ms=0.006 node_bytes=12008320 total_ms=12.739
+bvh_build entries=46908 payload_ms=4.640 keys_ms=1.160 partition_ms=4.222 assembly_ms=3.380 cleanup_ms=0.007 node_bytes=12008320 total_ms=13.408
+bvh_build entries=46908 payload_ms=5.916 keys_ms=0.754 partition_ms=2.653 assembly_ms=2.952 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.281
+bvh_build entries=46908 payload_ms=8.459 keys_ms=0.975 partition_ms=2.846 assembly_ms=4.835 cleanup_ms=0.004 node_bytes=12008320 total_ms=17.119
+bvh_build entries=46908 payload_ms=5.294 keys_ms=0.582 partition_ms=2.814 assembly_ms=2.050 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.745
+bvh_build entries=46908 payload_ms=4.379 keys_ms=0.576 partition_ms=2.742 assembly_ms=2.091 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.791
+bvh_build entries=46908 payload_ms=4.307 keys_ms=0.575 partition_ms=2.805 assembly_ms=2.027 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.717
+bvh_build entries=46908 payload_ms=5.534 keys_ms=0.591 partition_ms=2.654 assembly_ms=4.246 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.030
+bvh_build entries=46908 payload_ms=4.862 keys_ms=0.568 partition_ms=2.744 assembly_ms=1.957 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.135
+bvh_build entries=46908 payload_ms=6.234 keys_ms=0.647 partition_ms=2.643 assembly_ms=2.156 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.684
+bvh_build entries=46908 payload_ms=4.404 keys_ms=0.659 partition_ms=2.821 assembly_ms=2.260 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.148
+bvh_build entries=46908 payload_ms=4.639 keys_ms=0.671 partition_ms=2.702 assembly_ms=2.744 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.761
+bvh_build entries=46908 payload_ms=6.242 keys_ms=0.844 partition_ms=2.778 assembly_ms=4.191 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.061
+bvh_build entries=46908 payload_ms=8.311 keys_ms=0.851 partition_ms=2.732 assembly_ms=5.531 cleanup_ms=0.005 node_bytes=12008320 total_ms=17.431
+bvh_build entries=46908 payload_ms=5.488 keys_ms=0.929 partition_ms=2.675 assembly_ms=2.125 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.222
+bvh_build entries=46908 payload_ms=6.492 keys_ms=1.000 partition_ms=2.884 assembly_ms=3.947 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.328
+bvh_build entries=46908 payload_ms=4.189 keys_ms=0.593 partition_ms=2.715 assembly_ms=1.861 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.362
+bvh_build entries=46908 payload_ms=7.828 keys_ms=0.675 partition_ms=2.470 assembly_ms=4.282 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.260
+bvh_build entries=46908 payload_ms=5.905 keys_ms=0.740 partition_ms=3.587 assembly_ms=6.101 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.338
+bvh_build entries=46908 payload_ms=4.477 keys_ms=0.700 partition_ms=2.693 assembly_ms=2.527 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.402
+bvh_build entries=46908 payload_ms=4.333 keys_ms=0.631 partition_ms=2.637 assembly_ms=3.682 cleanup_ms=0.007 node_bytes=12008320 total_ms=11.290
+bvh_build entries=46908 payload_ms=4.403 keys_ms=0.993 partition_ms=2.746 assembly_ms=2.511 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.656
+bvh_build entries=46908 payload_ms=5.178 keys_ms=0.683 partition_ms=2.655 assembly_ms=5.499 cleanup_ms=0.003 node_bytes=12008320 total_ms=14.018
+bvh_build entries=46908 payload_ms=9.408 keys_ms=0.891 partition_ms=2.658 assembly_ms=3.817 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.778
+bvh_build entries=46908 payload_ms=4.428 keys_ms=0.634 partition_ms=2.881 assembly_ms=2.316 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.262
+bvh_build entries=46908 payload_ms=4.173 keys_ms=0.563 partition_ms=2.906 assembly_ms=1.919 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.565
+bvh_build entries=46908 payload_ms=4.271 keys_ms=0.596 partition_ms=2.700 assembly_ms=1.917 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.489
+bvh_build entries=46908 payload_ms=4.751 keys_ms=0.940 partition_ms=2.793 assembly_ms=2.321 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.809
+bvh_build entries=46908 payload_ms=4.301 keys_ms=0.608 partition_ms=2.877 assembly_ms=1.897 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.686
+bvh_build entries=46908 payload_ms=7.553 keys_ms=0.793 partition_ms=2.650 assembly_ms=3.589 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.589
+bvh_build entries=46908 payload_ms=4.270 keys_ms=0.659 partition_ms=2.661 assembly_ms=1.913 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.508
+bvh_build entries=46908 payload_ms=4.555 keys_ms=0.971 partition_ms=2.716 assembly_ms=2.486 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.732
+bvh_build entries=46908 payload_ms=5.215 keys_ms=0.597 partition_ms=2.707 assembly_ms=4.335 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.859
+bvh_build entries=46908 payload_ms=6.069 keys_ms=0.655 partition_ms=3.185 assembly_ms=2.846 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.758
+bvh_build entries=46908 payload_ms=6.136 keys_ms=0.983 partition_ms=4.367 assembly_ms=2.578 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.068
+bvh_build entries=46908 payload_ms=4.276 keys_ms=0.616 partition_ms=3.068 assembly_ms=1.853 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.816
+bvh_build entries=46908 payload_ms=6.972 keys_ms=0.585 partition_ms=2.730 assembly_ms=3.916 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.208
+bvh_build entries=46908 payload_ms=4.157 keys_ms=0.576 partition_ms=2.721 assembly_ms=1.897 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.354
+bvh_build entries=46908 payload_ms=4.295 keys_ms=0.601 partition_ms=2.649 assembly_ms=1.871 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.419
+bvh_build entries=46908 payload_ms=6.361 keys_ms=0.924 partition_ms=2.687 assembly_ms=2.023 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.000
+bvh_build entries=46908 payload_ms=4.608 keys_ms=0.894 partition_ms=3.396 assembly_ms=2.933 cleanup_ms=0.007 node_bytes=12008320 total_ms=11.838
+bvh_build entries=46908 payload_ms=9.455 keys_ms=0.776 partition_ms=2.639 assembly_ms=3.575 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.450
+progress frame=250 total_ms=74.240 physics_ms=10.833 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=4.161 keys_ms=0.576 partition_ms=2.673 assembly_ms=1.935 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.349
+bvh_build entries=46908 payload_ms=4.411 keys_ms=0.648 partition_ms=2.669 assembly_ms=1.877 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.611
+bvh_build entries=46908 payload_ms=4.600 keys_ms=0.872 partition_ms=2.696 assembly_ms=2.017 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.189
+bvh_build entries=46908 payload_ms=4.196 keys_ms=0.558 partition_ms=2.706 assembly_ms=1.818 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.281
+bvh_build entries=46908 payload_ms=6.353 keys_ms=0.721 partition_ms=2.606 assembly_ms=2.365 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.048
+bvh_build entries=46908 payload_ms=4.238 keys_ms=0.847 partition_ms=2.900 assembly_ms=2.909 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.898
+bvh_build entries=46908 payload_ms=4.296 keys_ms=0.589 partition_ms=2.738 assembly_ms=1.941 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.568
+bvh_build entries=46908 payload_ms=5.153 keys_ms=0.614 partition_ms=2.671 assembly_ms=3.720 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.160
+bvh_build entries=46908 payload_ms=5.726 keys_ms=0.910 partition_ms=3.155 assembly_ms=3.315 cleanup_ms=0.007 node_bytes=12008320 total_ms=13.113
+bvh_build entries=46908 payload_ms=4.273 keys_ms=0.732 partition_ms=2.845 assembly_ms=2.496 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.352
+bvh_build entries=46908 payload_ms=11.267 keys_ms=0.736 partition_ms=2.661 assembly_ms=4.340 cleanup_ms=0.005 node_bytes=12008320 total_ms=19.009
+bvh_build entries=46908 payload_ms=4.861 keys_ms=0.922 partition_ms=2.655 assembly_ms=2.586 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.028
+bvh_build entries=46908 payload_ms=4.476 keys_ms=0.595 partition_ms=2.870 assembly_ms=1.922 cleanup_ms=0.006 node_bytes=12008320 total_ms=9.869
+bvh_build entries=46908 payload_ms=4.539 keys_ms=0.584 partition_ms=2.643 assembly_ms=2.008 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.779
+bvh_build entries=46908 payload_ms=4.385 keys_ms=0.680 partition_ms=2.694 assembly_ms=1.877 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.641
+bvh_build entries=46908 payload_ms=4.231 keys_ms=0.585 partition_ms=2.669 assembly_ms=1.839 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.328
+bvh_build entries=46908 payload_ms=4.380 keys_ms=0.565 partition_ms=2.965 assembly_ms=4.051 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.966
+bvh_build entries=46908 payload_ms=4.200 keys_ms=0.558 partition_ms=2.924 assembly_ms=2.022 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.707
+bvh_build entries=46908 payload_ms=4.227 keys_ms=0.561 partition_ms=2.925 assembly_ms=1.830 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.546
+bvh_build entries=46908 payload_ms=4.320 keys_ms=0.594 partition_ms=2.627 assembly_ms=2.477 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.023
+bvh_build entries=46908 payload_ms=4.318 keys_ms=0.579 partition_ms=2.780 assembly_ms=2.069 cleanup_ms=0.008 node_bytes=12008320 total_ms=9.754
+bvh_build entries=46908 payload_ms=4.170 keys_ms=0.600 partition_ms=2.683 assembly_ms=2.486 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.943
+bvh_build entries=46908 payload_ms=4.969 keys_ms=0.617 partition_ms=2.664 assembly_ms=2.509 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.763
+bvh_build entries=46908 payload_ms=4.370 keys_ms=1.066 partition_ms=2.835 assembly_ms=2.366 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.641
+bvh_build entries=46908 payload_ms=4.800 keys_ms=0.660 partition_ms=2.648 assembly_ms=2.323 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.435
+bvh_build entries=46908 payload_ms=6.171 keys_ms=0.946 partition_ms=2.851 assembly_ms=2.429 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.402
+bvh_build entries=46908 payload_ms=5.558 keys_ms=0.589 partition_ms=2.801 assembly_ms=1.780 cleanup_ms=0.006 node_bytes=12008320 total_ms=10.733
+bvh_build entries=46908 payload_ms=5.588 keys_ms=0.654 partition_ms=3.149 assembly_ms=2.485 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.880
+bvh_build entries=46908 payload_ms=4.623 keys_ms=0.817 partition_ms=2.724 assembly_ms=2.047 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.214
+bvh_build entries=46908 payload_ms=5.718 keys_ms=0.676 partition_ms=2.613 assembly_ms=2.387 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.398
+bvh_build entries=46908 payload_ms=4.840 keys_ms=0.849 partition_ms=2.608 assembly_ms=2.084 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.386
+bvh_build entries=46908 payload_ms=4.354 keys_ms=0.536 partition_ms=2.625 assembly_ms=1.807 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.325
+bvh_build entries=46908 payload_ms=6.292 keys_ms=0.725 partition_ms=2.749 assembly_ms=2.642 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.410
+bvh_build entries=46908 payload_ms=5.867 keys_ms=0.640 partition_ms=2.680 assembly_ms=2.458 cleanup_ms=0.003 node_bytes=12008320 total_ms=11.649
+bvh_build entries=46908 payload_ms=4.368 keys_ms=0.544 partition_ms=2.854 assembly_ms=2.436 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.207
+bvh_build entries=46908 payload_ms=5.917 keys_ms=0.962 partition_ms=3.107 assembly_ms=3.744 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.733
+bvh_build entries=46908 payload_ms=7.192 keys_ms=1.043 partition_ms=2.621 assembly_ms=2.811 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.670
+bvh_build entries=46908 payload_ms=4.961 keys_ms=1.079 partition_ms=2.605 assembly_ms=2.051 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.701
+bvh_build entries=46908 payload_ms=4.434 keys_ms=0.787 partition_ms=2.776 assembly_ms=2.890 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.891
+bvh_build entries=46908 payload_ms=5.086 keys_ms=0.903 partition_ms=2.819 assembly_ms=3.100 cleanup_ms=0.006 node_bytes=12008320 total_ms=11.914
+bvh_build entries=46908 payload_ms=6.110 keys_ms=0.768 partition_ms=2.650 assembly_ms=3.081 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.613
+bvh_build entries=46908 payload_ms=4.299 keys_ms=0.623 partition_ms=2.629 assembly_ms=2.790 cleanup_ms=0.007 node_bytes=12008320 total_ms=10.348
+bvh_build entries=46908 payload_ms=4.314 keys_ms=0.526 partition_ms=2.705 assembly_ms=2.387 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.938
+bvh_build entries=46908 payload_ms=4.979 keys_ms=0.553 partition_ms=2.848 assembly_ms=4.376 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.759
+bvh_build entries=46908 payload_ms=5.332 keys_ms=0.628 partition_ms=2.970 assembly_ms=2.461 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.396
+bvh_build entries=46908 payload_ms=8.774 keys_ms=0.744 partition_ms=3.067 assembly_ms=3.687 cleanup_ms=0.004 node_bytes=12008320 total_ms=16.276
+bvh_build entries=46908 payload_ms=4.981 keys_ms=0.619 partition_ms=2.789 assembly_ms=4.167 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.562
+bvh_build entries=46908 payload_ms=4.456 keys_ms=0.610 partition_ms=2.743 assembly_ms=1.818 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.631
+bvh_build entries=46908 payload_ms=4.248 keys_ms=0.611 partition_ms=2.738 assembly_ms=2.120 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.721
+bvh_build entries=46908 payload_ms=5.163 keys_ms=0.996 partition_ms=2.631 assembly_ms=1.860 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.654
+progress frame=300 total_ms=67.149 physics_ms=11.011 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=5.015 keys_ms=0.603 partition_ms=2.724 assembly_ms=4.082 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.429
+bvh_build entries=46908 payload_ms=7.194 keys_ms=0.757 partition_ms=2.625 assembly_ms=3.739 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.320
+bvh_build entries=46908 payload_ms=5.868 keys_ms=1.146 partition_ms=2.889 assembly_ms=4.334 cleanup_ms=0.006 node_bytes=12008320 total_ms=14.243
+bvh_build entries=46908 payload_ms=4.745 keys_ms=0.882 partition_ms=2.751 assembly_ms=2.439 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.822
+bvh_build entries=46908 payload_ms=6.252 keys_ms=0.897 partition_ms=2.613 assembly_ms=4.504 cleanup_ms=0.007 node_bytes=12008320 total_ms=14.272
+bvh_build entries=46908 payload_ms=4.299 keys_ms=0.594 partition_ms=2.820 assembly_ms=2.431 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.149
+bvh_build entries=46908 payload_ms=7.743 keys_ms=0.862 partition_ms=2.659 assembly_ms=3.700 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.969
+bvh_build entries=46908 payload_ms=4.669 keys_ms=0.837 partition_ms=2.789 assembly_ms=2.084 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.381
+bvh_build entries=46908 payload_ms=4.322 keys_ms=0.577 partition_ms=2.849 assembly_ms=4.052 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.804
+bvh_build entries=46908 payload_ms=6.533 keys_ms=1.132 partition_ms=2.633 assembly_ms=4.190 cleanup_ms=0.004 node_bytes=12008320 total_ms=14.492
+bvh_build entries=46908 payload_ms=7.900 keys_ms=0.766 partition_ms=2.892 assembly_ms=3.686 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.248
+bvh_build entries=46908 payload_ms=5.773 keys_ms=1.207 partition_ms=2.855 assembly_ms=5.649 cleanup_ms=0.003 node_bytes=12008320 total_ms=15.488
+bvh_build entries=46908 payload_ms=4.213 keys_ms=0.587 partition_ms=2.976 assembly_ms=1.913 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.692
+bvh_build entries=46908 payload_ms=4.260 keys_ms=0.575 partition_ms=2.856 assembly_ms=1.854 cleanup_ms=0.003 node_bytes=12008320 total_ms=9.548
+bvh_build entries=46908 payload_ms=4.185 keys_ms=0.591 partition_ms=2.607 assembly_ms=2.126 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.513
+bvh_build entries=46908 payload_ms=5.617 keys_ms=0.648 partition_ms=2.550 assembly_ms=1.797 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.615
+bvh_build entries=46908 payload_ms=4.202 keys_ms=0.567 partition_ms=2.647 assembly_ms=2.011 cleanup_ms=0.006 node_bytes=12008320 total_ms=9.433
+bvh_build entries=46908 payload_ms=4.254 keys_ms=0.568 partition_ms=2.576 assembly_ms=1.872 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.274
+bvh_build entries=46908 payload_ms=5.911 keys_ms=0.910 partition_ms=2.582 assembly_ms=3.895 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.303
+bvh_build entries=46908 payload_ms=4.199 keys_ms=0.652 partition_ms=3.721 assembly_ms=2.044 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.620
+bvh_build entries=46908 payload_ms=5.850 keys_ms=1.100 partition_ms=5.091 assembly_ms=5.246 cleanup_ms=0.007 node_bytes=12008320 total_ms=17.295
+bvh_build entries=46908 payload_ms=5.478 keys_ms=0.875 partition_ms=2.780 assembly_ms=3.038 cleanup_ms=0.008 node_bytes=12008320 total_ms=12.179
+bvh_build entries=46908 payload_ms=6.057 keys_ms=0.678 partition_ms=2.662 assembly_ms=3.078 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.479
+bvh_build entries=46908 payload_ms=6.988 keys_ms=0.774 partition_ms=3.134 assembly_ms=4.802 cleanup_ms=0.005 node_bytes=12008320 total_ms=15.704
+bvh_build entries=46908 payload_ms=6.130 keys_ms=1.114 partition_ms=2.665 assembly_ms=4.080 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.994
+bvh_build entries=46908 payload_ms=6.245 keys_ms=0.655 partition_ms=2.651 assembly_ms=4.132 cleanup_ms=0.005 node_bytes=12008320 total_ms=13.688
+bvh_build entries=46908 payload_ms=4.243 keys_ms=0.604 partition_ms=2.645 assembly_ms=1.911 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.408
+bvh_build entries=46908 payload_ms=4.167 keys_ms=0.781 partition_ms=2.637 assembly_ms=2.200 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.790
+bvh_build entries=46908 payload_ms=5.158 keys_ms=0.679 partition_ms=2.669 assembly_ms=4.529 cleanup_ms=0.003 node_bytes=12008320 total_ms=13.037
+bvh_build entries=46908 payload_ms=4.204 keys_ms=0.581 partition_ms=2.820 assembly_ms=2.007 cleanup_ms=0.002 node_bytes=12008320 total_ms=9.613
+bvh_build entries=46908 payload_ms=5.430 keys_ms=0.656 partition_ms=3.786 assembly_ms=5.509 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.384
+bvh_build entries=46908 payload_ms=11.108 keys_ms=0.926 partition_ms=3.564 assembly_ms=3.735 cleanup_ms=0.005 node_bytes=12008320 total_ms=19.338
+bvh_build entries=46908 payload_ms=10.491 keys_ms=0.747 partition_ms=3.045 assembly_ms=4.300 cleanup_ms=0.003 node_bytes=12008320 total_ms=18.587
+bvh_build entries=46908 payload_ms=5.940 keys_ms=0.961 partition_ms=2.827 assembly_ms=3.396 cleanup_ms=0.004 node_bytes=12008320 total_ms=13.128
+bvh_build entries=46908 payload_ms=4.324 keys_ms=0.575 partition_ms=3.774 assembly_ms=2.326 cleanup_ms=0.005 node_bytes=12008320 total_ms=11.004
+bvh_build entries=46908 payload_ms=4.258 keys_ms=0.758 partition_ms=2.676 assembly_ms=2.442 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.137
+bvh_build entries=46908 payload_ms=4.412 keys_ms=0.607 partition_ms=2.582 assembly_ms=1.910 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.514
+bvh_build entries=46908 payload_ms=8.379 keys_ms=0.749 partition_ms=2.691 assembly_ms=5.347 cleanup_ms=0.005 node_bytes=12008320 total_ms=17.171
+bvh_build entries=46908 payload_ms=5.726 keys_ms=0.601 partition_ms=2.967 assembly_ms=4.723 cleanup_ms=0.003 node_bytes=12008320 total_ms=14.020
+bvh_build entries=46908 payload_ms=12.067 keys_ms=0.804 partition_ms=2.895 assembly_ms=4.293 cleanup_ms=0.004 node_bytes=12008320 total_ms=20.064
+bvh_build entries=46908 payload_ms=4.731 keys_ms=0.960 partition_ms=2.593 assembly_ms=2.127 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.416
+bvh_build entries=46908 payload_ms=4.362 keys_ms=0.565 partition_ms=2.639 assembly_ms=2.084 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.656
+bvh_build entries=46908 payload_ms=7.312 keys_ms=0.597 partition_ms=2.566 assembly_ms=4.555 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.034
+bvh_build entries=46908 payload_ms=4.265 keys_ms=0.635 partition_ms=3.229 assembly_ms=2.023 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.156
+bvh_build entries=46908 payload_ms=4.206 keys_ms=0.566 partition_ms=2.664 assembly_ms=1.962 cleanup_ms=0.005 node_bytes=12008320 total_ms=9.403
+bvh_build entries=46908 payload_ms=4.348 keys_ms=0.596 partition_ms=2.691 assembly_ms=2.090 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.729
+bvh_build entries=46908 payload_ms=4.280 keys_ms=0.644 partition_ms=2.676 assembly_ms=4.129 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.734
+bvh_build entries=46908 payload_ms=4.208 keys_ms=0.581 partition_ms=2.615 assembly_ms=2.028 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.436
+bvh_build entries=46908 payload_ms=4.593 keys_ms=0.823 partition_ms=2.701 assembly_ms=2.146 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.267
+bvh_build entries=46908 payload_ms=7.123 keys_ms=0.795 partition_ms=2.720 assembly_ms=4.265 cleanup_ms=0.005 node_bytes=12008320 total_ms=14.908
+progress frame=350 total_ms=74.361 physics_ms=11.665 groups=1 bodies=3017 grouped=2
+bvh_build entries=46908 payload_ms=4.255 keys_ms=0.771 partition_ms=2.655 assembly_ms=2.509 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.194
+bvh_build entries=46908 payload_ms=4.595 keys_ms=1.057 partition_ms=2.506 assembly_ms=2.493 cleanup_ms=0.003 node_bytes=12008320 total_ms=10.654
+bvh_build entries=46908 payload_ms=4.248 keys_ms=0.657 partition_ms=2.895 assembly_ms=3.348 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.152
+bvh_build entries=46908 payload_ms=4.735 keys_ms=0.964 partition_ms=2.692 assembly_ms=2.078 cleanup_ms=0.005 node_bytes=12008320 total_ms=10.474
+bvh_build entries=46908 payload_ms=4.193 keys_ms=0.684 partition_ms=2.625 assembly_ms=2.661 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.168
+bvh_build entries=46908 payload_ms=6.067 keys_ms=0.814 partition_ms=2.635 assembly_ms=2.797 cleanup_ms=0.005 node_bytes=12008320 total_ms=12.318
+bvh_build entries=46908 payload_ms=5.489 keys_ms=0.967 partition_ms=2.684 assembly_ms=5.989 cleanup_ms=0.004 node_bytes=12008320 total_ms=15.133
+bvh_build entries=46908 payload_ms=5.672 keys_ms=0.906 partition_ms=2.717 assembly_ms=3.273 cleanup_ms=0.003 node_bytes=12008320 total_ms=12.572
+bvh_build entries=46908 payload_ms=5.967 keys_ms=1.423 partition_ms=2.863 assembly_ms=2.590 cleanup_ms=0.004 node_bytes=12008320 total_ms=12.847
+bvh_build entries=46908 payload_ms=5.421 keys_ms=1.139 partition_ms=2.696 assembly_ms=2.203 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.464
+bvh_build entries=46908 payload_ms=4.963 keys_ms=1.105 partition_ms=2.677 assembly_ms=2.311 cleanup_ms=0.004 node_bytes=12008320 total_ms=11.060
+bvh_build entries=46908 payload_ms=5.763 keys_ms=0.656 partition_ms=2.702 assembly_ms=2.363 cleanup_ms=0.003 node_bytes=12008320 total_ms=11.488
+bvh_build entries=46908 payload_ms=4.260 keys_ms=0.639 partition_ms=2.719 assembly_ms=2.060 cleanup_ms=0.004 node_bytes=12008320 total_ms=9.682
+bvh_build entries=46908 payload_ms=5.045 keys_ms=0.640 partition_ms=2.602 assembly_ms=6.686 cleanup_ms=0.003 node_bytes=12008320 total_ms=14.977
+bvh_build entries=46908 payload_ms=4.441 keys_ms=0.643 partition_ms=2.750 assembly_ms=2.847 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.685
+bvh_build entries=46908 payload_ms=9.271 keys_ms=0.805 partition_ms=3.106 assembly_ms=4.360 cleanup_ms=0.004 node_bytes=12008320 total_ms=17.545
+bvh_build entries=46908 payload_ms=7.239 keys_ms=1.032 partition_ms=2.633 assembly_ms=5.136 cleanup_ms=0.005 node_bytes=12008320 total_ms=16.044
+bvh_build entries=46908 payload_ms=5.711 keys_ms=0.593 partition_ms=2.594 assembly_ms=1.921 cleanup_ms=0.004 node_bytes=12008320 total_ms=10.824
+bvh_build entries=46908 payload_ms=4.558 keys_ms=0.842 partition_ms=2.566 assembly_ms=2.086 cleanup_ms=0.006 node_bytes=12008320 total_ms=10.057
+breakdown scope=COLLISION_TOTAL mean_ms=11.3416 p50_ms=11.2418 p95_ms=12.3958 samples=300
+breakdown scope=PUBLICATION_TOTAL mean_ms=12.5693 p50_ms=12.3990 p95_ms=13.9307 samples=300
+breakdown scope=SIMULATION_TOTAL mean_ms=56.4777 p50_ms=55.8855 p95_ms=64.1819 samples=300
+breakdown scope=SIMULATION_UNSCOPED mean_ms=1.6546 p50_ms=1.4916 p95_ms=2.0187 samples=300
+breakdown scope=activate_systems mean_ms=2.2822 p50_ms=2.2064 p95_ms=2.9294 samples=300
+breakdown scope=aperture_indexes mean_ms=0.0171 p50_ms=0.0123 p95_ms=0.0283 samples=300
+breakdown scope=chat.refresh mean_ms=1.9757 p50_ms=1.9230 p95_ms=2.7064 samples=300
+breakdown scope=collision.discovery mean_ms=8.1425 p50_ms=8.0245 p95_ms=8.9169 samples=300
+breakdown scope=collision.index_sync mean_ms=0.0000 p50_ms=0.0000 p95_ms=0.0000 samples=300
+breakdown scope=collision.solver mean_ms=0.3807 p50_ms=0.3583 p95_ms=0.5260 samples=300
+breakdown scope=hardware.actuate mean_ms=0.0699 p50_ms=0.0646 p95_ms=0.0921 samples=300
+breakdown scope=hardware.advance_computer_clock mean_ms=0.0042 p50_ms=0.0041 p95_ms=0.0060 samples=300
+breakdown scope=hardware.apply_impacts mean_ms=0.0236 p50_ms=0.0199 p95_ms=0.0403 samples=300
+breakdown scope=hardware.avionics mean_ms=0.1527 p50_ms=0.1424 p95_ms=0.2043 samples=300
+breakdown scope=hardware.begin mean_ms=0.0489 p50_ms=0.0456 p95_ms=0.0704 samples=300
+breakdown scope=hardware.cooling.run mean_ms=0.2740 p50_ms=0.2298 p95_ms=0.4023 samples=300
+breakdown scope=hardware.devices.prepare_engines mean_ms=0.0012 p50_ms=0.0011 p95_ms=0.0020 samples=300
+breakdown scope=hardware.devices.prepare_micropulse_engines mean_ms=0.2166 p50_ms=0.1896 p95_ms=0.3377 samples=300
+breakdown scope=hardware.devices.prepare_rcs mean_ms=0.0007 p50_ms=0.0006 p95_ms=0.0013 samples=300
+breakdown scope=hardware.devices.prepare_shields mean_ms=0.0084 p50_ms=0.0074 p95_ms=0.0144 samples=300
+breakdown scope=hardware.devices.prepare_thermal_engines mean_ms=0.0009 p50_ms=0.0009 p95_ms=0.0016 samples=300
+breakdown scope=hardware.devices.prepare_torquers mean_ms=0.0155 p50_ms=0.0119 p95_ms=0.0221 samples=300
+breakdown scope=hardware.devices.prepare_weapons mean_ms=0.0101 p50_ms=0.0091 p95_ms=0.0169 samples=300
+breakdown scope=hardware.devices.thermal_engine_decay mean_ms=0.0004 p50_ms=0.0003 p95_ms=0.0010 samples=300
+breakdown scope=hardware.dormant_thermal mean_ms=0.0010 p50_ms=0.0009 p95_ms=0.0017 samples=300
+breakdown scope=hardware.finish_electrical_tick mean_ms=0.0364 p50_ms=0.0335 p95_ms=0.0596 samples=300
+breakdown scope=hardware.generators mean_ms=0.2029 p50_ms=0.1827 p95_ms=0.3075 samples=300
+breakdown scope=hardware.initialize mean_ms=0.0006 p50_ms=0.0005 p95_ms=0.0010 samples=300
+breakdown scope=hardware.power_totals mean_ms=0.1063 p50_ms=0.0998 p95_ms=0.1414 samples=300
+breakdown scope=hardware.publish_devices mean_ms=0.2321 p50_ms=0.2072 p95_ms=0.3652 samples=300
+breakdown scope=hardware.publish_mass mean_ms=0.3852 p50_ms=0.3532 p95_ms=0.6085 samples=300
+breakdown scope=hardware.reactors.dock_heat_transfer mean_ms=0.0003 p50_ms=0.0002 p95_ms=0.0005 samples=300
+breakdown scope=hardware.reactors.generate mean_ms=0.5557 p50_ms=0.5524 p95_ms=0.7589 samples=300
+breakdown scope=hardware.reactors.process mean_ms=0.0298 p50_ms=0.0283 p95_ms=0.0424 samples=300
+breakdown scope=hardware.reset_demands mean_ms=0.0017 p50_ms=0.0016 p95_ms=0.0029 samples=300
+breakdown scope=hardware.reset_weapons mean_ms=0.0454 p50_ms=0.0432 p95_ms=0.0720 samples=300
+breakdown scope=hardware.sensor_overrides mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=hardware.transit_thermal mean_ms=0.0001 p50_ms=0.0000 p95_ms=0.0002 samples=300
+breakdown scope=hardware.utilities.run mean_ms=0.5707 p50_ms=0.5580 p95_ms=0.6886 samples=300
+breakdown scope=hardware.utilities.service_docked mean_ms=0.0004 p50_ms=0.0003 p95_ms=0.0006 samples=300
+breakdown scope=industry.advance mean_ms=0.2602 p50_ms=0.2498 p95_ms=0.3287 samples=300
+breakdown scope=move_orrery mean_ms=12.0584 p50_ms=12.1504 p95_ms=15.5730 samples=300
+breakdown scope=physics.aerodynamics.aero_env.update_aero_env mean_ms=2.9765 p50_ms=2.9301 p95_ms=3.5922 samples=300
+breakdown scope=physics.aerodynamics.aero_model.calc_aerodynamics mean_ms=0.0385 p50_ms=0.0340 p95_ms=0.0627 samples=300
+breakdown scope=physics.apply_forces mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0003 samples=300
+breakdown scope=physics.collision.ecs.activate_shields mean_ms=0.0765 p50_ms=0.0708 p95_ms=0.1060 samples=300
+breakdown scope=physics.collision.ecs.beams mean_ms=0.0001 p50_ms=0.0000 p95_ms=0.0001 samples=300
+breakdown scope=physics.collision.ecs.damage mean_ms=0.4461 p50_ms=0.4341 p95_ms=0.5320 samples=300
+breakdown scope=physics.collision.ecs.integrate mean_ms=8.5240 p50_ms=8.4228 p95_ms=9.3764 samples=300
+breakdown scope=physics.collision.ecs.kick mean_ms=0.5124 p50_ms=0.4804 p95_ms=0.6677 samples=300
+breakdown scope=physics.collision.ecs.launch mean_ms=0.1006 p50_ms=0.1003 p95_ms=0.1326 samples=300
+breakdown scope=physics.collision.ecs.prepare mean_ms=0.8333 p50_ms=0.7909 p95_ms=1.0974 samples=300
+breakdown scope=physics.collision.ecs.prepare_weapons mean_ms=0.0654 p50_ms=0.0603 p95_ms=0.0872 samples=300
+breakdown scope=physics.collision.ecs.publish mean_ms=0.0028 p50_ms=0.0022 p95_ms=0.0064 samples=300
+breakdown scope=physics.collision.ecs.write_physics mean_ms=0.7112 p50_ms=0.6950 p95_ms=0.9288 samples=300
+breakdown scope=physics.collision.ecs.write_weapons mean_ms=0.0196 p50_ms=0.0183 p95_ms=0.0311 samples=300
+breakdown scope=physics.gravity mean_ms=2.9738 p50_ms=2.9476 p95_ms=3.6722 samples=300
+breakdown scope=publication.displays mean_ms=0.4487 p50_ms=0.4495 p95_ms=0.6232 samples=300
+breakdown scope=publication.navigation mean_ms=5.8554 p50_ms=5.5431 p95_ms=7.0379 samples=300
+breakdown scope=publication.optical_observe mean_ms=0.0025 p50_ms=0.0024 p95_ms=0.0031 samples=300
+breakdown scope=publication.sensor_contact_selection mean_ms=0.1473 p50_ms=0.1445 p95_ms=0.1665 samples=300
+breakdown scope=publication.sensor_detection mean_ms=1.9486 p50_ms=1.9172 p95_ms=2.1162 samples=300
+breakdown scope=publication.sensor_occlusion_and_results mean_ms=1.6397 p50_ms=1.6208 p95_ms=1.7154 samples=300
+breakdown scope=publication.sensor_range_query mean_ms=0.1318 p50_ms=0.1291 p95_ms=0.1482 samples=300
+breakdown scope=publication.sensor_segment_query mean_ms=1.6172 p50_ms=1.5990 p95_ms=1.6902 samples=300
+breakdown scope=publication.sensor_sort_truncate mean_ms=0.0119 p50_ms=0.0117 p95_ms=0.0129 samples=300
+breakdown scope=publication.session.account_cache mean_ms=2.6044 p50_ms=2.4976 p95_ms=3.3005 samples=300
+breakdown scope=publication.session.chat_industry mean_ms=0.0013 p50_ms=0.0012 p95_ms=0.0018 samples=300
+breakdown scope=publication.session.contacts_and_events mean_ms=2.0020 p50_ms=1.9650 p95_ms=2.1755 samples=300
+breakdown scope=publication.session.diagnostics mean_ms=0.0071 p50_ms=0.0070 p95_ms=0.0087 samples=300
+breakdown scope=publication.session.frame mean_ms=5.8398 p50_ms=5.6963 p95_ms=6.6306 samples=300
+breakdown scope=publication.session.navigation mean_ms=0.6979 p50_ms=0.6627 p95_ms=0.8435 samples=300
+breakdown scope=publication.session.observable_ships mean_ms=1.3084 p50_ms=1.2441 p95_ms=1.6753 samples=300
+breakdown scope=publication.session.optical_combat mean_ms=0.0063 p50_ms=0.0060 p95_ms=0.0079 samples=300
+breakdown scope=publication.session.prune_events mean_ms=0.0069 p50_ms=0.0066 p95_ms=0.0097 samples=300
+breakdown scope=publication.session.screens mean_ms=0.0155 p50_ms=0.0124 p95_ms=0.0259 samples=300
+breakdown scope=publication.session.serialization mean_ms=0.3437 p50_ms=0.3386 p95_ms=0.3735 samples=300
+breakdown scope=publication.session.ship_presentation mean_ms=0.1525 p50_ms=0.1468 p95_ms=0.1836 samples=300
+breakdown scope=publication.session.slip mean_ms=0.0030 p50_ms=0.0029 p95_ms=0.0037 samples=300
+breakdown scope=publication.session.society mean_ms=1.5907 p50_ms=1.5404 p95_ms=1.9453 samples=300
+breakdown scope=publication.session.telemetry mean_ms=0.0197 p50_ms=0.0165 p95_ms=0.0301 samples=300
+breakdown scope=publication.snapshots_serialization_pruning mean_ms=6.2648 p50_ms=6.1169 p95_ms=7.0702 samples=300
+breakdown scope=publish_indexes mean_ms=3.4574 p50_ms=3.3102 p95_ms=4.6722 samples=300
+breakdown scope=route_service.advance mean_ms=0.0032 p50_ms=0.0030 p95_ms=0.0047 samples=300
+breakdown scope=sensor_contact_selection mean_ms=0.0263 p50_ms=0.0255 p95_ms=0.0399 samples=300
+breakdown scope=sensor_detection mean_ms=0.1821 p50_ms=0.1728 p95_ms=0.2445 samples=300
+breakdown scope=sensor_occlusion_and_results mean_ms=0.1315 p50_ms=0.1247 p95_ms=0.1740 samples=300
+breakdown scope=sensor_publish mean_ms=0.0627 p50_ms=0.0576 p95_ms=0.0971 samples=300
+breakdown scope=sensor_range_query mean_ms=0.0243 p50_ms=0.0234 p95_ms=0.0366 samples=300
+breakdown scope=sensor_segment_query mean_ms=0.1161 p50_ms=0.1090 p95_ms=0.1520 samples=300
+breakdown scope=sensor_sort_truncate mean_ms=0.0011 p50_ms=0.0010 p95_ms=0.0017 samples=300
+breakdown scope=services.dispatch_actions mean_ms=0.0176 p50_ms=0.0174 p95_ms=0.0261 samples=300
+breakdown scope=services.prepare_sources mean_ms=0.0169 p50_ms=0.0112 p95_ms=0.0199 samples=300
+breakdown scope=spatial.ecs_collection mean_ms=5.3900 p50_ms=4.9849 p95_ms=6.9240 samples=300
+breakdown scope=spatial.prepare_records mean_ms=2.2576 p50_ms=2.0993 p95_ms=3.1316 samples=300
+breakdown scope=spatial.projectiles mean_ms=0.0001 p50_ms=0.0001 p95_ms=0.0002 samples=300
+breakdown scope=spatial.replace mean_ms=12.4023 p50_ms=11.7657 p95_ms=17.4252 samples=300
+breakdown scope=spatial_clear mean_ms=0.1057 p50_ms=0.0948 p95_ms=0.1700 samples=300
+breakdown scope=spatial_collect_loop mean_ms=20.0554 p50_ms=19.1840 p95_ms=25.4833 samples=300
+breakdown scope=spatial_finish_geometry mean_ms=14.6605 p50_ms=13.9551 p95_ms=20.3395 samples=300
+breakdown scope=spatial_luminosity_bounds mean_ms=0.6861 p50_ms=0.6553 p95_ms=0.8381 samples=300
+breakdown scope=travel.advance mean_ms=0.0253 p50_ms=0.0241 p95_ms=0.0348 samples=300
+breakdown scope=travel.plan_orders mean_ms=0.0240 p50_ms=0.0225 p95_ms=0.0334 samples=300
+breakdown scope=vessel.run mean_ms=1.4757 p50_ms=1.3503 p95_ms=2.1120 samples=300
+query_count name=segment.candidates_examined per_tick=1664.000
+query_count name=segment.intersections per_tick=1664.000
+query_count name=segment.probes per_tick=14688.000
+query_count name=segment.rays per_tick=272.000
+query_count name=sensor.range_results per_tick=289.000
+query_count name=sensor.scans per_tick=17.000
+query_count name=sensor.selected_contacts per_tick=272.000
+query_count name=spatial.celestials_collected per_tick=43891.000
+query_count name=spatial.collections per_tick=1.000
+query_count name=spatial.objects_collected per_tick=46908.000
+population records=46908 entities=131072
+result players=16 scene=sparse repeat=0 frames=300 total_p50_ms=68.218 total_p95_ms=77.468 physics_p50_ms=11.242 discovery_p50_ms=8.025 solver_p50_ms=0.358 bodies=3017.0 grouped=2.0 groups=1.0 reused=1.0 contact_pairs=0.0
+test sim::benchmark::production_tick_and_publication ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 304 filtered out; finished in 29.15s
+

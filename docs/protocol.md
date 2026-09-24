@@ -1,4 +1,15 @@
-# Network protocol, version 49
+# Network protocol reference
+
+This reference includes historical version 49 sections. The running
+prototype now uses version 56; autopilot declarations below are updated, and current payload definitions are in
+`crates/osg-model/src` and `crates/osg-protocol/src`. The additions for Wallet,
+Market and Assets are described in [Client UI implementation](client-ui-implementation.md).
+
+Version 54 replaces management commands, screen subscriptions, and route replies
+with [typed RPC over picomux](rpc.md). `OsgNetClient` provides the shared client API.
+Main frames no longer include Society, Wallet, Market, Assets, or Industry
+snapshots. Command acknowledgements contain only their ID and optional error.
+The version 49 schema and vectors below are historical references.
 
 This specification defines the bytes and observable behavior needed to build an
 independent server or client. It is accompanied by:
@@ -134,7 +145,7 @@ consume.
 | Command ID | Client-chosen `Id` attached to each action. It deduplicates the action and matches it to its `CommandResult`. |
 | View | A numbered, client-revised observation subscription, optionally focused on a ship. Optical visibility and local chat belong to views. |
 | Authority revision | Per-ship counter published in telemetry. Ship and route actions must carry the current value. |
-| Travel revision | Per-ship counter for the travel queue, used for optimistic concurrency by `SetTravel` and `UseRoute`. |
+| Directive generation | Per-ship `directive_revision` used by `SetItinerary` and `UseRoute`. |
 | Contact handle | Observer-local nonzero `u64` naming one of a ship's sensor detections. It is addressed with a `ContactRef`. |
 | Optical ID | Opaque, session-scoped `Id` for a visible object within a view. |
 | Spatial lifetime | A continuous period of existence in space, named by a `spatial_instance` token. |
@@ -758,9 +769,9 @@ revision. `SetTransponderEnabled`, `SetIff` and `SetDockServices` require
 | Aim | Request aiming at a current sensor contact. |
 | UnmarkTarget | Clear the weapon target and stop firing. |
 | StartFiring / StopFiring | Start or stop firing. Starting requires a valid mark when it executes. Stopping keeps the target. |
-| SetThrottle | Request manual throttle. Rejected while autopilot is enabled. |
+| SetThrottle | Request manual throttle and disengage autopilot, retaining its itinerary. |
 | SetAutopilot | Enable planning and resumption, or pause navigation and request thrust cutoff and attitude hold. |
-| SetTravel | See [Travel](#travel). |
+| SetItinerary | See [Travel](#travel). |
 | UseRoute | See [Route planning](#route-planning). |
 | Dock / Undock | Request physical docking in a bay, or departure from the current host. |
 | ScreenInput | See [Display input](#display-input). |
@@ -806,108 +817,42 @@ isn't firing, for example `cooldown`, `pointing` or `energy`
 
 ### Travel
 
-`SetTravel` replaces the ship's travel goals. It carries the expected current
-travel revision and planning preferences, and it increments the travel revision.
-`engage = true` enables autopilot, while `false` leaves autopilot unchanged.
+`SetItinerary` replaces the remaining directives using the expected
+`directive_revision`, preferences and engagement choice. Directives are
+`SlipToSystem(system)` and `DockAt(station)`. The first entry is active;
+completion removes it and advances the generation. An empty itinerary is complete.
 
-**Orders** ([`Order`](protocol-schema.md#order)) are:
+`AutopilotState` publishes engagement, itinerary, directive generation,
+preferences, fuel/risk budgets, firmware status and failure. Firmware status
+contains phase, waiting reason, ETA, capture geometry, planned velocity change,
+risk and exotic spending, and display markers. Failure disables autopilot while
+preserving intent. Re-engagement starts fresh planning.
 
-- continuous `Guidance`,
-- automatic `TravelTo` and `TravelToSystem`,
-- `Sublight`,
-- explicit `Slip`,
-- `Dock` and `Undock`,
-- `WaitUntil` an absolute simulation tick.
-
-**Destinations** are beacons, galactic positions, or offsets from a celestial or
-beacon reference. With `Axes::Galactic` the offset stays in galactic axes. With
-`BodyFixed` it rotates with the reference's attitude.
-
-**Guidance modes** are `Align`, `Approach` and `KeepRange`. Only `Align` accepts
-a direction target.
-
-**Telemetry.** [`TravelState`](protocol-schema.md#travelstate) gives the goals,
-expanded orders, zero-based active index, revision, status, preferences,
-progress and estimates.
-
-- `order == orders.len()` means no queue entry is active.
-- A missing estimate means unknown, not zero.
-- Fuel budgets can be partial (`complete = false`).
-- Risk is in decimal parts per million. Logarithmic budgets use
-  `-ln(1 - ppm/1000000)`, which is positive infinity for 1,000,000 ppm.
-
-Displaying these values does not require reimplementing the server's planner.
+`SetGuidance` selects or clears a manual Align, Approach or KeepRange assist.
+Manual guidance, stick input and throttle disengage autopilot and retain its
+itinerary. Direction targets are valid only for Align.
 
 ### Route planning
 
-A route preview lets a client plan a travel queue before committing it.
+The route request RPC submits a nonzero ID, directives and preferences.
+Poll returns Unknown, Pending, Ready or Failed; cancel abandons the preview.
+Jobs are scoped to the world, ship and current authority. Repeated identical
+requests are idempotent. `UseRoute` commits the ready itinerary against the
+expected directive generation.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending: RouteRequest (new ID)
-    Pending --> Ready
-    Pending --> Failed
-    Pending --> Unknown: RouteCancel / eviction
-    Ready --> Unknown: RouteCancel / eviction
-    Failed --> Unknown: eviction
-    Ready --> Committed: Ship UseRoute
-    Committed --> [*]
-```
+The server searches system sequences and allocates risk/fuel allowances.
+Firmware privately chooses capture bodies, arrival velocity changes, departure
+windows and local maneuvers. Physical admission is checked at execution.
+`DockAt` requires a station known in the current system when it becomes active.
 
-**Request IDs.** Use a nonzero route request ID. Its scope is the world, ship,
-owning principal, authority revision and explicit-request namespace. Anyone with
-control of that ship shares the scope; it is not private to one TCP session.
+Clients display the itinerary and published plan markers. Risk is expressed in
+decimal ppm; the budget uses `-ln(1 - ppm/1000000)`. Unknown estimates remain
+optional, and fuel budgets may be partial. Waiting has no timeout.
 
-- Repeating a request ID with identical orders and preferences returns the
-  current status. Different contents under the same ID fail.
-- Use a new command ID for every poll.
-
-**Replies.** RouteRequest and RoutePoll reply with `Unknown`, `Pending`, `Ready`
-or `Failed`. `Unknown` also covers a cancelled or evicted result. RouteCancel is
-idempotent and has no typed reply. Capacity and planning failures appear as
-ordinary action errors or `Failed` statuses.
-
-**Committing.** The `UseRoute` ship command commits a Ready plan. It requires an
-unchanged authority and owner and the expected current travel revision, and it
-checks the fuel allowance again. Plan age, ordinary movement and topology
-revision changes alone do not expire a plan. A plan is advisory until it is
-committed, and physical admission is checked again during execution.
-
-Queue sizes, cache size and plan size are in [Appendix B](#appendix-b-limits).
-
-#### Example: plan a trip, then fly and dock
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant S as Server
-    Note over C: Telemetry: authority_revision 5, travel.revision 12
-    C->>S: RouteRequest { ship, 5, id 7, [TravelTo(Beacon B), Dock(station)] }
-    S->>C: State: result reply Route { 7, Pending { progress } }
-    loop Until Ready or Failed
-        C->>S: RoutePoll { ship, 5, id 7 } with a new command ID
-        S->>C: State: result reply Route { 7, Pending, Ready { plan } or Failed }
-    end
-    Note over C: Show plan: orders, fuel budget, loss ppm, exotic fuel
-    C->>S: Ship { ship, 5, UseRoute { id 7, expected_revision 12, engage true } }
-    S->>C: State: result error = None
-    Note over C: travel.revision now 13
-    loop In flight
-        S->>C: State: travel.status Active, travel.order advances, estimates
-    end
-    opt Slip leg
-        S->>C: State: event slip-departed, presence SlipTransit
-        S->>C: State: event slip-arrived, presence Space
-    end
-    S->>C: State: event docked, presence Docked { station, bay }
-    S->>C: State: travel.status Completed
-```
-
-If another controller changes the travel queue first, the revision no longer
-matches and `UseRoute` fails with an action error. The client then re-reads
-`travel.revision` and plans again. Using `SetTravel` directly with the same
-orders skips the preview: the server plans and starts flying in one step, and
-planning progress appears in `travel.planning` and `travel.status`.
+Save/load preserves intent and budget spending, clears obsolete plan markers
+and restarts private planning. Physical transit retains its exact progress.
+See [client networking and RPC](rpc.md) and
+[autopilot architecture](server-client.md#autopilot-itineraries-and-firmware-planning).
 
 ---
 
@@ -1324,7 +1269,7 @@ the byte limit, and with no Unicode control characters.
 | MarkTarget | Finite maximum flight time 0.01–60 s |
 | SetThrottle | Finite value 0–1 |
 | SetIff | At most 16 labels; each nonempty, <= 64 bytes, no Unicode control characters; no independent range field |
-| SetTravel / RouteRequest | At most 256 orders; valid preferences and destinations or guidance |
+| SetItinerary / RouteRequest | At most 256 directives; valid preferences and system/station identities |
 | PlanningPreferences | Finite `fuel_fraction` 0.01–1; finite `max_loss_ppm` 0–1,000,000 |
 | RouteRequest / RoutePoll / RouteCancel / UseRoute | Nonzero route ID |
 | Galactic or relative destination | Each coordinate's absolute value <= 2^110 |
@@ -1401,7 +1346,7 @@ failure levels from [Failure handling](#failure-handling).
 | Pending route requests per owner | 8 | Action rejected or Failed |
 | Pending route requests per ship | 4 | Action rejected or Failed |
 | Completed route cache | 256 entries | Oldest evicted (polls return Unknown) |
-| Orders per plan or SetTravel | 256 | Session disconnected (validation) |
+| Directives per plan or SetItinerary | 256 | Session disconnected (validation) |
 | Encoded plan size | 48 KiB | Action rejected or Failed |
 | IFF labels | 16, each <= 64 bytes | Session disconnected (validation) |
 

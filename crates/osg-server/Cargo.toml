@@ -10,6 +10,7 @@ dynamic_linking = ["dep:bevy_dylib"]
 profile = ["bevy/trace_chrome"]
 
 [dependencies]
+osg-spatial = { path = "../osg-spatial" }
 rapier3d = { version = "=0.34.0", optional = true }
 rapier3d-f64 = { version = "=0.34.0" }
 osg-spatial-hash = { path = "../osg-spatial-hash" }

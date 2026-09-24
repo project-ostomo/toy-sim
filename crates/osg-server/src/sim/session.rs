@@ -8,8 +8,9 @@ use super::identity::{self, Account, Control, Identity, WorldEpoch};
 use super::simulation::SimulationCounters;
 use super::vessel::ShipSoftware;
 
+mod cache;
+pub(super) use cache::maintain as maintain_cache;
 mod chat;
-mod industry;
 mod optical;
 
 #[derive(Resource)]
@@ -37,7 +38,6 @@ pub struct Events(pub VecDeque<osg_model::Event>);
 #[derive(Component)]
 pub struct Session {
     pub account: AccountId,
-    uploads: crate::blueprint_uploads::BlueprintUploads,
     pub views: BTreeMap<u64, ViewSubscription>,
     pub screens: BTreeMap<(EntityId, u8), u8>,
     pub instruments: BTreeSet<EntityId>,
@@ -47,14 +47,13 @@ pub struct Session {
     results: VecDeque<CommandResult>,
     seen: BTreeSet<Id>,
     optical: optical::OpticalSession,
-    industry: industry::IndustrySession,
     chat: chat::ChatSession,
 }
 
 pub fn connect(
     world: &mut World,
     account: AccountId,
-    uploads: crate::blueprint_uploads::BlueprintUploads,
+    _uploads: crate::blueprint_uploads::BlueprintUploads,
 ) -> Result<Entity> {
     let owner = identity::lookup(world, account)?;
     ensure!(world.get::<Account>(owner).is_some(), "account unavailable");
@@ -66,7 +65,6 @@ pub fn connect(
     Ok(world
         .spawn(Session {
             account,
-            uploads,
             views: BTreeMap::new(),
             screens: BTreeMap::new(),
             instruments: BTreeSet::new(),
@@ -76,7 +74,6 @@ pub fn connect(
             results: VecDeque::new(),
             seen: BTreeSet::new(),
             optical: optical::OpticalSession::default(),
-            industry: industry::IndustrySession::default(),
             chat: chat::ChatSession::default(),
         })
         .id())
@@ -87,6 +84,7 @@ pub fn disconnect(world: &mut World, session: Entity) {
 }
 
 pub fn prune_events(world: &mut World) {
+    let _profile = super::diagnostics::ProfileScope::new("session.prune_events");
     let published = world
         .query::<&Session>()
         .iter(world)
@@ -122,6 +120,7 @@ pub fn input(world: &mut World, entity: Entity, input: InputFrame) -> Result<()>
 }
 
 pub fn frame(world: &mut World, entity: Entity) -> Result<Frame> {
+    let _profile = super::diagnostics::ProfileScope::new("session.frame");
     let mut session = world
         .entity_mut(entity)
         .take::<Session>()
@@ -159,13 +158,6 @@ impl Session {
             "replayed input frame"
         );
         self.input_sequence = Some(input.sequence);
-        let mut reply_bytes = self
-            .results
-            .iter()
-            .filter_map(|result| result.reply.as_ref())
-            .try_fold(0usize, |total, reply| -> Result<usize> {
-                Ok(total.saturating_add(postcard::experimental::serialized_size(reply)?))
-            })?;
         for (id, action) in input.actions {
             if self.seen.contains(&id) {
                 continue;
@@ -176,79 +168,17 @@ impl Session {
             );
             ensure!(self.results.len() < 4096, "command results backlogged");
             self.seen.insert(id);
-            let (reply, error) = match self.apply(world, action).and_then(|reply| {
-                let size = reply
-                    .as_ref()
-                    .map(postcard::experimental::serialized_size)
-                    .transpose()?
-                    .unwrap_or(0);
-                ensure!(
-                    reply_bytes.saturating_add(size) <= 512 * 1024,
-                    "command reply budget exceeded; retry after publication"
-                );
-                reply_bytes += size;
-                Ok(reply)
-            }) {
-                Ok(reply) => (reply, None),
-                Err(error) => (None, Some(error.to_string())),
-            };
-            self.results.push_back(CommandResult {
-                reply,
-                id,
-                effective_tick: world.resource::<SimulationCounters>().ticks,
-                error,
-            });
+            let error = self
+                .apply(world, action)
+                .err()
+                .map(|error| error.to_string());
+            self.results.push_back(CommandResult { id, error });
         }
         Ok(())
     }
 
-    fn apply(&mut self, world: &mut World, action: Action) -> Result<Option<Reply>> {
+    fn apply(&mut self, world: &mut World, action: Action) -> Result<()> {
         match action {
-            Action::RouteRequest {
-                ship,
-                authority_revision,
-                request,
-            } => {
-                let ship = super::commands::authorize(
-                    world,
-                    self.account,
-                    ship,
-                    Some(authority_revision),
-                    ownership::Permission::Control,
-                )?;
-                let id = request.id;
-                let status = super::route_service::submit(world, ship, request)?;
-                return Ok(Some(Reply::Route { id, status }));
-            }
-            Action::RoutePoll {
-                ship,
-                authority_revision,
-                id,
-            } => {
-                let ship = super::commands::authorize(
-                    world,
-                    self.account,
-                    ship,
-                    Some(authority_revision),
-                    ownership::Permission::Control,
-                )?;
-                let status = super::route_service::poll(world, ship, id)?;
-                return Ok(Some(Reply::Route { id, status }));
-            }
-            Action::RouteCancel {
-                ship,
-                authority_revision,
-                id,
-            } => {
-                let ship = super::commands::authorize(
-                    world,
-                    self.account,
-                    ship,
-                    Some(authority_revision),
-                    ownership::Permission::Control,
-                )?;
-                super::route_service::cancel(world, ship, id)?;
-            }
             Action::ChatSubscribe(subscription) => {
                 world.run_system_cached(super::chat::refresh)?;
                 self.chat
@@ -268,12 +198,6 @@ impl Session {
                     &text,
                 )?;
             }
-            Action::Industry(command) => {
-                super::industry::execute(world, self.account, command, Some(&self.uploads))?;
-            }
-            Action::IndustrySubscribe(subscription) => self.industry.subscribe(subscription)?,
-            Action::IndustryUnsubscribe => self.industry.unsubscribe(),
-            Action::Society(command) => super::ownership::apply(world, self.account, command)?,
             Action::Subscribe(view) => {
                 ensure!(
                     self.views.contains_key(&view.id) || self.views.len() < 8,
@@ -358,12 +282,13 @@ impl Session {
                 super::commands::execute(world, self.account, ship, authority_revision, command)?;
             }
         }
-        Ok(None)
+        Ok(())
     }
 }
 
 impl Session {
     fn frame(&mut self, world: &mut World) -> Result<Frame> {
+        let profile = super::diagnostics::ProfileScope::new("session.contacts_and_events");
         self.views.retain(|_, view| {
             view.focused_ship
                 .is_none_or(|ship| observe(world, self.account, ship).is_ok())
@@ -426,18 +351,28 @@ impl Session {
             .chain(self.screens.keys().map(|(ship, _)| *ship))
             .chain(self.instruments.iter().copied())
             .collect();
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.observable_ships");
         let owned = observable_ships(world, self.account, &focused);
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.telemetry");
         let ships = owned
             .iter()
             .filter_map(|(_, entity)| super::commands::ship_telemetry(world, *entity, self.account))
             .collect();
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.slip");
         let mut presentation = PresentationFrame::default();
         presentation.slip = super::slip_effects::observe(world, self.account, &views);
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.navigation");
         presentation.navigation = super::infrastructure::navigation_snapshot(
             world,
             &views,
             &owned.iter().map(|(_, entity)| *entity).collect::<Vec<_>>(),
         );
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.ship_presentation");
         presentation.ships = owned
             .iter()
             .filter(|(id, _)| focused.contains(id))
@@ -445,6 +380,8 @@ impl Session {
                 super::presentation::ship(world, *entity, self.instruments.contains(id))
             })
             .collect();
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.optical_combat");
         let (optical, optically_visible) =
             self.optical.observe(world, self.account, &views, &contacts);
         presentation.combat = super::combat::for_session(
@@ -455,6 +392,8 @@ impl Session {
             self.sent_event,
         );
         self.optical.previous_entities = optically_visible;
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.diagnostics");
         let owner = identity::lookup(world, self.account)?;
         if world
             .get::<Account>(owner)
@@ -524,6 +463,8 @@ impl Session {
                 });
             }
         }
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.screens");
         let screens = self
             .screens
             .keys()
@@ -540,12 +481,14 @@ impl Session {
             })
             .collect();
         self.sent_event = published_event;
+        drop(profile);
+        let profile = super::diagnostics::ProfileScope::new("session.chat");
+        let chat = self.chat.frame(world, self.account, &self.views)?;
+        drop(profile);
         Ok(Frame {
-            chat: self.chat.frame(world, self.account, &self.views)?,
-            industry: self.industry.frame(world, self.account)?,
+            chat,
             optical,
             calendar_unix_ms: osg_model::calendar::now_unix_ms(),
-            society: super::ownership::snapshot(world, self.account),
             presentation,
             world: world.resource::<WorldEpoch>().0,
             sequence: self.sequence,
@@ -599,11 +542,11 @@ fn observable_ships(
     account: AccountId,
     focused: &BTreeSet<Id>,
 ) -> Vec<(Id, Entity)> {
-    let mut ships: Vec<_> = world
-        .query_filtered::<(Entity, &Identity), With<super::vessel::Vessel>>()
-        .iter(world)
-        .filter_map(|(entity, id)| {
-            observe(world, account, id.0).ok()?;
+    let cached = cache::get(world, account);
+    let mut ships: Vec<_> = cached
+        .ships
+        .iter()
+        .map(|&(id, entity, can_control)| {
             let living = world
                 .get::<super::travel::PresenceState>(entity)
                 .is_none_or(|presence| {
@@ -612,14 +555,8 @@ fn observable_ships(
                         travel::Presence::Destroyed | travel::Presence::StoredInWreck(_)
                     )
                 });
-            let controllable = living
-                && super::ownership::can_access(
-                    world,
-                    account,
-                    entity,
-                    ownership::Permission::Control,
-                );
-            Some(((!focused.contains(&id.0), !controllable, id.0), entity))
+            let controllable = living && can_control;
+            ((!focused.contains(&id), !controllable, id), entity)
         })
         .collect();
 

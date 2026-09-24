@@ -7,8 +7,10 @@ edition.workspace = true
 dynamic_linking = ["dep:bevy_dylib"]
 
 [dependencies]
+serde.workspace = true
 bevy.workspace = true
 bevy_egui.workspace = true
+egui_flex = "0.8.0"
 osg-model = { path = "../osg-model" }
 osg-ship-api = { path = "../osg-ship-api" }
 osg-ships = { path = "../osg-ships" }

@@ -20,7 +20,9 @@ use osg_ships::{
     CompiledShipDesign,
     thermal::{ThermalModel, ThermalState},
 };
-use osg_space::spatial::{GalacticIndex, QueryBudget, SpatialRecord};
+#[cfg(test)]
+use osg_spatial::SpatialRecord;
+use osg_spatial::{GalacticIndex, QueryBudget};
 use parry3d_f64::{
     math::{Pose, Rotation},
     query,
@@ -55,6 +57,7 @@ fn test_snapshot(bodies: &[Body], _end: f64) -> GalacticIndex<SpatialKey> {
             )
             .expect("test coordinates");
     }
+    index.rebuild();
     index
 }
 

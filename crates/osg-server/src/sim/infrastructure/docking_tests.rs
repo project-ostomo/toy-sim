@@ -1,35 +1,4 @@
 use super::*;
-use std::time::{Duration, Instant};
-
-fn finish_route_planning(world: &mut World, ship: Entity) -> osg_model::travel::TravelState {
-    use osg_model::travel::Status;
-
-    let started = Instant::now();
-    let deadline = started + Duration::from_secs(30);
-    loop {
-        travel::plan_orders(world);
-        super::super::route_service::advance(world);
-        travel::plan_orders(world);
-
-        let state = world.get::<travel::Travel>(ship).unwrap();
-        match &state.0.status {
-            Status::Planning => {
-                assert!(state.0.planning.is_some(), "planning must report progress");
-            }
-            Status::Active => {
-                eprintln!("server route completed in {:?}", started.elapsed());
-                return state.0.clone();
-            }
-            status => panic!("route planning failed: {status:?}"),
-        }
-        assert!(
-            Instant::now() < deadline,
-            "route worker did not finish within 30 seconds: {:?}",
-            state.0.planning
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
 
 #[test]
 fn docking_removes_physics_and_private_pose_follows_the_station() {
@@ -67,33 +36,11 @@ fn docking_removes_physics_and_private_pose_follows_the_station() {
     let private = super::super::session::ship_pose(world, player).unwrap();
     assert!((private.position.relative_to(berth.position) - DVec3::X * 1000.).length() < 0.001);
     crate::sim::spatial::rebuild(world);
-    let destination = private.position.offset_by(DVec3::Z * 1000.);
-    world.get_mut::<travel::Travel>(player).unwrap().0 = osg_model::travel::TravelState {
-        autopilot_enabled: true,
-        revision: 1,
-        goals: vec![osg_model::travel::Order::TravelTo(
-            osg_model::travel::Destination::Galactic(destination),
-        )],
-        orders: vec![osg_model::travel::Order::TravelTo(
-            osg_model::travel::Destination::Galactic(destination),
-        )]
-        .into_iter()
-        .map(Into::into)
-        .collect(),
-        status: osg_model::travel::Status::Planning,
-        ..default()
-    };
     travel::advance(world);
     assert!(world.get::<physics::RigidBody>(player).is_none());
     assert!(world.get::<travel::DockedIn>(player).is_some());
 
-    let planned = finish_route_planning(world, player);
-    assert!(matches!(
-        planned.orders[0].action,
-        osg_model::travel::Order::Undock
-    ));
-    assert!(world.get::<physics::RigidBody>(player).is_none());
-    travel::advance(world);
+    travel::dispatch(world, player, osg_model::ProgramAction::Undock).unwrap();
 
     assert!(world.get::<physics::RigidBody>(player).is_some());
     assert!(
@@ -101,7 +48,6 @@ fn docking_removes_physics_and_private_pose_follows_the_station() {
             .get::<physics::collision::CollisionBody>(player)
             .is_some()
     );
-    assert_eq!(world.get::<travel::Travel>(player).unwrap().0.order, 1);
     assert!(world.get::<travel::DockedIn>(player).is_none());
     assert!(matches!(
         world.get::<travel::PresenceState>(player).unwrap().0,
@@ -133,15 +79,16 @@ fn stock_computer_docks_from_default_spawn_without_entering_station() {
     let station_id = world.get::<identity::Identity>(station).unwrap().0;
     world
         .entity_mut(player)
-        .insert((travel::Travel(osg_model::travel::TravelState {
-            autopilot_enabled: true,
-            revision: 1,
-            goals: vec![osg_model::travel::Order::Dock(station_id)],
-            orders: vec![osg_model::travel::Order::Dock(station_id)]
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            status: osg_model::travel::Status::Planning,
+        .insert((travel::Travel(osg_model::travel::AutopilotState {
+            enabled: true,
+            directive_revision: 1,
+            itinerary: vec![osg_model::travel::ItineraryEntry {
+                directive: osg_model::travel::Directive::DockAt(station_id),
+                label: "Dock at local station".into(),
+                max_loss_ppm: 100.,
+                fuel_allowance_kg: 0.,
+                estimated_duration_ticks: None,
+            }],
             ..default()
         }),));
     let player_shape = crate::sim::physics::collision::Geometry::ship(
@@ -152,7 +99,6 @@ fn stock_computer_docks_from_default_spawn_without_entering_station() {
         &world.get::<vessel::ShipDesign>(station).unwrap().0,
     )
     .surface;
-    finish_route_planning(world, player);
     for _ in 0..3000 {
         app.update();
         if matches!(

@@ -19,7 +19,6 @@ pub(crate) struct Publications {
     pub results: Vec<CommandResult>,
     pub events: Vec<Event>,
     pub combat: Vec<CombatEvent>,
-    pub industry: Vec<industry::IndustrySnapshot>,
     pub chat: Vec<chat::ChatUpdate>,
 }
 
@@ -61,7 +60,6 @@ impl Playback {
         if !results.is_empty()
             || !combat.is_empty()
             || !frame.events.is_empty()
-            || frame.industry.is_some()
             || frame.chat.is_some()
         {
             self.publications.push_back(Publications {
@@ -69,10 +67,16 @@ impl Playback {
                 results,
                 events: frame.events.clone(),
                 combat,
-                industry: frame.industry.iter().cloned().collect(),
                 chat: frame.chat.iter().cloned().collect(),
             });
         }
+    }
+
+    pub fn stop(&mut self) {
+        self.frames.clear();
+        self.publications.clear();
+        self.playing = false;
+        self.catching_up = false;
     }
 
     pub fn tick(&mut self) -> Option<&Frame> {
@@ -148,7 +152,6 @@ impl Playback {
             ready.results.extend(batch.results);
             ready.events.extend(batch.events);
             ready.combat.extend(batch.combat);
-            ready.industry.extend(batch.industry);
             ready.chat.extend(batch.chat);
         }
         ready
@@ -162,11 +165,9 @@ mod tests {
 
     fn frame(sequence: u64) -> Frame {
         Frame {
-            industry: None,
             chat: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
-            society: Default::default(),
             world: Id([1; 16]),
             sequence,
             tick: sequence,
@@ -269,9 +270,7 @@ mod tests {
             let mut snapshot = frame(sequence);
             snapshot.results.push(CommandResult {
                 id: Id((sequence as u128).to_le_bytes()),
-                effective_tick: sequence,
                 error: None,
-                reply: None,
             });
             snapshot.presentation.combat.push(CombatEvent {
                 sequence,
@@ -289,8 +288,14 @@ mod tests {
             assert_eq!(playback.tick().unwrap().sequence, sequence);
             let publications = playback.take_publications(sequence);
             assert_eq!(publications.results.len(), 2);
-            assert_eq!(publications.results[0].effective_tick, sequence - 1);
-            assert_eq!(publications.results[1].effective_tick, sequence);
+            assert_eq!(
+                publications.results[0].id,
+                Id(((sequence - 1) as u128).to_le_bytes())
+            );
+            assert_eq!(
+                publications.results[1].id,
+                Id((sequence as u128).to_le_bytes())
+            );
             assert_eq!(publications.combat.len(), 2);
             assert_eq!(publications.combat[0].sequence, sequence - 1);
             assert_eq!(publications.combat[1].sequence, sequence);
@@ -338,9 +343,7 @@ mod tests {
             });
             snapshot.results.push(CommandResult {
                 id: command,
-                effective_tick: 1,
                 error: None,
-                reply: None,
             });
             playback.receive(snapshot);
         }

@@ -7,7 +7,6 @@ use std::{
 
 pub(super) struct SliceInput {
     pub input: Input,
-    pub source: Option<Arc<dyn ScanSource>>,
     pub services: Option<Arc<dyn ProgramServices>>,
     pub observer_origin: spatial::Position,
     pub catalogue: Arc<[DeviceDescriptor]>,
@@ -74,7 +73,6 @@ fn refresh(host: &mut Host, mut slice: SliceInput, new_callback: bool) {
     );
     host.working.expire(slice.input.observation.time_s);
     host.input = Some(slice.input);
-    host.source = slice.source;
     host.services = slice.services;
     host.catalogue = slice.catalogue;
     host.specs = slice.specs;
@@ -159,7 +157,6 @@ async fn suspend(caller: &mut Caller<'_, Host>, left: u64, required: u64) -> Res
         .unwrap_or(0);
     let exchange = caller.data().exchange.clone();
     let published = commit(caller.data_mut(), memory_bytes);
-    caller.data_mut().source = None;
     caller.data_mut().services = None;
     {
         let mut exchange = exchange.lock().unwrap();
@@ -239,7 +236,6 @@ fn finish(store: &mut Store<Host>, successful: bool) -> Result<()> {
         .map(|memory| memory.data_size(&*store))
         .unwrap_or(0);
     let published = successful.then(|| commit(store.data_mut(), memory_bytes));
-    store.data_mut().source = None;
     let mut exchange = exchange.lock().unwrap();
     exchange.remaining = remaining;
     exchange.minimum = 1;
@@ -288,7 +284,6 @@ pub(super) fn initialize(
                 memory: None,
                 input: None,
                 output: Output::default(),
-                source: None,
                 services: None,
                 contacts: Vec::new(),
                 scan_time: None,

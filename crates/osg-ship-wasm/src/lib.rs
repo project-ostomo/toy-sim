@@ -3,6 +3,7 @@ mod execution;
 mod imports;
 mod metering;
 mod program_services;
+mod scan_scope;
 mod session;
 pub mod spatial;
 
@@ -34,7 +35,8 @@ pub const FUEL_PER_TICK: u64 = 1_000_000;
 pub const GAS_PER_SECOND: u64 = FUEL_PER_TICK * 10;
 pub const BOOT_GAS: u64 = FUEL_PER_TICK * 50;
 pub const MAX_BOOTS_PER_TICK: usize = 64;
-/// Shared immutable scene access, called only after a successful scan admission.
+/// Scene access borrowed during an execution slice. Scan work runs only after
+/// successful admission; suspended execution retains no reference to this source.
 pub trait ScanSource: Send + Sync {
     fn scan(&self, range_m: f64, n: usize) -> Vec<SensorContact>;
     fn contact(&self, handle: u64) -> Option<SensorContact> {
@@ -85,7 +87,6 @@ struct Host {
     memory: Option<Memory>,
     input: Option<Input>,
     output: Output,
-    source: Option<Arc<dyn ScanSource>>,
     services: Option<Arc<dyn ProgramServices>>,
     contacts: Vec<SensorContact>,
     scan_time: Option<f64>,
@@ -237,7 +238,7 @@ impl Controller {
     pub fn run_slice(
         &mut self,
         mut input: Input,
-        source: Option<Arc<dyn ScanSource>>,
+        source: Option<&dyn ScanSource>,
         grant: u64,
         gas_per_tick: u64,
     ) -> Result<SliceOutput> {
@@ -299,7 +300,6 @@ impl Controller {
         }
         let slice = execution::SliceInput {
             input,
-            source,
             services: self.services.clone(),
             observer_origin: self.observer_origin,
             catalogue: self.catalogue.clone(),
@@ -336,7 +336,9 @@ impl Controller {
             };
             *self.execution.get_mut().unwrap() = Some(pending);
         }
-        let poll = self.execution.get_mut().unwrap().as_mut().unwrap().poll();
+        let poll = scan_scope::enter(source, || {
+            self.execution.get_mut().unwrap().as_mut().unwrap().poll()
+        });
         let (remaining, commit, minimum) = {
             let mut exchange = self.exchange.lock().unwrap();
             (

@@ -231,7 +231,10 @@ impl Equipment {
             | Self::Structure
             | Self::CoolantTank { .. }
             | Self::HeatSink { .. } => return None,
-            Self::Weapon { .. } => D::Weapon,
+            Self::Weapon { ref weapon } => match weapon.mechanism {
+                crate::weapons::WeaponMechanism::Gun { .. } => D::Gun,
+                crate::weapons::WeaponMechanism::Laser { .. } => D::Laser,
+            },
             Self::Rcs {
                 thrust_n,
                 propellant_kg_s,

@@ -51,7 +51,7 @@ impl State {
         self.status = Status::Queued;
     }
 
-    fn start(&mut self, request: Request, session: Session, client: crate::AssetClient) {
+    fn start(&mut self, request: Request, session: Session, client: crate::OsgNetClient) {
         let bytes = request.bytes.clone();
         let (send, receive) = oneshot::channel();
         self.begin(request, session, receive);
@@ -81,8 +81,7 @@ impl State {
         &mut self,
         session: Option<Session>,
         results: &[CommandResult],
-        outgoing: &mut Outgoing,
-    ) -> Option<Id> {
+    ) -> Option<(Id, IndustryCommand)> {
         if self.session != session {
             *self = Self::default();
             return None;
@@ -100,13 +99,14 @@ impl State {
                 match result {
                     Ok(blueprint_hash) => {
                         let request = self.request.as_ref().unwrap();
-                        let command = outgoing.push(Action::Industry(IndustryCommand::BuildShip {
+                        let command = Id::new();
+                        let build = IndustryCommand::BuildShip {
                             facility: request.facility,
                             owner: request.owner,
                             blueprint_hash,
-                        }));
+                        };
                         self.status = Status::Submitted(command);
-                        return Some(command);
+                        return Some((command, build));
                     }
                     Err(error) => self.status = Status::UploadFailed(error),
                 }
@@ -169,22 +169,27 @@ impl State {
 pub(in crate::ui::shell) fn update(
     mut shell: ResMut<Shell>,
     session: Res<SessionInfo>,
-    mut outgoing: ResMut<Outgoing>,
+    mut requests: ResMut<crate::state::requests::Requests>,
     client: Res<crate::ui::BlueprintAssets>,
 ) {
     let key = session
         .world
         .filter(|_| session.status.is_empty())
         .map(|world| (world, session.generation));
-    if let Some(command) = shell
-        .industry
-        .construction
-        .update(key, &session.results, &mut outgoing)
-    {
+    if let Some((command, build)) = shell.industry.construction.update(key, &session.results) {
+        let (world, generation) = key.unwrap();
+        let net = client.0.clone();
+        requests.submit(world, generation, command, async move {
+            crate::state::requests::mutations::industry_call(
+                &net,
+                osg_model::rpc::Operation { world, id: command },
+                build,
+            )
+            .await
+        });
         shell.feedback = Some(Feedback {
             pending: vec![command],
             label: "Build ship".into(),
-            last_tick: 0,
             error: None,
         });
     }
@@ -218,11 +223,9 @@ mod tests {
         let key = Some((Id([1; 16]), 4));
         let (send, receive) = oneshot::channel();
         let mut state = State::default();
-        let mut outgoing = Outgoing::default();
         state.begin(request(), key.unwrap(), receive);
         assert!(state.busy());
-        assert!(state.update(key, &[], &mut outgoing).is_none());
-        assert!(outgoing.pending().is_empty());
+        assert!(state.update(key, &[]).is_none());
 
         let mut other = request();
         other.facility = Id([8; 16]);
@@ -230,34 +233,27 @@ mod tests {
         state.queue(other, key.unwrap());
 
         send.send(Ok([9; 32])).unwrap();
-        let command = state.update(key, &[], &mut outgoing).unwrap();
-        assert!(
-            matches!(&outgoing.pending()[..], [(_, Action::Industry(IndustryCommand::BuildShip {
+        let (command, build) = state.update(key, &[]).unwrap();
+        assert!(matches!(&build, IndustryCommand::BuildShip {
             facility, owner, blueprint_hash,
-        }))] if *facility == Id([2; 16])
+        } if *facility == Id([2; 16])
             && *owner == ownership::Principal::Player(Id([3; 16]))
-            && *blueprint_hash == [9; 32])
-        );
+            && *blueprint_hash == [9; 32]));
         assert!(state.busy());
-        assert!(state.update(key, &[], &mut outgoing).is_none());
-        assert_eq!(outgoing.pending().len(), 1);
+        assert!(state.update(key, &[]).is_none());
 
         let unrelated = CommandResult {
             id: Id([8; 16]),
-            effective_tick: 8,
             error: None,
-            reply: None,
         };
-        state.update(key, &[unrelated], &mut outgoing);
+        state.update(key, &[unrelated]);
         assert!(state.busy());
 
         let result = CommandResult {
             id: command,
-            effective_tick: 9,
             error: Some("No free shipyard lane".into()),
-            reply: None,
         };
-        state.update(key, &[result], &mut outgoing);
+        state.update(key, &[result]);
         assert!(!state.busy());
         assert!(matches!(state.status, Status::BuildFailed(_)));
     }
@@ -266,20 +262,17 @@ mod tests {
     fn blueprint_upload_failure_and_session_reset_never_submit_a_build() {
         let key = Some((Id([1; 16]), 4));
         let mut state = State::default();
-        let mut outgoing = Outgoing::default();
         let (send, receive) = oneshot::channel();
         state.begin(request(), key.unwrap(), receive);
         send.send(Err("Upload quota exceeded".into())).unwrap();
-        state.update(key, &[], &mut outgoing);
+        assert!(state.update(key, &[]).is_none());
         assert!(matches!(state.status, Status::UploadFailed(_)));
-        assert!(outgoing.pending().is_empty());
 
         let (send, receive) = oneshot::channel();
         state.begin(request(), key.unwrap(), receive);
         send.send(Ok([9; 32])).unwrap();
-        state.update(Some((Id([1; 16]), 5)), &[], &mut outgoing);
+        assert!(state.update(Some((Id([1; 16]), 5)), &[]).is_none());
         assert!(!state.busy());
         assert!(state.request.is_none());
-        assert!(outgoing.pending().is_empty());
     }
 }

@@ -6,6 +6,8 @@ use osg_model::chat::{ChatMessage, MAX_MESSAGE_BYTES, valid_text};
 #[derive(Default)]
 pub(super) struct State {
     draft: String,
+    search: String,
+    rendered_search: String,
     layout: layout::Layout,
     generation: u64,
     scroll_offset: f32,
@@ -52,6 +54,28 @@ pub(super) fn draw(
         state.at_bottom = true;
     }
 
+    if ui.available_width() > 540. {
+        egui::Panel::left(ui.id().with("chat_channels"))
+            .exact_size(180.)
+            .resizable(false)
+            .frame(egui::Frame::NONE.inner_margin(6))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.search)
+                        .hint_text("Find in local…")
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_sized(
+                    [ui.available_width(), 26.],
+                    egui::Button::selectable(true, "# Local"),
+                );
+            });
+    }
+    if state.search != state.rendered_search {
+        state.rendered_search.clone_from(&state.search);
+        state.layout = layout::Layout::default();
+    }
+
     ui.horizontal(|ui| {
         ui.label(Icon::Broadcast.text(18.0).color(ACCENT));
         ui.strong("LOCAL · 500 AU");
@@ -95,6 +119,13 @@ pub(super) fn draw(
         .messages
         .partition_point(|message| last.is_some_and(|last| message.sequence <= last));
     for message in chat.messages.iter().skip(first_new) {
+        let query = state.search.to_lowercase();
+        if !query.is_empty()
+            && !message.text.to_lowercase().contains(&query)
+            && !message.sender_name.to_lowercase().contains(&query)
+        {
+            continue;
+        }
         let heading = heading(message, &model.society.directory);
         state
             .layout

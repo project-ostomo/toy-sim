@@ -18,8 +18,8 @@ pub mod firmware;
 #[path = "world/local.rs"]
 mod local_guidance;
 #[cfg(any(target_arch = "wasm32", test))]
-#[path = "world/slip.rs"]
-mod slip_guidance;
+#[path = "world/planner.rs"]
+mod directive_planner;
 #[cfg(target_arch = "wasm32")]
 mod world;
 

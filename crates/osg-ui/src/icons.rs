@@ -25,6 +25,9 @@ pub enum Icon {
     Target,
     Layout,
     Info,
+    Flag,
+    User,
+    Handshake,
 }
 
 impl Icon {
@@ -53,6 +56,9 @@ impl Icon {
             Self::Target => "\u{e47c}",
             Self::Layout => "\u{e464}",
             Self::Info => "\u{e2ce}",
+            Self::Flag => "\u{e244}",
+            Self::User => "\u{e4c2}",
+            Self::Handshake => "\u{e582}",
         }
     }
 

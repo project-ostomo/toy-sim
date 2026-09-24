@@ -8,7 +8,14 @@ use bevy::{
     render::view::screenshot::{Screenshot, ScreenshotCaptured},
     tasks::IoTaskPool,
 };
-use std::{io::Write, path::PathBuf};
+use std::{
+    io::Write,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 #[derive(Resource)]
 struct Capture {
@@ -16,6 +23,8 @@ struct Capture {
     remaining: u32,
     frame: u32,
     log: std::fs::File,
+    pending: Arc<AtomicU32>,
+    exit_after: bool,
 }
 
 pub(super) fn install(app: &mut App) {
@@ -50,6 +59,8 @@ pub(super) fn install(app: &mut App) {
         remaining: frames,
         frame: 0,
         log,
+        pending: Arc::new(AtomicU32::new(0)),
+        exit_after: std::env::var_os("OSG_CAPTURE_EXIT").is_some(),
     })
     .add_systems(Last, capture);
 }
@@ -69,8 +80,12 @@ fn capture(
         &ViewVisibility,
     )>,
     ships: Query<(&crate::state::OwnedShip, &crate::state::DisplayPose)>,
+    mut exit: MessageWriter<AppExit>,
 ) {
     if capture.remaining == 0 {
+        if capture.exit_after && capture.pending.load(Ordering::Acquire) == 0 {
+            exit.write(AppExit::Success);
+        }
         return;
     }
     capture.remaining -= 1;
@@ -139,10 +154,13 @@ fn capture(
         poses.join(" | "),
     );
     let path = capture.directory.join(format!("f{frame:05}.png"));
+    let pending = capture.pending.clone();
+    pending.fetch_add(1, Ordering::Release);
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>| {
             let image = captured.image.clone();
             let path = path.clone();
+            let pending = pending.clone();
             // Encode off the main thread so capture barely perturbs timing.
             IoTaskPool::get()
                 .spawn(async move {
@@ -155,6 +173,7 @@ fn capture(
                         }
                         Err(error) => warn!("Frame capture {}: {error}", path.display()),
                     }
+                    pending.fetch_sub(1, Ordering::Release);
                 })
                 .detach();
         },

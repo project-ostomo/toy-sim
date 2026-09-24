@@ -4,7 +4,8 @@ use osg_ship_api::abi;
 #[derive(Clone, Debug)]
 pub enum Capability {
     Passive,
-    Weapon(abi::WeaponSpec),
+    Gun(abi::GunSpec),
+    Laser(abi::LaserSpec),
     Engine(abi::EngineSpec),
     Torquer(abi::TorquerSpec),
     Rcs(abi::RcsSpec),
@@ -58,7 +59,8 @@ impl Hardware {
                 let info = sdk::device(self.next_device)?;
                 let capability = match info.kind {
                     abi::DEVICE_RCS => Capability::Rcs(sdk::device_spec(info.id, info.kind)?),
-                    abi::DEVICE_WEAPON => Capability::Weapon(sdk::device_spec(info.id, info.kind)?),
+                    abi::DEVICE_GUN => Capability::Gun(sdk::device_spec(info.id, info.kind)?),
+                    abi::DEVICE_LASER => Capability::Laser(sdk::device_spec(info.id, info.kind)?),
                     abi::DEVICE_ENGINE => Capability::Engine(sdk::device_spec(info.id, info.kind)?),
                     abi::DEVICE_TORQUER => {
                         Capability::Torquer(sdk::device_spec(info.id, info.kind)?)
@@ -116,7 +118,7 @@ impl Hardware {
             let id = device.info.id;
             let kind = device.info.kind;
             device.status = match kind {
-                abi::DEVICE_WEAPON => {
+                abi::DEVICE_GUN | abi::DEVICE_LASER => {
                     let reading: abi::WeaponReading = sdk::device_read(id, kind)?;
                     self.weapon_readings.insert(id, reading);
                     reading.status

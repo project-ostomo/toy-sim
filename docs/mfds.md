@@ -11,6 +11,18 @@ Screens are drawn by one of two entry points, depending on the host:
 
 The drawing imports and limits are the same for both.
 
+## Autopilot page
+
+The standard firmware publishes its remaining directive itinerary, active phase,
+waiting reason, capture body, aim offset, departure window, ETA, planned velocity
+change, risk allowance and spending, and failure. These describe the flight
+instance's private plan. The display instance reads published status and does
+not run another planner. HUD navigation markers use the same publication.
+
+After loading, the flight instance replans from persisted intent and budget
+progress. Obsolete plan markers are cleared. A saved failure retains its reason
+and keeps autopilot disabled until explicit re-engagement.
+
 Source:
 
 - Syscalls: [imports/drawing.rs](../crates/osg-ship-wasm/src/imports/drawing.rs), with event handling in [imports.rs](../crates/osg-ship-wasm/src/imports.rs) and [computer.rs](../crates/osg-ship-wasm/src/computer.rs)
@@ -69,7 +81,7 @@ Per-frame limits:
 
 ### Text
 
-Text uses a fixed grid of 8 × 16 pixel cells (`FONT_WIDTH`, `FONT_HEIGHT`). Each Unicode scalar value takes one cell, and `\n` starts a new line at the original x position. Spaces and control characters advance without drawing. Characters missing from the embedded Iosevka Fixed font are drawn as `?`.
+Text uses a fixed grid of 8 × 16 pixel cells (`FONT_WIDTH`, `FONT_HEIGHT`). Fullwidth CJK characters take two cells; other Unicode scalar values take one cell. `\n` starts a new line at the original x position. Spaces and control characters advance without drawing. The embedded font is Iosevka Charon Mono with a Sarasa-derived CJK fallback. Characters missing from both fonts are drawn as `?`.
 
 ### Bezel keys
 

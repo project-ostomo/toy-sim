@@ -11,6 +11,7 @@ use layout::{ActiveRoute, Cache};
 
 #[derive(Default)]
 pub(super) struct State {
+    color_by: ColorBy,
     selected: Option<Id>,
     camera: camera::Camera,
     preference: Option<travel::PlanningPreferences>,
@@ -24,6 +25,43 @@ pub(super) struct State {
     active: ActiveRoute,
     pub(super) route: planner::Preview,
     suggested: ActiveRoute,
+}
+
+#[derive(Default, PartialEq, Clone, Copy)]
+enum ColorBy {
+    #[default]
+    Bloc,
+    Polity,
+    Standing,
+}
+
+#[cfg(test)]
+impl State {
+    pub(super) fn gallery(&mut self, ship: &ShipTelemetry) {
+        self.route = planner::Preview::gallery(ship);
+    }
+}
+
+fn system_color(state: &State, model: &FrameModel, sovereignty: Option<Id>) -> egui::Color32 {
+    match state.color_by {
+        ColorBy::Bloc => polity_color(
+            sovereignty
+                .and_then(|id| model.inhabited.sovereignties.get(&id))
+                .map(|s| s.bloc),
+        ),
+        ColorBy::Polity => sovereignty.map_or(MUTED, |id| {
+            let hash = id.0.iter().fold(0_u32, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(*byte as u32)
+            });
+            egui::ecolor::Hsva::new((hash % 360) as f32 / 360., 0.5, 0.9, 1.).into()
+        }),
+        ColorBy::Standing => sovereignty.map_or(MUTED, |id| {
+            super::super::standing::color(Some(model.society.directory.standing(
+                ownership::Principal::Player(model.society.account),
+                ownership::Principal::Sovereignty(id),
+            )))
+        }),
+    }
 }
 
 fn polity_color(bloc: Option<Bloc>) -> egui::Color32 {
@@ -68,7 +106,7 @@ pub(super) fn draw(
         }
         NavigationStatus::Ready => {}
     }
-    ui.set_min_height(680.);
+    ui.set_min_height(ui.available_height().min(680.).max(0.));
 
     let catalogue = model.navigation;
     if state.cache.update(catalogue) {
@@ -80,13 +118,14 @@ pub(super) fn draw(
             .filter(|id| state.cache.systems.contains_key(id));
     }
     let inhabited_changed = state.cache.update_inhabited(&model.inhabited);
-    let preference = preferences(ui, state, model, intents);
-    ui.separator();
 
     let origin = model
         .ship
-        .and_then(|ship| ship.pose.as_ref())
-        .and_then(|pose| state.cache.nearest(catalogue, pose.position))
+        .and_then(|ship| ship.location.system)
+        .or_else(|| {
+            model.ship?.pose.as_ref()
+                .and_then(|pose| state.cache.nearest(catalogue, pose.position))
+        })
         .or_else(|| {
             let travel::Presence::Docked { host, .. } = &model.ship?.presence else {
                 return None;
@@ -97,9 +136,9 @@ pub(super) fn draw(
                 .get(host)
                 .and_then(|&index| catalogue.beacons[index].systems.first().copied())
         });
-    let orders = model.ship.map_or(&[][..], |ship| {
-        &ship.travel.orders[ship.travel.order.min(ship.travel.orders.len())..]
-    });
+    let orders = model
+        .ship
+        .map_or(&[][..], |ship| ship.travel.itinerary.as_slice());
     let active_changed = state.active.update(&state.cache, catalogue, origin, orders);
     let suggested_changed = state.suggested.update(
         &state.cache,
@@ -108,7 +147,7 @@ pub(super) fn draw(
         state
             .route
             .plan()
-            .map_or(&[], |plan| plan.orders.as_slice()),
+            .map_or(&[], |plan| plan.itinerary.as_slice()),
     );
     if inhabited_changed || active_changed || suggested_changed {
         state.browser_systems = model
@@ -167,23 +206,64 @@ pub(super) fn draw(
             focus = origin;
         }
     });
-    search(ui, state, model, &mut focus);
-    egui::Panel::bottom(ui.id().with("map_footer"))
-        .exact_size(200.)
+    ui.separator();
+    let wide = ui.available_width() >= 850.;
+    let mut preference = state.preference.unwrap_or_else(|| {
+        model
+            .ship
+            .map_or_else(Default::default, |ship| ship.travel.preferences)
+    });
+    if wide {
+        egui::Panel::left(ui.id().with("map_browser"))
+            .exact_size(260.)
+            .resizable(false)
+            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 0)))
+            .show(ui, |ui| {
+                ui.small("ROUTE PREFERENCES");
+                preference = preferences(ui, state, model, intents);
+                ui.separator();
+                ui.small("STAR SYSTEMS");
+                search(ui, state, model, &mut focus, ui.available_height());
+            });
+    } else {
+        egui::CollapsingHeader::new("Route preferences and star systems").show(ui, |ui| {
+            preference = preferences(ui, state, model, intents);
+            search(ui, state, model, &mut focus, 100.);
+        });
+    }
+    let details = if wide {
+        egui::Panel::right(ui.id().with("map_details")).exact_size(280.)
+    } else {
+        egui::Panel::bottom(ui.id().with("map_details"))
+            .exact_size((ui.available_height() * 0.4).clamp(100., 220.))
+    };
+    details
         .resizable(false)
-        .frame(egui::Frame::NONE)
-        .show_separator_line(false)
+        .frame(egui::Frame::NONE.inner_margin(8))
         .show(ui, |ui| {
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             egui::ScrollArea::vertical()
                 .id_salt("map_route_details")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    canvas::legend(ui);
+                    ui.small("SELECTED SYSTEM");
                     selected_system(ui, state, model, origin, preference, intents);
+                    ui.separator();
                     planner::draw(ui, &state.route, model, intents);
-                    instruments::fuel_budget(ui, model);
+                    if state.route.plan().is_none() {
+                        instruments::fuel_budget(ui, model);
+                    }
                 });
         });
+    egui::Panel::bottom(ui.id().with("map_legend"))
+        .frame(egui::Frame::NONE)
+        .show(ui, |ui| canvas::legend(ui, state.color_by));
+    ui.horizontal_wrapped(|ui| {
+        ui.small("Colour by");
+        ui.selectable_value(&mut state.color_by, ColorBy::Bloc, "Bloc");
+        ui.selectable_value(&mut state.color_by, ColorBy::Polity, "Polity");
+        ui.selectable_value(&mut state.color_by, ColorBy::Standing, "Your standing");
+    });
     canvas::draw(ui, state, model, origin, focus, fit, fit_route);
 }
 
@@ -200,7 +280,13 @@ fn preferences(
     });
     let previous = preference;
     let mut percentage = preference.fuel_fraction * 100.;
-    ui.add(egui::Slider::new(&mut percentage, 1. ..=100.).text("Fuel allowance").suffix("%"))
+    ui.horizontal(|ui| {
+        ui.label("Fuel allowance");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.monospace(format!("{percentage:.0}%"));
+        });
+    });
+    ui.add(egui::Slider::new(&mut percentage, 1. ..=100.).show_value(false))
         .on_hover_text("Maximum estimated fuel use for the complete route, as a percentage of each remaining propulsion resource.");
     preference.fuel_fraction = percentage / 100.;
     ui.horizontal_wrapped(|ui| {
@@ -241,12 +327,18 @@ fn risk_equivalent(ppm: f64) -> String {
     }
 }
 
-fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut Option<Id>) {
-    ui.horizontal(|ui| {
+fn search(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+    focus: &mut Option<Id>,
+    height: f32,
+) {
+    ui.vertical(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut state.search)
                 .hint_text("Find a star system…")
-                .desired_width(220.),
+                .desired_width(ui.available_width()),
         );
         egui::ComboBox::from_id_salt("map-sovereignty")
             .selected_text(
@@ -269,10 +361,6 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut 
             state.search.clear();
         }
     });
-    if state.search.trim().is_empty() {
-        return;
-    }
-
     let key = (
         state.search.trim().to_lowercase(),
         state.sovereignty,
@@ -290,20 +378,21 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, focus: &mut 
     ui.weak(format!("{} matches", state.search_results.len()));
     egui::ScrollArea::vertical()
         .id_salt("system-search-results")
-        .max_height(108.)
+        .max_height(height.min(ui.available_height()).max(24.))
         .show_rows(ui, 24., state.search_results.len(), |ui, rows| {
             for row in rows {
                 let system = &model.navigation.systems[state.search_results[row]];
                 let sovereignty = system
                     .sovereignty
                     .and_then(|id| model.inhabited.sovereignties.get(&id));
-                let label = format!(
-                    "{}  ·  {}",
-                    system.name,
-                    sovereignty.map_or("Unclaimed", |s| s.name.as_str())
-                );
+                let label = egui::RichText::new(format!("● {}", system.name)).color(system_color(
+                    state,
+                    model,
+                    system.sovereignty,
+                ));
                 if ui
                     .selectable_label(state.selected == Some(system.id), label)
+                    .on_hover_text(sovereignty.map_or("Unclaimed", |s| s.name.as_str()))
                     .clicked()
                 {
                     state.selected = Some(system.id);
@@ -348,9 +437,9 @@ fn selected_system(
             sovereignty.map_or("Unclaimed", |s| s.name.as_str()),
         );
     });
-    let destination = Some(travel::Order::TravelToSystem(system.id));
-    ui.horizontal(|ui| {
-        let available = model.connected && model.ship.is_some() && destination.is_some();
+    let destination = Some(travel::Directive::SlipToSystem(system.id));
+    let available = model.connected && model.ship.is_some() && destination.is_some();
+    ui.horizontal_wrapped(|ui| {
         if ui
             .add_enabled(available, egui::Button::new("Plan destination"))
             .clicked()
@@ -371,28 +460,28 @@ fn selected_system(
                 preference,
             ));
         }
-        let stations: Vec<_> = catalogue
-            .beacons
-            .iter()
-            .filter(|beacon| beacon.systems.contains(&system.id) && beacon.docking)
-            .collect();
-        if !stations.is_empty() {
-            ui.add_enabled_ui(available, |ui| {
-                ui.menu_button("Dock at…", |ui| {
-                    for station in stations {
-                        if ui.button(&station.name).clicked() {
-                            intents.push(Intent::PlanRoute(
-                                vec![travel::Order::Dock(station.id)],
-                                ui.input(|i| i.modifiers.shift),
-                                preference,
-                            ));
-                            ui.close();
-                        }
-                    }
-                });
-            });
-        }
     });
+    let stations: Vec<_> = catalogue
+        .beacons
+        .iter()
+        .filter(|beacon| beacon.systems.contains(&system.id) && beacon.docking)
+        .collect();
+    if !stations.is_empty() {
+        ui.add_enabled_ui(available, |ui| {
+            ui.menu_button("Dock at…", |ui| {
+                for station in stations {
+                    if ui.button(&station.name).clicked() {
+                        intents.push(Intent::PlanRoute(
+                            vec![travel::Directive::DockAt(station.id)],
+                            ui.input(|i| i.modifiers.shift),
+                            preference,
+                        ));
+                        ui.close();
+                    }
+                }
+            });
+        });
+    }
 }
 
 #[cfg(test)]

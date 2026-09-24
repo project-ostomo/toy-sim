@@ -63,7 +63,9 @@ pub(super) fn prepare(settings: &mut Distortion, flow: f64) {
     let coverage = settings.time.y.clamp(0.0, 1.0);
     let coverage = coverage * coverage * (3.0 - 2.0 * coverage);
     let mut count = 0;
-    for index in 0..STREAK_COUNT as u32 {
+    // A few filaments converge on the arrival direction. Leave most of the
+    // star field unobstructed so actual stellar parallax remains visible.
+    for index in 0..STREAK_COUNT.min(8) as u32 {
         let interval = 5.0 + random(index, 0, 1) as f64 * 11.0;
         let clock = flow / interval + random(index, 0, 2) as f64;
         let event = clock.floor() as u32;

@@ -2,7 +2,7 @@
 use super::*;
 use osg_ships::{
     Inventory,
-    weapons::{WeaponState, shot_energy},
+    weapons::{WeaponSpec, WeaponState, shot_energy},
 };
 use osg_ships::{StochasticBalance, StochasticRound};
 
@@ -165,19 +165,15 @@ pub fn fire(
     if (ship.inventory.energy_j as f64) < shot_energy(&spec) {
         flags |= abi::WEAPON_ENERGY;
     }
-    let resource = spec.ammunition_resource.saturating_sub(1) as usize;
+    let ammunition = spec.gun().map_or(0, |gun| gun.ammunition_resource);
+    let resource = ammunition.saturating_sub(1) as usize;
     let propellant = osg_ships::weapons::shot_propellant_kg(&spec);
     // The native propellant resource is measured in kilograms.
-    let required_propellant = propellant
-        + if spec.ammunition_resource == 1 {
-            1.0
-        } else {
-            0.0
-        };
+    let required_propellant = propellant + if ammunition == 1 { 1.0 } else { 0.0 };
     if ship.inventory.available(0) < required_propellant {
         flags |= abi::WEAPON_PROPELLANT;
     }
-    if spec.beam_power_w == 0.0 && ship.inventory.quantities[resource] < 1 {
+    if spec.gun().is_some() && ship.inventory.quantities[resource] < 1 {
         flags |= abi::WEAPON_AMMO;
     }
     if state.next_fire_s > now + 1e-8 {
@@ -221,14 +217,19 @@ pub fn fire(
         ship,
         pivot,
         muzzle,
-        spec.projectile_radius_m,
+        spec.gun().map_or(0.0, |gun| gun.projectile_radius_m),
     ) {
         ship.weapons[index].inhibit_flags = abi::WEAPON_BLOCKED;
         return None;
     }
     let state = &mut ship.weapons[index];
-    if spec.beam_power_w > 0.0 {
-        let optical = spec.beam_power_w * spec.cycle_interval_s;
+    let direction = dispersed_direction(
+        barrel,
+        spec.dispersion_half_angle_rad,
+        body.members[member].entity.to_bits() ^ (part.placed.id << 32) ^ state.shots_fired,
+    );
+    if let WeaponSpec::Laser(laser) = spec {
+        let optical = laser.pulse_energy_j;
         let input = shot_energy(&spec);
         let paid = ship.inventory.energy_j.withdraw(input);
         body.members[member]
@@ -239,28 +240,19 @@ pub fn fire(
         report.beams.push(BeamEvent {
             owner: body.members[member].entity,
             position: body.position.offset_by(muzzle),
-            direction: barrel * DVec3::NEG_Z,
-            range_m: spec.beam_range_m,
+            direction,
+            range_m: laser.range_m,
             energy_j: optical,
-            divergence_rad: spec.dispersion_half_angle_rad,
+            divergence_rad: laser.divergence_half_angle_rad,
+            waist_m: laser.beam_waist_m,
             duration_s: spec.cycle_interval_s,
         });
         return None;
     }
-    // Deterministic uniform solid-angle dispersion; unrelated fights cannot perturb it.
-    let mut seed =
-        body.members[member].entity.to_bits() ^ (part.placed.id << 32) ^ state.shots_fired;
-    let mut random = || {
-        seed = seed.wrapping_add(0x9e3779b97f4a7c15);
-        let mut z = seed;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-        ((z ^ (z >> 31)) >> 11) as f64 / ((1_u64 << 53) as f64)
+    let energy = shot_energy(&spec);
+    let WeaponSpec::Gun(spec) = spec else {
+        unreachable!("laser returned after firing");
     };
-    let cosine = 1.0 - random() * (1.0 - spec.dispersion_half_angle_rad.cos());
-    let angle = random() * std::f64::consts::TAU;
-    let sine = (1.0 - cosine * cosine).sqrt();
-    let direction = barrel * DVec3::new(sine * angle.cos(), sine * angle.sin(), -cosine);
     let mass = spec.projectile_mass_kg;
     let propellant = propellant.stochastic_round() as f64;
     let removed_mass = mass + propellant;
@@ -274,7 +266,6 @@ pub fn fire(
     let inverse_after = body.inertia_inv * (body.mass / remaining);
     let momentum_after = body.momentum * (remaining / body.mass);
     let kinetic = 0.5 * mass * spec.muzzle_speed_m_s.powi(2);
-    let energy = shot_energy(&spec);
     let supplied = if spec.chemical != 0 {
         kinetic / spec.efficiency
     } else {
@@ -324,6 +315,21 @@ pub fn fire(
     );
     projectile_body.launch_owner = Some(m.entity);
     Some(projectile_body)
+}
+
+/// Uniform solid-angle pointing error, stable per emitter and pulse number.
+fn dispersed_direction(barrel: DQuat, half_angle: f64, mut seed: u64) -> DVec3 {
+    let mut random = || {
+        seed = seed.wrapping_add(0x9e3779b97f4a7c15);
+        let mut z = seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+        ((z ^ (z >> 31)) >> 11) as f64 / ((1_u64 << 53) as f64)
+    };
+    let cosine = 1.0 - random() * (1.0 - half_angle.cos());
+    let angle = random() * std::f64::consts::TAU;
+    let sine = (1.0 - cosine * cosine).sqrt();
+    barrel * DVec3::new(sine * angle.cos(), sine * angle.sin(), -cosine)
 }
 
 pub fn projectile_body(
@@ -383,6 +389,23 @@ pub fn projectile_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointing_dispersion_is_repeatable_and_stays_inside_its_cone() {
+        let rotation = DQuat::from_rotation_y(0.7);
+        let bore = rotation * DVec3::NEG_Z;
+        let half_angle = 0.00002;
+        let first = dispersed_direction(rotation, half_angle, 0);
+        let second = dispersed_direction(rotation, half_angle, 1);
+        assert_ne!(first, second);
+        assert_eq!(first, dispersed_direction(rotation, half_angle, 0));
+        for pulse in 0..1024 {
+            let direction = dispersed_direction(rotation, half_angle, pulse);
+            assert!((direction.length() - 1.0).abs() < 1e-12);
+            assert!(direction.angle_between(bore) <= half_angle + 1e-10);
+        }
+        assert_eq!(dispersed_direction(rotation, 0.0, 7), bore);
+    }
     use bevy::prelude::World;
     use osg_ships::{Catalogue, ShipState, armed_starter, weapons::WeaponCommand};
 
@@ -418,6 +441,7 @@ mod tests {
                 range_m: 100.0,
                 energy_j: 1000.0,
                 divergence_rad: 0.00002,
+                waist_m: 0.01,
                 duration_s: 0.1,
             },
             &mut bodies,
@@ -501,6 +525,7 @@ mod tests {
             range_m: 10.0,
             energy_j: 1000.0,
             divergence_rad: 0.00002,
+            waist_m: 0.01,
             duration_s: 0.1,
         };
         let mut report = Report::default();
@@ -547,7 +572,7 @@ mod tests {
         Arc::make_mut(&mut ship.design).weapon_specs[0] = spec;
         ship.inventory.energy_j = 0;
         ship.inventory.quantities.fill(0);
-        let ammo = spec.ammunition_resource as usize - 1;
+        let ammo = spec.gun().unwrap().ammunition_resource as usize - 1;
         ship.inventory.quantities[ammo] = 10;
         let heat = body.members[0].thermal.hull_energy_j;
         let mut report = Report::default();
@@ -578,11 +603,17 @@ mod tests {
         let mut world = World::new();
         let (mut body, mut ship) = armed(&mut world);
         let spec = &mut Arc::make_mut(&mut ship.design).weapon_specs[0];
-        spec.beam_power_w = 1000.0;
-        spec.beam_range_m = 10000.0;
-        spec.ammunition_resource = 0;
-        spec.efficiency = 0.5;
-        spec.cycle_interval_s = 0.1;
+        *spec = WeaponSpec::Laser(abi::LaserSpec {
+            weapon: abi::WeaponSpec {
+                efficiency: 0.5,
+                cycle_interval_s: 0.1,
+                ..**spec
+            },
+            pulse_energy_j: 100.0,
+            range_m: 10000.0,
+            beam_waist_m: 0.01,
+            divergence_half_angle_rad: 0.00002,
+        });
         ship.inventory.quantities.fill(0);
         ship.inventory.energy_j = 1000;
         let mass = body.mass;
@@ -673,7 +704,7 @@ mod tests {
 
             let spec = ship.design.weapon_specs[0];
             let propellant = osg_ships::weapons::shot_propellant_kg(&spec);
-            let kinetic = 0.5 * projectile.mass * spec.muzzle_speed_m_s.powi(2);
+            let kinetic = 0.5 * projectile.mass * spec.gun().unwrap().muzzle_speed_m_s.powi(2);
             let heat = body.members[0].thermal.hull_energy_j
                 + body.members[0].thermal.shield_energy_j
                 - before.members[0].thermal.hull_energy_j
@@ -685,7 +716,11 @@ mod tests {
             assert!(
                 (ship.inventory.available(0) - (before_ammo[0] as f64 - propellant)).abs() < 1.0
             );
-            let ammo = ship.design.weapon_specs[0].ammunition_resource as usize - 1;
+            let ammo = ship.design.weapon_specs[0]
+                .gun()
+                .unwrap()
+                .ammunition_resource as usize
+                - 1;
             assert_eq!(ship.inventory.quantities[ammo], before_ammo[ammo] - 1);
         }
     }
@@ -704,7 +739,11 @@ mod tests {
                 abi::WEAPON_ENERGY => ship.inventory.energy_j = 0,
                 abi::WEAPON_PROPELLANT => ship.inventory.quantities[0] = 0,
                 abi::WEAPON_AMMO => {
-                    let resource = ship.design.weapon_specs[0].ammunition_resource as usize - 1;
+                    let resource = ship.design.weapon_specs[0]
+                        .gun()
+                        .unwrap()
+                        .ammunition_resource as usize
+                        - 1;
                     ship.inventory.quantities[resource] = 0;
                 }
                 _ => {
@@ -882,6 +921,7 @@ pub struct BeamEvent {
     pub range_m: f64,
     pub energy_j: f64,
     pub divergence_rad: f64,
+    pub waist_m: f64,
     pub duration_s: f64,
 }
 
@@ -992,8 +1032,13 @@ pub fn resolve_beam(
     } else {
         member.geometry.radius
     };
-    let spot = (distance * beam.divergence_rad).max(0.001);
-    let energy = beam.energy_j * (radius * radius / (spot * spot)).min(1.0);
+    let energy = beam.energy_j
+        * osg_ships::weapons::beam_interception(
+            beam.waist_m,
+            beam.divergence_rad,
+            distance,
+            radius,
+        );
     member.deposit(shield, energy);
     let target = member.entity;
     let position = beam.position.offset_by(beam.direction * distance);

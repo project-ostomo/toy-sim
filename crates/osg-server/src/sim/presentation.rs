@@ -262,7 +262,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             })
             .collect(),
         slip_available: drive.is_some(),
-        slip_exotic_fuel_kg: drive.map(|drive| {
+        slip_exotic_fuel_kg: drive.map(|_| {
             let grams = catalogue
                 .resources
                 .iter()
@@ -270,7 +270,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 .and_then(|index| state.inventory.quantities.get(index))
                 .copied()
                 .unwrap_or(0) as f64;
-            (grams - drive.fuel_fraction_g).max(0.0) * 0.001
+            grams * 0.001
         }),
         slip_navigation_lock: world
             .get::<super::travel::Transit>(entity)
@@ -287,7 +287,9 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             SlipTransitTelemetry {
                 departed_ns: transit.departed * osg_model::TICK_NS,
                 destination: transit.destination,
-                failure_ppm: transit.failure_ppm(),
+                failure_ppm: world
+                    .get::<super::travel::Travel>(entity)
+                    .map_or(0.0, |travel| travel.0.status.planned_loss_ppm),
                 direction: transit.direction,
             }
         }),

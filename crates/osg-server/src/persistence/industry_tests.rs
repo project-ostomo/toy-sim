@@ -43,6 +43,125 @@ fn advance(world: &mut World) {
     initialize.run(world);
 }
 
+#[test]
+fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
+    use crate::sim::{economy::Economy, industry::service};
+    use osg_model::{
+        economy::{Currency, MONEY_SCALE},
+        industry::*,
+    };
+
+    let operator = Id::new();
+    let customer = Id::new();
+    let payer = Principal::Player(customer);
+    let mut app = crate::scenario(&[operator, customer], Some(operator), None).unwrap();
+    for _ in 0..3 {
+        app.update();
+    }
+    let world = app.world_mut();
+    let facility = world
+        .query_filtered::<Entity, With<travel::DockingBays>>()
+        .iter(world)
+        .next()
+        .unwrap();
+    let facility_id = id(world, facility).unwrap();
+    world.entity_mut(facility).insert((
+        ownership::AssetOwner(Principal::Player(operator)),
+        industry::IndustryFacility {
+            seeded: true,
+            ..Default::default()
+        },
+    ));
+    let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
+    let recipe = manufacturing::recipes(&catalogue)
+        .unwrap()
+        .into_iter()
+        .find(|recipe| recipe.id == "railgun_pellets")
+        .unwrap();
+    stock(world, facility, &recipe.inputs);
+    for input in &recipe.inputs {
+        world
+            .get_mut::<hardware::ShipInventory>(facility)
+            .unwrap()
+            .0
+            .custody
+            .insert(input.item.clone(), input.quantity);
+        world
+            .resource_mut::<Economy>()
+            .storage
+            .entry((facility_id, payer))
+            .or_default()
+            .insert(input.item.clone(), input.quantity);
+    }
+    world
+        .resource_mut::<Economy>()
+        .issue(
+            payer,
+            Currency::Uec,
+            1000 * MONEY_SCALE,
+            osg_model::calendar::now_unix_ms(),
+        )
+        .unwrap();
+    service::publish(
+        world,
+        operator,
+        facility_id,
+        ServicePolicy {
+            revision: 0,
+            accepting: true,
+            currency: Currency::Uec,
+            rates: vec![ServiceRate {
+                capability: recipe.capability,
+                energy_per_mj: 1,
+                time_per_hour: MONEY_SCALE,
+                public_lanes: 1,
+            }],
+            tiers: vec![],
+        },
+    )
+    .unwrap();
+    let uploads = crate::blueprint_uploads::BlueprintUploads::default();
+    let quote = service::quote(
+        world,
+        customer,
+        facility_id,
+        payer,
+        ServiceWork::Recipe {
+            recipe: recipe.id,
+            batches: 1,
+        },
+        &uploads,
+    )
+    .unwrap();
+    service::order(world, customer, quote.clone(), &uploads).unwrap();
+    let job = service::jobs(world, customer, facility_id).unwrap()[0].id;
+    let checkpoint = capture(world).unwrap();
+    restore(world, &checkpoint).unwrap();
+    assert_eq!(
+        world.resource::<Economy>().service_holds[&job].amount,
+        quote.total
+    );
+    service::cancel(world, customer, facility_id, job).unwrap();
+    assert_eq!(
+        world.resource::<Economy>().available(payer, Currency::Uec),
+        1000 * MONEY_SCALE
+    );
+    for input in &quote.inputs {
+        assert_eq!(
+            world.resource::<Economy>().storage[&(facility_id, payer)][&input.item],
+            input.quantity
+        );
+    }
+    service::order(world, customer, quote.clone(), &uploads).unwrap();
+    advance(world);
+    let charged = world.resource::<Economy>().balances[&payer].uec;
+    assert_eq!(charged, 1000 * MONEY_SCALE - quote.total);
+    let checkpoint = capture(world).unwrap();
+    restore(world, &checkpoint).unwrap();
+    advance(world);
+    assert_eq!(world.resource::<Economy>().balances[&payer].uec, charged);
+}
+
 #[tokio::test]
 async fn industry_checkpoints_resume_reserved_work_and_complete_ship_construction_once() {
     let account = Id::new();

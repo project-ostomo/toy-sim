@@ -181,117 +181,93 @@ impl TryFrom<&abi::Target> for travel::Target {
     }
 }
 
-impl From<&travel::Order> for abi::Order {
-    fn from(value: &travel::Order) -> Self {
-        let mut output = Self::default();
-        match value {
-            travel::Order::Guidance(guidance) => {
-                output.kind = 1;
-                output.target = (&guidance.target).into();
-                output.mode = match guidance.mode {
-                    travel::GuidanceMode::Align => 0,
-                    travel::GuidanceMode::Approach => 1,
-                    travel::GuidanceMode::KeepRange => 2,
-                };
-                output.range_m = guidance.range_m;
-            }
-            travel::Order::TravelTo(destination) => {
-                output.kind = 2;
-                output.destination = destination.into();
-            }
-            travel::Order::TravelToSystem(id) => {
-                output.kind = 8;
-                output.entity = id.0;
-            }
-            travel::Order::Sublight(destination) => {
-                output.kind = 3;
-                output.destination = destination.into();
-            }
-            travel::Order::Slip {
-                destination,
-                navigation_beacon,
-            } => {
-                output.kind = 4;
-                output.destination = destination.into();
-                output.navigation_beacon_present = navigation_beacon.is_some() as u64;
-                output.navigation_beacon = navigation_beacon.unwrap_or_default().0;
-            }
-            travel::Order::Dock(id) => {
-                output.kind = 5;
-                output.entity = id.0;
-            }
-            travel::Order::Undock => output.kind = 6,
-            travel::Order::WaitUntil(tick) => {
-                output.kind = 7;
-                output.tick = *tick;
-            }
-        }
-        output
+impl From<&travel::Directive> for abi::Directive {
+    fn from(value: &travel::Directive) -> Self {
+        let (kind, entity) = match value {
+            travel::Directive::SlipToSystem(id) => (abi::DIRECTIVE_SLIP_TO_SYSTEM, id.0),
+            travel::Directive::DockAt(id) => (abi::DIRECTIVE_DOCK_AT, id.0),
+        };
+        Self { kind, entity }
     }
 }
 
-impl TryFrom<&abi::Order> for travel::Order {
+pub fn guidance_record(value: &Option<travel::Guidance>) -> abi::Guidance {
+    let Some(value) = value else {
+        return abi::Guidance::default();
+    };
+    abi::Guidance {
+        present: 1,
+        mode: match value.mode {
+            travel::GuidanceMode::Align => abi::GUIDANCE_ALIGN,
+            travel::GuidanceMode::Approach => abi::GUIDANCE_APPROACH,
+            travel::GuidanceMode::KeepRange => abi::GUIDANCE_KEEP_RANGE,
+        },
+        target: (&value.target).into(),
+        range_m: value.range_m,
+    }
+}
+
+pub fn guidance_value(value: &abi::Guidance) -> Result<Option<travel::Guidance>, ()> {
+    if !flag(value.present)? {
+        return Ok(None);
+    }
+    if !value.range_m.is_finite() || value.range_m < 0.0 {
+        return Err(());
+    }
+    Ok(Some(travel::Guidance {
+        mode: match value.mode {
+            abi::GUIDANCE_ALIGN => travel::GuidanceMode::Align,
+            abi::GUIDANCE_APPROACH => travel::GuidanceMode::Approach,
+            abi::GUIDANCE_KEEP_RANGE => travel::GuidanceMode::KeepRange,
+            _ => return Err(()),
+        },
+        target: (&value.target).try_into()?,
+        range_m: value.range_m,
+    }))
+}
+
+impl TryFrom<&abi::Directive> for travel::Directive {
     type Error = ();
 
-    fn try_from(value: &abi::Order) -> Result<Self, ()> {
-        Ok(match value.kind {
-            1 => Self::Guidance(travel::Guidance {
-                mode: match value.mode {
-                    0 => travel::GuidanceMode::Align,
-                    1 => travel::GuidanceMode::Approach,
-                    2 => travel::GuidanceMode::KeepRange,
-                    _ => return Err(()),
-                },
-                target: (&value.target).try_into()?,
-                range_m: value.range_m,
-            }),
-            2 => Self::TravelTo((&value.destination).try_into()?),
-            3 => Self::Sublight((&value.destination).try_into()?),
-            4 => Self::Slip {
-                destination: (&value.destination).try_into()?,
-                navigation_beacon: optional(
-                    value.navigation_beacon_present,
-                    Id(value.navigation_beacon),
-                )?,
-            },
-            5 => Self::Dock(Id(value.entity)),
-            6 => Self::Undock,
-            7 => Self::WaitUntil(value.tick),
-            8 => Self::TravelToSystem(Id(value.entity)),
-            _ => return Err(()),
-        })
+    fn try_from(value: &abi::Directive) -> Result<Self, ()> {
+        match value.kind {
+            abi::DIRECTIVE_SLIP_TO_SYSTEM => Ok(Self::SlipToSystem(Id(value.entity))),
+            abi::DIRECTIVE_DOCK_AT => Ok(Self::DockAt(Id(value.entity))),
+            _ => Err(()),
+        }
     }
 }
 
-impl From<&travel::QueuedOrder> for abi::QueuedOrder {
-    fn from(value: &travel::QueuedOrder) -> Self {
+impl From<&travel::ItineraryEntry> for abi::ItineraryEntry {
+    fn from(value: &travel::ItineraryEntry) -> Self {
         Self {
             label: Text::new(&value.label),
-            action: (&value.action).into(),
-            seconds_per_kg: value.transfer_cost.seconds_per_kg,
+            directive: (&value.directive).into(),
+            max_loss_ppm: value.max_loss_ppm,
+            fuel_allowance_kg: value.fuel_allowance_kg,
             duration_present: value.estimated_duration_ticks.is_some() as u64,
             duration_ticks: value.estimated_duration_ticks.unwrap_or_default(),
-            propellant_present: value.estimated_propellant_kg.is_some() as u64,
-            propellant_kg: value.estimated_propellant_kg.unwrap_or_default(),
-            loss_present: value.estimated_loss_ppm.is_some() as u64,
-            loss_ppm: value.estimated_loss_ppm.unwrap_or_default(),
         }
     }
 }
 
-impl TryFrom<&abi::QueuedOrder> for travel::QueuedOrder {
+impl TryFrom<&abi::ItineraryEntry> for travel::ItineraryEntry {
     type Error = ();
 
-    fn try_from(value: &abi::QueuedOrder) -> Result<Self, ()> {
+    fn try_from(value: &abi::ItineraryEntry) -> Result<Self, ()> {
+        if !value.max_loss_ppm.is_finite()
+            || !(0.0..=1_000_000.0).contains(&value.max_loss_ppm)
+            || !value.fuel_allowance_kg.is_finite()
+            || value.fuel_allowance_kg < 0.0
+        {
+            return Err(());
+        }
         Ok(Self {
             label: text(&value.label)?,
-            action: (&value.action).try_into()?,
-            transfer_cost: crate::transfer::TransferCost {
-                seconds_per_kg: value.seconds_per_kg,
-            },
+            directive: (&value.directive).try_into()?,
+            max_loss_ppm: value.max_loss_ppm,
+            fuel_allowance_kg: value.fuel_allowance_kg,
             estimated_duration_ticks: optional(value.duration_present, value.duration_ticks)?,
-            estimated_propellant_kg: optional(value.propellant_present, value.propellant_kg)?,
-            estimated_loss_ppm: optional(value.loss_present, value.loss_ppm)?,
         })
     }
 }
@@ -365,62 +341,200 @@ impl TryFrom<&abi::FuelRequirement> for travel::FuelRequirement {
     }
 }
 
-pub fn travel_record(
-    state: &travel::CurrentOrder,
-    pose: &crate::Pose,
-    slip_ready: bool,
-    slip_axis: [f64; 3],
-) -> abi::TravelReply {
-    let (status, reason) = match &state.status {
-        travel::Status::Idle => (0, ""),
-        travel::Status::Planning => (1, ""),
-        travel::Status::Active => (2, ""),
-        travel::Status::Paused => (3, ""),
-        travel::Status::Blocked(reason) => (4, reason.as_str()),
-        travel::Status::Completed => (5, ""),
-    };
-    abi::TravelReply {
-        autopilot_enabled: state.autopilot_enabled as u64,
-        preferences: (&state.preferences).into(),
-        revision: state.revision,
-        index: state.index as u64,
-        order_present: state.order.is_some() as u64,
-        order: state.order.as_ref().map(Into::into).unwrap_or_default(),
-        status,
-        reason: Text::new(reason),
-        arrival_present: state.estimated_arrival_tick.is_some() as u64,
-        arrival_tick: state.estimated_arrival_tick.unwrap_or_default(),
-        pose: pose.into(),
-        slip_ready: slip_ready as u64,
-        slip_axis,
+impl From<&travel::CelestialRef> for abi::CelestialRef {
+    fn from(value: &travel::CelestialRef) -> Self {
+        Self {
+            system: value.system.0,
+            body: value.body.0,
+        }
     }
 }
 
-pub fn travel_reply(value: &abi::TravelReply) -> Result<ProgramReply, ()> {
-    let status = match value.status {
-        0 => travel::Status::Idle,
-        1 => travel::Status::Planning,
-        2 => travel::Status::Active,
-        3 => travel::Status::Paused,
-        4 => travel::Status::Blocked(text(&value.reason)?),
-        5 => travel::Status::Completed,
+impl From<&abi::CelestialRef> for travel::CelestialRef {
+    fn from(value: &abi::CelestialRef) -> Self {
+        Self {
+            system: Id(value.system),
+            body: Id(value.body),
+        }
+    }
+}
+
+impl TryFrom<&travel::FirmwareStatus> for abi::FirmwareStatus {
+    type Error = ();
+
+    fn try_from(value: &travel::FirmwareStatus) -> Result<Self, ()> {
+        if value.markers.len() > abi::MAX_STATUS_MARKERS
+            || value.summary.len() > 256
+            || value.markers.iter().any(|marker| marker.label.len() > 64)
+        {
+            return Err(());
+        }
+        let (phase, until, why) = match &value.phase {
+            travel::FirmwarePhase::Idle => (0, None, ""),
+            travel::FirmwarePhase::Planning => (1, None, ""),
+            travel::FirmwarePhase::Waiting { until, why } => (2, *until, why.as_str()),
+            travel::FirmwarePhase::Charging => (3, None, ""),
+            travel::FirmwarePhase::Transit => (4, None, ""),
+            travel::FirmwarePhase::Maneuvering => (5, None, ""),
+            travel::FirmwarePhase::Docking => (6, None, ""),
+            travel::FirmwarePhase::Completed => (7, None, ""),
+        };
+        if why.len() > 256 {
+            return Err(());
+        }
+        let mut output = Self {
+            phase,
+            waiting_until_present: until.is_some() as u64,
+            waiting_until: until.unwrap_or_default(),
+            waiting_reason: Text::new(why),
+            summary: Text::new(&value.summary),
+            arrival_present: value.estimated_arrival_tick.is_some() as u64,
+            arrival_tick: value.estimated_arrival_tick.unwrap_or_default(),
+            capture_present: value.capture_body.is_some() as u64,
+            capture_body: value
+                .capture_body
+                .as_ref()
+                .map(Into::into)
+                .unwrap_or_default(),
+            aim_present: value.aim_offset_m.is_some() as u64,
+            aim_offset_m: value.aim_offset_m.unwrap_or_default(),
+            departure_present: value.departure_tick.is_some() as u64,
+            departure_tick: value.departure_tick.unwrap_or_default(),
+            planned_delta_v_m_s: value.planned_delta_v_m_s,
+            planned_loss_ppm: value.planned_loss_ppm,
+            spent_loss_ppm: value.spent_loss_ppm,
+            planned_exotic_fuel_kg: value.planned_exotic_fuel_kg,
+            spent_exotic_fuel_kg: value.spent_exotic_fuel_kg,
+            marker_count: value.markers.len() as u64,
+            ..Default::default()
+        };
+        for (out, marker) in output.markers.iter_mut().zip(&value.markers) {
+            *out = abi::PlanMarker {
+                position: position_record(&marker.position),
+                label: Text::new(&marker.label),
+            };
+        }
+        Ok(output)
+    }
+}
+
+impl TryFrom<&abi::FirmwareStatus> for travel::FirmwareStatus {
+    type Error = ();
+
+    fn try_from(value: &abi::FirmwareStatus) -> Result<Self, ()> {
+        if !value.planned_delta_v_m_s.is_finite()
+            || !value.planned_exotic_fuel_kg.is_finite()
+            || value.planned_exotic_fuel_kg < 0.0
+            || !value.spent_exotic_fuel_kg.is_finite()
+            || value.spent_exotic_fuel_kg < 0.0
+            || value.planned_delta_v_m_s < 0.0
+            || !value.planned_loss_ppm.is_finite()
+            || !(0.0..=1_000_000.0).contains(&value.planned_loss_ppm)
+            || !value.spent_loss_ppm.is_finite()
+            || !(0.0..=1_000_000.0).contains(&value.spent_loss_ppm)
+            || value.aim_offset_m.iter().any(|x| !x.is_finite())
+        {
+            return Err(());
+        }
+        Ok(Self {
+            phase: match value.phase {
+                0 => travel::FirmwarePhase::Idle,
+                1 => travel::FirmwarePhase::Planning,
+                2 => travel::FirmwarePhase::Waiting {
+                    until: optional(value.waiting_until_present, value.waiting_until)?,
+                    why: text(&value.waiting_reason)?,
+                },
+                3 => travel::FirmwarePhase::Charging,
+                4 => travel::FirmwarePhase::Transit,
+                5 => travel::FirmwarePhase::Maneuvering,
+                6 => travel::FirmwarePhase::Docking,
+                7 => travel::FirmwarePhase::Completed,
+                _ => return Err(()),
+            },
+            summary: text(&value.summary)?,
+            estimated_arrival_tick: optional(value.arrival_present, value.arrival_tick)?,
+            capture_body: optional(value.capture_present, (&value.capture_body).into())?,
+            aim_offset_m: optional(value.aim_present, value.aim_offset_m)?,
+            departure_tick: optional(value.departure_present, value.departure_tick)?,
+            planned_delta_v_m_s: value.planned_delta_v_m_s,
+            planned_loss_ppm: value.planned_loss_ppm,
+            spent_loss_ppm: value.spent_loss_ppm,
+            planned_exotic_fuel_kg: value.planned_exotic_fuel_kg,
+            spent_exotic_fuel_kg: value.spent_exotic_fuel_kg,
+            markers: counted(&value.markers, value.marker_count)?
+                .iter()
+                .map(|marker| {
+                    Ok(travel::PlanMarker {
+                        position: position_value(&marker.position),
+                        label: text(&marker.label)?,
+                    })
+                })
+                .collect::<Result<_, ()>>()?,
+        })
+    }
+}
+
+pub fn travel_reply(
+    value: &abi::TravelReply,
+    itinerary: &[abi::ItineraryEntry],
+    fuels: &[abi::FuelRequirement],
+    hierarchy: &[abi::CelestialRef],
+) -> Result<ProgramReply, ()> {
+    use crate::location::{LocationContext, LocationRegion};
+    let presence = match value.presence {
+        0 => travel::Presence::Space,
+        1 => travel::Presence::Docked {
+            host: Id(value.host),
+            bay: value.bay.try_into().map_err(|_| ())?,
+        },
+        2 => travel::Presence::SlipTransit(Id(value.host)),
+        3 => travel::Presence::StoredInWreck(Id(value.host)),
+        4 => travel::Presence::Destroyed,
         _ => return Err(()),
     };
+    let fuel_budget = travel::FuelBudget {
+        resources: counted(fuels, value.fuel_count)?
+            .iter()
+            .map(TryInto::try_into)
+            .collect::<Result<_, _>>()?,
+        complete: flag(value.fuel_complete)?,
+    };
     Ok(ProgramReply::Travel {
-        state: travel::CurrentOrder {
-            autopilot_enabled: flag(value.autopilot_enabled)?,
+        state: travel::AutopilotState {
+            enabled: flag(value.enabled)?,
+            directive_revision: value.directive_revision,
+            itinerary: counted(itinerary, value.itinerary_count)?
+                .iter()
+                .map(TryInto::try_into)
+                .collect::<Result<_, _>>()?,
             preferences: (&value.preferences).try_into()?,
-            revision: value.revision,
-            index: usize::try_from(value.index).map_err(|_| ())?,
-            order: if flag(value.order_present)? {
-                Some((&value.order).try_into()?)
-            } else {
-                None
+            risk_budget: travel::RiskBudget {
+                max_log_loss: value.max_log_loss,
+                spent_log_loss: value.spent_log_loss,
             },
-            status,
-            estimated_arrival_tick: optional(value.arrival_present, value.arrival_tick)?,
+            fuel_budget: optional(value.fuel_present, fuel_budget)?,
+            status: (&value.status).try_into()?,
+            failure: optional(value.failure_present, text(&value.failure)?)?,
         },
         pose: (&value.pose).into(),
+        presence,
+        location: LocationContext {
+            region: match value.region {
+                0 => LocationRegion::System,
+                1 => LocationRegion::Interstellar,
+                2 => LocationRegion::SlipTransit,
+                _ => return Err(()),
+            },
+            system: optional(value.system_present, Id(value.system))?,
+            primary: optional(value.primary_present, (&value.primary).into())?,
+            hierarchy: counted(hierarchy, value.hierarchy_count)?
+                .iter()
+                .map(Into::into)
+                .collect(),
+            sample_tick: value.sample_tick,
+        },
+        tick: value.tick,
+        exotic_fuel_kg: value.exotic_fuel_kg,
         slip_ready: flag(value.slip_ready)?,
         slip_axis: value.slip_axis,
     })
@@ -431,7 +545,7 @@ pub fn route_records(
     status: &routing::Status,
 ) -> (
     abi::RouteReply,
-    Vec<abi::QueuedOrder>,
+    Vec<abi::ItineraryEntry>,
     Vec<abi::FuelRequirement>,
 ) {
     let mut header = abi::RouteReply {
@@ -456,14 +570,14 @@ pub fn route_records(
         routing::Status::Ready { plan } => {
             header.status = 2;
             header.planned_tick = plan.planned_tick;
-            header.travel_revision = plan.travel_revision;
+            header.directive_revision = plan.directive_revision;
             header.topology_revision = plan.topology_revision;
-            header.order_count = plan.orders.len() as u64;
+            header.itinerary_count = plan.itinerary.len() as u64;
             header.fuel_count = plan.fuel_budget.resources.len() as u64;
             header.fuel_complete = plan.fuel_budget.complete as u64;
             header.estimated_loss_ppm = plan.estimated_loss_ppm;
             header.exotic_fuel_kg = plan.exotic_fuel_kg;
-            orders.extend(plan.orders.iter().map(abi::QueuedOrder::from));
+            orders.extend(plan.itinerary.iter().map(abi::ItineraryEntry::from));
             fuels.extend(
                 plan.fuel_budget
                     .resources
@@ -481,7 +595,7 @@ pub fn route_records(
 
 pub fn route_reply(
     header: &abi::RouteReply,
-    orders: &[abi::QueuedOrder],
+    orders: &[abi::ItineraryEntry],
     fuels: &[abi::FuelRequirement],
 ) -> Result<ProgramReply, ()> {
     let status = match header.status {
@@ -505,20 +619,10 @@ pub fn route_reply(
             plan: routing::Plan {
                 estimated_loss_ppm: header.estimated_loss_ppm,
                 exotic_fuel_kg: header.exotic_fuel_kg,
-                beacon_assumptions: counted(orders, header.order_count)?
-                    .iter()
-                    .filter(|order| {
-                        order.action.kind == abi::ORDER_SLIP
-                            && order.action.navigation_beacon_present == 1
-                    })
-                    .map(|order| Id(order.action.navigation_beacon))
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
                 planned_tick: header.planned_tick,
-                travel_revision: header.travel_revision,
+                directive_revision: header.directive_revision,
                 topology_revision: header.topology_revision,
-                orders: counted(orders, header.order_count)?
+                itinerary: counted(orders, header.itinerary_count)?
                     .iter()
                     .map(TryInto::try_into)
                     .collect::<Result<_, _>>()?,
@@ -556,6 +660,75 @@ impl From<&abi::OrreryQuery> for ProgramQuery {
     }
 }
 
+impl From<&abi::OrrerySystemQuery> for ProgramQuery {
+    fn from(value: &abi::OrrerySystemQuery) -> Self {
+        Self::OrrerySystem {
+            system: Id(value.system),
+            after_seconds: value.after_seconds,
+        }
+    }
+}
+
+impl TryFrom<&abi::SlipEligibilityQuery> for crate::SlipProbe {
+    type Error = ();
+
+    fn try_from(value: &abi::SlipEligibilityQuery) -> Result<Self, ()> {
+        Ok(Self {
+            arrival_velocity: optional(value.arrival_velocity_present, value.arrival_velocity)?,
+            origin: position_value(&value.origin),
+            destination: position_value(&value.destination),
+            departure_after_seconds: value.departure_after_seconds,
+            arrival_after_seconds: value.arrival_after_seconds,
+            navigation_beacon: optional(
+                value.navigation_beacon_present,
+                Id(value.navigation_beacon),
+            )?,
+        })
+    }
+}
+
+impl From<&crate::SlipProbe> for abi::SlipEligibilityQuery {
+    fn from(value: &crate::SlipProbe) -> Self {
+        Self {
+            arrival_velocity_present: value.arrival_velocity.is_some() as u64,
+            arrival_velocity: value.arrival_velocity.unwrap_or_default(),
+            origin: position_record(&value.origin),
+            destination: position_record(&value.destination),
+            departure_after_seconds: value.departure_after_seconds,
+            arrival_after_seconds: value.arrival_after_seconds,
+            navigation_beacon_present: value.navigation_beacon.is_some() as u64,
+            navigation_beacon: value.navigation_beacon.unwrap_or_default().0,
+        }
+    }
+}
+
+impl From<&crate::SlipProbeResult> for abi::SlipProbeReply {
+    fn from(value: &crate::SlipProbeResult) -> Self {
+        Self {
+            result: abi::SlipEligibilityReply {
+                ready: value.ready as u64,
+                preparation_s: value.preparation_s,
+                duration_s: value.duration_s,
+            },
+            error: Text::new(value.error.as_deref().unwrap_or_default()),
+        }
+    }
+}
+
+impl TryFrom<&abi::SlipProbeReply> for crate::SlipProbeResult {
+    type Error = ();
+
+    fn try_from(value: &abi::SlipProbeReply) -> Result<Self, ()> {
+        let error = text(&value.error)?;
+        Ok(Self {
+            ready: flag(value.result.ready)?,
+            preparation_s: value.result.preparation_s,
+            duration_s: value.result.duration_s,
+            error: (!error.is_empty()).then_some(error),
+        })
+    }
+}
+
 impl TryFrom<&abi::SlipEligibilityQuery> for ProgramQuery {
     type Error = ();
 
@@ -586,15 +759,15 @@ impl TryFrom<&abi::ResolveQuery> for ProgramQuery {
 
 pub fn route_request(
     header: &abi::RouteRequest,
-    orders: &[abi::Order],
+    orders: &[abi::Directive],
 ) -> Result<ProgramQuery, ()> {
-    if orders.len() > routing::MAX_ORDERS {
+    if orders.len() > routing::MAX_DIRECTIVES {
         return Err(());
     }
     Ok(ProgramQuery::RouteRequest(routing::Request {
         id: header.id,
         preferences: (&header.preferences).try_into()?,
-        orders: orders
+        directives: orders
             .iter()
             .map(TryInto::try_into)
             .collect::<Result<_, _>>()?,
@@ -618,75 +791,60 @@ action!(
     value,
     Self::UseRoute {
         id: value.id,
-        revision: value.revision,
+        directive_revision: value.directive_revision,
         engage: flag(value.engage)?
     }
 );
 action!(
-    Block,
+    Fail,
     value,
-    Self::Block {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?,
+    Self::Fail {
+        directive_revision: value.directive_revision,
         reason: text(&value.reason)?
     }
 );
 action!(
-    Estimate,
+    PublishStatus,
     value,
-    Self::Estimate {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?,
-        remaining_ticks: optional(value.ticks_present, value.remaining_ticks)?,
-        remaining_propellant_kg: optional(value.propellant_present, value.remaining_propellant_kg)?,
+    Self::PublishStatus {
+        directive_revision: value.directive_revision,
+        status: (&value.status).try_into()?
     }
 );
 action!(
-    CompleteOrder,
+    Complete,
     value,
-    Self::CompleteOrder {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?
+    Self::Complete {
+        directive_revision: value.directive_revision
     }
 );
 action!(
     Slip,
     value,
     Self::Slip {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?,
         destination: position_value(&value.destination),
         navigation_beacon: optional(value.navigation_beacon_present, Id(value.navigation_beacon))?,
+        arrival_velocity: optional(value.arrival_velocity_present, value.arrival_velocity)?,
+        not_before_tick: optional(value.not_before_present, value.not_before_tick)?,
     }
 );
 action!(
     ReserveBay,
     value,
     Self::ReserveBay {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?,
         station: Id(value.station),
-        bay: u32::try_from(value.bay).map_err(|_| ())?,
+        bay: value.bay.try_into().map_err(|_| ())?,
     }
 );
 action!(
     Dock,
     value,
     Self::Dock {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?,
         station: Id(value.station),
-        bay: u32::try_from(value.bay).map_err(|_| ())?,
+        bay: value.bay.try_into().map_err(|_| ())?,
     }
 );
-action!(
-    Undock,
-    value,
-    Self::Undock {
-        revision: value.revision,
-        order: usize::try_from(value.order).map_err(|_| ())?
-    }
-);
+action!(Undock, _value, Self::Undock);
 
 impl From<&abi::ContactRef> for ProgramQuery {
     fn from(value: &abi::ContactRef) -> Self {
@@ -698,15 +856,69 @@ impl TryFrom<&ProgramReply> for abi::TravelReply {
     type Error = ();
 
     fn try_from(value: &ProgramReply) -> Result<Self, ()> {
-        match value {
-            ProgramReply::Travel {
-                state,
-                pose,
-                slip_ready,
-                slip_axis,
-            } => Ok(travel_record(state, pose, *slip_ready, *slip_axis)),
-            _ => Err(()),
-        }
+        let ProgramReply::Travel {
+            state,
+            pose,
+            presence,
+            location,
+            tick,
+            exotic_fuel_kg,
+            slip_ready,
+            slip_axis,
+        } = value
+        else {
+            return Err(());
+        };
+        let (presence, host, bay) = match presence {
+            travel::Presence::Space => (0, Id::default(), 0),
+            travel::Presence::Docked { host, bay } => (1, *host, *bay as u64),
+            travel::Presence::SlipTransit(id) => (2, *id, 0),
+            travel::Presence::StoredInWreck(id) => (3, *id, 0),
+            travel::Presence::Destroyed => (4, Id::default(), 0),
+        };
+        Ok(Self {
+            enabled: state.enabled as u64,
+            preferences: (&state.preferences).into(),
+            directive_revision: state.directive_revision,
+            itinerary_count: state.itinerary.len() as u64,
+            fuel_present: state.fuel_budget.is_some() as u64,
+            fuel_count: state
+                .fuel_budget
+                .as_ref()
+                .map_or(0, |budget| budget.resources.len()) as u64,
+            fuel_complete: state
+                .fuel_budget
+                .as_ref()
+                .is_some_and(|budget| budget.complete) as u64,
+            max_log_loss: state.risk_budget.max_log_loss,
+            spent_log_loss: state.risk_budget.spent_log_loss,
+            status: (&state.status).try_into()?,
+            failure_present: state.failure.is_some() as u64,
+            failure: Text::new(state.failure.as_deref().unwrap_or_default()),
+            pose: pose.into(),
+            slip_ready: *slip_ready as u64,
+            slip_axis: *slip_axis,
+            presence,
+            host: host.0,
+            bay,
+            region: match location.region {
+                crate::location::LocationRegion::System => 0,
+                crate::location::LocationRegion::Interstellar => 1,
+                crate::location::LocationRegion::SlipTransit => 2,
+            },
+            system_present: location.system.is_some() as u64,
+            system: location.system.unwrap_or_default().0,
+            primary_present: location.primary.is_some() as u64,
+            primary: location
+                .primary
+                .as_ref()
+                .map(Into::into)
+                .unwrap_or_default(),
+            hierarchy_count: location.hierarchy.len() as u64,
+            sample_tick: location.sample_tick,
+            tick: *tick,
+            exotic_fuel_kg: *exotic_fuel_kg,
+        })
     }
 }
 
@@ -770,20 +982,34 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
     use osg_ship_api::abi::ERR_ARGUMENT;
 
     match query {
-        ProgramQuery::Orrery { reference } => {
-            let input = abi::OrreryQuery {
-                reference: position_record(reference),
-            };
+        ProgramQuery::Orrery { .. } | ProgramQuery::OrrerySystem { .. } => {
             let mut values =
                 vec![abi::LocalObstacle::default(); crate::local_space::MAX_LOCAL_OBSTACLES];
             let mut header = abi::OrreryReply::default();
             syscall(unsafe {
-                raw::orrery_read(
-                    &input,
-                    values.as_mut_ptr(),
-                    values.len() as u32,
-                    &mut header,
-                )
+                match query {
+                    ProgramQuery::Orrery { reference } => raw::orrery_read(
+                        &abi::OrreryQuery {
+                            reference: position_record(reference),
+                        },
+                        values.as_mut_ptr(),
+                        values.len() as u32,
+                        &mut header,
+                    ),
+                    ProgramQuery::OrrerySystem {
+                        system,
+                        after_seconds,
+                    } => raw::orrery_system_read(
+                        &abi::OrrerySystemQuery {
+                            system: system.0,
+                            after_seconds: *after_seconds,
+                        },
+                        values.as_mut_ptr(),
+                        values.len() as u32,
+                        &mut header,
+                    ),
+                    _ => unreachable!(),
+                }
             })?;
             let obstacles = counted(&values, header.count)
                 .map_err(|_| ERR_ARGUMENT)?
@@ -810,6 +1036,8 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
             navigation_beacon,
         } => {
             let input = abi::SlipEligibilityQuery {
+                arrival_velocity_present: 0,
+                arrival_velocity: [0.0; 3],
                 origin: position_record(origin),
                 destination: position_record(destination),
                 departure_after_seconds: *departure_after_seconds,
@@ -827,8 +1055,40 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
         }
         ProgramQuery::Travel => {
             let mut output = abi::TravelReply::default();
-            syscall(unsafe { raw::travel_read(&mut output) })?;
-            travel_reply(&output).map_err(|_| ERR_ARGUMENT)
+            let mut itinerary = vec![abi::ItineraryEntry::default(); routing::MAX_DIRECTIVES];
+            let mut fuels = vec![abi::FuelRequirement::default(); 256];
+            let mut hierarchy =
+                vec![abi::CelestialRef::default(); crate::local_space::MAX_LOCAL_OBSTACLES];
+            syscall(unsafe {
+                raw::travel_read(
+                    &mut output,
+                    itinerary.as_mut_ptr(),
+                    itinerary.len() as u32,
+                    fuels.as_mut_ptr(),
+                    fuels.len() as u32,
+                    hierarchy.as_mut_ptr(),
+                    hierarchy.len() as u32,
+                )
+            })?;
+            travel_reply(&output, &itinerary, &fuels, &hierarchy).map_err(|_| ERR_ARGUMENT)
+        }
+        ProgramQuery::SlipEligibilityBatch(probes) => {
+            let inputs: Vec<abi::SlipEligibilityQuery> = probes.iter().map(Into::into).collect();
+            let mut outputs = vec![abi::SlipProbeReply::default(); probes.len()];
+            syscall(unsafe {
+                raw::slip_eligibility_batch(
+                    inputs.as_ptr(),
+                    inputs.len() as u32,
+                    outputs.as_mut_ptr(),
+                )
+            })?;
+            Ok(ProgramReply::SlipEligibilityBatch(
+                outputs
+                    .iter()
+                    .map(TryInto::try_into)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| ERR_ARGUMENT)?,
+            ))
         }
         ProgramQuery::Resolve {
             destination,
@@ -844,7 +1104,7 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
         }
         ProgramQuery::RouteRequest(_) | ProgramQuery::RoutePoll { .. } => {
             let mut output = abi::RouteReply::default();
-            let mut orders = vec![abi::QueuedOrder::default(); routing::MAX_ORDERS];
+            let mut orders = vec![abi::ItineraryEntry::default(); routing::MAX_DIRECTIVES];
             let mut fuels = vec![abi::FuelRequirement::default(); 256];
             let status = match query {
                 ProgramQuery::RouteRequest(request) => {
@@ -852,7 +1112,8 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
                         id: request.id,
                         preferences: (&request.preferences).into(),
                     };
-                    let inputs: Vec<abi::Order> = request.orders.iter().map(Into::into).collect();
+                    let inputs: Vec<abi::Directive> =
+                        request.directives.iter().map(Into::into).collect();
                     unsafe {
                         raw::route_request(
                             &input,
@@ -888,102 +1149,76 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
 #[cfg(target_arch = "wasm32")]
 pub fn command(action: ProgramAction) -> Result<(), i32> {
     use abi::raw;
+    use osg_ship_api::abi::ERR_ARGUMENT;
 
     let result = match action {
         ProgramAction::UseRoute {
             id,
-            revision,
+            directive_revision,
             engage,
         } => unsafe {
             raw::travel_use_route(&abi::UseRoute {
                 id,
-                revision,
+                directive_revision,
                 engage: engage as u64,
             })
         },
-        ProgramAction::Block {
-            revision,
-            order,
+        ProgramAction::Fail {
+            directive_revision,
             reason,
         } => {
             if reason.len() > 256 {
-                return Err(osg_ship_api::abi::ERR_ARGUMENT);
+                return Err(ERR_ARGUMENT);
             }
             unsafe {
-                raw::travel_block(&abi::Block {
-                    revision,
-                    order: order as u64,
+                raw::travel_fail(&abi::Fail {
+                    directive_revision,
                     reason: Text::new(&reason),
                 })
             }
         }
-        ProgramAction::Estimate {
-            revision,
-            order,
-            remaining_ticks,
-            remaining_propellant_kg,
+        ProgramAction::PublishStatus {
+            directive_revision,
+            status,
         } => unsafe {
-            raw::travel_estimate(&abi::Estimate {
-                revision,
-                order: order as u64,
-                ticks_present: remaining_ticks.is_some() as u64,
-                remaining_ticks: remaining_ticks.unwrap_or_default(),
-                propellant_present: remaining_propellant_kg.is_some() as u64,
-                remaining_propellant_kg: remaining_propellant_kg.unwrap_or_default(),
+            raw::travel_publish_status(&abi::PublishStatus {
+                directive_revision,
+                status: (&status).try_into().map_err(|_| ERR_ARGUMENT)?,
             })
         },
-        ProgramAction::CompleteOrder { revision, order } => unsafe {
-            raw::travel_complete(&abi::CompleteOrder {
-                revision,
-                order: order as u64,
-            })
+        ProgramAction::Complete { directive_revision } => unsafe {
+            raw::travel_complete(&abi::Complete { directive_revision })
         },
         ProgramAction::Slip {
-            revision,
-            order,
             destination,
             navigation_beacon,
+            arrival_velocity,
+            not_before_tick,
         } => unsafe {
             raw::travel_slip(&abi::Slip {
-                revision,
-                order: order as u64,
                 destination: position_record(&destination),
                 navigation_beacon_present: navigation_beacon.is_some() as u64,
                 navigation_beacon: navigation_beacon.unwrap_or_default().0,
+                arrival_velocity_present: arrival_velocity.is_some() as u64,
+                arrival_velocity: arrival_velocity.unwrap_or_default(),
+                not_before_present: not_before_tick.is_some() as u64,
+                not_before_tick: not_before_tick.unwrap_or_default(),
             })
         },
-        ProgramAction::ReserveBay {
-            revision,
-            order,
-            station,
-            bay,
-        } => unsafe {
+        ProgramAction::ReserveBay { station, bay } => unsafe {
             raw::travel_reserve_bay(&abi::ReserveBay {
-                revision,
-                order: order as u64,
                 station: station.0,
                 bay: bay as u64,
             })
         },
-        ProgramAction::Dock {
-            revision,
-            order,
-            station,
-            bay,
-        } => unsafe {
+        ProgramAction::Dock { station, bay } => unsafe {
             raw::travel_dock(&abi::Dock {
-                revision,
-                order: order as u64,
                 station: station.0,
                 bay: bay as u64,
             })
         },
-        ProgramAction::Undock { revision, order } => unsafe {
-            raw::travel_undock(&abi::Undock {
-                revision,
-                order: order as u64,
-            })
-        },
+        ProgramAction::Undock => unsafe { raw::travel_undock(&abi::Undock::default()) },
+        ProgramAction::CancelSlip => unsafe { raw::travel_cancel_slip() },
     };
     syscall(result)
 }
@@ -1003,45 +1238,27 @@ mod tests {
 
     #[test]
     fn nested_route_records_preserve_optional_values_and_references() {
-        let system_order = travel::Order::TravelToSystem(Id([42; 16]));
-        assert_eq!(
-            travel::Order::try_from(&abi::Order::from(&system_order)).unwrap(),
-            system_order
-        );
-        let position = GalacticPosition::new(1_i128 << 92, -127, 101);
-        let action = travel::Order::Guidance(travel::Guidance {
-            mode: travel::GuidanceMode::KeepRange,
-            target: travel::Target::Destination(travel::Destination::Relative {
-                reference: travel::Reference::Celestial(travel::CelestialRef {
-                    system: Id([12; 16]),
-                    body: Id([13; 16]),
-                }),
-                offset: position,
-                axes: travel::Axes::BodyFixed,
-            }),
-            range_m: 1050.,
-        });
         let plan = routing::Plan {
             estimated_loss_ppm: 31.5,
-            beacon_assumptions: vec![Id([14; 16])],
             exotic_fuel_kg: 14.0,
             planned_tick: 42,
-            travel_revision: 17,
+            directive_revision: 17,
             topology_revision: 8,
-            orders: vec![
-                travel::QueuedOrder {
-                    label: "Authored waypoint".into(),
-                    transfer_cost: crate::transfer::TransferCost { seconds_per_kg: 8. },
-                    action,
+            itinerary: vec![
+                travel::ItineraryEntry {
+                    label: "Target system".into(),
+                    directive: travel::Directive::SlipToSystem(Id([42; 16])),
+                    max_loss_ppm: 12.5,
+                    fuel_allowance_kg: 45.0,
                     estimated_duration_ticks: Some(0),
-                    estimated_propellant_kg: None,
-                    estimated_loss_ppm: Some(12.5),
                 },
-                travel::Order::Slip {
-                    destination: travel::Destination::Galactic(position),
-                    navigation_beacon: Some(Id([14; 16])),
-                }
-                .into(),
+                travel::ItineraryEntry {
+                    label: "Station".into(),
+                    directive: travel::Directive::DockAt(Id([14; 16])),
+                    max_loss_ppm: 19.0,
+                    fuel_allowance_kg: 5.0,
+                    estimated_duration_ticks: None,
+                },
             ],
             fuel_budget: travel::FuelBudget {
                 resources: vec![travel::FuelRequirement {
@@ -1067,6 +1284,98 @@ mod tests {
     }
 
     #[test]
+    fn travel_publication_preserves_context_and_rejects_short_arrays() {
+        let body = travel::CelestialRef {
+            system: Id([1; 16]),
+            body: Id([2; 16]),
+        };
+        let marker = travel::PlanMarker {
+            position: GalacticPosition::new(1_i128 << 100, -17, 31),
+            label: "Capture".into(),
+        };
+        let state = travel::AutopilotState {
+            enabled: true,
+            directive_revision: 77,
+            itinerary: vec![travel::ItineraryEntry {
+                directive: travel::Directive::DockAt(Id([3; 16])),
+                label: "Station".into(),
+                max_loss_ppm: 10.0,
+                fuel_allowance_kg: 50.0,
+                estimated_duration_ticks: None,
+            }],
+            status: travel::FirmwareStatus {
+                phase: travel::FirmwarePhase::Waiting {
+                    until: Some(500),
+                    why: "Planet occlusion".into(),
+                },
+                summary: "Awaiting departure".into(),
+                capture_body: Some(body),
+                aim_offset_m: Some([100.0, 200.0, -50.0]),
+                departure_tick: Some(500),
+                markers: vec![marker],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let location = crate::location::LocationContext {
+            region: crate::location::LocationRegion::System,
+            system: Some(body.system),
+            primary: Some(body),
+            hierarchy: vec![body],
+            sample_tick: 123,
+        };
+        let reply = ProgramReply::Travel {
+            state: state.clone(),
+            pose: crate::Pose::default(),
+            presence: travel::Presence::Docked {
+                host: Id([3; 16]),
+                bay: 2,
+            },
+            location: location.clone(),
+            tick: 124,
+            exotic_fuel_kg: 200.0,
+            slip_ready: false,
+            slip_axis: [0.0, 0.0, 1.0],
+        };
+        let header = abi::TravelReply::try_from(&reply).unwrap();
+        let itinerary: Vec<_> = state
+            .itinerary
+            .iter()
+            .map(abi::ItineraryEntry::from)
+            .collect();
+        let hierarchy: Vec<_> = location
+            .hierarchy
+            .iter()
+            .map(abi::CelestialRef::from)
+            .collect();
+        let ProgramReply::Travel {
+            state: decoded,
+            location: decoded_location,
+            presence,
+            tick,
+            ..
+        } = travel_reply(&header, &itinerary, &[], &hierarchy).unwrap()
+        else {
+            panic!("travel reply");
+        };
+        assert_eq!(decoded, state);
+        assert_eq!(decoded_location, location);
+        assert_eq!(
+            presence,
+            travel::Presence::Docked {
+                host: Id([3; 16]),
+                bay: 2
+            }
+        );
+        assert_eq!(tick, 124);
+        assert!(travel_reply(&header, &[], &[], &hierarchy).is_err());
+        assert!(travel_reply(&header, &itinerary, &[], &[]).is_err());
+        let mut malformed = header;
+        malformed.status.marker_count = abi::MAX_STATUS_MARKERS as u64 + 1;
+        assert!(travel_reply(&malformed, &itinerary, &[], &hierarchy).is_err());
+    }
+
+    #[test]
     fn malformed_discriminants_and_text_are_rejected() {
         let destination = abi::Destination {
             kind: 999,
@@ -1085,5 +1394,41 @@ mod tests {
         reason.len = 1;
         reason.bytes[0] = 255;
         assert!(text(&reason).is_err());
+    }
+
+    #[test]
+    fn slip_probe_and_launch_preserve_arrival_velocity_and_timing() {
+        let probe = crate::SlipProbe {
+            origin: GalacticPosition::new(1_i128 << 100, 0, 0),
+            destination: GalacticPosition::new(-(1_i128 << 95), 42, 7),
+            departure_after_seconds: 120.0,
+            arrival_after_seconds: 900.0,
+            navigation_beacon: Some(Id([9; 16])),
+            arrival_velocity: Some([1000.0, -2000.0, 3000.0]),
+        };
+        let restored =
+            crate::SlipProbe::try_from(&abi::SlipEligibilityQuery::from(&probe)).unwrap();
+        assert_eq!(restored.origin, probe.origin);
+        assert_eq!(restored.destination, probe.destination);
+        assert_eq!(restored.arrival_velocity, probe.arrival_velocity);
+        assert_eq!(restored.departure_after_seconds, 120.0);
+        let launch = abi::Slip {
+            destination: position_record(&probe.destination),
+            arrival_velocity_present: 1,
+            arrival_velocity: probe.arrival_velocity.unwrap(),
+            not_before_present: 1,
+            not_before_tick: 1200,
+            ..Default::default()
+        };
+        let ProgramAction::Slip {
+            arrival_velocity,
+            not_before_tick,
+            ..
+        } = ProgramAction::try_from(&launch).unwrap()
+        else {
+            panic!("slip action");
+        };
+        assert_eq!(arrival_velocity, probe.arrival_velocity);
+        assert_eq!(not_before_tick, Some(1200));
     }
 }

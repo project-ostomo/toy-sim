@@ -1,8 +1,13 @@
+pub mod assets;
 pub mod calendar;
 pub mod chat;
+pub mod diplomacy;
 pub mod drawing;
+pub mod economy;
 pub mod industry;
 pub mod local_space;
+pub mod location;
+pub mod market;
 pub mod optical;
 pub mod ownership;
 pub mod presentation;
@@ -17,6 +22,7 @@ pub use local_space::{LocalObstacle, LocalSpace};
 pub use presentation::*;
 
 pub use osg_ship_api::GAME_VERSION;
+pub mod rpc;
 
 /// Duration of one authoritative simulation tick.
 pub const TICK_NS: u64 = 100_000_000;
@@ -131,7 +137,8 @@ pub struct ShipTelemetry {
     pub hull_heat_j: f64,
     pub shield_temperature_k: f64,
     pub coolant_reserve_kg: f64,
-    pub travel: travel::TravelState,
+    pub location: location::LocationContext,
+    pub travel: travel::AutopilotState,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -154,25 +161,16 @@ pub struct Event {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Reply {
-    Route { id: u64, status: routing::Status },
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommandResult {
-    pub reply: Option<Reply>,
     pub id: Id,
-    pub effective_tick: u64,
     pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
     pub chat: Option<chat::ChatUpdate>,
-    pub industry: Option<industry::IndustrySnapshot>,
     pub optical: Vec<optical::OpticalObservation>,
     pub calendar_unix_ms: i64,
-    pub society: ownership::SocietySnapshot,
     pub presentation: PresentationFrame,
     pub world: Id,
     pub sequence: u64,
@@ -189,31 +187,12 @@ pub struct Frame {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Action {
-    RouteCancel {
-        ship: EntityId,
-        authority_revision: u64,
-        id: u64,
-    },
-    RouteRequest {
-        ship: EntityId,
-        authority_revision: u64,
-        request: routing::Request,
-    },
-    RoutePoll {
-        ship: EntityId,
-        authority_revision: u64,
-        id: u64,
-    },
     ChatSubscribe(chat::ChatSubscription),
     ChatUnsubscribe,
     ChatSend {
         subscription_revision: u64,
         text: String,
     },
-    Industry(industry::IndustryCommand),
-    IndustrySubscribe(industry::IndustrySubscription),
-    IndustryUnsubscribe,
-    Society(ownership::SocietyCommand),
     InstrumentSubscribe {
         ship: EntityId,
     },
@@ -259,12 +238,13 @@ pub enum ShipCommand {
         target: ContactRef,
     },
     SetIff(IffIdentity),
-    SetTravel {
+    SetItinerary {
         preferences: travel::PlanningPreferences,
         engage: bool,
         expected_revision: u64,
-        orders: Vec<travel::Order>,
+        itinerary: Vec<travel::Directive>,
     },
+    SetGuidance(Option<travel::Guidance>),
     SetAutopilot(bool),
     SetThrottle(f64),
     SetDockServices {
@@ -299,6 +279,11 @@ pub enum ProgramQuery {
     Orrery {
         reference: GalacticPosition,
     },
+    OrrerySystem {
+        system: Id,
+        after_seconds: f64,
+    },
+    SlipEligibilityBatch(Vec<SlipProbe>),
     RouteRequest(routing::Request),
     RoutePoll {
         id: u64,
@@ -324,7 +309,26 @@ pub enum ProgramQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SlipProbe {
+    pub origin: GalacticPosition,
+    pub destination: GalacticPosition,
+    pub departure_after_seconds: f64,
+    pub arrival_after_seconds: f64,
+    pub navigation_beacon: Option<EntityId>,
+    pub arrival_velocity: Option<[f64; 3]>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SlipProbeResult {
+    pub ready: bool,
+    pub preparation_s: f64,
+    pub duration_s: f64,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Beacon {
+    pub system: Option<Id>,
     pub radius_m: f64,
     pub entity: EntityId,
     pub pose: Pose,
@@ -335,6 +339,7 @@ pub struct Beacon {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramReply {
     Orrery(Vec<LocalObstacle>),
+    SlipEligibilityBatch(Vec<SlipProbeResult>),
     Route {
         id: u64,
         status: routing::Status,
@@ -350,8 +355,12 @@ pub enum ProgramReply {
         duration_s: f64,
     },
     Travel {
-        state: travel::CurrentOrder,
+        state: travel::AutopilotState,
         pose: Pose,
+        presence: travel::Presence,
+        location: location::LocationContext,
+        tick: u64,
+        exotic_fuel_kg: f64,
         slip_ready: bool,
         slip_axis: [f64; 3],
     },
@@ -363,44 +372,34 @@ pub enum ProgramReply {
 pub enum ProgramAction {
     UseRoute {
         id: u64,
-        revision: u64,
+        directive_revision: u64,
         engage: bool,
     },
-    Block {
-        revision: u64,
-        order: usize,
+    Fail {
+        directive_revision: u64,
         reason: String,
     },
-    Estimate {
-        revision: u64,
-        order: usize,
-        remaining_ticks: Option<u64>,
-        remaining_propellant_kg: Option<f64>,
+    PublishStatus {
+        directive_revision: u64,
+        status: travel::FirmwareStatus,
     },
-    CompleteOrder {
-        revision: u64,
-        order: usize,
+    Complete {
+        directive_revision: u64,
     },
     Slip {
-        revision: u64,
-        order: usize,
         destination: GalacticPosition,
         navigation_beacon: Option<EntityId>,
+        arrival_velocity: Option<[f64; 3]>,
+        not_before_tick: Option<u64>,
     },
     ReserveBay {
-        revision: u64,
-        order: usize,
         station: EntityId,
         bay: u32,
     },
     Dock {
-        revision: u64,
-        order: usize,
         station: EntityId,
         bay: u32,
     },
-    Undock {
-        revision: u64,
-        order: usize,
-    },
+    Undock,
+    CancelSlip,
 }

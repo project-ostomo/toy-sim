@@ -43,8 +43,15 @@ fn beacon_page<T>(beacons: &BTreeMap<Id, T>, after: Option<Id>, limit: usize) ->
     beacons.range(bounds).take(limit).collect()
 }
 
-struct ShipScan {
-    sensors: Option<super::sensors::SensorService>,
+#[derive(Clone, Copy)]
+enum ScanSensors<'a> {
+    World(&'a World),
+    Borrowed(&'a (dyn Fn() -> Arc<ObservationSnapshot> + Send + Sync)),
+}
+
+#[derive(Clone)]
+pub(crate) struct ShipScan<'a> {
+    sensors: Option<ScanSensors<'a>>,
     routing: Option<(
         super::route_service::RouteService,
         super::route_service::Caller,
@@ -60,7 +67,10 @@ struct ShipScan {
     apertures: Arc<ApertureIndex>,
     own: EntityId,
     pose: Pose,
-    travel: CurrentOrder,
+    travel: AutopilotState,
+    presence: Presence,
+    location: location::LocationContext,
+    exotic_fuel_kg: f64,
     slip_ready: bool,
     slip_axis: [f64; 3],
     slip_power_w: f64,
@@ -73,6 +83,17 @@ struct ShipScan {
 }
 
 const MAX_QUERY_BEACON_BAYS: usize = 4096;
+
+impl ShipScan<'static> {
+    pub(crate) fn borrow_sensors<'a>(
+        &self,
+        observe: &'a (dyn Fn() -> Arc<ObservationSnapshot> + Send + Sync),
+    ) -> ShipScan<'a> {
+        let mut source = self.clone();
+        source.sensors = Some(ScanSensors::Borrowed(observe));
+        source
+    }
+}
 const QUERY_BAY_GAS: u64 = 100;
 
 fn check_reply_capacity(reply: &ProgramReply, capacity: ReplyCapacity) -> Result<()> {
@@ -82,7 +103,7 @@ fn check_reply_capacity(reply: &ProgramReply, capacity: ReplyCapacity) -> Result
     Ok(())
 }
 
-impl osg_ship_wasm::ScanSource for ShipScan {
+impl osg_ship_wasm::ScanSource for ShipScan<'_> {
     fn query_output_bytes(
         &self,
         query: &ProgramQuery,
@@ -143,6 +164,60 @@ impl osg_ship_wasm::ScanSource for ShipScan {
         self.query_work(&query)?;
         let reply = match query {
             ProgramQuery::Orrery { reference } => ProgramReply::Orrery(self.orrery(reference)?),
+            ProgramQuery::OrrerySystem {
+                system,
+                after_seconds,
+            } => {
+                let _profile = super::diagnostics::ProfileScope::new("services.orrery_system");
+                ProgramReply::Orrery(self.orrery_system(system, after_seconds)?)
+            }
+            ProgramQuery::SlipEligibilityBatch(probes) => {
+                let _profile = super::diagnostics::ProfileScope::new("services.slip_probes");
+                ensure!(probes.len() <= 256, "too many slip probes");
+                ProgramReply::SlipEligibilityBatch(
+                    probes
+                        .into_iter()
+                        .map(|probe| {
+                            match self.query(
+                                ProgramQuery::SlipEligibility {
+                                    origin: probe.origin,
+                                    destination: probe.destination,
+                                    departure_after_seconds: probe.departure_after_seconds,
+                                    arrival_after_seconds: probe.arrival_after_seconds,
+                                    navigation_beacon: probe.navigation_beacon,
+                                },
+                                false,
+                                ReplyCapacity::UNLIMITED,
+                            ) {
+                                Ok(ProgramReply::SlipEligibility {
+                                    ready,
+                                    preparation_s,
+                                    duration_s,
+                                }) => {
+                                    let valid_velocity =
+                                        probe.arrival_velocity.is_none_or(|velocity| {
+                                            velocity.iter().all(|value| value.is_finite())
+                                        });
+                                    SlipProbeResult {
+                                        ready: ready && valid_velocity,
+                                        preparation_s,
+                                        duration_s,
+                                        error: (!valid_velocity)
+                                            .then(|| "invalid arrival velocity".into()),
+                                    }
+                                }
+                                Err(error) => SlipProbeResult {
+                                    ready: false,
+                                    preparation_s: 0.0,
+                                    duration_s: 0.0,
+                                    error: Some(error.to_string()),
+                                },
+                                _ => unreachable!("slip eligibility reply"),
+                            }
+                        })
+                        .collect(),
+                )
+            }
             ProgramQuery::RouteRequest(request) => {
                 osg_protocol::routing::validate_request(&request)?;
                 let (service, caller) = self
@@ -214,7 +289,10 @@ impl osg_ship_wasm::ScanSource for ShipScan {
                     })
                 });
                 ProgramReply::SlipEligibility {
-                    ready: authorized && self.slip_ready && self.admissible_at(origin, departure),
+                    ready: authorized
+                        && self.slip_ready
+                        && self.admissible_at(origin, departure)
+                        && self.departure_line_clear(origin, destination, departure, arrival)?,
                     preparation_s,
                     duration_s,
                 }
@@ -238,6 +316,10 @@ impl osg_ship_wasm::ScanSource for ShipScan {
             ProgramQuery::Travel => ProgramReply::Travel {
                 state: self.travel.clone(),
                 pose: self.pose.clone(),
+                presence: self.presence.clone(),
+                location: self.location.clone(),
+                tick: self.tick,
+                exotic_fuel_kg: self.exotic_fuel_kg,
                 slip_ready: self.slip_ready,
                 slip_axis: self.slip_axis,
             },
@@ -335,11 +417,21 @@ struct Aperture {
     radius: f64,
 }
 
-impl ShipScan {
+impl ShipScan<'_> {
+    fn without_sensors(&self) -> ShipScan<'static> {
+        ShipScan {
+            sensors: None,
+            ..self.clone()
+        }
+    }
+
     fn observations(&self) -> Arc<ObservationSnapshot> {
         self.sensors.as_ref().map_or_else(
             || self.snapshot.clone(),
-            |sensors| sensors.observe(self.physical),
+            |sensors| match sensors {
+                ScanSensors::World(world) => super::sensors::observe_read(world, self.physical),
+                ScanSensors::Borrowed(observe) => observe(),
+            },
         )
     }
 
@@ -459,6 +551,89 @@ impl ShipScan {
             self.publication_age_seconds() + (epoch - self.epoch).to_seconds(),
         )
     }
+
+    fn departure_line_clear(
+        &self,
+        origin: GalacticPosition,
+        destination: GalacticPosition,
+        departure: hifitime::Epoch,
+        arrival: hifitime::Epoch,
+    ) -> Result<bool> {
+        let displacement = destination.relative_to(origin);
+        if displacement.length_squared() == 0.0 {
+            return Ok(true);
+        }
+        let departure_s = (departure - self.epoch).to_seconds() + self.publication_age_seconds();
+        let arrival_s = (arrival - self.epoch).to_seconds() + self.publication_age_seconds();
+        let motion_margin = self.apertures.max_speed * arrival_s.abs().max(departure_s.abs());
+        let candidates = self
+            .apertures
+            .spatial()
+            .segment_candidates(
+                origin,
+                displacement,
+                self.radius + motion_margin,
+                &mut osg_spatial::QueryBudget::new(APERTURE_WORK_LIMIT),
+            )
+            .map_err(|_| osg_ship_wasm::WorldQueryError::LimitExceeded)?;
+        for slot in candidates {
+            let body = &self.apertures.bodies[slot];
+            if body.entity == self.physical {
+                continue;
+            }
+            let start = body.position.offset_by(body.velocity * departure_s);
+            let end = body.position.offset_by(body.velocity * arrival_s);
+            if intercepts_departure(origin, destination, start, end, body.radius + self.radius) {
+                return Ok(false);
+            }
+        }
+        if let Some(universe) = &self.universe {
+            let registry = &universe.registry.universe;
+            for index in registry.containing_segment(origin, DVec3::ZERO) {
+                let definition = registry.resolve_index(index)?;
+                for body in definition.solver.iter() {
+                    if matches!(body.class_params, super::orrery::BodyClass::Barycenter) {
+                        continue;
+                    }
+                    let Some(start) = definition.solver.solve_position(&body.name, departure)
+                    else {
+                        return Ok(false);
+                    };
+                    let Some(end) = definition.solver.solve_position(&body.name, arrival) else {
+                        return Ok(false);
+                    };
+                    let radius = slip::exclusion_radius_m(body.mass).max(body.radius) + self.radius;
+                    if intercepts_departure(origin, destination, start, end, radius) {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+}
+
+fn intercepts_departure(
+    origin: GalacticPosition,
+    destination: GalacticPosition,
+    body_at_departure: GalacticPosition,
+    body_at_arrival: GalacticPosition,
+    radius: f64,
+) -> bool {
+    // A sphere containing the requested endpoint is an intended capture.
+    if body_at_arrival.relative_to(destination).length() <= radius {
+        return false;
+    }
+    let relative_start = origin.relative_to(body_at_departure);
+    let relative_displacement =
+        destination.relative_to(origin) - body_at_arrival.relative_to(body_at_departure);
+    let fraction = if relative_displacement.length_squared() > 0.0 {
+        (-relative_start.dot(relative_displacement) / relative_displacement.length_squared())
+            .clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (relative_start + relative_displacement * fraction).length() <= radius
 }
 
 fn aperture_clearance(
@@ -526,6 +701,7 @@ pub fn publish_indexes(
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
     navigation: Option<Res<super::infrastructure::NavigationPublication>>,
+    locations: Query<&super::location::SpatialLocation>,
     bodies: Query<
         (
             Entity,
@@ -610,9 +786,13 @@ pub fn publish_indexes(
                 (
                     data.id.0,
                     PublishedBeacon {
-                        systems,
+                        systems: systems.clone(),
                         navigation: data.navigation,
                         beacon: Beacon {
+                            system: locations
+                                .get(data.entity)
+                                .ok()
+                                .and_then(|location| location.0.system),
                             entity: data.id.0,
                             radius_m: data.design.radius_m,
                             iff: data.iff.0.clone(),
@@ -652,20 +832,39 @@ struct SourceContext {
     radius: f64,
     mass: f64,
     pose: Pose,
-    travel: CurrentOrder,
+    travel: AutopilotState,
+    presence: Presence,
+    location: location::LocationContext,
+    exotic_fuel_kg: f64,
     slip: Option<super::travel::SlipDrive>,
+}
+
+fn exotic_fuel_kg(
+    inventory: Option<&super::hardware::ShipInventory>,
+    catalogue: &osg_ships::Catalogue,
+) -> f64 {
+    catalogue
+        .resources
+        .iter()
+        .enumerate()
+        .find(|(_, resource)| resource.id == slip::EXOTIC_RESOURCE)
+        .and_then(|(index, resource)| {
+            inventory
+                .and_then(|inventory| inventory.0.quantities.get(index))
+                .map(|quantity| *quantity as f64 * resource.mass_kg)
+        })
+        .unwrap_or(0.0)
 }
 
 fn ship_source(
     publication: &PublishedWorld,
-    sensors: Option<super::sensors::SensorService>,
     tick: u64,
     snapshot: Arc<ObservationSnapshot>,
     context: SourceContext,
-) -> Arc<ShipScan> {
+) -> Arc<ShipScan<'static>> {
     let slip = context.slip.as_ref();
     Arc::new(ShipScan {
-        sensors,
+        sensors: None,
         routing: context.routing,
         universe: publication.universe.clone(),
         epoch: hifitime::Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
@@ -679,6 +878,9 @@ fn ship_source(
         mass: context.mass,
         pose: context.pose.clone(),
         travel: context.travel,
+        presence: context.presence,
+        location: context.location,
+        exotic_fuel_kg: context.exotic_fuel_kg,
         slip_ready: slip.is_some(),
         slip_axis: slip.map_or([0.0, 0.0, -1.0], |drive| drive.axis),
         slip_power_w: slip.map_or(0.0, |drive| drive.power_w),
@@ -692,14 +894,11 @@ fn ship_source(
     })
 }
 
-pub(crate) fn current_source(
-    world: &mut World,
-    ship: Entity,
-) -> Option<Arc<dyn osg_ship_wasm::ScanSource>> {
-    current_ship_source(world, ship).map(|source| source as Arc<dyn osg_ship_wasm::ScanSource>)
+pub(crate) fn current_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
+    current_ship_source(world, ship)
 }
 
-fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>> {
+fn current_ship_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
     let routing = world
         .get_resource::<super::route_service::RouteService>()
         .cloned()
@@ -718,20 +917,27 @@ fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>>
         pose: super::session::ship_pose(world, ship)?,
         travel: world
             .get::<super::travel::Travel>(ship)
-            .map_or_else(CurrentOrder::default, |travel| {
-                CurrentOrder::from(&travel.0)
-            }),
+            .map(|travel| travel.0.clone())
+            .unwrap_or_default(),
+        presence: world
+            .get::<super::travel::PresenceState>(ship)
+            .map(|presence| presence.0.clone())
+            .unwrap_or(Presence::Space),
+        location: world
+            .get::<super::location::SpatialLocation>(ship)
+            .map(|location| location.0.clone())
+            .unwrap_or_default(),
+        exotic_fuel_kg: exotic_fuel_kg(
+            world.get::<super::hardware::ShipInventory>(ship),
+            &world.resource::<super::vessel::ShipCatalogue>().0,
+        ),
         slip: world
             .get::<super::travel::SlipDrive>(ship)
             .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
             .cloned(),
     };
-    Some(ship_source(
+    let source = ship_source(
         world.get_resource::<PublishedWorld>()?,
-        world
-            .get_resource::<super::sensors::SensorService>()
-            .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
-            .cloned(),
         world.get_resource::<SimulationCounters>()?.ticks,
         if world.get::<super::travel::Dormant>(ship).is_some() {
             Arc::default()
@@ -742,15 +948,19 @@ fn current_ship_source(world: &mut World, ship: Entity) -> Option<Arc<ShipScan>>
                 .unwrap_or_default()
         },
         context,
-    ))
+    );
+    let mut source = (*source).clone();
+    source.sensors = Some(ScanSensors::World(world));
+    Some(source)
 }
 
 pub fn prepare_sources(
     publication: Res<PublishedWorld>,
-    sensors: Option<Res<super::sensors::SensorService>>,
     clock: Res<SimulationCounters>,
     world_epoch: Res<super::identity::WorldEpoch>,
     routing: Option<Res<super::route_service::RouteService>>,
+    locations: Query<&super::location::SpatialLocation>,
+    catalogue: Res<super::vessel::ShipCatalogue>,
     mut ships: Query<
         (
             Entity,
@@ -765,6 +975,11 @@ pub fn prepare_sources(
             Option<&super::travel::Travel>,
             Option<&super::travel::SlipDrive>,
             Option<&Observations>,
+            (
+                Option<&super::travel::PresenceState>,
+                Option<&super::hardware::ShipInventory>,
+                Option<&super::travel::DormantMotion>,
+            ),
             &mut ShipSoftware,
         ),
         Without<super::travel::SystemsSuspended>,
@@ -784,13 +999,17 @@ pub fn prepare_sources(
         travel,
         slip,
         state,
+        (presence, inventory, dormant_motion),
         mut software,
     ) in &mut ships
     {
-        let pose = super::identity::pose(transform, velocity, angular);
+        let mut pose = super::identity::pose(transform, velocity, angular);
+        if let Some(motion) = dormant_motion {
+            pose.velocity = motion.velocity.to_array();
+            pose.angular_velocity = motion.angular_velocity.to_array();
+        }
         software.world_source = Some(ship_source(
             &publication,
-            sensors.as_ref().map(|sensors| (**sensors).clone()),
             clock.ticks,
             state.map(|value| value.0.clone()).unwrap_or_default(),
             SourceContext {
@@ -802,9 +1021,9 @@ pub fn prepare_sources(
                             ship: id.0,
                             owner: owner.0,
                             authority_revision: authority.revision,
-                            travel_revision: travel.map_or(0, |state| state.0.revision),
+                            directive_revision: travel
+                                .map_or(0, |state| state.0.directive_revision),
                             topology_revision: publication.navigation_revision,
-                            origin: super::route_service::Origin::Explicit,
                         },
                     )
                 }),
@@ -814,9 +1033,15 @@ pub fn prepare_sources(
                 radius: design.0.radius,
                 mass: mass.mass,
                 pose,
-                travel: travel.map_or_else(CurrentOrder::default, |travel| {
-                    CurrentOrder::from(&travel.0)
-                }),
+                travel: travel.map(|travel| travel.0.clone()).unwrap_or_default(),
+                presence: presence
+                    .map(|presence| presence.0.clone())
+                    .unwrap_or(Presence::Space),
+                location: locations
+                    .get(entity)
+                    .map(|location| location.0.clone())
+                    .unwrap_or_default(),
+                exotic_fuel_kg: exotic_fuel_kg(inventory, &catalogue.0),
                 slip: slip.cloned(),
             },
         ));
@@ -847,12 +1072,12 @@ pub fn dispatch_actions(world: &mut World) {
                 super::travel::dispatch(world, entity, action)
             };
             if let Err(error) = result {
-                if error.is::<super::travel::StaleOrder>() {
+                if error.is::<super::travel::StaleDirective>() {
                     continue;
                 }
                 if let Some(mut travel) = world.get_mut::<super::travel::Travel>(entity) {
-                    travel.0.status = Status::Blocked(error.to_string());
-                    travel.0.planning = None;
+                    travel.0.enabled = false;
+                    travel.0.failure = Some(error.to_string());
                 }
                 break;
             }
@@ -886,11 +1111,10 @@ pub fn handle_for_entity(world: &mut World, ship: Entity, target: Entity) -> Res
         .get::<Identity>(target)
         .ok_or_else(|| anyhow::anyhow!("target unavailable"))?
         .0;
-    world
-        .get_resource::<super::sensors::SensorService>()
-        .map(|service| service.observe(ship))
-        .or_else(|| world.get::<Observations>(ship).map(|value| value.0.clone()))
-        .and_then(|observations| observations.targets.get(&id).copied())
+    super::sensors::observe_read(world, ship)
+        .targets
+        .get(&id)
+        .copied()
         .ok_or_else(|| anyhow::anyhow!("target not observed"))
 }
 
@@ -905,7 +1129,7 @@ const APERTURE_WORK_LIMIT: usize = 1024;
 
 #[derive(Default)]
 struct ApertureIndex {
-    spatial: std::sync::OnceLock<osg_space::spatial::GalacticIndex<usize>>,
+    spatial: std::sync::OnceLock<osg_spatial::GalacticIndex<usize>>,
     bodies: Vec<Aperture>,
     max_speed: f64,
     age_seconds: f64,
@@ -925,14 +1149,14 @@ impl ApertureIndex {
         }
     }
 
-    fn spatial(&self) -> &osg_space::spatial::GalacticIndex<usize> {
+    fn spatial(&self) -> &osg_spatial::GalacticIndex<usize> {
         self.spatial.get_or_init(|| {
-            let mut index = osg_space::spatial::GalacticIndex::new();
+            let mut index = osg_spatial::GalacticIndex::new();
             for (slot, body) in self.bodies.iter().enumerate() {
                 index
                     .insert(
                         slot,
-                        osg_space::spatial::SpatialRecord {
+                        osg_spatial::SpatialRecord {
                             position: body.position,
                             radius_m: body.radius,
                             luminosity: 0.0,
@@ -940,6 +1164,7 @@ impl ApertureIndex {
                     )
                     .expect("published aperture coordinate range");
             }
+            index.rebuild();
             index
         })
     }
@@ -951,7 +1176,7 @@ impl ApertureIndex {
         radius: f64,
         after_seconds: f64,
     ) -> bool {
-        use osg_space::spatial::QueryBudget;
+        use osg_spatial::QueryBudget;
         let after_seconds = after_seconds + self.age_seconds;
         self.spatial()
             .within_radius_budgeted(
@@ -1024,7 +1249,38 @@ mod tests {
     use osg_ship_wasm::ScanSource;
 
     #[test]
-    fn delayed_callback_actions_do_not_block_or_replace_the_next_order() {
+    fn slip_departure_checks_the_line_and_future_clearance_but_allows_target_capture() {
+        let mut source = source();
+        source.apertures = Arc::new(ApertureIndex::fixture(vec![Aperture {
+            reference: None,
+            entity: Entity::from_raw_u32(1).unwrap(),
+            position: GalacticPosition::from_meters(DVec3::X * 50.0),
+            velocity: DVec3::Y * 10.0,
+            radius: 5.0,
+        }]));
+        let origin = GalacticPosition::ZERO;
+        let destination = GalacticPosition::from_meters(DVec3::X * 100.0);
+        assert!(
+            !source
+                .departure_line_clear(origin, destination, source.epoch, source.epoch)
+                .unwrap()
+        );
+        let later = source.epoch + hifitime::Duration::from_seconds(5.0);
+        assert!(
+            source
+                .departure_line_clear(origin, destination, later, later)
+                .unwrap()
+        );
+        let target = GalacticPosition::from_meters(DVec3::X * 50.0);
+        assert!(
+            source
+                .departure_line_clear(origin, target, source.epoch, source.epoch)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn delayed_callback_actions_do_not_replace_the_current_directive() {
         let account = Id::new();
         let mut app = crate::sim::provision(&[account], None, None).unwrap();
         let world = app.world_mut();
@@ -1038,39 +1294,43 @@ mod tests {
         world
             .get_mut::<super::super::travel::Travel>(ship)
             .unwrap()
-            .0 = TravelState {
-            autopilot_enabled: true,
-            revision: 8,
-            order: 1,
-            orders: vec![Order::WaitUntil(5).into(), Order::WaitUntil(20).into()],
-            status: Status::Active,
+            .0 = AutopilotState {
+            enabled: true,
+            directive_revision: 8,
+            itinerary: vec![ItineraryEntry {
+                directive: Directive::SlipToSystem(Id::new()),
+                label: "Destination".into(),
+                max_loss_ppm: 100.0,
+                fuel_allowance_kg: 1.0,
+                estimated_duration_ticks: None,
+            }],
             ..Default::default()
         };
         world.get_mut::<ShipSoftware>(ship).unwrap().world_actions = vec![
-            ProgramAction::Block {
-                revision: 8,
-                order: 0,
+            ProgramAction::Fail {
+                directive_revision: 7,
                 reason: "late error from previous stage".into(),
             },
-            ProgramAction::Undock {
-                revision: 7,
-                order: 1,
+            ProgramAction::Complete {
+                directive_revision: 7,
             },
-            ProgramAction::Estimate {
-                revision: 8,
-                order: 1,
-                remaining_ticks: Some(15),
-                remaining_propellant_kg: Some(0.),
+            ProgramAction::PublishStatus {
+                directive_revision: 8,
+                status: FirmwareStatus {
+                    estimated_arrival_tick: Some(now + 15),
+                    ..Default::default()
+                },
             },
         ];
 
         dispatch_actions(world);
 
         let state = &world.get::<super::super::travel::Travel>(ship).unwrap().0;
-        assert_eq!(state.status, Status::Active);
-        assert_eq!((state.revision, state.order), (8, 1));
-        assert_eq!(state.orders.len(), 2);
-        assert_eq!(state.estimated_arrival_tick, Some(now + 15));
+        assert!(state.enabled);
+        assert!(state.failure.is_none());
+        assert_eq!(state.directive_revision, 8);
+        assert_eq!(state.itinerary.len(), 1);
+        assert_eq!(state.status.estimated_arrival_tick, Some(now + 15));
         assert!(
             world
                 .get::<ShipSoftware>(ship)
@@ -1094,7 +1354,7 @@ mod tests {
         }
     }
 
-    pub(super) fn source() -> ShipScan {
+    pub(super) fn source() -> ShipScan<'static> {
         ShipScan {
             sensors: None,
             routing: None,
@@ -1109,7 +1369,10 @@ mod tests {
             apertures: Arc::default(),
             own: Id::new(),
             pose: Pose::default(),
-            travel: CurrentOrder::default(),
+            travel: AutopilotState::default(),
+            presence: Presence::Space,
+            location: Default::default(),
+            exotic_fuel_kg: 1.0,
             slip_ready: true,
             slip_axis: [0.0, 0.0, -1.0],
             slip_power_w: 100e6,
@@ -1304,6 +1567,7 @@ mod tests {
             systems: Vec::new(),
             navigation: false,
             beacon: Beacon {
+                system: None,
                 entity: Id::new(),
                 radius_m: 10.0,
                 pose: Pose::default(),
@@ -1339,6 +1603,7 @@ mod tests {
             systems: Vec::new(),
             navigation: false,
             beacon: Beacon {
+                system: None,
                 entity: id,
                 radius_m: 10.0,
                 pose: Pose::default(),
@@ -1460,7 +1725,7 @@ mod tests {
         );
     }
 
-    pub(super) fn universe_source() -> ShipScan {
+    pub(super) fn universe_source() -> ShipScan<'static> {
         let mut source = source();
         let universe = Arc::new(
             osg_universe::universe::Universe::init(osg_universe::example_config()).unwrap(),

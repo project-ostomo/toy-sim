@@ -292,9 +292,16 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
     use crate::sim::{identity::Identity, travel};
     use osg_model::{
         Id,
-        travel::{Order, Status, TravelState},
+        travel::{AutopilotState, Directive, FirmwarePhase, FirmwareStatus, ItineraryEntry},
     };
     let id = Id::new();
+    let itinerary = vec![ItineraryEntry {
+        directive: Directive::SlipToSystem(Id::new()),
+        label: "Next system".into(),
+        max_loss_ppm: 100.,
+        fuel_allowance_kg: 1.,
+        estimated_duration_ticks: None,
+    }];
     app.world_mut()
         .init_resource::<crate::sim::simulation::SimulationCounters>();
     app.world_mut().entity_mut(entity).insert((
@@ -303,26 +310,23 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
             account: id,
             revision: 1,
         },
-        travel::Travel(TravelState {
-            autopilot_enabled: true,
-            revision: 9,
-            orders: vec![Order::WaitUntil(9999)]
-                .into_iter()
-                .map(Into::into)
-                .collect(),
-            status: Status::Planning,
-            planning: Some(osg_model::travel::PlanningProgress {
-                stage: osg_model::travel::PlanningStage::BuildingGraph,
-                completed: 40,
-                total: Some(100),
-            }),
-            estimated_arrival_tick: Some(9999),
+        travel::Travel(AutopilotState {
+            enabled: true,
+            directive_revision: 9,
+            itinerary: itinerary.clone(),
+            status: FirmwareStatus {
+                phase: FirmwarePhase::Planning,
+                estimated_arrival_tick: Some(9999),
+                ..default()
+            },
             ..default()
         }),
         travel::SlipDrive {
             preparation: Some(travel::Preparation {
                 destination: Default::default(),
                 navigation_beacon: None,
+                arrival_velocity: None,
+                not_before_tick: None,
                 started: 0,
                 mass: 100.,
                 work_j: 100.,
@@ -386,8 +390,10 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
         assert!(software.inbox.is_empty() && software.world_actions.is_empty());
         assert_eq!(
             world.get::<travel::Travel>(entity).unwrap().0,
-            TravelState {
-                revision: 10,
+            AutopilotState {
+                directive_revision: 10,
+                itinerary: itinerary.clone(),
+                failure: Some("Flight computer restarted".into()),
                 ..default()
             }
         );
@@ -443,8 +449,10 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
     assert_eq!(throttle(app.world(), entity), 0.4);
     assert_eq!(
         app.world().get::<travel::Travel>(entity).unwrap().0,
-        TravelState {
-            revision: 10,
+        AutopilotState {
+            directive_revision: 10,
+            itinerary,
+            failure: Some("Flight computer restarted".into()),
             ..default()
         }
     );

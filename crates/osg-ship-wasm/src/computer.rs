@@ -6,6 +6,7 @@ use osg_ships::{DeviceCommand, DeviceStatus};
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    SetGuidance(Option<osg_model::travel::Guidance>),
     SetThrottle(f64),
     Manual {
         throttle: f64,
@@ -34,6 +35,12 @@ impl Command {
         use abi::Record;
 
         match *self {
+            Self::SetGuidance(ref guidance) => (
+                abi::REQUEST_SET_GUIDANCE,
+                osg_model::wasm_world::guidance_record(guidance)
+                    .bytes()
+                    .to_vec(),
+            ),
             Self::SetThrottle(throttle) => (abi::REQUEST_THROTTLE, throttle.to_le_bytes().to_vec()),
             Self::MarkTarget {
                 contact,
@@ -349,10 +356,12 @@ impl crate::Controller {
                 };
 
                 match design.parts[*part].definition.equipment {
-                    Equipment::Weapon { .. } => design.weapon_specs
-                        [design.part_weapons[*part].unwrap()]
-                    .bytes()
-                    .to_vec(),
+                    Equipment::Weapon { .. } => {
+                        match &design.weapon_specs[design.part_weapons[*part].unwrap()] {
+                            osg_ships::weapons::WeaponSpec::Gun(spec) => spec.bytes().to_vec(),
+                            osg_ships::weapons::WeaponSpec::Laser(spec) => spec.bytes().to_vec(),
+                        }
+                    }
                     Equipment::Rcs {
                         ref propellant_resource,
                         thrust_n,
@@ -596,10 +605,15 @@ pub fn query_work(query: &osg_model::ProgramQuery) -> u64 {
     use osg_model::ProgramQuery;
 
     match query {
-        ProgramQuery::Orrery { .. } => osg_model::local_space::QUERY_GAS,
+        ProgramQuery::Orrery { .. } | ProgramQuery::OrrerySystem { .. } => {
+            osg_model::local_space::QUERY_GAS
+        }
         ProgramQuery::RouteRequest(_) => osg_model::routing::REQUEST_GAS,
         ProgramQuery::RoutePoll { .. } => osg_model::routing::POLL_GAS,
         ProgramQuery::SlipEligibility { .. } => 131_072,
+        ProgramQuery::SlipEligibilityBatch(probes) => {
+            131_072_u64.saturating_mul(probes.len() as u64)
+        }
         ProgramQuery::Beacons { limit, .. } => 100 + 1008 * u64::from((*limit).min(256)),
         ProgramQuery::Beacon(_)
         | ProgramQuery::Contact(_)

@@ -73,6 +73,34 @@ impl GasLedger {
         Ok(())
     }
 
+    pub fn transfer(&self, from: Principal, to: Principal, amount: u64) -> Result<()> {
+        ensure!(from != to && amount > 0, "invalid gas transfer");
+        let mut ledger = self.0.lock().unwrap();
+        let source = ledger
+            .accounts
+            .get(&from)
+            .context("source gas account unavailable")?;
+        ensure!(source.available >= amount, "insufficient gas");
+        let target = ledger
+            .accounts
+            .get(&to)
+            .context("recipient gas account unavailable")?;
+        let available = target
+            .available
+            .checked_add(amount)
+            .context("gas balance overflow")?;
+        ensure!(
+            available
+                .checked_add(target.reserved)
+                .and_then(|n| n.checked_add(target.spent))
+                .is_some(),
+            "gas lifetime accounting overflow"
+        );
+        ledger.accounts.get_mut(&from).unwrap().available -= amount;
+        ledger.accounts.get_mut(&to).unwrap().available = available;
+        Ok(())
+    }
+
     pub fn reserve(&self, owner: Principal, maximum: u64) -> Result<GasReservation> {
         let mut ledger = self.0.lock().unwrap();
         let account = ledger

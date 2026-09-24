@@ -1,4 +1,6 @@
 pub(super) mod construction;
+pub(super) mod service;
+mod workspace;
 
 use super::*;
 use bevy::tasks::{IoTaskPool, Task, futures::check_ready};
@@ -14,10 +16,15 @@ enum Tab {
     Shipyard,
     Jobs,
     Storage,
+    Prices,
 }
 
 #[derive(Default)]
 pub(super) struct State {
+    overview: bool,
+    new_job: bool,
+    facility_search: String,
+    pub service: service::State,
     pub facility: Option<Id>,
     pub directory_after: Option<Id>,
     previous_pages: Vec<Option<Id>>,
@@ -28,13 +35,44 @@ pub(super) struct State {
     owner: Option<ownership::Principal>,
     search: String,
     import_path: String,
+    import_mode: bool,
     imported: Option<Result<BlueprintView, String>>,
     importing: Option<Task<Result<BlueprintView, String>>>,
     pub construction: construction::State,
     cargo: cargo::PaneState,
 }
 
+#[cfg(test)]
+impl State {
+    pub(super) fn gallery_import(&mut self, blueprint: BlueprintView) {
+        self.import_mode = true;
+        self.imported = Some(Ok(blueprint));
+    }
+
+    pub(super) fn gallery_tab(&mut self, name: &str) {
+        self.overview = name == "facilities";
+        self.tab = match name {
+            "shipyard" => Tab::Shipyard,
+            "jobs" => Tab::Jobs,
+            "storage" => Tab::Storage,
+            "pricing" => Tab::Prices,
+            _ => Tab::Factory,
+        };
+        self.service.public = matches!(name, "public-search" | "public-job");
+    }
+}
+
 pub(super) fn draw(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+    transfers: &mut cargo::Transfers,
+    intents: &mut Vec<Intent>,
+) {
+    workspace::draw(ui, state, model, transfers, intents);
+}
+
+fn content(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
@@ -48,13 +86,16 @@ pub(super) fn draw(
         }
     }
 
-    ui.horizontal(|ui| {
-        ui.label(Icon::Industry.text(22.0).color(ACCENT));
-        ui.strong("INDUSTRY NETWORK");
-        ui.weak("Remote management · physical deliveries");
-    });
     if let Some(error) = &model.industry.error {
         ui.colored_label(THREAT, error);
+    }
+    if state.service.public {
+        service::customer(ui, &mut state.service, model, intents);
+        return;
+    }
+    if state.overview {
+        workspace::overview(ui, state, model);
+        return;
     }
     state.construction.draw(ui, model.connected, intents);
     let facilities: Vec<_> = model
@@ -66,47 +107,6 @@ pub(super) fn draw(
     if state.facility.is_none() {
         state.facility = facilities.first().map(|facility| facility.entity);
     }
-    ui.horizontal(|ui| {
-        let name = state
-            .facility
-            .and_then(|id| {
-                model
-                    .industry
-                    .directory
-                    .iter()
-                    .find(|facility| facility.entity == id)
-                    .map(|facility| facility.name.as_str())
-                    .or_else(|| cargo::facility(model, id).map(|facility| facility.name.as_str()))
-            })
-            .unwrap_or("Select a facility");
-        egui::ComboBox::from_id_salt("industry_facility")
-            .selected_text(name)
-            .width(310.0)
-            .show_ui(ui, |ui| {
-                for facility in &facilities {
-                    ui.selectable_value(&mut state.facility, Some(facility.entity), &facility.name);
-                }
-            });
-        if ui
-            .add_enabled(
-                !state.previous_pages.is_empty(),
-                egui::Button::new("Previous"),
-            )
-            .clicked()
-        {
-            state.directory_after = state.previous_pages.pop().flatten();
-        }
-        if ui
-            .add_enabled(
-                model.industry.directory_next.is_some(),
-                egui::Button::new("Next"),
-            )
-            .clicked()
-        {
-            state.previous_pages.push(state.directory_after);
-            state.directory_after = model.industry.directory_next;
-        }
-    });
     let Some(facility) = state.facility.and_then(|id| cargo::facility(model, id)) else {
         ui.weak(if state.facility.is_some() {
             "Loading facility inventory and jobs…"
@@ -116,23 +116,35 @@ pub(super) fn draw(
         return;
     };
     ui.horizontal(|ui| {
-        ui.label(society::name(&model.society.directory, facility.owner));
+        ui.label(Icon::Industry.text(24.).color(ACCENT));
+        ui.heading(&facility.name);
         if !facility.can_manage {
             ui.colored_label(MUTED, "VIEW ONLY");
         }
-        if ui.button("Open cargo").clicked() {
-            intents.push(Intent::InspectInventory(facility.entity));
-        }
     });
-    ui.horizontal(|ui| {
-        ui.selectable_value(&mut state.tab, Tab::Factory, "Production");
+    ui.weak(format!(
+        "Station · owned by {}",
+        society::name(&model.society.directory, facility.owner)
+    ));
+    ui.horizontal_wrapped(|ui| {
+        ui.selectable_value(&mut state.tab, Tab::Factory, "Console");
         ui.selectable_value(&mut state.tab, Tab::Shipyard, "Shipyard");
         ui.selectable_value(&mut state.tab, Tab::Storage, "Storage");
+        if facility.can_configure_service {
+            ui.selectable_value(&mut state.tab, Tab::Prices, "Service & pricing");
+        }
         ui.selectable_value(
             &mut state.tab,
             Tab::Jobs,
-            format!("Jobs ({})", facility.jobs.len()),
+            format!("Queue ({})", facility.jobs.len()),
         );
+        if ui.button("Open cargo").clicked() {
+            intents.push(Intent::InspectInventory(facility.entity));
+        }
+        if ui.button("+ New job").clicked() {
+            state.new_job = true;
+            state.tab = Tab::Factory;
+        }
     });
     ui.separator();
     if state.tab == Tab::Storage {
@@ -153,15 +165,12 @@ pub(super) fn draw(
         .auto_shrink([false, false])
         .min_scrolled_height(0.0)
         .max_height(height)
-        .show(ui, |ui| {
-            capabilities(ui, facility);
-            ui.separator();
-            match state.tab {
-                Tab::Factory => production(ui, state, model, facility, intents),
-                Tab::Shipyard => shipyard(ui, state, model, facility, intents),
-                Tab::Jobs => jobs(ui, model, facility, intents),
-                Tab::Storage => unreachable!(),
-            }
+        .show(ui, |ui| match state.tab {
+            Tab::Factory => workspace::console(ui, state, model, facility, intents),
+            Tab::Shipyard => workspace::build(ui, state, model, facility, intents),
+            Tab::Jobs => jobs(ui, model, facility, intents),
+            Tab::Prices => service::pricing(ui, &mut state.service, facility, model, intents),
+            Tab::Storage => unreachable!(),
         });
 }
 
@@ -171,29 +180,6 @@ fn capability_name(capability: IndustryCapability) -> &'static str {
         IndustryCapability::FuelPlant => "Fuel plant",
         IndustryCapability::Fabricator => "Fabricator",
         IndustryCapability::Shipyard => "Shipyard",
-    }
-}
-
-fn capabilities(ui: &mut egui::Ui, facility: &FacilityView) {
-    for module in &facility.capabilities {
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                if module.operational { ACCENT } else { THREAT },
-                if module.operational { "●" } else { "○" },
-            );
-            ui.label(format!(
-                "{} · {} lanes · {:.1} MW / lane",
-                capability_name(module.capability),
-                module.lanes,
-                module.power_per_lane_w as f64 / 1e6
-            ));
-            if let Some(radius) = module.max_radius_m {
-                ui.weak(format!("max hull radius {}", distance(radius)));
-            }
-            if !module.operational {
-                ui.colored_label(THREAT, "Unavailable");
-            }
-        });
     }
 }
 
@@ -271,7 +257,7 @@ fn production(
     if ui
         .add_enabled(
             model.connected && facility.can_manage && enough,
-            egui::Button::new("Start production"),
+            egui::Button::new("Queue production").min_size(egui::vec2(ui.available_width(), 32.)),
         )
         .clicked()
     {
@@ -368,27 +354,51 @@ fn shipyard(
     state.blueprint = state
         .blueprint
         .min(catalogue.blueprints.len().saturating_sub(1));
-    if let Some(blueprint) = catalogue.blueprints.get(state.blueprint) {
-        egui::ComboBox::from_id_salt("construction_blueprint")
-            .selected_text(&blueprint.name)
-            .show_ui(ui, |ui| {
-                for (index, blueprint) in catalogue.blueprints.iter().enumerate() {
-                    ui.selectable_value(&mut state.blueprint, index, &blueprint.name);
-                }
-            });
-        blueprint_controls(
-            ui,
-            blueprint,
-            state.owner.unwrap(),
-            model,
-            facility,
-            state.construction.busy(),
-            intents,
-        );
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut state.import_mode, false, "Blueprint");
+        ui.selectable_value(&mut state.import_mode, true, "Import .ship");
+    });
+    if !state.import_mode {
+        if let Some(blueprint) = catalogue.blueprints.get(state.blueprint) {
+            egui::ComboBox::from_id_salt("construction_blueprint")
+                .selected_text(&blueprint.name)
+                .show_ui(ui, |ui| {
+                    for (index, blueprint) in catalogue.blueprints.iter().enumerate() {
+                        ui.selectable_value(&mut state.blueprint, index, &blueprint.name);
+                    }
+                });
+            blueprint_controls(
+                ui,
+                blueprint,
+                state.owner.unwrap(),
+                model,
+                facility,
+                state.construction.busy(),
+                intents,
+            );
+        }
+        return;
     }
     ui.separator();
-    ui.label("Import a .ship design");
-    ui.weak("Drop a ship file here, or enter its local path.");
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1., ACCENT))
+        .fill(osg_ui::desktop::SURFACE_RAISED)
+        .inner_margin(10.)
+        .show(ui, |ui| {
+            ui.set_min_width((ui.available_width() - 1.).max(0.));
+            ui.vertical_centered(|ui| {
+                ui.label(Icon::Ship.text(24.).color(ACCENT));
+                if let Some(Ok(blueprint)) = &state.imported {
+                    ui.colored_label(
+                        osg_ui::desktop::POSITIVE,
+                        format!("VALID · {}", blueprint.name),
+                    );
+                } else {
+                    ui.strong("Import a .ship design");
+                }
+                ui.small("Drop a ship file here, or enter its path below.");
+            });
+        });
     let dropped = ui.input(|input| input.raw.dropped_files.clone());
     for file in dropped {
         let path = file.path().to_owned();
@@ -471,11 +481,94 @@ fn blueprint_controls(
         blueprint.energy_j as f64 / 1e6
     ));
     let enough = requirements(ui, &blueprint.inputs, facility, 1);
+    let radius_id = egui::Id::new((
+        "industry_blueprint_radius",
+        *blake3::hash(&blueprint.blueprint).as_bytes(),
+    ));
+    let radius = ui.ctx().data_mut(|data| {
+        if let Some(radius) = data.get_temp::<Option<f64>>(radius_id) {
+            return radius;
+        }
+        let radius = osg_ships::ShipBlueprint::from_bytes(&blueprint.blueprint)
+            .and_then(|blueprint| blueprint.compile(&osg_ships::Catalogue::builtin()))
+            .ok()
+            .map(|design| design.radius);
+        data.insert_temp(radius_id, radius);
+        radius
+    });
+    let maximum = facility
+        .capabilities
+        .iter()
+        .filter(|module| module.capability == IndustryCapability::Shipyard)
+        .filter_map(|module| module.max_radius_m)
+        .max_by(f64::total_cmp);
+    let fits = radius
+        .zip(maximum)
+        .is_none_or(|(radius, maximum)| radius <= maximum);
+    ui.add_space(8.);
+    ui.weak("CHECKS");
+    egui::Frame::new()
+        .fill(osg_ui::desktop::SURFACE_RAISED)
+        .inner_margin(10.)
+        .show(ui, |ui| {
+            egui::Grid::new("build_checks")
+                .spacing([18., 8.])
+                .show(ui, |ui| {
+                    ui.weak("Hull radius");
+                    ui.colored_label(
+                        if fits {
+                            osg_ui::desktop::POSITIVE
+                        } else {
+                            osg_ui::desktop::WARNING
+                        },
+                        radius
+                            .zip(maximum)
+                            .map(|(radius, maximum)| {
+                                format!("{radius:.0} m / {maximum:.0} m maximum")
+                            })
+                            .unwrap_or("Unavailable".into()),
+                    );
+                    ui.end_row();
+                    ui.weak("Hangar berths");
+                    ui.label(
+                        facility
+                            .metrics
+                            .berths_used
+                            .zip(facility.metrics.berths_total)
+                            .map(|(used, total)| {
+                                format!("{} of {total} free", total.saturating_sub(used))
+                            })
+                            .unwrap_or("Unavailable".into()),
+                    );
+                    ui.end_row();
+                    ui.weak("Shipyard queue");
+                    ui.label(format!(
+                        "{} builds ahead",
+                        facility
+                            .jobs
+                            .iter()
+                            .filter(|job| job.capability == IndustryCapability::Shipyard)
+                            .count()
+                    ));
+                    ui.end_row();
+                });
+        });
+    ui.add_space(8.);
+    egui::Frame::new()
+        .fill(osg_ui::desktop::SURFACE_RAISED)
+        .inner_margin(10.)
+        .show(ui, |ui| {
+            ui.weak("PRICE");
+            ui.colored_label(
+                osg_ui::desktop::POSITIVE,
+                "Your facility · no service charge",
+            );
+        });
     ui.weak("Delivered into this station's hangar with empty tanks and batteries. Refill and request dock power before undocking.");
     if ui
         .add_enabled(
-            model.connected && facility.can_manage && enough && !uploading,
-            egui::Button::new("Build ship"),
+            model.connected && facility.can_manage && enough && fits && !uploading,
+            egui::Button::new("Queue build").min_size(egui::vec2(ui.available_width(), 32.)),
         )
         .clicked()
     {
@@ -526,43 +619,38 @@ fn requirements(
     batches: u64,
 ) -> bool {
     let mut enough = true;
-    for input in inputs {
-        let quantity = input.quantity.checked_mul(batches);
-        let available = facility
-            .items
-            .iter()
-            .find(|stack| stack.item == input.item)
-            .map_or(0, cargo::available);
-        let satisfied = quantity.is_some_and(|quantity| available >= quantity);
-        enough &= satisfied;
-        ui.horizontal(|ui| {
-            ui.label(
-                match input.item {
-                    CargoItem::Resource(_) => Icon::Cargo,
-                    CargoItem::Part(_) => Icon::Settings,
-                }
-                .text(16.0)
-                .color(ACCENT),
-            );
-            ui.label(item_name(&input.item, facility));
-            ui.colored_label(
-                if satisfied { TEXT } else { THREAT },
-                format!(
-                    "{} required / {} available",
-                    quantity.map_or("Too many".into(), |value| quantity_label(
-                        &input.item,
-                        value,
-                        facility
-                    )),
+    egui::Grid::new("industry_requirements")
+        .striped(true)
+        .spacing([18., 10.])
+        .show(ui, |ui| {
+            ui.weak("Item");
+            ui.weak("Need");
+            ui.weak("Available");
+            ui.end_row();
+            for input in inputs {
+                let quantity = input.quantity.checked_mul(batches);
+                let available = facility
+                    .items
+                    .iter()
+                    .find(|stack| stack.item == input.item)
+                    .map_or(0, cargo::available);
+                let satisfied = quantity.is_some_and(|quantity| available >= quantity);
+                enough &= satisfied;
+                ui.label(item_name(&input.item, facility));
+                ui.label(quantity.map_or("Too many".into(), |value| {
+                    quantity_label(&input.item, value, facility)
+                }));
+                ui.colored_label(
+                    if satisfied {
+                        osg_ui::desktop::POSITIVE
+                    } else {
+                        osg_ui::desktop::WARNING
+                    },
                     quantity_label(&input.item, available, facility),
-                ),
-            )
-            .on_hover_text(format!(
-                "{} required / {available} available inventory units",
-                quantity.map_or("Overflow".into(), |value| value.to_string())
-            ));
+                );
+                ui.end_row();
+            }
         });
-    }
     enough
 }
 
@@ -585,55 +673,72 @@ fn jobs(ui: &mut egui::Ui, model: &FrameModel, facility: &FacilityView, intents:
         ui.weak("No queued production or construction jobs.");
     }
     for job in &facility.jobs {
-        ui.horizontal(|ui| {
-            ui.strong(&job.name);
-            if ui
-                .add_enabled(
-                    model.connected && facility.can_manage,
-                    egui::Button::new("Cancel"),
-                )
-                .clicked()
-            {
-                intents.push(Intent::Industry(
-                    IndustryCommand::CancelJob {
-                        facility: facility.entity,
-                        job: job.id,
+        egui::Frame::new()
+            .fill(osg_ui::desktop::SURFACE_RAISED)
+            .inner_margin(10.)
+            .show(ui, |ui| {
+                ui.set_max_width(ui.available_width().min(330.));
+                ui.horizontal(|ui| {
+                    ui.strong(&job.name);
+                    if ui
+                        .add_enabled(
+                            model.connected && facility.can_manage,
+                            egui::Button::new("Cancel"),
+                        )
+                        .clicked()
+                    {
+                        intents.push(Intent::Industry(
+                            IndustryCommand::CancelJob {
+                                facility: facility.entity,
+                                job: job.id,
+                            },
+                            "Cancel job",
+                        ));
+                    }
+                });
+                let status = match job.status {
+                    JobStatus::Queued => "Queued",
+                    JobStatus::Running => "Running",
+                    JobStatus::AwaitingPower => "Waiting for power",
+                    JobStatus::AwaitingPayment => {
+                        "Payment reservation expired · cancel and order again"
+                    }
+                    JobStatus::AwaitingCargoSpace => "Complete · waiting for cargo space",
+                    JobStatus::AwaitingBerth => "Complete · waiting for hangar capacity",
+                    JobStatus::ModuleUnavailable => "Installed module unavailable",
+                };
+                let fraction = job.progress_ticks as f32 / job.duration_ticks.max(1) as f32;
+                ui.add(
+                    egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
+                        .desired_height(4.)
+                        .corner_radius(0.)
+                        .fill(if job.status == JobStatus::Running {
+                            ACCENT
+                        } else {
+                            osg_ui::desktop::WARNING
+                        }),
+                );
+                ui.colored_label(
+                    if job.status == JobStatus::Running {
+                        ACCENT
+                    } else {
+                        osg_ui::desktop::WARNING
                     },
-                    "Cancel job",
+                    format!(
+                        "{status} · {} remaining",
+                        duration(
+                            job.duration_ticks.saturating_sub(job.progress_ticks) as f64
+                                * osg_model::TICK_SECONDS
+                        )
+                    ),
+                );
+                ui.small(format!(
+                    "Power {:.2} / {:.2} MW · {}",
+                    job.supplied_power_w as f64 / 1e6,
+                    job.requested_power_w as f64 / 1e6,
+                    society::name(&model.society.directory, job.owner)
                 ));
-            }
-        });
-        let status = match job.status {
-            JobStatus::Queued => "Queued",
-            JobStatus::Running => "Running",
-            JobStatus::AwaitingPower => "Waiting for power",
-            JobStatus::AwaitingCargoSpace => "Complete · waiting for cargo space",
-            JobStatus::AwaitingBerth => "Complete · waiting for hangar capacity",
-            JobStatus::ModuleUnavailable => "Installed module unavailable",
-        };
-        let fraction = job.progress_ticks as f32 / job.duration_ticks.max(1) as f32;
-        ui.add(
-            egui::ProgressBar::new(fraction.clamp(0.0, 1.0))
-                .text(format!(
-                    "{status} · {} remaining",
-                    duration(
-                        job.duration_ticks.saturating_sub(job.progress_ticks) as f64
-                            * osg_model::TICK_SECONDS
-                    )
-                ))
-                .fill(if job.status == JobStatus::Running {
-                    ACCENT
-                } else {
-                    MUTED
-                }),
-        );
-        ui.small(format!(
-            "Power {:.2} / {:.2} MW · {}",
-            job.supplied_power_w as f64 / 1e6,
-            job.requested_power_w as f64 / 1e6,
-            society::name(&model.society.directory, job.owner)
-        ));
-        ui.separator();
+            });
     }
 }
 

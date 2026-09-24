@@ -1,10 +1,13 @@
-mod connection;
+mod commands;
+mod headless;
+pub use commands::Outgoing;
+pub use headless::HeadlessClient;
 #[cfg(any(feature = "ui", test))]
 mod playback;
 #[cfg(feature = "ui")]
 mod universe;
 
-pub use connection::{AssetClient, Endpoint, connect};
+pub use osg_net::{EventSubscription, NetEvent, OsgNetClient};
 
 #[cfg(feature = "ui")]
 mod assets;

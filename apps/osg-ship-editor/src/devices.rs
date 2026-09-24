@@ -174,13 +174,14 @@ pub fn panel(ui: &mut egui::Ui, e: &mut Editor) {
                     osg_ships::DeviceKind::Engine { .. }
                         | osg_ships::DeviceKind::Rcs { .. }
                         | osg_ships::DeviceKind::Torquer { .. }
-                        | osg_ships::DeviceKind::Weapon
+                        | osg_ships::DeviceKind::Gun
+                        | osg_ships::DeviceKind::Laser
                 ) {
                     let mut enabled = !e.ship.avionics.excluded_actuators.contains(&part.id);
                     if ui
                         .checkbox(
                             &mut enabled,
-                            if matches!(kind, DeviceKind::Weapon) {
+                            if matches!(kind, DeviceKind::Gun | DeviceKind::Laser) {
                                 "Use for automatic weapons control"
                             } else {
                                 "Use for automatic flight control"

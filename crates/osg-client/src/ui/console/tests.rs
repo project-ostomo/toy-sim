@@ -127,9 +127,9 @@ fn console_headless_layout_and_manual_lockout() {
     ship.0.coolant_reserve_kg = 410.;
     let details = details();
     assert!(manual(&ship.0, &details, true));
-    ship.0.travel.autopilot_enabled = true;
-    assert!(!manual(&ship.0, &details, true));
-    ship.0.travel.autopilot_enabled = false;
+    ship.0.travel.enabled = true;
+    assert!(manual(&ship.0, &details, true));
+    ship.0.travel.enabled = false;
     world.spawn((ship, ShipDetails(details)));
     let mut textures = std::collections::BTreeMap::new();
     let size = egui::vec2(1600., 900.);

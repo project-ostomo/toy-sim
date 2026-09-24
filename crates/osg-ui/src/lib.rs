@@ -8,6 +8,8 @@ use bevy_dylib as _;
 pub use bevy_egui;
 pub use bevy_egui::egui;
 
+pub mod components;
+mod fonts;
 pub mod desktop;
 pub mod gauges;
 pub mod icons;

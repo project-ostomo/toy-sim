@@ -49,7 +49,7 @@ pub(super) fn update(
         warn!(target: "osg_client::diagnostics", frame_ms, tick = session.tick,
             sequence = session.sequence, buffered_ms = metrics.buffered_ms,
             queued_frames = metrics.queued_frames,
-            inbox_frames = transport.endpoint.state.len(), "client display frame stalled");
+            inbox_frames = transport.events.len(), "client display frame stalled");
         log.stall_at = now;
     }
     if metrics.underruns > log.underruns && now - log.underrun_at >= 1. {
@@ -71,7 +71,7 @@ pub(super) fn update(
     if now - log.summary_at >= 5. {
         debug!(target: "osg_client::diagnostics", fps = metrics.fps,
             max_frame_ms = log.max_frame_ms, buffered_ms = metrics.buffered_ms,
-            queued_frames = metrics.queued_frames, inbox_frames = transport.endpoint.state.len(),
+            queued_frames = metrics.queued_frames, inbox_frames = transport.events.len(),
             underruns = metrics.underruns, catching_up = metrics.catching_up,
             buffering = metrics.buffering,
             tick = session.tick, sequence = session.sequence, "client performance");

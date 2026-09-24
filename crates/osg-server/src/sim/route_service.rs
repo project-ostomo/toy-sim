@@ -35,21 +35,14 @@ const MAX_PER_SHIP: usize = 4;
 const MAX_ENTRIES: usize = 256;
 const MAX_WORKERS: usize = 2;
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
-pub enum Origin {
-    Explicit,
-    Automatic,
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct Caller {
     pub world: Id,
     pub ship: Id,
     pub owner: Principal,
     pub authority_revision: u64,
-    pub travel_revision: u64,
+    pub directive_revision: u64,
     pub topology_revision: u64,
-    pub origin: Origin,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -58,7 +51,6 @@ struct Scope {
     ship: Id,
     owner: Principal,
     authority: u64,
-    origin: Origin,
 }
 
 impl Caller {
@@ -68,12 +60,11 @@ impl Caller {
             ship: self.ship,
             owner: self.owner,
             authority: self.authority_revision,
-            origin: self.origin,
         }
     }
 
     fn current(self, other: Self) -> bool {
-        self.scope() == other.scope() && self.travel_revision == other.travel_revision
+        self.scope() == other.scope() && self.directive_revision == other.directive_revision
     }
 }
 
@@ -114,7 +105,6 @@ struct Running {
 struct Workers(Vec<Running>);
 
 pub struct ReadyRoute {
-    pub goals: Vec<osg_model::travel::Order>,
     pub plan: Plan,
     pub preferences: osg_model::travel::PlanningPreferences,
 }
@@ -161,15 +151,10 @@ impl RouteService {
         reply_capacity: ReplyCapacity,
     ) -> Result<Status> {
         ensure!(
-            request.id != 0 && request.orders.len() <= dto::MAX_ORDERS,
+            request.id != 0 && request.directives.len() <= dto::MAX_DIRECTIVES,
             "invalid route request"
         );
-        osg_protocol::validate_ship_command(&osg_model::ShipCommand::SetTravel {
-            preferences: request.preferences,
-            engage: false,
-            expected_revision: caller.travel_revision,
-            orders: request.orders.clone(),
-        })?;
+        ensure!(request.preferences.valid(), "invalid route preferences");
         let fingerprint = *blake3::hash(&postcard::to_stdvec(&request)?).as_bytes();
         let key = Key {
             scope: caller.scope(),
@@ -288,34 +273,19 @@ pub fn caller(world: &World, ship: Entity) -> Result<Caller> {
             .get::<identity::Control>(ship)
             .context("ship authority unavailable")?
             .revision,
-        travel_revision: world
+        directive_revision: world
             .get::<travel::Travel>(ship)
             .context("ship navigation unavailable")?
             .0
-            .revision,
+            .directive_revision,
         topology_revision: world
             .get_resource::<NavigationPublication>()
             .map_or(0, |publication| publication.revision),
-        origin: Origin::Explicit,
     })
 }
 
 pub fn submit(world: &mut World, ship: Entity, request: Request) -> Result<Status> {
-    submit_origin(world, ship, request, Origin::Explicit)
-}
-
-pub fn submit_automatic(world: &mut World, ship: Entity, request: Request) -> Result<Status> {
-    submit_origin(world, ship, request, Origin::Automatic)
-}
-
-fn submit_origin(
-    world: &mut World,
-    ship: Entity,
-    request: Request,
-    origin: Origin,
-) -> Result<Status> {
-    let mut caller = caller(world, ship)?;
-    caller.origin = origin;
+    let caller = caller(world, ship)?;
     world.init_resource::<RouteService>();
     world
         .resource::<RouteService>()
@@ -323,7 +293,10 @@ fn submit_origin(
 }
 
 pub fn poll(world: &World, ship: Entity, id: u64) -> Result<Status> {
-    poll_origin(world, ship, id, Origin::Explicit)
+    let caller = caller(world, ship)?;
+    Ok(world
+        .get_resource::<RouteService>()
+        .map_or(Status::Unknown, |service| service.poll(caller, id)))
 }
 
 pub fn cancel(world: &World, ship: Entity, id: u64) -> Result<()> {
@@ -342,43 +315,11 @@ pub fn cancel(world: &World, ship: Entity, id: u64) -> Result<()> {
     Ok(())
 }
 
-pub fn poll_automatic(world: &World, ship: Entity, id: u64) -> Result<Status> {
-    poll_origin(world, ship, id, Origin::Automatic)
-}
-
-fn poll_origin(world: &World, ship: Entity, id: u64, origin: Origin) -> Result<Status> {
-    let mut caller = caller(world, ship)?;
-    caller.origin = origin;
-    Ok(world
-        .get_resource::<RouteService>()
-        .map_or(Status::Unknown, |service| service.poll(caller, id)))
-}
-
 pub fn ready(world: &World, ship: Entity, id: u64, expected_revision: u64) -> Result<ReadyRoute> {
-    ready_origin(world, ship, id, expected_revision, Origin::Explicit)
-}
-
-pub fn ready_automatic(
-    world: &World,
-    ship: Entity,
-    id: u64,
-    expected_revision: u64,
-) -> Result<ReadyRoute> {
-    ready_origin(world, ship, id, expected_revision, Origin::Automatic)
-}
-
-fn ready_origin(
-    world: &World,
-    ship: Entity,
-    id: u64,
-    expected_revision: u64,
-    origin: Origin,
-) -> Result<ReadyRoute> {
-    let mut caller = caller(world, ship)?;
-    caller.origin = origin;
+    let caller = caller(world, ship)?;
     ensure!(
-        caller.travel_revision == expected_revision,
-        "stale travel revision"
+        caller.directive_revision == expected_revision,
+        "stale directive revision"
     );
     let service = world
         .get_resource::<RouteService>()
@@ -399,14 +340,16 @@ fn ready_origin(
         anyhow::bail!("route plan is not ready")
     };
     let mut plan = plan.clone();
-    let total = plan
-        .orders
-        .iter()
-        .map(|order| order.estimated_propellant_kg)
-        .collect::<Option<Vec<_>>>()
-        .map(|values| values.into_iter().sum());
-    plan.fuel_budget = fuel_budget(world, ship, total);
+    plan.fuel_budget = fuel_budget(world, ship, None);
     let performance = performance::performance(world, ship)?;
+    ensure!(
+        plan.itinerary
+            .iter()
+            .map(|entry| entry.fuel_allowance_kg)
+            .sum::<f64>()
+            <= performance.exotic_available_kg * entry.request.preferences.fuel_fraction + 1e-9,
+        "Fuel allowance changed; request a new preview"
+    );
     plan.fuel_budget
         .resources
         .push(osg_model::travel::FuelRequirement {
@@ -423,7 +366,6 @@ fn ready_origin(
         "Fuel allowance no longer covers this route; request a new preview"
     );
     Ok(ReadyRoute {
-        goals: entry.request.orders.clone(),
         plan,
         preferences: entry.request.preferences,
     })
@@ -468,11 +410,7 @@ pub fn advance(world: &mut World) {
         let running = &mut workers[index];
         let current = identity::lookup(world, running.key.scope.ship)
             .ok()
-            .and_then(|ship| caller(world, ship).ok())
-            .map(|mut caller| {
-                caller.origin = running.key.scope.origin;
-                caller
-            });
+            .and_then(|ship| caller(world, ship).ok());
         let mut state = service.0.lock().unwrap();
         let stale = running.generation != state.generation
             || state
@@ -535,15 +473,14 @@ pub fn advance(world: &mut World) {
                             Ok(result) => {
                                 let plan = Plan {
                                     planned_tick: input.tick,
-                                    travel_revision: admitted.travel_revision,
+                                    directive_revision: admitted.directive_revision,
                                     topology_revision: admitted.topology_revision,
-                                    orders: result.orders,
+                                    itinerary: result.itinerary,
                                     fuel_budget: result.fuel_budget,
                                     estimated_loss_ppm: result.estimated_loss_ppm,
-                                    beacon_assumptions: result.beacon_assumptions,
                                     exotic_fuel_kg: result.exotic_fuel_kg,
                                 };
-                                if plan.orders.len() > dto::MAX_ORDERS {
+                                if plan.itinerary.len() > dto::MAX_DIRECTIVES {
                                     failed("expanded route exceeds response limit")
                                 } else {
                                     Status::Ready { plan }
@@ -585,19 +522,13 @@ pub(crate) fn prepare(
     services::route_environment::Environment,
 )> {
     let ship = identity::lookup(world, admitted.ship)?;
-    let mut current = caller(world, ship)?;
-    current.origin = admitted.origin;
+    let current = caller(world, ship)?;
     ensure!(
         admitted.current(current),
         "route inputs changed before planning"
     );
 
-    let mut input = performance::request(world, ship, request)?;
-    if admitted.origin == Origin::Automatic {
-        if let Some(travel) = world.get::<travel::Travel>(ship) {
-            input.preferences.max_loss_ppm = travel.0.risk_budget.remaining_ppm();
-        }
-    }
+    let input = performance::request(world, ship, request)?;
     let environment =
         services::route_environment::Environment::capture(world, ship, cancel, &input)?;
     Ok((input, environment))

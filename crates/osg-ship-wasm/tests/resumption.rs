@@ -249,8 +249,9 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
     let old_source_lifetime = Arc::downgrade(&old_source);
 
     let slice = controller
-        .run_slice(input(100), Some(old_source), 200, FUEL_PER_TICK)
+        .run_slice(input(100), Some(old_source.as_ref()), 200, FUEL_PER_TICK)
         .unwrap();
+    drop(old_source);
     assert!(!slice.callback_completed);
     assert!(controller.minimum_to_progress() > 200);
     assert!(controller.last_gas_used <= 200);
@@ -263,7 +264,7 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
     controller
         .run_slice(
             input(101),
-            Some(Arc::new(QuerySource(new_calls.clone()))),
+            Some(&QuerySource(new_calls.clone())),
             0,
             FUEL_PER_TICK,
         )
@@ -274,7 +275,7 @@ fn deferred_syscall_has_no_unfunded_effect_and_uses_the_current_scene() {
     let slice = controller
         .run_slice(
             input(102),
-            Some(Arc::new(QuerySource(new_calls.clone()))),
+            Some(&QuerySource(new_calls.clone())),
             1000,
             FUEL_PER_TICK,
         )

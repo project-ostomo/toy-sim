@@ -7,13 +7,15 @@ use bevy::{
     math::{DQuat, DVec3},
     prelude::*,
 };
-use osg_model::travel::{Presence, TravelState};
+use osg_model::travel::{AutopilotState, FirmwarePhase, FirmwareStatus, Presence};
 use osg_model::{Id, IffIdentity, Pose};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 #[derive(Serialize, Deserialize)]
 struct WorldRecord {
+    operations: crate::rpc::OperationHistory,
+    economy: crate::sim::economy::Economy,
     epoch: Id,
     directory: osg_model::ownership::OwnershipDirectory,
     gas: gas::GasLedgerSnapshot,
@@ -63,7 +65,7 @@ struct ShipRecord {
     mine: Option<industry::MineSource>,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
-    travel: TravelState,
+    travel: AutopilotState,
     presence: Presence,
     physical_body: bool,
     stored_mass: f64,
@@ -144,6 +146,11 @@ fn definition_fingerprint(world: &World) -> [u8; 32] {
 
 pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut record = WorldRecord {
+        operations: world
+            .get_resource::<crate::rpc::OperationHistory>()
+            .cloned()
+            .unwrap_or_default(),
+        economy: world.resource::<crate::sim::economy::Economy>().clone(),
         epoch: world.resource::<identity::WorldEpoch>().0,
         directory: world.resource::<ownership::Directory>().0.clone(),
         gas: world.resource::<gas::GasLedger>().snapshot()?,
@@ -359,6 +366,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     use std::collections::BTreeSet;
 
     ensure!(record.directory.valid(), "invalid ownership directory");
+    record.economy.validate(&record.directory)?;
     ensure!(
         record
             .gas
@@ -383,6 +391,31 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
     validate_industry_ids(record)?;
     let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
     let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
+    for ((station, owner), stock) in &record.economy.storage {
+        ensure!(
+            ships.contains_key(station)
+                && record.directory.contains(*owner)
+                && !stock.is_empty()
+                && stock.len() <= 1024,
+            "invalid station storage account"
+        );
+    }
+    for ship in &record.ships {
+        ensure!(
+            ship.hardware.inventory.custody == record.economy.custody_totals(ship.id)?,
+            "station storage differs from physical custody"
+        );
+    }
+    for (asset, binding) in &record.directory.access_bindings {
+        let ship = ships
+            .get(asset)
+            .context("linked permission asset unavailable")?;
+        let profile = &record.directory.access_profiles[&binding.profile];
+        ensure!(
+            ship.access.0 == binding.effective(&profile.policy),
+            "linked permission policy mismatch"
+        );
+    }
     for account in &record.accounts {
         ensure!(
             record.directory.players.contains_key(&account.id),
@@ -435,6 +468,12 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         }
     }
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
+    for order in record.economy.exchange.orders.values() {
+        if let osg_model::market::Instrument::Commodity { station, item, .. } = &order.instrument {
+            ensure!(ships.contains_key(station), "market station unavailable");
+            osg_ships::industry::item_mass_kg(item, catalogue)?;
+        }
+    }
     for ship in &record.ships {
         ensure!(
             ship.software.is_none() || record.gas.accounts.contains_key(&ship.owner.0),
@@ -561,19 +600,14 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                     && transit.departure_mass_kg > 0.0
                     && transit.distance_ly.is_finite()
                     && transit.distance_ly >= 0.0
-                    && transit.consumed_fuel_g.is_finite()
-                    && transit.consumed_fuel_g >= 0.0
                     && transit.variance_m2.is_finite()
                     && transit.variance_m2 >= 0.0
                     && (!transit.beacon_lost || transit.navigation_beacon.is_some())
-                    && transit.capture_radius_m.is_finite()
-                    && transit.capture_radius_m >= 0.0
-                    && !transit.planned_log_loss.is_nan()
-                    && transit.planned_log_loss >= 0.0
                     && transit
                         .direction
                         .iter()
                         .chain(&transit.retained_velocity)
+                        .chain(&transit.requested_delta_v)
                         .chain(&transit.nominal_direction)
                         .all(|value| value.is_finite())
                     && (DVec3::from_array(transit.direction).length_squared() - 1.0).abs() < 1e-5
@@ -587,9 +621,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                 drive.axis.iter().all(|v| v.is_finite())
                     && (DVec3::from_array(drive.axis).length_squared() - 1.0).abs() < 1e-6
                     && drive.power_w.is_finite()
-                    && drive.power_w >= 0.
-                    && drive.fuel_fraction_g.is_finite()
-                    && (0.0..1.0).contains(&drive.fuel_fraction_g),
+                    && drive.power_w >= 0.,
                 "invalid slip power"
             );
             if let Some(preparation) = &drive.preparation {
@@ -600,7 +632,10 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
                         && preparation.work_j.is_finite()
                         && preparation.work_j >= 0.
                         && preparation.required_j.is_finite()
-                        && preparation.required_j >= preparation.work_j,
+                        && preparation.required_j >= preparation.work_j
+                        && preparation.arrival_velocity.is_none_or(|velocity| {
+                            velocity.iter().all(|value| value.is_finite())
+                        }),
                     "invalid slip preparation"
                 );
             }
@@ -666,6 +701,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
 }
 
 fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
+    let mut held = std::collections::BTreeMap::new();
     let mut identities: std::collections::BTreeSet<_> = record
         .accounts
         .iter()
@@ -681,7 +717,18 @@ fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
                 identities.insert(job.view.id),
                 "duplicate persistent industry job identity"
             );
+            if let Some(payment) = &job.view.payment {
+                if !payment.charged {
+                    held.insert(job.view.id, payment);
+                }
+            }
         }
+    }
+    for (id, payment) in &record.economy.service_holds {
+        ensure!(
+            held.get(id) == Some(&payment),
+            "industry payment hold has no matching job"
+        );
     }
     Ok(())
 }
@@ -736,6 +783,9 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.insert_resource(record.slip_history);
     world.insert_resource(identity::WorldEpoch(record.epoch));
     world.insert_resource(ownership::Directory(record.directory));
+    world.insert_resource(record.operations);
+    world.insert_resource(record.economy);
+    crate::sim::economy::settle(world);
     world.insert_resource(ledger);
     world.insert_resource(crate::sim::session::Clock {
         rate: record.rate,
@@ -828,24 +878,20 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         }
         if ship.software.is_some() {
             ship.hardware.reset_commands(&design);
-            ship.travel.estimated_arrival_tick = None;
         }
-        if ship
-            .travel
-            .orders
-            .iter()
-            .skip(ship.travel.order)
-            .any(|order| {
-                matches!(&order.action, osg_model::travel::Order::Guidance(guidance)
-                if matches!(guidance.target, osg_model::travel::Target::Contact(_)))
-            })
-        {
-            ship.travel.autopilot_enabled = false;
-            ship.travel.status = osg_model::travel::Status::Blocked(
-                "Sensor target must be selected again after restore".into(),
-            );
-            ship.travel.planning = None;
+        if ship.travel.failure.is_some() {
+            ship.travel.enabled = false;
         }
+        ship.travel.status = FirmwareStatus {
+            spent_loss_ppm: ship.travel.status.spent_loss_ppm,
+            spent_exotic_fuel_kg: ship.travel.status.spent_exotic_fuel_kg,
+            phase: if ship.travel.enabled {
+                FirmwarePhase::Planning
+            } else {
+                FirmwarePhase::Idle
+            },
+            ..Default::default()
+        };
         if let Some(bays) = &mut ship.bays {
             for bay in bays {
                 bay.reservation = None;
@@ -1031,6 +1077,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             orrery::activity::activate,
             identity::identify_celestials,
             spatial::rebuild,
+            crate::sim::location::refresh,
         )
             .chain(),
     );
@@ -1056,12 +1103,20 @@ mod route_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osg_model::travel::{Order, QueuedOrder, Status};
+    use osg_model::travel::{Directive, ItineraryEntry};
+
+    fn dock_entry(station: Id) -> ItineraryEntry {
+        ItineraryEntry {
+            directive: Directive::DockAt(station),
+            label: "Dock".into(),
+            max_loss_ppm: 1.,
+            fuel_allowance_kg: 100.,
+            estimated_duration_ticks: None,
+        }
+    }
 
     #[test]
-    fn restore_rebuilds_handles_and_blocks_saved_contact_orders() {
-        use osg_model::travel::{Guidance, GuidanceMode, Target};
-
+    fn restore_rebuilds_sensor_handles() {
         let mut app =
             crate::sim::bootstrap::provision_combat_fixture(&[Id::new()], None, None).unwrap();
         let world = app.world_mut();
@@ -1070,36 +1125,16 @@ mod tests {
             .single(world)
             .unwrap();
         let ship_id = id(world, ship).unwrap();
-        let handle = *world
-            .get::<sensors::Observations>(ship)
-            .unwrap()
-            .0
+        let handle = *sensors::observe(world, ship)
             .contacts
             .keys()
             .next()
             .unwrap();
-        world.get_mut::<travel::Travel>(ship).unwrap().0 = TravelState {
-            autopilot_enabled: true,
-            orders: vec![QueuedOrder::from(Order::Guidance(Guidance {
-                mode: GuidanceMode::KeepRange,
-                target: Target::Contact(osg_model::ContactRef {
-                    observer: ship_id,
-                    contact: handle,
-                }),
-                range_m: 1000.,
-            }))],
-            ..Default::default()
-        };
         let saved = capture(world).unwrap();
         restore(world, &saved).unwrap();
 
         let restored = identity::lookup(world, ship_id).unwrap();
-        let state = &world.get::<travel::Travel>(restored).unwrap().0;
-        assert!(!state.autopilot_enabled);
-        assert!(
-            matches!(&state.status, Status::Blocked(reason) if reason.contains("selected again"))
-        );
-        let observations = &world.get::<sensors::Observations>(restored).unwrap().0;
+        let observations = sensors::observe(world, restored);
         assert!(!observations.contacts.contains_key(&handle));
         assert!(!observations.contacts.is_empty());
     }
@@ -1114,17 +1149,14 @@ mod tests {
             direction: DVec3::X.to_array(),
             speed_ly_s: osg_model::travel::slip::cruise_speed_ly_s(false),
             retained_velocity: [12.0, 34.0, 56.0],
+            requested_delta_v: [1000.0, 2000.0, 0.0],
             departure_mass_kg: 100_000.0,
             distance_ly: 0.25,
-            consumed_fuel_g: 189.46457081379975,
+            consumed_fuel_g: 190,
             navigation_beacon: Some(Id::new()),
             beacon_lost: true,
             nominal_direction: DVec3::X.to_array(),
             variance_m2: 1e12,
-            intended_capture: None,
-            risk_target: None,
-            capture_radius_m: 0.0,
-            planned_log_loss: 0.00001,
         }
     }
 
@@ -1356,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_slip_preserves_realized_walk_fuel_and_order_queue() {
+    fn restored_slip_preserves_realized_walk_fuel_velocity_and_itinerary() {
         let account = Id::new();
         let mut app = crate::scenario(&[account], Some(account), None).unwrap();
         for _ in 0..3 {
@@ -1372,22 +1404,19 @@ mod tests {
             .get::<precision::PreciseTransform>(ship)
             .unwrap()
             .translation_um;
-        let destination = departure.offset_by(DVec3::X * 1e12);
         let tick = world.resource::<simulation::SimulationCounters>().ticks;
-        let orders = vec![
-            QueuedOrder::from(Order::Slip {
-                destination: osg_model::travel::Destination::Galactic(destination),
-                navigation_beacon: None,
-            }),
-            QueuedOrder::from(Order::WaitUntil(tick + 1000)),
-        ];
-        world.entity_mut(ship).insert(travel::Travel(TravelState {
-            orders: orders.clone(),
-            autopilot_enabled: true,
-            revision: 31,
-            status: Status::Active,
-            ..Default::default()
-        }));
+        world
+            .entity_mut(ship)
+            .insert(travel::Travel(AutopilotState {
+                itinerary: vec![dock_entry(Id::new())],
+                enabled: true,
+                directive_revision: 31,
+                status: FirmwareStatus {
+                    phase: FirmwarePhase::Planning,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }));
         travel::set_dormant(world, ship, Presence::SlipTransit(Id::new()));
         let transit = saved_transit(departure, tick);
         let expected_transit = postcard::to_stdvec(&transit).unwrap();
@@ -1404,6 +1433,14 @@ mod tests {
             world.get::<travel::PresenceState>(restored_ship).unwrap().0,
             Presence::SlipTransit(_)
         ));
+        assert_eq!(
+            world
+                .get::<crate::sim::location::SpatialLocation>(restored_ship)
+                .unwrap()
+                .0
+                .region,
+            osg_model::location::LocationRegion::SlipTransit
+        );
         assert_eq!(
             postcard::to_stdvec(world.get::<travel::Transit>(restored_ship).unwrap()).unwrap(),
             expected_transit
@@ -1452,10 +1489,13 @@ mod tests {
             .0
             .labels
             .insert("Preserved identity".into());
-        let travel = TravelState {
-            autopilot_enabled: true,
-            orders: vec![QueuedOrder::from(Order::WaitUntil(1230))],
-            status: Status::Planning,
+        let travel = AutopilotState {
+            enabled: true,
+            itinerary: vec![dock_entry(station_id)],
+            status: FirmwareStatus {
+                phase: FirmwarePhase::Planning,
+                ..Default::default()
+            },
             ..Default::default()
         };
         world
@@ -1538,11 +1578,23 @@ mod tests {
                 .contains("Preserved identity")
         );
         assert_eq!(world.get::<travel::DockedIn>(ship).unwrap().0, station);
+        let ship_location = &world
+            .get::<crate::sim::location::SpatialLocation>(ship)
+            .unwrap()
+            .0;
+        let station_location = &world
+            .get::<crate::sim::location::SpatialLocation>(station)
+            .unwrap()
+            .0;
+        assert_eq!(ship_location, station_location);
+        assert!(station_location.system.is_some());
         let restored_travel = &world.get::<travel::Travel>(ship).unwrap().0;
-        assert_eq!(restored_travel.orders, travel.orders);
-        assert_eq!(restored_travel.order, travel.order);
-        assert_eq!(restored_travel.autopilot_enabled, travel.autopilot_enabled);
-        assert_eq!(restored_travel.revision, travel.revision);
+        assert_eq!(restored_travel.itinerary, travel.itinerary);
+        assert_eq!(restored_travel.enabled, travel.enabled);
+        assert_eq!(
+            restored_travel.directive_revision,
+            travel.directive_revision
+        );
         assert!(world.get::<physics::Velocity>(ship).is_none());
         assert_eq!(pose(world, transit_ship).unwrap(), expected_motion);
         assert!(world.get::<travel::Transit>(transit_ship).is_some());

@@ -50,18 +50,7 @@ fn fragment(input: Output, @builtin(front_facing) front: bool) -> @location(0) v
     let t = p.x;
     var color = vec3(0.0);
     var alpha = 0.0;
-    if mode < 1.5 {
-        let inside = length(input.camera) < 1.0;
-        if front == inside { discard; }
-        let ray = normalize(input.local - input.camera);
-        let angle = atan2(ray.y, ray.x);
-        let coverage = smoothstep(0.0, 1.0, p.y);
-        let n = normalize(input.local);
-        let rim = pow(1.0 - abs(n.z), 8.0);
-        let lines = pow(max(0.0, sin(angle * 73.0 + n.z * 2.0 - t * 4.0)), 38.0);
-        alpha = rim * lines * sin(coverage * 3.141593) * 0.3;
-        color = vec3(0.8, 0.76, 0.67) * 5.0;
-    } else if mode < 3.5 {
+    if mode < 3.5 {
         let inside = length(input.camera) < 1.0;
         if front == inside { discard; }
         let rd = normalize(input.local - input.camera);
@@ -73,7 +62,7 @@ fn fragment(input: Output, @builtin(front_facing) front: bool) -> @location(0) v
             let life = pow(max(0.0, 1.0 - p.y / 2.0), 2.0);
             let opacity = exp(-impact * impact * 8.0) * life * min(1.0, d.y * d.y * 20.0);
             let emission = vec3(0.85, 0.82, 1.0) * (400.0 * exp(-p.y * 20.0) + 6.0);
-            return vec4(emission * 35000.0 * view.exposure, opacity);
+            return vec4(min(emission * 35000.0 * view.exposure, vec3(1000.0)), opacity);
         }
         let b = dot(ro, rd);
         let c = dot(ro, ro) - 1.0;
@@ -115,8 +104,12 @@ fn fragment(input: Output, @builtin(front_facing) front: bool) -> @location(0) v
         let field = vec3(cos(angle) * 9.0, sin(angle) * 9.0, t * 0.5);
         let turbulence = fbm(field);
         let cracks = pow(1.0 - abs(2.0 * turbulence - 1.0), 14.0);
-        alpha = cracks * exp(-n.z * n.z * 70.0) * p.y * p.y * 0.8;
-        color = palette(turbulence) * (1.0 + p.y * 3.0);
+        alpha = cracks * exp(-n.z * n.z * 70.0) * p.y * p.y * 0.25;
+        // Decorative ring glow is bounded in exposed units; metering ran
+        // before this transparent pass.
+        return vec4(palette(turbulence) * (0.3 + p.y * 1.2), alpha);
     }
-    return vec4(color * 35000.0 * view.exposure, clamp(alpha, 0.0, 0.96));
+    // Bright ruptures viewed by a dark-adapted camera otherwise overflow the
+    // half-float scene target and poison bloom/temporal history with infinities.
+    return vec4(min(color * 35000.0 * view.exposure, vec3(1000.0)), clamp(alpha, 0.0, 0.96));
 }

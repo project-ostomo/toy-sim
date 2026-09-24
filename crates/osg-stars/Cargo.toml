@@ -3,5 +3,6 @@ name = "osg-stars"
 version = "0.1.0"
 edition = "2024"
 [dependencies]
+osg-spatial = { path = "../osg-spatial" }
 osg-space = { path = "../osg-space" }
 anyhow = "1.0.104"

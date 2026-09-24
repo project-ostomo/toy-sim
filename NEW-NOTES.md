@@ -1,6 +1,24 @@
-# Some design notes
+# Some changes to make
+
+## Physics
+
+We should compute a hill sphere for each planet and make a system for making it super fast and easy to detect which ship is in what hill sphere. This may be used for "on-rails" in the future, though the current nbody approach is neat too (it's not too slow and allows for emergent phenomena like Lagrange pts).
+
+The main advantage here is to make it unambiguous what the "location" of each station ship, etc, is, for purposes of drawing orbits, atmospheres, etc. One system will compute and set the relationships in parallel, and the whole sim frame subsequently would just read it off of this rather than computing anything. (This might cause things to be up to one tick out of date but that is perfectly fine!)
+
+Slipdrive should be allowed to change velocity as well as location, but velocity changes will be much more costly (a full slipdrive exotic matter tank should be able to cause something on the order of 100 km/s of slipdrive-powered dV, and the possible dV should be constrained to something like 10 km/s per ly, to prevent using slipdrives as an instantaneous velocity changer in combat etc). This can make interceptions at the endpoint significantly faster.
 
 ## Rendering
+
+There's currently a weird heisenbug where for the first few moments after the game starts, and occasionally afterwards, weird black shadows flash around on the starting ship. Claude's attempts at debuggging (contact shadows? mesh loading? shader compilation?) all failed to fix it.
+
+The slip rings are far too bright, and in any case they should probably be excluded from autoexposure. Otherwise when slip charges, instead of the slip rings getting brighter, everything else gets darker and darker. Slip effects in general should probably be excluded from metering, if that's at all practical; we want to see some cool star parallax during slip! Perhaps get rid of the leading tunnel altogether except for a few rays from the direction of travel that hint at a shimmering beacon / slip end point.
+
+Stars can get an aesthetic boost to brightness overall, perhaps a dynamic one given autoexposure (basically exposure should somehow affect stars less, so that they do seem affected by autoexposure, but don't completely disappear in daylight)
+
+## Combat and weapons
+
+Lasers and guns should use different config systems. Lasers should be modeled as hitscan weapons with some random dispersion, *not* as guns with really high muzzle velocity. Their damage should also fall off based on distance in a physically plausible way.
 
 ## Autopilot
 
@@ -106,8 +124,3 @@ A dedicated autopilot MFD page (a firmware screen) shows: the itinerary with the
 - The router returns a directive itinerary with per-hop risk/fuel allowances instead of a fully expanded order list.
 - Travel `ProgramAction`s become: `Complete { directive_revision }`, `Fail { reason }`, `PublishStatus { .. }`, plus the physical actions (`Slip`, `ReserveBay`, `Dock`, `Undock`) validated on physics alone, not against a queued order.
 - Persistence stores intent only; after a load, the firmware replans from scratch.
-
-### Still open
-
-- Should a ship that captures in the wrong system (a missed capture that was saved by an unplanned capture) ask the trip planner for a new itinerary automatically, or fail?
-- Can the player edit the itinerary in the middle of a hop, or only replace it?

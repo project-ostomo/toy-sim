@@ -124,8 +124,10 @@ impl WeaponsController {
         let mut ready = false;
 
         for device in &hardware.devices {
-            let Capability::Weapon(spec) = device.capability else {
-                continue;
+            let (spec, gun, laser) = match device.capability {
+                Capability::Gun(gun) => (gun.weapon, Some(gun), None),
+                Capability::Laser(laser) => (laser.weapon, None, Some(laser)),
+                _ => continue,
             };
             if device.info.flags & abi::CONTROL_ENABLED == 0 {
                 continue;
@@ -144,15 +146,15 @@ impl WeaponsController {
                 + barrel * DVec3::from_array(spec.muzzle_offset_m);
             let bore = barrel * DVec3::NEG_Z;
             let solution = contact.and_then(|c| {
-                if spec.beam_power_w > 0.0 {
+                if let Some(laser) = laser {
                     let offset = DVec3::from_array(c.position_m) - muzzle;
-                    return (offset.length() <= spec.beam_range_m)
+                    return (offset.length_squared() > 1e-12 && offset.length() <= laser.range_m)
                         .then(|| (offset.normalize(), 0.0));
                 }
                 intercept(
                     DVec3::from_array(c.position_m) - muzzle,
                     DVec3::from_array(c.velocity_m_s) - angular.cross(muzzle),
-                    spec.muzzle_speed_m_s,
+                    gun?.muzzle_speed_m_s,
                     self.maximum_flight_time,
                 )
             });
@@ -164,17 +166,17 @@ impl WeaponsController {
                     .clamp(0.0, 0.005)
             });
             let next = contact.and_then(|c| {
-                if spec.beam_power_w > 0.0 {
+                if laser.is_some() {
                     let offset = DVec3::from_array(c.position_m)
                         + DVec3::from_array(c.velocity_m_s) * dt
                         - muzzle;
-                    return Some((offset.normalize(), 0.0));
+                    return (offset.length_squared() > 1e-12).then(|| (offset.normalize(), 0.0));
                 }
                 intercept(
                     DVec3::from_array(c.position_m) + DVec3::from_array(c.velocity_m_s) * dt
                         - muzzle,
                     DVec3::from_array(c.velocity_m_s) - angular.cross(muzzle),
-                    spec.muzzle_speed_m_s,
+                    gun?.muzzle_speed_m_s,
                     self.maximum_flight_time,
                 )
             });
@@ -184,7 +186,7 @@ impl WeaponsController {
             let available = solution.is_some()
                 && tolerance > 0.0
                 && device.available()
-                && reading.ammunition_units > 0
+                && (laser.is_some() || reading.ammunition_units > 0)
                 && reading.battery_energy_j as f64 >= reading.shot_energy_j
                 && reading.inhibit_flags & abi::WEAPON_PROPELLANT == 0;
             ready |= available && error <= tolerance;
@@ -215,8 +217,11 @@ impl WeaponsController {
                         kind: abi::FRAME_SHIP,
                         ..Default::default()
                     },
-                    offset_m: (muzzle + direction * (spec.muzzle_speed_m_s * flight_time))
-                        .to_array(),
+                    offset_m: if let Some(gun) = gun {
+                        (muzzle + direction * (gun.muzzle_speed_m_s * flight_time)).to_array()
+                    } else {
+                        contact.expect("laser aim solution has a target").position_m
+                    },
                     ..Default::default()
                 });
             }
@@ -262,6 +267,76 @@ impl WeaponsController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn laser_aims_at_current_position_without_ammunition_or_projectile_lead() {
+        let mut controller = WeaponsController::default();
+        let sample = Sample {
+            tick: abi::TickContext {
+                physics_dt_s: 0.1,
+                interest: abi::INTEREST_MARKERS,
+                ..Default::default()
+            },
+            flight: abi::FlightState {
+                rotation: [0., 0., 0., 1.],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut hardware = Hardware::default();
+        hardware.devices.push(crate::hardware::Device {
+            info: abi::DeviceInfo {
+                id: 1,
+                kind: abi::DEVICE_LASER,
+                flags: abi::CONTROL_ENABLED,
+                rotation: [0., 0., 0., 1.],
+                ..Default::default()
+            },
+            capability: Capability::Laser(abi::LaserSpec {
+                range_m: 10000.0,
+                ..Default::default()
+            }),
+            status: abi::DeviceStatus {
+                flags: abi::OPERATIONAL | abi::POWERED,
+            },
+            accelerometer: Default::default(),
+            thrust_n: 0.0,
+            resource_mass_kg: 0.0,
+        });
+        hardware.weapon_readings.insert(
+            1,
+            abi::WeaponReading {
+                ammunition_units: 0,
+                battery_energy_j: 1000,
+                shot_energy_j: 100.0,
+                ..Default::default()
+            },
+        );
+        let target = abi::Contact {
+            id: 7,
+            kind: abi::CONTACT_SHIP,
+            position_m: [0.0, 0.0, -1000.0],
+            velocity_m_s: [1000.0, 0.0, 0.0],
+            radius_m: 10.0,
+            ..Default::default()
+        };
+        controller.observe(&sample, &[target]);
+        controller
+            .mark_target(
+                abi::MarkTargetRequest {
+                    contact: 7,
+                    maximum_flight_time_s: 1.0,
+                },
+                0.0,
+            )
+            .unwrap();
+        controller.start_firing().unwrap();
+        let output = controller.update(&sample, &hardware);
+        assert_eq!(output.settings[0].1.aim_direction, [0.0, 0.0, -1.0]);
+        assert_eq!(output.settings[0].1.trigger, 1);
+        assert_eq!(output.rows[0].time_of_flight_s, 0.0);
+        assert_eq!(output.markers[0].offset_m, target.position_m);
+    }
 
     #[test]
     fn marking_and_firing_are_independent_and_unmark_is_safe() {

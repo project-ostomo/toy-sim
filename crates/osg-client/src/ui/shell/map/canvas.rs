@@ -10,9 +10,12 @@ pub(super) fn draw(
     fit_route: bool,
 ) {
     let (rect, response) = ui.allocate_exact_size(
-        ui.available_size().max(egui::vec2(0., 220.)),
+        ui.available_size().max(egui::Vec2::ZERO),
         egui::Sense::click_and_drag(),
     );
+    if rect.width() < 1. || rect.height() < 1. {
+        return;
+    }
     if state.camera.scale == 0. || fit {
         state.camera.fit(
             state
@@ -41,7 +44,7 @@ pub(super) fn draw(
     }
     state.camera.update(ui, &response);
 
-    let painter = ui.painter().with_clip_rect(rect);
+    let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 2., egui::Color32::from_rgb(9, 17, 26));
     let selected = state.selected.or(origin);
     let mut highlighted = state.active.systems.clone();
@@ -92,13 +95,12 @@ pub(super) fn draw(
             )
         })
         .collect();
-    for &(a, b, speed_ly_s, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
+    for &(a, b, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
         let (a, b) = (positions[&a], positions[&b]);
         if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
             continue;
         }
         let color = crate::ui::travel_risk::color(loss);
-        let speed_c = speed_ly_s * travel::slip::LY_M / 299_792_458.0;
         let (a, b) = clip_segment(rect, a, b);
         painter.add(egui::Shape::dashed_line(
             &[a, b],
@@ -110,8 +112,8 @@ pub(super) fn draw(
             a.lerp(b, 0.5),
             egui::Align2::CENTER_BOTTOM,
             loss.map_or_else(
-                || format!("SLIP · {speed_c:.1} c · risk unknown"),
-                |loss| format!("SLIP · {speed_c:.1} c · {loss:.2} ppm"),
+                || "SLIP · risk allowance unknown".into(),
+                |loss| format!("SLIP · risk allowance {loss:.2} ppm"),
             ),
             egui::FontId::monospace(10.),
             color,
@@ -176,12 +178,7 @@ pub(super) fn draw(
         let chosen = selected == Some(system.id);
         let route = highlighted.contains(&index);
         let hovered = hovered == Some(index);
-        let mut color = polity_color(
-            system
-                .sovereignty
-                .and_then(|id| model.inhabited.sovereignties.get(&id))
-                .map(|s| s.bloc),
-        );
+        let mut color = system_color(state, model, system.sovereignty);
         if !matching[&index] && !own && !chosen && !route {
             color = color.gamma_multiply(0.25);
         } else if !own && !chosen && !route && !hovered {
@@ -217,7 +214,15 @@ pub(super) fn draw(
         };
         let galley =
             painter.layout_no_wrap(system.name.clone(), egui::FontId::proportional(11.), color);
-        let position = positions[&index] + egui::vec2(-galley.size().x * 0.5, radius + 5.);
+        let mut position = positions[&index] + egui::vec2(-galley.size().x * 0.5, radius + 5.);
+        position.x = position.x.clamp(
+            rect.left(),
+            (rect.right() - galley.size().x).max(rect.left()),
+        );
+        position.y = position.y.clamp(
+            rect.top(),
+            (rect.bottom() - galley.size().y).max(rect.top()),
+        );
         let bounds = egui::Rect::from_min_size(position, galley.size()).expand(3.);
         let cells = label_cells(bounds);
         if ordinary && cells.iter().any(|cell| occupied.contains(cell)) {
@@ -298,14 +303,22 @@ fn reference_plane(painter: &egui::Painter, rect: egui::Rect, state: &State) {
     }
 }
 
-pub(super) fn legend(ui: &mut egui::Ui) {
+pub(super) fn legend(ui: &mut egui::Ui, mode: ColorBy) {
     ui.horizontal_wrapped(|ui| {
+        if mode == ColorBy::Bloc {
         for (bloc, label) in [
             (Bloc::Union, "USE"),
             (Bloc::League, "LFS member states"),
             (Bloc::NonAligned, "Non-aligned"),
         ] {
             ui.colored_label(polity_color(Some(bloc)), format!("● {label}"));
+        }
+        } else if mode == ColorBy::Standing {
+            for (label, color) in [("Friendly", POSITIVE), ("Neutral", TEXT), ("Hostile", THREAT), ("Unknown", MUTED)] {
+                ui.colored_label(color, format!("● {label}"));
+            }
+        } else {
+            ui.weak("Colours identify polities");
         }
         ui.weak("◎ Inhabited");
         ui.weak("Right-drag rotate · Middle-drag / Shift+right-drag pan · Scroll zoom · Double-click focus");

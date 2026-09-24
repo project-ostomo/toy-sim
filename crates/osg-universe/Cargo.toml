@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+osg-spatial = { path = "../osg-spatial" }
 glam = "0.32.1"
 anyhow.workspace = true
 serde.workspace = true
@@ -18,3 +19,4 @@ blake3 = "1.8"
 rand = "0.10"
 rand_chacha = "0.10"
 serde_json = "1.0"
+moka = { version = "0.12.16", default-features = false, features = ["sync"] }

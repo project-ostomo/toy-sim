@@ -16,9 +16,6 @@ pub(super) fn draw(
     }
     let command = throttle(d, time);
     let enabled = manual(ship, d, connected) && command.is_some();
-    if ship.travel.autopilot_enabled {
-        state.pending = None;
-    }
     if state.smooth.stamp != d.sim_time_ns {
         state.smooth.previous_force = state.smooth.force;
         state.smooth.previous_torque = state.smooth.torque;

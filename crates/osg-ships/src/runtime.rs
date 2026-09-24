@@ -8,6 +8,7 @@ pub struct Inventory {
     pub cargo: Vec<u64>,
     pub packaged_parts: std::collections::BTreeMap<String, u64>,
     pub reservations: std::collections::BTreeMap<osg_model::industry::CargoItem, u64>,
+    pub custody: std::collections::BTreeMap<osg_model::industry::CargoItem, u64>,
     pub tank_capacities_m3: Vec<f64>,
     pub energy_j: u64,
 }
@@ -19,6 +20,7 @@ impl Inventory {
             cargo: vec![0; cat.resources.len()],
             packaged_parts: Default::default(),
             reservations: Default::default(),
+            custody: Default::default(),
             tank_capacities_m3: vec![0.; cat.resources.len()],
             energy_j: 0,
         }
@@ -269,19 +271,17 @@ impl ShipState {
                             [0.; 3]
                         },
                     },
-                    DeviceKind::Weapon => {
+                    DeviceKind::Gun | DeviceKind::Laser => {
                         let part = d.part_for_device(descriptor.handle).unwrap();
                         let index = d.part_weapons[part].unwrap();
                         let weapon = &self.weapons[index];
                         let spec = &d.weapon_specs[index];
                         use osg_ship_api::abi;
 
-                        let ammo = if spec.beam_power_w > 0.0 {
-                            f64::INFINITY
-                        } else {
+                        let ammo = spec.gun().map_or(f64::INFINITY, |gun| {
                             self.inventory
-                                .available(spec.ammunition_resource as usize - 1)
-                        };
+                                .available(gun.ammunition_resource as usize - 1)
+                        });
                         let mut flags = weapon.inhibit_flags
                             & (abi::WEAPON_BLOCKED | abi::WEAPON_TRAVEL | abi::WEAPON_POINTING);
                         for (blocked, flag) in [
@@ -290,7 +290,10 @@ impl ShipState {
                             (
                                 self.inventory.available(0)
                                     < crate::weapons::shot_propellant_kg(spec)
-                                        + if spec.ammunition_resource == 1 {
+                                        + if spec
+                                            .gun()
+                                            .is_some_and(|gun| gun.ammunition_resource == 1)
+                                        {
                                             1.0
                                         } else {
                                             0.0

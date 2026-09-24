@@ -224,7 +224,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     let view = snapshot(
         fixture.app.world(),
         fixture.account,
-        &IndustrySubscription {
+        &IndustryQuery {
             inventories: vec![fixture.ship],
             ..Default::default()
         },

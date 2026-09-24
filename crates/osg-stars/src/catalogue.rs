@@ -1,6 +1,6 @@
 use crate::{GalacticPosition, Star, StarId, min_brightness};
 use anyhow::{Result, ensure};
-use osg_space::spatial::{GalacticIndex, QueryBudget, SpatialRecord};
+use osg_spatial::{GalacticIndex, QueryBudget, SpatialRecord};
 use std::{
     cmp::Ordering,
     collections::{BinaryHeap, HashMap},
@@ -69,6 +69,7 @@ impl StarCatalogue {
                 },
             )?;
         }
+        index.rebuild();
         ensure!(stars.len() <= u32::MAX as usize, "too many stars");
         let mut identities = HashMap::with_capacity(stars.len());
         for (index, star) in stars.iter().enumerate() {

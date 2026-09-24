@@ -1,14 +1,18 @@
+mod assets;
 mod cargo;
 mod chat;
 mod hangar;
 mod industry;
 mod instruments;
 mod inventory;
+mod layout;
 mod map;
+mod market;
 mod model;
 mod overview;
 mod panels;
 mod society;
+mod wallet;
 
 use super::{SelectedTarget, Selection, scene};
 use crate::state::*;
@@ -76,7 +80,7 @@ const CARGO: WindowSpec = WindowSpec {
 const MAP: WindowSpec = WindowSpec {
     id: "map",
     title: "GATE NETWORK",
-    size: egui::vec2(720., 510.),
+    size: egui::vec2(1200., 800.),
     min_size: egui::vec2(480., 350.),
     anchor: egui::Align2::CENTER_CENTER,
     offset: egui::Vec2::ZERO,
@@ -84,9 +88,9 @@ const MAP: WindowSpec = WindowSpec {
 };
 const SOCIETY: WindowSpec = WindowSpec {
     id: "society",
-    title: "SOCIETY & OWNERSHIP",
-    size: egui::vec2(760., 560.),
-    min_size: egui::vec2(650., 420.),
+    title: "DIRECTORY",
+    size: egui::vec2(940., 740.),
+    min_size: egui::vec2(680., 420.),
     anchor: egui::Align2::CENTER_CENTER,
     offset: egui::Vec2::ZERO,
     open: false,
@@ -94,7 +98,7 @@ const SOCIETY: WindowSpec = WindowSpec {
 const INDUSTRY: WindowSpec = WindowSpec {
     id: "industry",
     title: "INDUSTRY",
-    size: egui::vec2(720., 560.),
+    size: egui::vec2(1180., 780.),
     min_size: egui::vec2(580., 400.),
     anchor: egui::Align2::CENTER_CENTER,
     offset: egui::Vec2::ZERO,
@@ -102,8 +106,8 @@ const INDUSTRY: WindowSpec = WindowSpec {
 };
 const CHAT: WindowSpec = WindowSpec {
     id: "local_chat",
-    title: "LOCAL CHAT",
-    size: egui::vec2(510., 360.),
+    title: "CHAT",
+    size: egui::vec2(780., 420.),
     min_size: egui::vec2(360., 260.),
     anchor: egui::Align2::LEFT_BOTTOM,
     offset: egui::Vec2::ZERO,
@@ -111,9 +115,39 @@ const CHAT: WindowSpec = WindowSpec {
 };
 const SETTINGS: WindowSpec = WindowSpec {
     id: "settings",
-    title: "INTERFACE",
-    size: egui::vec2(310., 240.),
-    min_size: egui::vec2(260., 200.),
+    title: "SETTINGS",
+    size: egui::vec2(1000., 740.),
+    min_size: egui::vec2(500., 320.),
+    anchor: egui::Align2::CENTER_CENTER,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
+
+const WALLET: WindowSpec = WindowSpec {
+    id: "wallet",
+    title: "WALLET",
+    size: egui::vec2(1180., 800.),
+    min_size: egui::vec2(650., 420.),
+    anchor: egui::Align2::CENTER_CENTER,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
+
+const MARKET: WindowSpec = WindowSpec {
+    id: "market",
+    title: "MARKET",
+    size: egui::vec2(1180., 800.),
+    min_size: egui::vec2(650., 420.),
+    anchor: egui::Align2::CENTER_CENTER,
+    offset: egui::Vec2::ZERO,
+    open: false,
+};
+
+const ASSETS: WindowSpec = WindowSpec {
+    id: "assets",
+    title: "ASSETS",
+    size: egui::vec2(1180., 800.),
+    min_size: egui::vec2(650., 420.),
     anchor: egui::Align2::CENTER_CENTER,
     offset: egui::Vec2::ZERO,
     open: false,
@@ -158,6 +192,11 @@ pub(super) struct Shell {
     chat: chat::State,
     map: map::State,
     society: society::State,
+    wallet: wallet::State,
+    market: market::State,
+    assets: assets::State,
+    pending_intents: Vec<Intent>,
+    pending_rows: Vec<Row>,
     filter: Filter,
     sort: Sort,
     descending: bool,
@@ -169,7 +208,6 @@ pub(super) struct Shell {
 struct Feedback {
     pending: Vec<Id>,
     label: String,
-    last_tick: u64,
     error: Option<String>,
 }
 
@@ -180,9 +218,14 @@ impl Feedback {
                 return true;
             };
 
-            self.last_tick = self.last_tick.max(result.effective_tick);
             if let Some(error) = &result.error {
-                self.error = Some(error.clone());
+                let message = format!("{}: {error}", short_id(result.id));
+                if let Some(previous) = &mut self.error {
+                    previous.push_str("; ");
+                    previous.push_str(&message);
+                } else {
+                    self.error = Some(message);
+                }
             }
             false
         });
@@ -203,6 +246,11 @@ impl Default for Shell {
             chat: chat::State::default(),
             map: map::State::default(),
             society: society::State::default(),
+            wallet: wallet::State::default(),
+            market: market::State::default(),
+            assets: assets::State::default(),
+            pending_intents: Vec::new(),
+            pending_rows: Vec::new(),
             filter: Filter::default(),
             sort: Sort::default(),
             descending: false,
@@ -214,11 +262,20 @@ impl Default for Shell {
 }
 
 enum Intent {
+    Market(osg_model::market::MarketCommand),
+    OpenStorage {
+        owner: ownership::Principal,
+        station: Id,
+        item: industry_model::CargoItem,
+    },
+    Wallet(economy::WalletCommand),
     Chat(String),
     FocusShip(Id),
     InspectInventory(Id),
     OpenHangar,
+    OpenAssets,
     Industry(industry_model::IndustryCommand, &'static str),
+    Service(industry::service::Action),
     BuildShip(industry::construction::Request),
     RetryNavigation,
     InspectAffiliation(ownership::Principal),
@@ -228,12 +285,12 @@ enum Intent {
     Align(SelectedTarget),
     Approach(ContactRef, f64),
     KeepRange(ContactRef, f64),
-    Queue(Vec<travel::Order>, bool),
-    PlanRoute(Vec<travel::Order>, bool, travel::PlanningPreferences),
+    Navigate(Vec<travel::Directive>, bool),
+    PlanRoute(Vec<travel::Directive>, bool, travel::PlanningPreferences),
     RetryRoute,
-    CancelRoute(Action),
+    CancelRoute(crate::state::requests::RouteCall),
     CommitRoute,
-    EditQueue(Vec<travel::Order>),
+    EditItinerary(Vec<travel::Directive>),
     Command(ShipCommand, &'static str),
     Orbits(bool),
 }
@@ -243,8 +300,15 @@ pub(super) struct ShellDraw;
 
 pub(super) fn install(app: &mut App) {
     app.init_resource::<Shell>()
+        .init_resource::<layout::Store>()
+        .add_systems(Startup, layout::load)
+        .add_systems(Last, layout::save)
         .add_observer(reset_session)
         .add_systems(Update, industry::construction::update)
+        .add_systems(
+            PostUpdate,
+            dispatch.after(osg_ui::bevy_egui::EguiPostUpdateSet::EndPass),
+        )
         .add_systems(
             osg_ui::bevy_egui::EguiPrimaryContextPass,
             draw.in_set(ShellDraw).after(super::console::ConsoleDraw),
@@ -254,6 +318,11 @@ pub(super) fn install(app: &mut App) {
 fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
     shell.feedback = None;
     shell.society = society::State::default();
+    shell.wallet = wallet::State::default();
+    shell.market = market::State::default();
+    shell.assets = assets::State::default();
+    shell.pending_intents.clear();
+    shell.pending_rows.clear();
     shell.map = map::State::default();
     shell.inventory = inventory::State::default();
     shell.industry = industry::State::default();
@@ -267,20 +336,19 @@ fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
 fn draw(
     mut contexts: EguiContexts,
     mut shell: ResMut<Shell>,
-    mut selection: ResMut<Selection>,
-    mut outgoing: ResMut<Outgoing>,
-    mut session: ResMut<SessionInfo>,
+    selection: Res<Selection>,
+    session: Res<SessionInfo>,
+    requests: Res<crate::state::requests::Requests>,
     clock: Res<RenderTime>,
     calendar: Res<CalendarClock>,
     real_time: Res<Time<Real>>,
-    asset_server: Res<AssetServer>,
     diagnostics: Res<ClientDiagnostics>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>, Option<&DisplayPose>)>,
     contacts: Query<(&Contact, &DisplayPose)>,
     optical: Query<&Optical>,
     beacons: Query<(&NavigationObject, &DisplayPose)>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
-    mut views: Query<(
+    views: Query<(
         &ViewObservation,
         &ViewSystems,
         &mut scene::CameraOptions,
@@ -304,19 +372,10 @@ fn draw(
     let velocity = displayed_ship.map_or(glam::DVec3::ZERO, |pose| {
         glam::DVec3::from_array(pose.velocity)
     });
-    let mut primary_acceleration = 0.;
     let mut vicinity = "No celestial reference".to_string();
     let mut primary_luminosity = 0.;
     let mut system_name = "Deep space".to_string();
     let mut rows = Vec::new();
-    let slip_clear = displayed_ship.is_some()
-        && bodies.iter().all(|(body, pose, _)| {
-            let radius =
-                travel::slip::exclusion_radius_m(body.0.gravitational_parameter / 6.67430e-11);
-            radius <= 0.0
-                || pose.0.position.relative_to(origin).length()
-                    > radius + telemetry.map_or(0.0, |ship| ship.radius_m)
-        });
     if let Some((view, systems, _, _)) = view {
         for (contact, pose) in &contacts {
             let observation = &contact.0;
@@ -341,7 +400,6 @@ fn draw(
                 .unwrap_or_else(|| format!("Contact {:08x}", observation.id));
             let kind = "Ship".to_owned();
             rows.push(Row {
-                slip_order: None,
                 celestial: None,
                 target: SelectedTarget::Contact(contact.1),
                 contact: Some(contact.1),
@@ -369,43 +427,21 @@ fn draw(
                 continue;
             }
             let range = pose.0.position.relative_to(origin).length();
-            let acceleration =
-                body.0.gravitational_parameter / range.max(body.0.radius_m).max(1.).powi(2);
-            if acceleration > primary_acceleration {
-                primary_acceleration = acceleration;
+            if telemetry.and_then(|ship| ship.location.primary) == Some(body.0.reference) {
                 vicinity = format!(
                     "{}  /  {} altitude",
                     body.0.name,
                     distance((range - body.0.radius_m).max(0.))
                 );
             }
-            if body.0.luminosity_lumens > primary_luminosity {
+            if telemetry.and_then(|ship| ship.location.system) == Some(body.0.reference.system)
+                && body.0.luminosity_lumens > primary_luminosity
+            {
                 primary_luminosity = body.0.luminosity_lumens;
                 system_name = body.0.name.clone();
             }
 
             rows.push(Row {
-                slip_order: telemetry.filter(|_| slip_clear).and_then(|ship| {
-                    let radius = travel::slip::exclusion_radius_m(
-                        body.0.gravitational_parameter / 6.67430e-11,
-                    );
-                    if radius <= body.0.radius_m + ship.radius_m {
-                        return None;
-                    }
-                    if travel::slip::capture_loss_ppm(radius, range, false)
-                        > ship.travel.preferences.max_loss_ppm
-                    {
-                        return None;
-                    }
-                    Some(travel::Order::Slip {
-                        destination: travel::Destination::Relative {
-                            reference: travel::Reference::Celestial(body.0.reference),
-                            offset: GalacticPosition::ZERO,
-                            axes: travel::Axes::Galactic,
-                        },
-                        navigation_beacon: None,
-                    })
-                }),
                 celestial: Some(body.0.reference),
                 target: SelectedTarget::Celestial(body.0.entity),
                 contact: None,
@@ -435,7 +471,6 @@ fn draw(
             continue;
         }
         rows.push(Row {
-            slip_order: None,
             celestial: None,
             target: SelectedTarget::Beacon(beacon.id),
             contact: view.and_then(|(view, ..)| {
@@ -481,6 +516,10 @@ fn draw(
         });
     }
     let model = FrameModel {
+        declaration_history: &session.declaration_history,
+        declaration_history_next: session.declaration_history_next,
+        declaration_history_key: session.declaration_history_key,
+        services: &session.services,
         industry: &session.industry.snapshot,
         industry_ready: session.industry.ready(),
         navigation: &session.navigation,
@@ -491,7 +530,6 @@ fn draw(
         rows,
         ship: telemetry,
         details,
-        ships: ships.iter().map(|(ship, _, _)| &ship.0).collect(),
         system: system_name,
         vicinity,
         connected: session.world.is_some() && session.status.is_empty(),
@@ -503,12 +541,23 @@ fn draw(
     };
     let mut intents = Vec::new();
     shell.chat.receive(&session.results);
-    shell.map.route.update(
-        telemetry.filter(|_| model.connected),
-        &session.results,
-        &mut outgoing,
-        real_time.elapsed(),
-    );
+    let loading = requests.loading();
+    let navigation_loading = matches!(session.navigation_status, NavigationStatus::Loading);
+    for (window, active) in [
+        (SOCIETY, loading.society),
+        (WALLET, loading.wallet),
+        (MARKET, loading.market || loading.industry),
+        (ASSETS, loading.assets),
+        (INDUSTRY, loading.industry || loading.services),
+        (INVENTORY, loading.industry),
+        (HANGAR, loading.industry),
+        (CARGO, loading.industry),
+        (MAP, navigation_loading),
+        (NAVIGATION, navigation_loading),
+        (CHAT, session.chat.loading()),
+    ] {
+        shell.desktop.set_loading(window, active);
+    }
     panels::draw(
         ctx,
         &mut shell,
@@ -516,6 +565,9 @@ fn draw(
         &selection,
         &session.results,
         &session.chat,
+        session.wallet.as_ref(),
+        session.market.as_ref(),
+        session.assets.as_ref(),
         &mut intents,
     );
     shell.hud = model
@@ -530,8 +582,98 @@ fn draw(
             visible: row_visible(row, &shell, selection.target),
         })
         .collect();
-    for intent in intents {
+    shell.pending_rows = model.rows;
+    if shell.pending_intents.is_empty() {
+        shell.pending_intents = intents;
+    }
+    Ok(())
+}
+
+fn dispatch(
+    mut shell: ResMut<Shell>,
+    mut selection: ResMut<Selection>,
+    mut session: ResMut<SessionInfo>,
+    mut outgoing: ResMut<Outgoing>,
+    mut requests: ResMut<crate::state::requests::Requests>,
+    client: Res<crate::state::requests::NetworkClient>,
+    real_time: Res<Time<Real>>,
+    asset_server: Res<AssetServer>,
+    ships: Query<&OwnedShip>,
+    mut views: Query<(
+        &ViewObservation,
+        &ViewSystems,
+        &mut scene::CameraOptions,
+        &mut scene::ViewOptions,
+    )>,
+) {
+    struct DispatchModel<'a> {
+        connected: bool,
+        rows: Vec<Row>,
+        ships: Vec<&'a ShipTelemetry>,
+        industry: &'a industry_model::IndustrySnapshot,
+    }
+    let model = DispatchModel {
+        connected: session.world.is_some() && session.status.is_empty(),
+        rows: std::mem::take(&mut shell.pending_rows),
+        ships: ships.iter().map(|ship| &ship.0).collect(),
+        industry: &session.industry.snapshot,
+    };
+    let telemetry = ships
+        .iter()
+        .find(|ship| Some(ship.0.ship) == selection.ship)
+        .map(|ship| &ship.0);
+    shell.map.route.update(
+        telemetry.filter(|_| model.connected),
+        &session.results,
+        &mut requests,
+        real_time.elapsed(),
+    );
+    for intent in std::mem::take(&mut shell.pending_intents) {
         match intent {
+            Intent::OpenStorage {
+                owner,
+                station,
+                item,
+            } => {
+                shell.market.open_storage(owner, station, item);
+                shell.desktop.open(MARKET);
+            }
+            Intent::Market(command) => {
+                if model.connected {
+                    let id = crate::state::requests::mutations::market(
+                        &mut requests,
+                        &client.0,
+                        session.world.unwrap(),
+                        session.generation,
+                        command,
+                    );
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: "Market order".into(),
+                        error: None,
+                    });
+                }
+            }
+            Intent::Wallet(command) => {
+                if model.connected {
+                    let label = match &command {
+                        economy::WalletCommand::SetTurnoverTax { .. } => "Turnover tax rate",
+                        _ => "Transfer",
+                    };
+                    let id = crate::state::requests::mutations::wallet(
+                        &mut requests,
+                        &client.0,
+                        session.world.unwrap(),
+                        session.generation,
+                        command,
+                    );
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: label.into(),
+                        error: None,
+                    });
+                }
+            }
             Intent::Chat(text) => {
                 if let Some(id) = session.chat.transmit(text.clone(), &mut outgoing) {
                     shell.chat.sent(id, text);
@@ -566,6 +708,7 @@ fn draw(
                 }
             }
             Intent::OpenHangar => shell.desktop.open(HANGAR),
+            Intent::OpenAssets => shell.desktop.open(ASSETS),
             Intent::BuildShip(request) => {
                 if let Some(world) = session.world.filter(|_| model.connected) {
                     shell
@@ -576,11 +719,34 @@ fn draw(
             }
             Intent::Industry(command, label) => {
                 if model.connected {
-                    let id = outgoing.push(Action::Industry(command));
+                    let id = crate::state::requests::mutations::industry(
+                        &mut requests,
+                        &client.0,
+                        session.world.unwrap(),
+                        session.generation,
+                        command,
+                    );
                     shell.feedback = Some(Feedback {
                         pending: vec![id],
                         label: label.into(),
-                        last_tick: 0,
+                        error: None,
+                    });
+                }
+            }
+            Intent::Service(action) => {
+                if model.connected {
+                    let id = Id::new();
+                    let operation = osg_model::rpc::Operation {
+                        world: session.world.unwrap(),
+                        id,
+                    };
+                    let net = client.0.clone();
+                    requests.submit(operation.world, session.generation, id, async move {
+                        industry::service::submit(net, operation, action).await
+                    });
+                    shell.feedback = Some(Feedback {
+                        pending: vec![id],
+                        label: "Industry service".into(),
                         error: None,
                     });
                 }
@@ -596,24 +762,37 @@ fn draw(
             }
             Intent::Society(command, label) => {
                 if model.connected {
-                    let id = outgoing.push(Action::Society(command));
-                    shell.feedback = Some(Feedback {
-                        pending: vec![id],
-                        label: label.into(),
-                        last_tick: 0,
-                        error: None,
-                    });
+                    let id = crate::state::requests::mutations::society(
+                        &mut requests,
+                        &client.0,
+                        session.world.unwrap(),
+                        session.generation,
+                        command,
+                    );
+                    if let Some(feedback) = shell
+                        .feedback
+                        .as_mut()
+                        .filter(|feedback| feedback.label == label && !feedback.pending.is_empty())
+                    {
+                        feedback.pending.push(id);
+                    } else {
+                        shell.feedback = Some(Feedback {
+                            pending: vec![id],
+                            label: label.into(),
+                            error: None,
+                        });
+                    }
                 }
             }
-            Intent::EditQueue(orders) => {
+            Intent::EditItinerary(orders) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     outgoing.ship(
                         ship,
-                        ShipCommand::SetTravel {
+                        ShipCommand::SetItinerary {
                             preferences: ship.travel.preferences,
                             engage: false,
-                            expected_revision: ship.travel.revision,
-                            orders,
+                            expected_revision: ship.travel.directive_revision,
+                            itinerary: orders,
                         },
                     );
                 }
@@ -623,16 +802,16 @@ fn draw(
                     shell
                         .map
                         .route
-                        .begin(ship, orders, append, preferences, &mut outgoing);
+                        .begin(ship, orders, append, preferences, &mut requests);
                 }
             }
             Intent::RetryRoute => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
-                    shell.map.route.retry(ship, &mut outgoing);
+                    shell.map.route.retry(ship, &mut requests);
                 }
             }
             Intent::CancelRoute(action) => {
-                outgoing.push(action);
+                requests.route(action);
             }
             Intent::CommitRoute => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
@@ -642,20 +821,18 @@ fn draw(
                         shell.feedback = Some(Feedback {
                             pending: vec![id],
                             label: "Engage planned route".into(),
-                            last_tick: 0,
                             error: None,
                         });
                     }
                 }
             }
-            Intent::Queue(orders, append) => {
+            Intent::Navigate(orders, append) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
                     let mut queue = if append {
                         ship.travel
-                            .orders
+                            .itinerary
                             .iter()
-                            .skip(ship.travel.order)
-                            .map(|stage| stage.action.clone())
+                            .map(|stage| stage.directive.clone())
                             .collect::<Vec<_>>()
                     } else {
                         Vec::new()
@@ -666,17 +843,16 @@ fn draw(
                     }
                     let id = outgoing.ship(
                         ship,
-                        ShipCommand::SetTravel {
+                        ShipCommand::SetItinerary {
                             preferences: ship.travel.preferences,
                             engage: true,
-                            expected_revision: ship.travel.revision,
-                            orders: queue,
+                            expected_revision: ship.travel.directive_revision,
+                            itinerary: queue,
                         },
                     );
                     shell.feedback = Some(Feedback {
                         pending: vec![id],
-                        label: "Command queue".into(),
-                        last_tick: 0,
+                        label: "Autopilot itinerary".into(),
                         error: None,
                     });
                 }
@@ -695,7 +871,6 @@ fn draw(
                         shell.feedback = Some(Feedback {
                             pending: vec![],
                             label: "Look at".into(),
-                            last_tick: session.tick,
                             error: Some(
                                 "Object must be optically visible and within camera range (100 km)"
                                     .into(),
@@ -727,7 +902,6 @@ fn draw(
                         shell.feedback = Some(Feedback {
                             pending,
                             label: label.into(),
-                            last_tick: 0,
                             error: None,
                         });
                     }
@@ -742,7 +916,23 @@ fn draw(
         model.connected,
     );
     drop(model);
-    session.industry.subscribe(wanted, &mut outgoing);
+    let society_open = shell.desktop.is_open(SOCIETY);
+    requests.society = shell.society.request(society_open, &session);
+    let wallet_open =
+        shell.desktop.is_open(WALLET) && session.world.is_some() && session.status.is_empty();
+    let account = session.society.account;
+    requests.services = shell
+        .industry
+        .service
+        .query(shell.desktop.is_open(INDUSTRY), account);
+    requests.wallet = shell.wallet.query(wallet_open, account);
+    let market_open =
+        shell.desktop.is_open(MARKET) && session.world.is_some() && session.status.is_empty();
+    requests.market = shell.market.query(market_open, account);
+    let assets_open =
+        shell.desktop.is_open(ASSETS) && session.world.is_some() && session.status.is_empty();
+    requests.assets = shell.assets.query(assets_open);
+    session.industry.subscribe(wanted, &mut requests);
 
     let focus = (shell.desktop.is_open(CHAT) && session.status.is_empty())
         .then(|| {
@@ -759,7 +949,6 @@ fn draw(
         })
         .flatten();
     session.chat.subscribe(focus, &mut outgoing);
-    Ok(())
 }
 
 fn inventory_subscription(
@@ -767,8 +956,12 @@ fn inventory_subscription(
     focused: Option<Id>,
     hangar: Option<&industry_model::HangarView>,
     connected: bool,
-) -> Option<industry_model::IndustrySubscription> {
-    let mut interest = industry_model::IndustrySubscription::default();
+) -> Option<industry_model::IndustryQuery> {
+    let mut interest = industry_model::IndustryQuery::default();
+    if shell.desktop.is_open(MARKET) {
+        interest.directory = true;
+        interest.catalogue = true;
+    }
     if shell.desktop.is_open(INDUSTRY) {
         interest.directory = true;
         interest.catalogue = true;
@@ -779,7 +972,7 @@ fn inventory_subscription(
         interest.inventories.extend(focused);
     }
     if shell.desktop.is_open(HANGAR) {
-        interest.hangar = focused.map(|ship| industry_model::HangarSubscription {
+        interest.hangar = focused.map(|ship| industry_model::HangarQuery {
             ship,
             after: shell.hangar.after,
         });
@@ -824,7 +1017,7 @@ fn commands_for(
                 }
             };
             (
-                vec![queue_command(ship, travel::GuidanceMode::Align, target, 0.)],
+                vec![guidance_command(travel::GuidanceMode::Align, target, 0.)],
                 "Align",
             )
         }
@@ -841,8 +1034,7 @@ fn commands_for(
                 travel::GuidanceMode::Approach
             };
             (
-                vec![queue_command(
-                    ship,
+                vec![guidance_command(
                     mode,
                     travel::Target::Contact(reference),
                     range.max(row.radius + 100.),
@@ -859,20 +1051,14 @@ fn commands_for(
 #[cfg(test)]
 mod tests;
 
-fn queue_command(
-    ship: &ShipTelemetry,
+fn guidance_command(
     mode: travel::GuidanceMode,
     target: travel::Target,
     range_m: f64,
 ) -> ShipCommand {
-    ShipCommand::SetTravel {
-        preferences: ship.travel.preferences,
-        engage: true,
-        expected_revision: ship.travel.revision,
-        orders: vec![travel::Order::Guidance(travel::Guidance {
-            mode,
-            target,
-            range_m,
-        })],
-    }
+    ShipCommand::SetGuidance(Some(travel::Guidance {
+        mode,
+        target,
+        range_m,
+    }))
 }

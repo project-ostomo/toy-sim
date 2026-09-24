@@ -1,4 +1,4 @@
-// Network protocol 49: complete Postcard payload schema.
+// Postcard schema reference; autopilot declarations updated for version 56.
 // See protocol.md for encoding and behavior; protocol-schema.md for the index.
 // This file is a standalone Serde library. It has no game or engine dependencies.
 // Fields and variants are in wire order. Do not alphabetize them.
@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 pub use presentation::*;
-pub const GAME_VERSION: u16 = 49;
+pub const GAME_VERSION: u16 = 56;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Id(pub [u8; 16]);
@@ -78,7 +78,8 @@ pub struct ShipTelemetry {
     pub hull_heat_j: f64,
     pub shield_temperature_k: f64,
     pub coolant_reserve_kg: f64,
-    pub travel: travel::TravelState,
+    pub location: location::LocationContext,
+    pub travel: travel::AutopilotState,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -206,12 +207,13 @@ pub enum ShipCommand {
         target: ContactRef,
     },
     SetIff(IffIdentity),
-    SetTravel {
+    SetItinerary {
         preferences: travel::PlanningPreferences,
         engage: bool,
         expected_revision: u64,
-        orders: Vec<travel::Order>,
+        itinerary: Vec<travel::Directive>,
     },
+    SetGuidance(Option<travel::Guidance>),
     SetAutopilot(bool),
     SetThrottle(f64),
     SetDockServices {
@@ -754,18 +756,9 @@ pub mod travel {
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-    pub enum Order {
-        Guidance(Guidance),
-        TravelTo(Destination),
-        TravelToSystem(Id),
-        Sublight(Destination),
-        Slip {
-            destination: Destination,
-            navigation_beacon: Option<EntityId>,
-        },
-        Dock(EntityId),
-        Undock,
-        WaitUntil(u64),
+    pub enum Directive {
+        SlipToSystem(Id),
+        DockAt(EntityId),
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -789,22 +782,45 @@ pub mod travel {
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-    pub struct QueuedOrder {
+    pub struct ItineraryEntry {
+        pub directive: Directive,
         pub label: String,
-        pub transfer_cost: crate::transfer::TransferCost,
-        pub action: Order,
+        pub max_loss_ppm: f64,
+        pub fuel_allowance_kg: f64,
         pub estimated_duration_ticks: Option<u64>,
-        pub estimated_propellant_kg: Option<f64>,
-        pub estimated_loss_ppm: Option<f64>,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub struct PlanMarker {
+        pub position: GalacticPosition,
+        pub label: String,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    pub struct FirmwareStatus {
+        pub phase: FirmwarePhase,
+        pub summary: String,
+        pub estimated_arrival_tick: Option<u64>,
+        pub capture_body: Option<CelestialRef>,
+        pub aim_offset_m: Option<[f64; 3]>,
+        pub departure_tick: Option<u64>,
+        pub planned_delta_v_m_s: f64,
+        pub planned_loss_ppm: f64,
+        pub spent_loss_ppm: f64,
+        pub planned_exotic_fuel_kg: f64,
+        pub spent_exotic_fuel_kg: f64,
+        pub markers: Vec<PlanMarker>,
     }
 
     #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-    pub enum Status {
+    pub enum FirmwarePhase {
         Idle,
         Planning,
-        Active,
-        Paused,
-        Blocked(String),
+        Waiting { until: Option<u64>, why: String },
+        Charging,
+        Transit,
+        Maneuvering,
+        Docking,
         Completed,
     }
 
@@ -823,18 +839,15 @@ pub mod travel {
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-    pub struct TravelState {
-        pub autopilot_enabled: bool,
+    pub struct AutopilotState {
+        pub enabled: bool,
+        pub directive_revision: u64,
+        pub itinerary: Vec<ItineraryEntry>,
         pub preferences: PlanningPreferences,
         pub risk_budget: RiskBudget,
-        pub goals: Vec<Order>,
         pub fuel_budget: Option<FuelBudget>,
-        pub planning: Option<PlanningProgress>,
-        pub revision: u64,
-        pub orders: Vec<QueuedOrder>,
-        pub order: u64,
-        pub status: Status,
-        pub estimated_arrival_tick: Option<u64>,
+        pub status: FirmwareStatus,
+        pub failure: Option<String>,
     }
 
     #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -865,26 +878,46 @@ pub mod travel {
     }
 }
 
+pub mod location {
+    use super::*;
+    use super::travel::CelestialRef;
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub enum LocationRegion {
+        System,
+        Interstellar,
+        SlipTransit,
+    }
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    pub struct LocationContext {
+        pub region: LocationRegion,
+        pub system: Option<Id>,
+        pub primary: Option<CelestialRef>,
+        pub hierarchy: Vec<CelestialRef>,
+        pub sample_tick: u64,
+    }
+}
+
 pub mod routing {
     use super::*;
-    use super::travel::{FuelBudget, Order, PlanningPreferences, PlanningProgress, QueuedOrder};
+    use super::travel::{Directive, FuelBudget, ItineraryEntry, PlanningPreferences, PlanningProgress};
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     pub struct Request {
         pub id: u64,
-        pub orders: Vec<Order>,
+        pub directives: Vec<Directive>,
         pub preferences: PlanningPreferences,
     }
 
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     pub struct Plan {
         pub planned_tick: u64,
-        pub travel_revision: u64,
+        pub directive_revision: u64,
         pub topology_revision: u64,
-        pub orders: Vec<QueuedOrder>,
+        pub itinerary: Vec<ItineraryEntry>,
         pub fuel_budget: FuelBudget,
         pub estimated_loss_ppm: f64,
-        pub beacon_assumptions: Vec<crate::EntityId>,
         pub exotic_fuel_kg: f64,
     }
 

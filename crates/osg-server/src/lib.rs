@@ -11,6 +11,7 @@ pub mod collision_prototype;
 pub mod launch;
 pub mod persistence;
 pub mod provision;
+mod rpc;
 mod sim;
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
@@ -38,11 +39,13 @@ pub struct Connection {
     pub uploads: BlueprintUploads,
     pub input: mpsc::Receiver<InputFrame>,
     pub state: SnapshotSender,
+    rpc: mpsc::Receiver<rpc::Request>,
 }
 
 struct Endpoint {
     pub input: mpsc::Sender<InputFrame>,
     pub state: SnapshotReceiver,
+    rpc: rpc::Handler,
 }
 
 pub struct SnapshotSender {
@@ -110,16 +113,19 @@ impl SnapshotSender {
 fn channels(account: AccountId, uploads: BlueprintUploads) -> (Connection, Endpoint) {
     let (input, receive) = mpsc::channel(16);
     let (state, frames) = snapshot_queue(64 * 1024 * 1024);
+    let (rpc, requests) = rpc::channel();
     (
         Connection {
             account,
             uploads,
             input: receive,
             state,
+            rpc: requests,
         },
         Endpoint {
             input,
             state: frames,
+            rpc,
         },
     )
 }
@@ -191,6 +197,12 @@ fn run_loop(
                 }
             }
             if connected {
+                for _ in 0..4 {
+                    let Ok(request) = connection.rpc.try_recv() else {
+                        break;
+                    };
+                    request(app.world_mut(), connection.account, &connection.uploads);
+                }
                 app.world_mut().entity_mut(entity).insert(connection);
             } else {
                 sim::session::disconnect(app.world_mut(), entity);
@@ -347,10 +359,11 @@ pub async fn listen(
                 ensure!(main.metadata() == b"main", "first stream must be main");
                 let uploads = upload_budget.session(account);
                 let (connection, endpoint) = channels(account, uploads.clone());
+                let rpc = endpoint.rpc.clone();
                 connections.send(connection).await?;
                 tokio::select! {
                     result = main_stream(main, endpoint) => result,
-                    result = asset_streams(&mux, assets, uploads) => result,
+                    result = asset_streams(&mux, assets, uploads, rpc) => result,
                     result = mux.wait_until_dead() => result,
                 }
             }
@@ -423,8 +436,10 @@ async fn asset_streams(
     mux: &osg_net::picomux::PicoMux,
     assets: AppearanceAssets,
     uploads: BlueprintUploads,
+    rpc: rpc::Handler,
 ) -> Result<()> {
     let mut transfers = JoinSet::new();
+    let permits = Arc::new(tokio::sync::Semaphore::new(osg_net::rpc::MAX_CALLS));
     loop {
         tokio::select! {
             stream = mux.accept() => {
@@ -448,12 +463,24 @@ async fn asset_streams(
                             blueprint_uploads::serve(&mut stream, &uploads).await
                         });
                     }
-                    _ => anyhow::bail!("unknown stream label"),
+                    label if label.starts_with(b"rpc:") => {
+                        let Ok(permit) = permits.clone().try_acquire_owned() else {
+                            eprintln!("RPC rejected: concurrent call limit reached");
+                            continue;
+                        };
+                        let handler = osg_net::GameRpcDispatcher(rpc.clone());
+                        transfers.spawn(async move {
+                            let _permit = permit;
+                            tokio::time::timeout(osg_net::rpc::DEADLINE, handler.dispatch(stream)).await??;
+                            Ok(())
+                        });
+                    }
+                    _ => eprintln!("Unknown auxiliary stream label; closing stream"),
                 }
             }
             Some(result) = transfers.join_next(), if !transfers.is_empty() => {
                 if let Err(error) = result.map_err(anyhow::Error::from).and_then(|result| result) {
-                    eprintln!("Asset transfer failed: {error:#}");
+                    eprintln!("Auxiliary stream failed: {error:#}");
                 }
             }
         }
@@ -499,10 +526,8 @@ mod asset_tests {
     fn empty_snapshot() -> Frame {
         Frame {
             chat: None,
-            industry: None,
             optical: Vec::new(),
             calendar_unix_ms: 0,
-            society: Default::default(),
             world: Id::new(),
             sequence: 1,
             tick: 1,
@@ -693,10 +718,9 @@ mod asset_tests {
             let server_assets = assets.clone();
             let uploads = BlueprintUploads::default();
             let server_uploads = uploads.clone();
-            let serving =
-                tokio::spawn(
-                    async move { asset_streams(&server, server_assets, server_uploads).await },
-                );
+            let serving = tokio::spawn(async move {
+                asset_streams(&server, server_assets, server_uploads, rpc::channel().0).await
+            });
             let mut stalled = client.open(b"assets").await.unwrap();
             stalled.write_all(&[0]).await.unwrap();
             let mut stalled_upload = client.open(b"blueprint-upload").await.unwrap();

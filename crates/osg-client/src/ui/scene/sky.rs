@@ -99,6 +99,55 @@ pub(super) fn install(app: &mut App) {
     }
 }
 
+/// Fixed near and far stars for the offscreen renderer fixture. The production
+/// sprite shader still computes exposure, culling and parallax each frame.
+pub(super) fn install_regression(app: &mut App) {
+    sprites::install(app);
+    app.add_systems(PostUpdate, (regression_sky, sprites::sync).chain());
+}
+
+fn regression_sky(
+    mut cameras: Query<&mut ViewSky, With<ViewCamera>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    for mut sky in &mut cameras {
+        if sky.snapshot.is_some() {
+            continue;
+        }
+        let sources = (0..256u64)
+            .map(|index| {
+                let z = 1.0 - 2.0 * (index as f64 + 0.5) / 256.0;
+                let angle = index as f64 * 2.399963229728653;
+                let radius = (1.0 - z * z).sqrt();
+                let direction =
+                    bevy::math::DVec3::new(radius * angle.cos(), z, radius * angle.sin());
+                let distance = if index % 4 == 0 { 1e16 } else { 1e17 };
+                snapshot::Source {
+                    star: Star {
+                        id: StarId::gaia(index),
+                        position: GalacticPosition::ZERO.offset_by(direction * distance),
+                        luminosity: osg_stars::SOLAR_LUMENS * (1.0 + (index % 11) as f64),
+                        temperature_k: 5800.0,
+                        colour: [1.0, 0.9, 0.8],
+                    },
+                    radius_m: 7e8,
+                    key: snapshot::GeometryKey::Catalogue(StarId::gaia(index)),
+                }
+            })
+            .collect();
+        let snapshot = Arc::new(snapshot::Snapshot::new(
+            sources,
+            GalacticPosition::ZERO,
+            12.0,
+            0,
+            0,
+            1e-12,
+        ));
+        sky.mesh = sprites::star_mesh(&snapshot.stars).map(|mesh| meshes.add(mesh));
+        sky.snapshot = Some(snapshot);
+    }
+}
+
 fn acknowledge_upload(uploads: Res<SkyUploads>, meshes: Res<RenderAssets<RenderMesh>>) {
     for upload in &uploads.0 {
         if upload

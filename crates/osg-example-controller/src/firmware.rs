@@ -61,6 +61,14 @@ impl Computer {
             .update(tick.tick, &sample, &self.hardware, &contacts[..count])
             .ok()
             .flatten();
+        let resumed_tick = sdk::tick()?;
+        if resumed_tick.tick != tick.tick {
+            // A long planner uses normal WASM suspension. Start the next
+            // control cycle with fresh sensors instead of publishing expired
+            // instruments or applying controls based on the old sample.
+            sdk::interval(0.)?;
+            return Ok(resumed_tick);
+        }
         if self.executor.reference_changed
             && self
                 .pilot
@@ -182,7 +190,28 @@ impl Computer {
         use abi::Record;
 
         let failed = |_| "Could not read request payload".to_owned();
+        if matches!(
+            kind,
+            abi::REQUEST_THROTTLE
+                | abi::REQUEST_MANUAL
+                | abi::REQUEST_AIM_DIRECTION
+                | abi::REQUEST_AIM_CONTACT
+                | abi::REQUEST_ENGAGE_NAVIGATION
+                | abi::REQUEST_STOP_GUIDANCE
+                | abi::REQUEST_HOLD_ATTITUDE
+        ) {
+            self.executor.set_guidance(None);
+        }
         match kind {
+            abi::REQUEST_SET_GUIDANCE => {
+                let value: osg_ship_api::world::Guidance =
+                    sdk::request_read(index, kind).map_err(failed)?;
+                let guidance = osg_model::wasm_world::guidance_value(&value)
+                    .map_err(|_| "Invalid guidance request".to_owned())?;
+                self.executor.set_guidance(guidance);
+                self.pilot.navigation.abort();
+                Ok(())
+            }
             abi::REQUEST_MARK_TARGET => {
                 let value = sdk::request_read(index, kind).map_err(failed)?;
                 self.weapons.mark_target(value, sample.tick.time_s)
@@ -436,8 +465,20 @@ pub fn draw_display() -> Result<(), i32> {
     let tick = sdk::tick()?;
     let flight = sdk::flight()?;
     let resources = sdk::resources()?;
+    let autopilot = match osg_model::wasm_world::query(&osg_model::ProgramQuery::Travel) {
+        Ok(osg_model::ProgramReply::Travel { state, tick, .. }) => Some((state, tick)),
+        _ => None,
+    };
     for slot in 0..8 {
         if tick.requested_screens & (1 << slot) == 0 {
+            continue;
+        }
+        if slot == 1 {
+            draw_autopilot(
+                slot,
+                autopilot.as_ref().map_or(tick.tick, |(_, tick)| *tick),
+                autopilot.as_ref().map(|(state, _)| state),
+            )?;
             continue;
         }
         sdk::screen_define(&abi::ScreenDefinition {
@@ -478,4 +519,134 @@ pub fn draw_display() -> Result<(), i32> {
         sdk::screen_end(slot)?;
     }
     Ok(())
+}
+
+fn draw_autopilot(
+    slot: u64,
+    tick: u64,
+    state: Option<&osg_model::travel::AutopilotState>,
+) -> Result<(), i32> {
+    use osg_model::travel::FirmwarePhase;
+
+    sdk::screen_define(&abi::ScreenDefinition {
+        id: slot,
+        width: 768,
+        height: 512,
+        title: abi::Text64::new("Autopilot"),
+    })?;
+    sdk::screen_begin(&abi::ScreenFrame {
+        id: slot,
+        background: 0x03070e,
+    })?;
+    let mut lines = vec!["AUTOPILOT / ITINERARY".to_owned()];
+    if let Some(state) = state {
+        let phase = match state.status.phase {
+            FirmwarePhase::Idle => "IDLE",
+            FirmwarePhase::Planning => "PLANNING",
+            FirmwarePhase::Waiting { .. } => "WAITING",
+            FirmwarePhase::Charging => "CHARGING",
+            FirmwarePhase::Transit => "TRANSIT",
+            FirmwarePhase::Maneuvering => "MANEUVERING",
+            FirmwarePhase::Docking => "DOCKING",
+            FirmwarePhase::Completed => "COMPLETED",
+        };
+        lines.push(format!(
+            "{}  {phase}",
+            if state.enabled {
+                "ENGAGED"
+            } else {
+                "DISENGAGED"
+            }
+        ));
+        if let FirmwarePhase::Waiting { until, why } = &state.status.phase {
+            lines.push(format!(
+                "WAIT {}  {}",
+                until.map_or_else(
+                    || "".into(),
+                    |until| {
+                        format!(
+                            "{:.0}s",
+                            until.saturating_sub(tick) as f64 * osg_model::TICK_SECONDS
+                        )
+                    }
+                ),
+                why
+            ));
+        }
+        lines.push(state.status.summary.clone());
+        if let Some(body) = state.status.capture_body {
+            lines.push(format!("CAPTURE {}", body.body));
+        }
+        if let Some(offset) = state.status.aim_offset_m {
+            lines.push(format!(
+                "AIM OFFSET {:.0} / {:.0} / {:.0} km",
+                offset[0] / 1000.,
+                offset[1] / 1000.,
+                offset[2] / 1000.
+            ));
+        }
+        let remaining = |at: Option<u64>| {
+            at.map_or_else(
+                || "--".into(),
+                |at| {
+                    format!(
+                        "{:.0}s",
+                        at.saturating_sub(tick) as f64 * osg_model::TICK_SECONDS
+                    )
+                },
+            )
+        };
+        lines.push(format!(
+            "DEPART {}   ARRIVAL {}",
+            remaining(state.status.departure_tick),
+            remaining(state.status.estimated_arrival_tick)
+        ));
+        lines.push(format!(
+            "ARRIVAL DV {:.2} km/s   PLANNED RISK {:.4} ppm",
+            state.status.planned_delta_v_m_s / 1000.,
+            state.status.planned_loss_ppm
+        ));
+        lines.push(format!(
+            "RISK SPENT {:.4} / {:.4} ppm",
+            state.status.spent_loss_ppm,
+            state
+                .itinerary
+                .first()
+                .map_or(0., |entry| entry.max_loss_ppm)
+        ));
+        lines.push(format!(
+            "EXOTIC {:.3} kg planned / {:.3} kg spent",
+            state.status.planned_exotic_fuel_kg, state.status.spent_exotic_fuel_kg
+        ));
+        if let Some(failure) = &state.failure {
+            lines.push(format!("FAILURE: {failure}"));
+        }
+        for (index, entry) in state.itinerary.iter().take(8).enumerate() {
+            lines.push(format!(
+                "{} {}. {}",
+                if index == 0 { ">" } else { " " },
+                index + 1,
+                entry.label
+            ));
+        }
+    } else {
+        lines.push("Waiting for flight publication".into());
+    }
+    for (index, line) in lines.iter().take(21).enumerate() {
+        sdk::screen_draw(
+            slot,
+            abi::DRAW_TEXT,
+            &abi::ScreenText {
+                color: if line.starts_with("FAILURE") {
+                    0xff7766
+                } else {
+                    0x50ffb0
+                },
+                x: 16,
+                y: 18 + index as i64 * 23,
+            },
+            line.as_bytes(),
+        )?;
+    }
+    sdk::screen_end(slot)
 }

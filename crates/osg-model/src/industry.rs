@@ -1,6 +1,9 @@
 use crate::{AccountId, EntityId, Id, ownership::Principal};
 use serde::{Deserialize, Serialize};
 
+mod service;
+pub use service::*;
+
 pub const MAX_DIRECTORY_ENTRIES: usize = 128;
 pub const MAX_SUBSCRIBED_INVENTORIES: usize = 8;
 pub const MAX_CARGO_STACKS: usize = 1024;
@@ -66,6 +69,7 @@ pub enum JobStatus {
     Queued,
     Running,
     AwaitingPower,
+    AwaitingPayment,
     AwaitingCargoSpace,
     AwaitingBerth,
     ModuleUnavailable,
@@ -84,6 +88,7 @@ pub struct JobView {
     pub module_part: Option<u64>,
     pub requested_power_w: u64,
     pub supplied_power_w: u64,
+    pub payment: Option<ServicePayment>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -98,6 +103,7 @@ pub struct FacilityCapability {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FacilityView {
+    pub metrics: FacilityMetrics,
     pub entity: EntityId,
     pub owner: Principal,
     pub name: String,
@@ -110,6 +116,8 @@ pub struct FacilityView {
     pub jobs: Vec<JobView>,
     pub capabilities: Vec<FacilityCapability>,
     pub location: Option<EntityId>,
+    pub service: ServicePolicy,
+    pub can_configure_service: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -158,23 +166,25 @@ pub enum IndustryCommand {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndustrySubscription {
+pub struct IndustryQuery {
     pub revision: u64,
     pub directory: bool,
     pub directory_after: Option<Id>,
-    pub hangar: Option<HangarSubscription>,
+    pub hangar: Option<HangarQuery>,
     pub inventories: Vec<EntityId>,
     pub catalogue: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HangarSubscription {
+pub struct HangarQuery {
     pub ship: Id,
     pub after: Option<Id>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HangarView {
+    pub berths_used: Option<u32>,
+    pub berths_total: Option<u32>,
     pub ship: Id,
     pub host: Id,
     pub host_name: String,
@@ -193,6 +203,7 @@ pub struct HangarEntry {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FacilitySummary {
+    pub metrics: FacilityMetrics,
     pub entity: EntityId,
     pub owner: Principal,
     pub name: String,
@@ -200,6 +211,22 @@ pub struct FacilitySummary {
     pub capabilities: Vec<IndustryCapability>,
     pub can_manage: bool,
     pub can_transfer: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FacilityMetrics {
+    pub system: Option<Id>,
+    pub power_generated_w: Option<f64>,
+    pub power_consumed_w: Option<f64>,
+    pub total_lanes: u32,
+    pub busy_lanes: u32,
+    pub queued_jobs: u32,
+    pub stalled_jobs: u32,
+    pub outside_jobs: u32,
+    /// Cumulative outside-service receipts after taxes, retained after jobs complete.
+    pub outside_revenue: Option<Vec<(crate::economy::Currency, u64)>>,
+    pub berths_used: Option<u32>,
+    pub berths_total: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

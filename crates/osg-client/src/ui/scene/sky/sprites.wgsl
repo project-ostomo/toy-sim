@@ -51,6 +51,9 @@ const HALO_MAX_ENERGY: f32 = 0.35;
 const CULL_LUMINANCE: f32 = 1e-4;
 // Keep additive output inside Rgba16Float.
 const MAX_OUTPUT: f32 = 60000.0;
+// Anchor to the dark-adapted camera (EV 5), while retaining a visible response
+// to exposure in daylight. Use the same gain for sizing and culling.
+const NIGHT_EXPOSURE: f32 = 0.026041667;
 
 fn gaussian(r2: f32, sigma: f32) -> f32 {
     return exp(-r2 / (2.0 * sigma * sigma)) / (2.0 * PI * sigma * sigma);
@@ -67,7 +70,8 @@ fn vertex(in: Vertex) -> Output {
 
     // Solid angle of one pixel at the screen centre.
     let pixel = 2.0 / (view.clip_from_view[1][1] * view.viewport.w);
-    let exposed = illuminance * fade * view.exposure / (pixel * pixel);
+    let star_exposure = 2.0 * sqrt(max(view.exposure, 0.0) * NIGHT_EXPOSURE);
+    let exposed = illuminance * fade * star_exposure / (pixel * pixel);
     let core_peak = exposed * gaussian(0.0, CORE_SIGMA);
 
     // A direction, not a point: w = 0 drops the camera translation.
@@ -87,7 +91,7 @@ fn vertex(in: Vertex) -> Output {
     // Depth 0 is infinitely far under Bevy's reverse-Z.
     out.position = vec4(ndc + in.corner * radius * 2.0 / view.viewport.zw, 0.0, 1.0);
     out.offset = in.corner * radius;
-    out.radiance = in.flux.rgb / distance2 * fade * view.exposure / (pixel * pixel);
+    out.radiance = in.flux.rgb / distance2 * fade * star_exposure / (pixel * pixel);
     out.psf = vec3(CORE_SIGMA, halo_sigma, halo_fraction);
     return out;
 }

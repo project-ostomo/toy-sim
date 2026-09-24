@@ -69,11 +69,11 @@ impl Fixture {
         ));
     }
 
-    fn interest(&self) -> IndustrySubscription {
-        IndustrySubscription {
+    fn interest(&self) -> IndustryQuery {
+        IndustryQuery {
             revision: 7,
             directory: true,
-            hangar: Some(HangarSubscription {
+            hangar: Some(HangarQuery {
                 ship: self.world.get::<identity::Identity>(self.ship).unwrap().0,
                 after: None,
             }),
@@ -81,7 +81,7 @@ impl Fixture {
         }
     }
 
-    fn publish(&mut self, interest: &IndustrySubscription) -> IndustrySnapshot {
+    fn publish(&mut self, interest: &IndustryQuery) -> IndustrySnapshot {
         refresh(&mut self.world);
         let snapshot = snapshot(&self.world, self.account, interest);
         snapshot

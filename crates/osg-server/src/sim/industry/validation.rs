@@ -74,12 +74,22 @@ pub fn validate_saved(
     let mut reservations = BTreeMap::<CargoItem, u64>::new();
     let mut identities = BTreeSet::new();
     if let Some(facility) = facility {
+        ensure!(facility.service.valid(), "invalid saved service prices");
         validate_blueprint_budget(&facility.jobs, 0)?;
         ensure!(
             facility.jobs.len() <= MAX_JOBS,
             "saved industry queue exceeds limit"
         );
         for job in &facility.jobs {
+            if let Some(payment) = &job.view.payment {
+                ensure!(
+                    directory.contains(payment.payer)
+                        && directory.contains(payment.operator)
+                        && job.view.owner == payment.payer
+                        && (payment.charged || job.view.progress_ticks == 0),
+                    "invalid saved service payment"
+                );
+            }
             ensure!(
                 identities.insert(job.view.id)
                     && !job.view.name.trim().is_empty()

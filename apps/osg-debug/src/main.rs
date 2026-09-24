@@ -158,12 +158,23 @@ async fn main() -> Result<()> {
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
-    let mut endpoint =
-        osg_client::connect(&address, server_key.verifying_key(), account, &account_key).await?;
+    let endpoint = osg_client::OsgNetClient::connect(
+        &address,
+        server_key.verifying_key(),
+        account,
+        &account_key,
+    )
+    .await?;
     if check {
-        let frame = tokio::time::timeout(Duration::from_secs(10), endpoint.state.recv())
-            .await?
-            .context("server disconnected before its first frame")?;
+        let mut events = endpoint.subscribe_events();
+        let frame = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                if let osg_client::NetEvent::Frame(frame) = events.recv().await? {
+                    break Ok::<_, anyhow::Error>(frame);
+                }
+            }
+        })
+        .await??;
         ensure!(
             !frame.ships.is_empty(),
             "server did not provision the debug ship"

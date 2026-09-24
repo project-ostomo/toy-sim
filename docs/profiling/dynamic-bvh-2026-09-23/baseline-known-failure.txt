@@ -1,0 +1,17 @@
+
+running 1 test
+
+thread 'sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts' (4) panicked at crates/osg-server/src/sim/physics/collision/weapons.rs:771:9:
+assertion `left == right` failed
+  left: 0
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts ... FAILED
+
+failures:
+
+failures:
+    sim::physics::collision::weapons::tests::due_shots_launch_together_and_ccd_reports_their_impacts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 304 filtered out; finished in 0.01s
+

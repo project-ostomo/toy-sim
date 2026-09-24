@@ -105,7 +105,8 @@ pub const EVENT_KEY_RELEASE: u64 = 5;
 pub const EVENT_BEZEL: u64 = 6;
 pub const EVENT_RESET: u64 = 7;
 
-pub const DEVICE_WEAPON: u64 = 9;
+pub const DEVICE_GUN: u64 = 9;
+pub const DEVICE_LASER: u64 = 11;
 pub const DEVICE_RCS: u64 = 10;
 pub const SET_RCS: u64 = 6;
 pub const WEAPON_PROPELLANT: u64 = 4096;
@@ -114,6 +115,7 @@ pub const REQUEST_MARK_TARGET: u64 = 7;
 pub const REQUEST_STOP_FIRING: u64 = 8;
 pub const REQUEST_UNMARK_TARGET: u64 = 9;
 pub const REQUEST_START_FIRING: u64 = 10;
+pub const REQUEST_SET_GUIDANCE: u64 = 12;
 pub const INSTRUMENT_WEAPONS: u64 = 3;
 pub const CONTACT_PROJECTILE: u64 = 3;
 pub const WEAPONS_HOLD: u64 = 0;
@@ -525,50 +527,8 @@ const _: () = assert!(core::mem::offset_of!(ShieldReading, radiated_power_w) == 
 const _: () = assert!(core::mem::offset_of!(ShieldReading, power_w) == 64);
 const _: () = assert!(size_of::<ShieldReading>() == 72 && align_of::<ShieldReading>() == 8);
 
-#[repr(C)]
-#[derive(Clone, Copy, Default, Debug, PartialEq)]
-pub struct WeaponSpec {
-    pub ammunition_resource: u64,
-    pub projectile_mass_kg: f64,
-    pub projectile_radius_m: f64,
-    pub muzzle_speed_m_s: f64,
-    pub cycle_interval_s: f64,
-    pub efficiency: f64,
-    pub dispersion_half_angle_rad: f64,
-    pub pivot_device_m: [f64; 3],
-    pub muzzle_offset_m: [f64; 3],
-    pub yaw_min_rad: f64,
-    pub yaw_max_rad: f64,
-    pub pitch_min_rad: f64,
-    pub pitch_max_rad: f64,
-    pub yaw_rate_rad_s: f64,
-    pub pitch_rate_rad_s: f64,
-    pub beam_power_w: f64,
-    pub beam_range_m: f64,
-    pub chemical: u64,
-}
-
-impl private::Sealed for WeaponSpec {}
-impl Record for WeaponSpec {}
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, ammunition_resource) == 0);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, projectile_mass_kg) == 8);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, projectile_radius_m) == 16);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, muzzle_speed_m_s) == 24);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, cycle_interval_s) == 32);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, efficiency) == 40);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, dispersion_half_angle_rad) == 48);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, pivot_device_m) == 56);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, muzzle_offset_m) == 80);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, yaw_min_rad) == 104);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, yaw_max_rad) == 112);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, pitch_min_rad) == 120);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, pitch_max_rad) == 128);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, yaw_rate_rad_s) == 136);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, pitch_rate_rad_s) == 144);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, beam_power_w) == 152);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, beam_range_m) == 160);
-const _: () = assert!(core::mem::offset_of!(WeaponSpec, chemical) == 168);
-const _: () = assert!(size_of::<WeaponSpec>() == 176 && align_of::<WeaponSpec>() == 8);
+mod weapons;
+pub use weapons::{GunSpec, LaserSpec, WeaponSpec};
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug, PartialEq)]
@@ -1225,21 +1185,24 @@ pub const IMPORTS: &[&str] = &[
     "persistent_read",
     "persistent_write",
     "orrery_read",
+    "orrery_system_read",
     "navigation_query",
     "contact_get",
     "slip_eligibility",
+    "slip_eligibility_batch",
     "travel_read",
     "destination_resolve",
     "route_request",
     "route_poll",
     "travel_use_route",
-    "travel_block",
-    "travel_estimate",
+    "travel_fail",
+    "travel_publish_status",
     "travel_complete",
     "travel_slip",
     "travel_reserve_bay",
     "travel_dock",
     "travel_undock",
+    "travel_cancel_slip",
     "beacons_read",
     "beacon_read",
     "tick_read",

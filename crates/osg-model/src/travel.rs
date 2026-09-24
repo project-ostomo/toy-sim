@@ -45,18 +45,9 @@ pub enum Destination {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub enum Order {
-    Guidance(Guidance),
-    TravelTo(Destination),
-    TravelToSystem(Id),
-    Sublight(Destination),
-    Slip {
-        destination: Destination,
-        navigation_beacon: Option<EntityId>,
-    },
-    Dock(EntityId),
-    Undock,
-    WaitUntil(u64),
+pub enum Directive {
+    SlipToSystem(Id),
+    DockAt(EntityId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -118,82 +109,56 @@ impl FuelBudget {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct QueuedOrder {
+pub struct ItineraryEntry {
+    pub directive: Directive,
     pub label: String,
-    pub transfer_cost: crate::transfer::TransferCost,
-    pub action: Order,
+    pub max_loss_ppm: f64,
+    pub fuel_allowance_kg: f64,
     pub estimated_duration_ticks: Option<u64>,
-    pub estimated_propellant_kg: Option<f64>,
-    pub estimated_loss_ppm: Option<f64>,
 }
 
-impl From<Order> for QueuedOrder {
-    fn from(action: Order) -> Self {
-        let estimated_propellant_kg = matches!(
-            action,
-            Order::Slip { .. } | Order::Undock | Order::WaitUntil(_)
-        )
-        .then_some(0.);
-        Self {
-            label: action.label(),
-            transfer_cost: Default::default(),
-            action,
-            estimated_duration_ticks: None,
-            estimated_propellant_kg,
-            estimated_loss_ppm: None,
-        }
-    }
-}
-
-impl QueuedOrder {
-    pub fn with_label(mut self, label: impl Into<String>) -> Self {
-        self.label = label.into();
-        self
-    }
-
-    pub fn with_propellant(mut self, kg: f64) -> Self {
-        self.estimated_propellant_kg = (kg.is_finite() && kg >= 0.).then_some(kg);
-        self
-    }
-
-    pub fn estimated(action: Order, seconds: f64) -> Self {
-        Self {
-            label: action.label(),
-            transfer_cost: Default::default(),
-            action,
-            estimated_propellant_kg: None,
-            estimated_loss_ppm: None,
-            estimated_duration_ticks: (seconds.is_finite() && seconds >= 0.)
-                .then(|| (seconds * crate::TICK_RATE_HZ).ceil() as u64),
-        }
-    }
-}
-
-impl Order {
-    /// Default queue label for producers without catalogue names.
+impl Directive {
     pub fn label(&self) -> String {
         match self {
-            Self::Guidance(guidance) => format!("{:?}", guidance.mode),
-            Self::TravelTo(_) => "Travel to destination".into(),
-            Self::TravelToSystem(_) => "Travel to system".into(),
-            Self::Sublight(_) => "Sublight transfer".into(),
-            Self::Slip { .. } => "Slip arrival".into(),
-            Self::Dock(_) => "Dock".into(),
-            Self::Undock => "Undock".into(),
-            Self::WaitUntil(tick) => format!("Wait until tick {tick}"),
+            Self::SlipToSystem(_) => "Slip to system".into(),
+            Self::DockAt(_) => "Dock at station".into(),
         }
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Status {
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum FirmwarePhase {
     #[default]
     Idle,
     Planning,
-    Active,
-    Paused,
-    Blocked(String),
+    Waiting { until: Option<u64>, why: String },
+    Charging,
+    Transit,
+    Maneuvering,
+    Docking,
     Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PlanMarker {
+    pub position: GalacticPosition,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct FirmwareStatus {
+    pub phase: FirmwarePhase,
+    pub summary: String,
+    pub estimated_arrival_tick: Option<u64>,
+    pub capture_body: Option<CelestialRef>,
+    pub aim_offset_m: Option<[f64; 3]>,
+    pub departure_tick: Option<u64>,
+    pub planned_delta_v_m_s: f64,
+    pub planned_loss_ppm: f64,
+    pub spent_loss_ppm: f64,
+    pub planned_exotic_fuel_kg: f64,
+    pub spent_exotic_fuel_kg: f64,
+    pub markers: Vec<PlanMarker>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,18 +176,15 @@ pub struct PlanningProgress {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct TravelState {
-    pub autopilot_enabled: bool,
+pub struct AutopilotState {
+    pub enabled: bool,
+    pub directive_revision: u64,
+    pub itinerary: Vec<ItineraryEntry>,
     pub preferences: PlanningPreferences,
     pub risk_budget: RiskBudget,
-    pub goals: Vec<Order>,
     pub fuel_budget: Option<FuelBudget>,
-    pub planning: Option<PlanningProgress>,
-    pub revision: u64,
-    pub orders: Vec<QueuedOrder>,
-    pub order: usize,
-    pub status: Status,
-    pub estimated_arrival_tick: Option<u64>,
+    pub status: FirmwareStatus,
+    pub failure: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -259,60 +221,6 @@ impl RiskBudget {
 
     pub fn spend(&mut self, loss_ppm: f64) {
         self.spent_log_loss += slip::log_loss_from_ppm(loss_ppm);
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct CurrentOrder {
-    pub autopilot_enabled: bool,
-    pub preferences: PlanningPreferences,
-    pub revision: u64,
-    pub index: usize,
-    pub order: Option<QueuedOrder>,
-    pub status: Status,
-    pub estimated_arrival_tick: Option<u64>,
-}
-
-impl From<&TravelState> for CurrentOrder {
-    fn from(state: &TravelState) -> Self {
-        Self {
-            autopilot_enabled: state.autopilot_enabled,
-            preferences: state.preferences,
-            revision: state.revision,
-            index: state.order,
-            order: state.orders.get(state.order).cloned(),
-            status: state.status.clone(),
-            estimated_arrival_tick: state.estimated_arrival_tick,
-        }
-    }
-}
-
-impl TravelState {
-    pub fn stage_arrivals(&self, now: u64) -> Vec<Option<u64>> {
-        let mut arrival = Some(now);
-        self.orders
-            .iter()
-            .enumerate()
-            .skip(self.order)
-            .map(|(index, stage)| {
-                arrival = if !self.autopilot_enabled
-                    || matches!(
-                        self.status,
-                        Status::Paused | Status::Blocked(_) | Status::Idle | Status::Completed
-                    ) {
-                    None
-                } else if let Order::WaitUntil(until) = stage.action {
-                    arrival.map(|tick| tick.max(until))
-                } else if index == self.order {
-                    self.estimated_arrival_tick.map(|tick| tick.max(now))
-                } else {
-                    arrival
-                        .zip(stage.estimated_duration_ticks)
-                        .map(|(tick, duration)| tick.saturating_add(duration))
-                };
-                arrival
-            })
-            .collect()
     }
 }
 
@@ -405,34 +313,4 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stage_arrivals_accumulate_live_delays_and_stop_at_unknown_durations() {
-        let mut state = TravelState {
-            autopilot_enabled: true,
-            status: Status::Active,
-            estimated_arrival_tick: Some(150),
-            orders: vec![
-                QueuedOrder::estimated(Order::Undock, 1.),
-                QueuedOrder::estimated(Order::Undock, 20.),
-                Order::WaitUntil(400).into(),
-                Order::Undock.into(),
-                QueuedOrder::estimated(Order::Undock, 10.),
-            ],
-            ..Default::default()
-        };
-        assert_eq!(
-            state.stage_arrivals(100),
-            vec![Some(150), Some(350), Some(400), None, None]
-        );
-        state.estimated_arrival_tick = Some(250);
-        assert_eq!(
-            state.stage_arrivals(100),
-            vec![Some(250), Some(450), Some(450), None, None]
-        );
-        state.order = 1;
-        state.estimated_arrival_tick = None;
-        assert_eq!(state.stage_arrivals(150), vec![None; 4]);
-        state.status = Status::Paused;
-        assert_eq!(state.stage_arrivals(150), vec![None; 4]);
-    }
 }

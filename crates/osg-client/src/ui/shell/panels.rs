@@ -9,47 +9,62 @@ pub(super) fn draw(
     selection: &Selection,
     results: &[CommandResult],
     chat_log: &ChatState,
+    wallet: Option<&economy::WalletSnapshot>,
+    market: Option<&osg_model::market::MarketSnapshot>,
+    assets: Option<&osg_model::assets::AssetsSnapshot>,
     intents: &mut Vec<Intent>,
 ) {
     let screen = ctx.content_rect();
     launcher(ctx, |ui| {
-        ui.label(Icon::Layout.text(24.).color(ACCENT))
-            .on_hover_text("OpenSpaceGame workspace");
-        ui.add_space(15.);
-        for (spec, icon, label) in [
-            (OVERVIEW, Icon::Overview, "Overview"),
-            (SELECTED, Icon::Target, "Selected item"),
-            (INVENTORY, Icon::Cargo, "Ship inventory"),
-            (HANGAR, Icon::Ship, "Hangar"),
-            (INDUSTRY, Icon::Industry, "Industry"),
-            (CHAT, Icon::Broadcast, "Local chat"),
-            (NAVIGATION, Icon::Navigation, "Navigation"),
-            (MAP, Icon::Planet, "Navigation map"),
-            (SOCIETY, Icon::Shield, "Society and ownership"),
-        ] {
-            if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
-                shell.desktop.toggle(spec);
-            }
-        }
-        ui.separator();
-        if icon_button(ui, Icon::Planet, "Show orbital paths (O)", model.orbits).clicked() {
-            intents.push(Intent::Orbits(!model.orbits));
-        }
-        if icon_button(ui, Icon::Look, "Return camera to your ship (Esc)", false).clicked() {
-            intents.push(Intent::Look(None));
-        }
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-            if icon_button(
-                ui,
-                Icon::Settings,
-                "Interface settings",
-                shell.desktop.is_open(SETTINGS),
-            )
-            .clicked()
-            {
-                shell.desktop.toggle(SETTINGS);
-            }
-        });
+        egui::Panel::bottom("launcher_settings")
+            .exact_size(44.)
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                if icon_button(
+                    ui,
+                    Icon::Settings,
+                    "Settings",
+                    shell.desktop.is_open(SETTINGS),
+                )
+                .clicked()
+                {
+                    shell.desktop.toggle(SETTINGS);
+                }
+            });
+        egui::ScrollArea::vertical()
+            .id_salt("launcher_tools")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.label(Icon::Layout.text(24.).color(ACCENT))
+                    .on_hover_text("OpenSpaceGame workspace");
+                ui.add_space(15.);
+                for (spec, icon, label) in [
+                    (OVERVIEW, Icon::Overview, "Overview"),
+                    (SELECTED, Icon::Target, "Selected item"),
+                    (INVENTORY, Icon::Cargo, "Ship inventory"),
+                    (HANGAR, Icon::Ship, "Hangar"),
+                    (INDUSTRY, Icon::Industry, "Industry"),
+                    (CHAT, Icon::Broadcast, "Local chat"),
+                    (NAVIGATION, Icon::Navigation, "Navigation"),
+                    (MAP, Icon::Planet, "Navigation map"),
+                    (SOCIETY, Icon::Shield, "Society and ownership"),
+                    (WALLET, Icon::Cargo, "Wallet"),
+                    (ASSETS, Icon::Layout, "Assets"),
+                    (MARKET, Icon::Cargo, "Market"),
+                ] {
+                    if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
+                        shell.desktop.toggle(spec);
+                    }
+                }
+                ui.separator();
+                if icon_button(ui, Icon::Planet, "Show orbital paths (O)", model.orbits).clicked() {
+                    intents.push(Intent::Orbits(!model.orbits));
+                }
+                if icon_button(ui, Icon::Look, "Return camera to your ship (Esc)", false).clicked()
+                {
+                    intents.push(Intent::Look(None));
+                }
+            });
     });
 
     status_bar(ctx, |ui| {
@@ -138,7 +153,7 @@ pub(super) fn draw(
                     });
                     ui.label(egui::RichText::new(&model.vicinity).size(12.).color(MUTED));
                     if let Some(ship) = model.ship {
-                        let ap = ship.travel.autopilot_enabled;
+                        let ap = ship.travel.enabled;
                         if ui
                             .add_enabled(
                                 model.connected && ship.presence == travel::Presence::Space,
@@ -158,18 +173,22 @@ pub(super) fn draw(
                         ui.horizontal(|ui| {
                             ui.label(Icon::Ship.text(14.).color(ACCENT));
                             ui.label(egui::RichText::new(ship_name(ship)).size(12.).color(TEXT));
-                            if ship.travel.status != travel::Status::Idle {
+                            if !ship.travel.itinerary.is_empty() || ship.travel.failure.is_some() {
                                 ui.label(
                                     egui::RichText::new(format!(
                                         "· {}",
-                                        travel_status(&ship.travel.status)
+                                        travel_status(&ship.travel)
                                     ))
                                     .size(11.)
                                     .color(ACCENT),
                                 );
                             }
                         });
-                        instruments::planning_progress(ui, &ship.travel);
+                        if ship.travel.enabled
+                            && ship.travel.status.phase == travel::FirmwarePhase::Planning
+                        {
+                            ui.spinner();
+                        }
                         if ship
                             .travel
                             .fuel_budget
@@ -185,6 +204,7 @@ pub(super) fn draw(
                         );
                         if let Some(arrival) = ship
                             .travel
+                            .status
                             .estimated_arrival_tick
                             .filter(|_| matches!(ship.presence, travel::Presence::SlipTransit(_)))
                         {
@@ -207,7 +227,7 @@ pub(super) fn draw(
                                 intents.push(Intent::OpenHangar);
                             }
                             if ui.button("Undock").clicked() {
-                                intents.push(Intent::Queue(vec![travel::Order::Undock], false));
+                                intents.push(Intent::Command(ShipCommand::Undock, "Undock"));
                             }
                         }
                     }
@@ -229,7 +249,7 @@ pub(super) fn draw(
             .and_then(|details| details.instruments.as_ref())
             .and_then(|instruments| instruments.weapons_state.as_ref());
         egui::ScrollArea::vertical()
-            .max_height(SELECTED.size.y)
+            .max_height(ui.available_height().max(0.))
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 selected_item(
@@ -238,6 +258,7 @@ pub(super) fn draw(
                     can_control,
                     weapons,
                     &model.rows,
+                    model.society,
                     &mut stand_off,
                     intents,
                 );
@@ -329,9 +350,6 @@ pub(super) fn draw(
                                 ui.close();
                             }
                         }
-                        if super::overview::slip_to(ui, row, can_control, intents) {
-                            ui.close();
-                        }
                     });
                 }
                 if rows.is_empty() {
@@ -399,19 +417,54 @@ pub(super) fn draw(
     shell.desktop.show(ctx, CHAT, |ui| {
         chat::draw(ui, &mut shell.chat, model, chat_log, intents);
     });
+    shell.desktop.show(ctx, WALLET, |ui| {
+        wallet::draw(ui, &mut shell.wallet, model, wallet, intents);
+    });
+    shell.desktop.show(ctx, MARKET, |ui| {
+        market::draw(ui, &mut shell.market, model, market, intents);
+    });
+    shell.desktop.show(ctx, ASSETS, |ui| {
+        assets::draw(ui, &mut shell.assets, model, assets, intents);
+    });
     cargo::draw_dialog(ctx, &mut shell.transfers, model, intents);
     let mut locked = shell.desktop.locked;
     let mut reset = false;
     shell.desktop.show(ctx, SETTINGS, |ui| {
-        ui.label(egui::RichText::new("Workspace").strong().color(ACCENT));
-        ui.checkbox(&mut locked, "Lock window positions and sizes");
-        ui.weak("Drag titles or empty window backgrounds to move windows. Resize at the edges. Nearby windows snap together.");
+        egui::Panel::left("settings_categories")
+            .exact_size(180.)
+            .resizable(false)
+            .frame(egui::Frame::new().fill(SURFACE).inner_margin(8))
+            .show(ui, |ui| {
+                ui.add_sized(
+                    [ui.available_width(), 28.],
+                    egui::Button::selectable(true, "Interface"),
+                );
+            });
+        egui::Panel::bottom("settings_footer")
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| {
+                reset = ui.button("Restore defaults for Interface").clicked();
+            });
+        ui.heading("Interface");
+        ui.add_space(16.);
+        ui.small("LAYOUT");
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Lock window positions and sizes");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.checkbox(&mut locked, "");
+            });
+        });
+        ui.weak("Drag window titles to move. Resize at the edges. Nearby windows snap together.");
+        ui.separator();
+        ui.add_space(16.);
+        ui.small("HUD");
+        ui.separator();
         let mut orbits = model.orbits;
         if ui.checkbox(&mut orbits, "Show orbital paths").changed() {
             intents.push(Intent::Orbits(orbits));
         }
-        ui.add_space(8.);
-        reset = ui.button("Restore default layout").clicked();
+        ui.separator();
     });
     shell.desktop.locked = locked;
     if reset {
@@ -428,10 +481,7 @@ pub(super) fn draw(
                 egui::Color32::from_rgb(237, 161, 130),
             )
         } else if feedback.pending.is_empty() {
-            (
-                format!("{label} accepted · tick {}", feedback.last_tick),
-                ACCENT,
-            )
+            (format!("{label} accepted"), ACCENT)
         } else {
             (format!("{label} · awaiting server"), MUTED)
         };

@@ -1,6 +1,6 @@
 use crate::precision::GalacticPosition;
 use glam::DVec3;
-use osg_space::spatial::{GalacticIndex, QueryBudget, SpatialRecord};
+use osg_spatial::{GalacticIndex, QueryBudget, SpatialRecord};
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -30,6 +30,7 @@ impl CatalogueIndex {
                 )
                 .expect("catalogue fits spatial coordinate range");
         }
+        spatial.rebuild();
         Self { entries, spatial }
     }
 

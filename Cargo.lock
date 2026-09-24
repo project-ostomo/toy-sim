@@ -3039,6 +3039,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_flex"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0be0f33b6959fc44dc8b7775b0f949afcb52d509f9657a4427a2112c99d1b84"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4672,6 +4681,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "moka"
+version = "0.12.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4293f18e7567a1caf3c584855554377025c65e0aa445344d04171f5ad63d19b9"
+dependencies = [
+ "crossbeam-channel",
+ "crossbeam-epoch",
+ "crossbeam-utils",
+ "equivalent",
+ "parking_lot",
+ "portable-atomic",
+ "smallvec",
+ "tagptr",
+ "uuid",
+]
+
+[[package]]
 name = "moxcms"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5433,6 +5459,7 @@ dependencies = [
  "osg-stars",
  "osg-ui",
  "osg-universe",
+ "png",
  "serde",
  "serde_json",
  "tokio",
@@ -5485,14 +5512,26 @@ dependencies = [
  "blake3",
  "chacha20poly1305",
  "ed25519-dalek",
+ "futures-lite",
  "osg-model",
+ "osg-net-macros",
  "osg-protocol",
  "picomux",
+ "postcard",
  "rand 0.8.8",
  "serde",
  "tokio",
  "x25519-dalek",
  "zstd",
+]
+
+[[package]]
+name = "osg-net-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -5525,6 +5564,7 @@ dependencies = [
  "osg-ship-wasm",
  "osg-ships",
  "osg-space",
+ "osg-spatial",
  "osg-spatial-hash",
  "osg-universe",
  "postcard",
@@ -5605,10 +5645,27 @@ name = "osg-space"
 version = "0.1.0"
 dependencies = [
  "glam 0.32.1",
- "osg-spatial-hash",
  "serde",
  "serde_yml",
  "toml",
+]
+
+[[package]]
+name = "osg-spatial"
+version = "0.1.0"
+dependencies = [
+ "glam 0.32.1",
+ "osg-space",
+ "osg-spatial-bvh",
+ "osg-spatial-hash",
+]
+
+[[package]]
+name = "osg-spatial-bvh"
+version = "0.1.0"
+dependencies = [
+ "criterion",
+ "rayon",
 ]
 
 [[package]]
@@ -5637,6 +5694,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "osg-space",
+ "osg-spatial",
 ]
 
 [[package]]
@@ -5646,9 +5704,11 @@ dependencies = [
  "bevy",
  "bevy_dylib",
  "bevy_egui",
+ "egui_flex",
  "osg-model",
  "osg-ship-api",
  "osg-ships",
+ "serde",
  "skrifa 0.44.0",
 ]
 
@@ -5660,8 +5720,10 @@ dependencies = [
  "blake3",
  "glam 0.32.1",
  "hifitime",
+ "moka",
  "osg-ship-api",
  "osg-space",
+ "osg-spatial",
  "osg-stars",
  "rand 0.10.2",
  "rand_chacha 0.10.0",
@@ -7200,6 +7262,12 @@ dependencies = [
  "serde",
  "slotmap",
 ]
+
+[[package]]
+name = "tagptr"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b2093cf4c8eb1e67749a6762251bc9cd836b6fc171623bd0a9d324d37af2417"
 
 [[package]]
 name = "tap"

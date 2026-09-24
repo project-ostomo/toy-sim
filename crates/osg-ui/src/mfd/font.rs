@@ -1,22 +1,13 @@
-//! Dedicated embedded MFD family; leaves every other egui font unchanged.
+//! Dedicated embedded Charon Mono family with CJK fallback.
 use bevy::prelude::*;
 use bevy_egui::{EguiContext, EguiPreUpdateSet, egui};
-const NAME: &str = "osg-mfd-iosevka-fixed";
-const DATA: &[u8] = include_bytes!("../../data/fonts/IosevkaFixed-Regular.ttf");
+const NAME: &str = "osg-mfd-charon-mono";
 pub fn family() -> egui::FontFamily {
     egui::FontFamily::Name(NAME.into())
 }
 /// Call before the first egui pass when using the painter without Bevy.
 pub fn install(ctx: &egui::Context) {
-    use egui::epaint::text::{FontInsert, FontPriority, InsertFontFamily};
-    ctx.add_font(FontInsert::new(
-        NAME,
-        egui::FontData::from_static(DATA),
-        vec![InsertFontFamily {
-            family: family(),
-            priority: FontPriority::Highest,
-        }],
-    ));
+    crate::fonts::install_family(ctx, family(), true);
 }
 #[derive(Component)]
 struct Installed;
@@ -46,14 +37,16 @@ fn install_context_fonts(
 /// embedded cmap directly so supported characters aren't replaced with '?'.
 pub(super) fn has_glyph(ch: char) -> bool {
     use skrifa::MetadataProvider;
-    static CHARMAP: std::sync::OnceLock<skrifa::charmap::Charmap<'static>> =
+    static CHARMAPS: std::sync::OnceLock<[skrifa::charmap::Charmap<'static>; 2]> =
         std::sync::OnceLock::new();
-    CHARMAP
+    CHARMAPS
         .get_or_init(|| {
-            skrifa::FontRef::new(DATA)
-                .expect("embedded Iosevka font")
-                .charmap()
+            [crate::fonts::MONO, crate::fonts::CJK].map(|data| {
+                skrifa::FontRef::new(data)
+                    .expect("embedded Charon or CJK font")
+                    .charmap()
+            })
         })
-        .map(ch)
-        .is_some()
+        .iter()
+        .any(|charmap| charmap.map(ch).is_some())
 }

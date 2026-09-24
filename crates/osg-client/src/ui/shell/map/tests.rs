@@ -52,6 +52,10 @@ pub(super) fn model<'a>(
     ship: Option<&'a ShipTelemetry>,
 ) -> FrameModel<'a> {
     FrameModel {
+        services: empty_services(),
+        declaration_history: &[],
+        declaration_history_next: None,
+        declaration_history_key: None,
         industry: empty_industry(),
         industry_ready: true,
         navigation_status: &NavigationStatus::Ready,
@@ -68,7 +72,6 @@ pub(super) fn model<'a>(
             ..Default::default()
         }),
         society,
-        ships: ship.into_iter().collect(),
         rows: Vec::new(),
         ship,
         details: None,
@@ -147,13 +150,12 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
     let catalogue = catalogue();
     let society = ownership::SocietySnapshot::default();
     let mut ship = crate::ui::tests::ship(id(9000)).0;
-    let mut leg: travel::QueuedOrder = travel::Order::Slip {
-        destination: travel::Destination::Galactic(catalogue.systems[2].position),
-        navigation_beacon: None,
-    }
-    .into();
-    leg.estimated_loss_ppm = Some(1_234.0);
-    ship.travel.orders.push(leg);
+    let mut leg = crate::ui::shell::tests::entry(
+        travel::Directive::SlipToSystem(catalogue.systems[2].id),
+        60.,
+    );
+    leg.max_loss_ppm = 1_234.0;
+    ship.travel.itinerary.push(leg);
     let inhabited = std::sync::Arc::new(osg_model::InhabitedDirectory {
         systems: vec![id(1)],
         ..Default::default()
@@ -165,7 +167,7 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
     };
     for cleared in [false, true] {
         if cleared {
-            ship.travel.orders.clear();
+            ship.travel.itinerary.clear();
         }
         let mut model = model(&catalogue, &society, Some(&ship));
         model.inhabited = inhabited.clone();
@@ -188,7 +190,7 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
             expected
         );
         if !cleared {
-            assert_eq!(state.active.slips, [(0, 2, 0.03, Some(1_234.0))]);
+            assert_eq!(state.active.slips, [(0, 2, Some(1_234.0))]);
         }
     }
 }
@@ -213,25 +215,27 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
             .len(),
         1000
     );
-    let orders: Vec<travel::QueuedOrder> = vec![
-        travel::Order::TravelToSystem(catalogue.systems[1].id).into(),
-        travel::Order::Slip {
-            destination: travel::Destination::Galactic(catalogue.systems[2999].position),
-            navigation_beacon: None,
-        }
-        .into(),
+    let orders: Vec<travel::ItineraryEntry> = vec![
+        crate::ui::shell::tests::entry(
+            travel::Directive::SlipToSystem(catalogue.systems[1].id),
+            60.,
+        ),
+        crate::ui::shell::tests::entry(
+            travel::Directive::SlipToSystem(catalogue.systems[2999].id),
+            60.,
+        ),
     ];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(1, 2999, 0.03, None)]);
+    assert_eq!(active.slips, [(0, 1, Some(100.)), (1, 2999, Some(100.))]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
-    assert_eq!(active.slips, [(1, 2999, 0.03, None)]);
+    assert_eq!(active.slips, [(1, 2999, Some(100.))]);
 }
 
 #[test]
-fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position() {
+fn docking_route_uses_station_system_membership() {
     let mut catalogue = catalogue();
     let beacon = catalogue
         .beacons
@@ -243,51 +247,33 @@ fn slip_highlighting_uses_beacon_membership_instead_of_catalogue_epoch_position(
     let mut cache = Cache::default();
     cache.update(&catalogue);
 
-    for destination in [
-        travel::Destination::Beacon(destination_beacon),
-        travel::Destination::Relative {
-            reference: travel::Reference::Beacon(destination_beacon),
-            offset: GalacticPosition::ZERO.offset_by(glam::DVec3::Y * 1e7),
-            axes: travel::Axes::Galactic,
-        },
-    ] {
-        let mut active = ActiveRoute::default();
-        active.update(
-            &cache,
-            &catalogue,
-            Some(id(0)),
-            &[travel::Order::Slip {
-                destination,
-                navigation_beacon: None,
-            }
-            .into()],
-        );
-        assert_eq!(active.slips, [(0, 2999, 0.03, None)]);
-        assert_eq!(active.systems, BTreeSet::from([0, 2999]));
-    }
+    let mut active = ActiveRoute::default();
+    active.update(
+        &cache,
+        &catalogue,
+        Some(id(0)),
+        &[crate::ui::shell::tests::entry(
+            travel::Directive::DockAt(destination_beacon),
+            60.,
+        )],
+    );
+    assert!(active.slips.is_empty());
+    assert_eq!(active.stops, [(1, 2999)]);
+    assert_eq!(active.systems, BTreeSet::from([0, 2999]));
 }
 
 #[test]
-fn celestial_slip_route_resolves_without_ephemeris_download() {
+fn system_slip_route_resolves_without_ephemeris_download() {
     let catalogue = catalogue();
     let mut cache = Cache::default();
     cache.update(&catalogue);
-    let body = id(90000);
-    let orders = [travel::Order::Slip {
-        destination: travel::Destination::Relative {
-            reference: travel::Reference::Celestial(travel::CelestialRef {
-                system: id(2999),
-                body,
-            }),
-            offset: GalacticPosition::ZERO,
-            axes: travel::Axes::Galactic,
-        },
-        navigation_beacon: None,
-    }
-    .into()];
+    let orders = [crate::ui::shell::tests::entry(
+        travel::Directive::SlipToSystem(id(2999)),
+        60.,
+    )];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 2999, 0.03, None)]);
+    assert_eq!(active.slips, [(0, 2999, Some(100.))]);
 }
 
 #[test]
@@ -391,7 +377,11 @@ fn desktop_map_keeps_its_height_across_frames_and_search_results() {
         output.textures_delta.clear();
         let size = desktop.rect(MAP).unwrap().size();
         if frame == 8 {
-            assert!(size.y < 760., "default map grew to {size:?}");
+            assert!(
+                (size - MAP.size).length() < 1.,
+                "default map size {size:?} differs from its specification {:?}",
+                MAP.size
+            );
             settled_size = Some(size);
         } else if let Some(expected) = settled_size {
             assert!(

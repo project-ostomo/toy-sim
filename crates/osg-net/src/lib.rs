@@ -1,5 +1,12 @@
+mod client;
 pub mod crypto;
+mod game;
 pub mod pipe;
+pub mod rpc;
+
+pub use client::{EventSubscription, InputError, NetEvent, OsgNetClient};
+pub use game::{GameRpc, GameRpcDispatcher};
+pub use rpc::RpcError;
 
 use anyhow::Result;
 use ed25519_dalek::{SigningKey, VerifyingKey};
@@ -11,7 +18,7 @@ use tokio::{
     net::TcpStream,
 };
 
-pub async fn connect(
+async fn connect_mux(
     address: &str,
     server_key: VerifyingKey,
     account: AccountId,

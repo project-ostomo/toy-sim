@@ -7,11 +7,10 @@ use crate::Catalogue;
 
 /// Prototype counter-exhaust: ten percent of projectile mass, in kg of propellant.
 /// Exhaust energy and momentum are deliberately not simulated.
-pub fn shot_propellant_kg(spec: &abi::WeaponSpec) -> f64 {
-    if spec.beam_power_w > 0.0 || spec.chemical != 0 {
-        0.0
-    } else {
-        spec.projectile_mass_kg * 0.1
+pub fn shot_propellant_kg(spec: &WeaponSpec) -> f64 {
+    match spec {
+        WeaponSpec::Gun(gun) if gun.chemical == 0 => gun.projectile_mass_kg * 0.1,
+        _ => 0.0,
     }
 }
 
@@ -26,13 +25,7 @@ pub enum WeaponDrive {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeaponDef {
-    #[serde(default)]
-    pub drive: WeaponDrive,
-    #[serde(default)]
-    pub laser: Option<LaserDef>,
-    pub ammunition: String,
-    pub projectile_radius_m: f64,
-    pub muzzle_speed_m_s: f64,
+    pub mechanism: WeaponMechanism,
     pub cycle_interval_s: f64,
     pub efficiency: f64,
     pub dispersion_half_angle_rad: f64,
@@ -42,38 +35,67 @@ pub struct WeaponDef {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LaserDef {
-    pub optical_power_w: f64,
-    pub range_m: f64,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WeaponMechanism {
+    Gun {
+        #[serde(default)]
+        drive: WeaponDrive,
+        ammunition: String,
+        projectile_radius_m: f64,
+        muzzle_speed_m_s: f64,
+    },
+    Laser {
+        pulse_energy_j: f64,
+        range_m: f64,
+        beam_waist_m: f64,
+        divergence_half_angle_rad: f64,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WeaponSpec {
+    Gun(abi::GunSpec),
+    Laser(abi::LaserSpec),
+}
+
+impl std::ops::Deref for WeaponSpec {
+    type Target = abi::WeaponSpec;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Gun(spec) => &spec.weapon,
+            Self::Laser(spec) => &spec.weapon,
+        }
+    }
+}
+
+impl WeaponSpec {
+    pub fn gun(&self) -> Option<&abi::GunSpec> {
+        match self {
+            Self::Gun(spec) => Some(spec),
+            Self::Laser(_) => None,
+        }
+    }
+
+    pub fn laser(&self) -> Option<&abi::LaserSpec> {
+        match self {
+            Self::Laser(spec) => Some(spec),
+            Self::Gun(_) => None,
+        }
+    }
+
+    pub fn kind(&self) -> u64 {
+        match self {
+            Self::Gun(_) => abi::DEVICE_GUN,
+            Self::Laser(_) => abi::DEVICE_LASER,
+        }
+    }
 }
 
 impl WeaponDef {
-    pub fn spec(&self, catalogue: &Catalogue) -> Option<abi::WeaponSpec> {
-        let resource = catalogue
-            .resources
-            .iter()
-            .position(|r| r.id == self.ammunition)
-            .or_else(|| self.laser.as_ref().map(|_| 0))?;
+    pub fn spec(&self, catalogue: &Catalogue) -> Option<WeaponSpec> {
         let turret = self.slew_rate_rad_s > 0.0;
-        Some(abi::WeaponSpec {
-            chemical: u64::from(self.drive == WeaponDrive::Chemical),
-            ammunition_resource: if self.laser.is_some() {
-                0
-            } else {
-                resource as u64 + 1
-            },
-            beam_power_w: self
-                .laser
-                .as_ref()
-                .map_or(0.0, |laser| laser.optical_power_w),
-            beam_range_m: self.laser.as_ref().map_or(0.0, |laser| laser.range_m),
-            projectile_mass_kg: if self.laser.is_some() {
-                0.0
-            } else {
-                catalogue.resources[resource].mass_kg
-            },
-            projectile_radius_m: self.projectile_radius_m,
-            muzzle_speed_m_s: self.muzzle_speed_m_s,
+        let weapon = abi::WeaponSpec {
             cycle_interval_s: self.cycle_interval_s,
             efficiency: self.efficiency,
             dispersion_half_angle_rad: self.dispersion_half_angle_rad,
@@ -85,36 +107,82 @@ impl WeaponDef {
             pitch_max_rad: if turret { 80.0_f64.to_radians() } else { 0.0 },
             yaw_rate_rad_s: self.slew_rate_rad_s,
             pitch_rate_rad_s: self.slew_rate_rad_s,
+        };
+        Some(match &self.mechanism {
+            WeaponMechanism::Gun {
+                drive,
+                ammunition,
+                projectile_radius_m,
+                muzzle_speed_m_s,
+            } => {
+                let resource = catalogue
+                    .resources
+                    .iter()
+                    .position(|r| &r.id == ammunition)?;
+                WeaponSpec::Gun(abi::GunSpec {
+                    weapon,
+                    chemical: u64::from(*drive == WeaponDrive::Chemical),
+                    ammunition_resource: resource as u64 + 1,
+                    projectile_mass_kg: catalogue.resources[resource].mass_kg,
+                    projectile_radius_m: *projectile_radius_m,
+                    muzzle_speed_m_s: *muzzle_speed_m_s,
+                })
+            }
+            WeaponMechanism::Laser {
+                pulse_energy_j,
+                range_m,
+                beam_waist_m,
+                divergence_half_angle_rad,
+            } => WeaponSpec::Laser(abi::LaserSpec {
+                weapon,
+                pulse_energy_j: *pulse_energy_j,
+                range_m: *range_m,
+                beam_waist_m: *beam_waist_m,
+                divergence_half_angle_rad: *divergence_half_angle_rad,
+            }),
         })
     }
 
     pub fn valid(&self) -> bool {
-        if self.laser.is_some() && self.drive == WeaponDrive::Chemical {
+        let positive = |v: f64| v.is_finite() && v > 0.0;
+        let valid_mechanism = match &self.mechanism {
+            WeaponMechanism::Gun {
+                ammunition,
+                projectile_radius_m,
+                muzzle_speed_m_s,
+                ..
+            } => {
+                !ammunition.is_empty()
+                    && positive(*projectile_radius_m)
+                    && positive(*muzzle_speed_m_s)
+                    && DVec3::from_array(self.muzzle_offset_m).length() > *projectile_radius_m
+            }
+            WeaponMechanism::Laser {
+                pulse_energy_j,
+                range_m,
+                beam_waist_m,
+                divergence_half_angle_rad,
+            } => {
+                positive(*pulse_energy_j)
+                    && positive(*range_m)
+                    && positive(*beam_waist_m)
+                    && positive(*divergence_half_angle_rad)
+                    && *divergence_half_angle_rad < 0.1
+            }
+        };
+        if !valid_mechanism {
             return false;
         }
-        if self.laser.as_ref().is_some_and(|laser| {
-            !laser.optical_power_w.is_finite()
-                || laser.optical_power_w <= 0.0
-                || !laser.range_m.is_finite()
-                || laser.range_m <= 0.0
-        }) {
-            return false;
-        }
-        [
-            self.projectile_radius_m,
-            self.muzzle_speed_m_s,
-            self.cycle_interval_s,
-            self.efficiency,
-        ]
-        .iter()
-        .all(|v| v.is_finite() && *v > 0.0)
+        [self.cycle_interval_s, self.efficiency]
+            .iter()
+            .all(|v| v.is_finite() && *v > 0.0)
             && self.efficiency <= 1.0
             && [self.slew_rate_rad_s, self.dispersion_half_angle_rad]
                 .iter()
                 .all(|v| v.is_finite() && *v >= 0.0)
             && self.dispersion_half_angle_rad < 0.1
             && self.muzzle_offset_m.iter().all(|v| v.is_finite())
-            && DVec3::from_array(self.muzzle_offset_m).length() > self.projectile_radius_m
+            && DVec3::from_array(self.muzzle_offset_m).length() > 0.0
     }
 }
 
@@ -139,15 +207,20 @@ pub struct WeaponState {
     pub powered: bool,
 }
 
-pub fn shot_energy(spec: &abi::WeaponSpec) -> f64 {
-    if spec.chemical != 0 {
-        return 0.0;
+pub fn shot_energy(spec: &WeaponSpec) -> f64 {
+    match spec {
+        WeaponSpec::Gun(gun) if gun.chemical != 0 => 0.0,
+        WeaponSpec::Gun(gun) => {
+            0.5 * gun.projectile_mass_kg * gun.muzzle_speed_m_s.powi(2) / gun.efficiency
+        }
+        WeaponSpec::Laser(laser) => laser.pulse_energy_j / laser.efficiency,
     }
-    if spec.beam_power_w > 0.0 {
-        spec.beam_power_w * spec.cycle_interval_s / spec.efficiency
-    } else {
-        0.5 * spec.projectile_mass_kg * spec.muzzle_speed_m_s.powi(2) / spec.efficiency
-    }
+}
+
+/// Fraction of a Gaussian pulse intercepted by a centered circular silhouette.
+pub fn beam_interception(waist_m: f64, divergence_rad: f64, distance_m: f64, radius_m: f64) -> f64 {
+    let width_squared = waist_m.powi(2) + (divergence_rad * distance_m).powi(2);
+    -(-2.0 * radius_m.powi(2) / width_squared).exp_m1()
 }
 
 pub fn valid_setting(value: &abi::WeaponSetting) -> bool {
@@ -227,6 +300,37 @@ impl WeaponState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gaussian_beam_has_finite_near_field_and_inverse_area_far_field() {
+        let near = beam_interception(0.1, 0.00002, 0.0, 0.05);
+        assert!((near - (1.0 - (-0.5_f64).exp())).abs() < 1e-12);
+        let far = beam_interception(0.1, 0.00002, 1e7, 1.0);
+        let twice_as_far = beam_interception(0.1, 0.00002, 2e7, 1.0);
+        assert!((far / twice_as_far - 4.0).abs() < 0.001);
+        assert_eq!(beam_interception(0.1, 0.00002, 0.0, 10.0), 1.0);
+        assert_eq!(beam_interception(0.1, 0.00002, 100.0, 0.0), 0.0);
+    }
+
+    #[test]
+    fn laser_configuration_has_no_ballistic_fields() {
+        let catalogue = Catalogue::builtin();
+        for part in &catalogue.parts {
+            let crate::Equipment::Weapon { weapon } = &part.equipment else {
+                continue;
+            };
+            let encoded = toml::to_string(weapon).unwrap();
+            let parsed: WeaponDef = toml::from_str(&encoded).unwrap();
+            assert!(parsed.valid());
+            let spec = parsed.spec(&catalogue).unwrap();
+            if let WeaponSpec::Laser(laser) = spec {
+                assert!(!encoded.contains("ammunition"));
+                assert!(!encoded.contains("muzzle_speed"));
+                assert_eq!(shot_propellant_kg(&spec), 0.0);
+                assert_eq!(shot_energy(&spec), laser.pulse_energy_j / laser.efficiency);
+            }
+        }
+    }
 
     #[test]
     fn full_rotation_turret_crosses_yaw_seam_in_both_directions() {

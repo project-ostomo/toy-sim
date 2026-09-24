@@ -106,30 +106,22 @@ struct Measurements {
     skipped_ticks: u64,
 }
 
-async fn receive(endpoint: &mut osg_client::Endpoint) -> Result<Arc<Frame>> {
-    tokio::time::timeout(Duration::from_secs(30), endpoint.state.recv())
-        .await?
-        .context("server disconnected")
+async fn receive(endpoint: &mut osg_client::HeadlessClient) -> Result<Arc<Frame>> {
+    tokio::time::timeout(Duration::from_secs(30), endpoint.receive()).await?
 }
 
 async fn acknowledge(
-    endpoint: &osg_client::Endpoint,
+    endpoint: &osg_client::HeadlessClient,
     frame: &Frame,
     sequence: &mut u64,
     actions: Vec<Action>,
 ) -> Result<()> {
     *sequence += 1;
-    endpoint
-        .input
-        .send(InputFrame {
-            world: frame.world,
-            sequence: *sequence,
-            actions: actions
-                .into_iter()
-                .map(|action| (Id::new(), action))
-                .collect(),
-        })
-        .await?;
+    let actions: Vec<_> = actions
+        .into_iter()
+        .map(|action| (Id::new(), action))
+        .collect();
+    endpoint.client.send_inputs(frame.world, &actions).await?;
     Ok(())
 }
 
@@ -142,7 +134,9 @@ async fn measure(
     options: Arc<Options>,
     barrier: Arc<tokio::sync::Barrier>,
 ) -> Result<Measurements> {
-    let mut endpoint = osg_client::connect(&address, server_key, account, &key).await?;
+    let mut endpoint = osg_client::HeadlessClient::new(
+        osg_client::OsgNetClient::connect(&address, server_key, account, &key).await?,
+    );
     let first = receive(&mut endpoint).await?;
     let mut sequence = 0;
     let mut actions = vec![Action::Subscribe(ViewSubscription {

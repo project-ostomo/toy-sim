@@ -115,6 +115,7 @@ fn nearest_queries_match_exhaustive_selection_across_regions_and_ties() {
             optical_occludes: false,
         });
     }
+    index.finish_geometry();
     for n in [1, 16, 256] {
         let actual = index.nearest(observer, anchor, 1e8, n);
         let mut expected: Vec<_> = (0..index.objects.len()).collect();

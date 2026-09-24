@@ -398,7 +398,7 @@ fn contact_iff_reads_current_identity_and_rejects_lost_handles() {
         let result = controller
             .run_slice(
                 input(0.),
-                Some(Arc::new(Source(contact))),
+                Some(&Source(contact)),
                 FUEL_PER_TICK,
                 FUEL_PER_TICK,
             )
@@ -446,7 +446,7 @@ fn scan_reserves_full_cost_and_suspends_before_repeating_provider_work() {
         let slice = controller
             .run_slice(
                 observation.clone(),
-                Some(Arc::new(CountedSource(count.clone()))),
+                Some(&CountedSource(count.clone())),
                 FUEL_PER_TICK,
                 FUEL_PER_TICK,
             )
@@ -718,7 +718,7 @@ fn suspended_callback_discards_expired_fire_and_publications_without_faulting() 
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut controller = ready(&mut runtime, &guest(&imports, &data, &body));
     let mut catalogue = controller.catalogue.to_vec();
-    catalogue[0].kind = DeviceKind::Weapon;
+    catalogue[0].kind = DeviceKind::Gun;
     controller.catalogue = catalogue.into();
 
     let first = controller
@@ -793,7 +793,7 @@ fn weapon_syscalls_reject_invalid_records_and_discard_staged_fire_on_fault() {
         let mut runtime = ControllerRuntime::new().unwrap();
         let mut computer = ready(&mut runtime, &bytes);
         let mut catalogue = computer.catalogue.to_vec();
-        catalogue[0].kind = DeviceKind::Weapon;
+        catalogue[0].kind = DeviceKind::Gun;
         computer.catalogue = catalogue.into();
         let result = run(&mut computer, input(0.0));
         if trap {
@@ -895,11 +895,11 @@ fn travel_read_rejects_bad_output_memory_before_calling_world_service() {
     }
 
     let imports = format!(
-        r#"(import "{}" "travel_read" (func $query (param i32) (result i32)))"#,
+        r#"(import "{}" "travel_read" (func $query (param i32 i32 i32 i32 i32 i32 i32) (result i32)))"#,
         abi::IMPORT_MODULE
     );
     let data = "";
-    let body = "i32.const 65520 call $query drop";
+    let body = "i32.const 65520 i32.const 0 i32.const 0 i32.const 0 i32.const 0 i32.const 0 i32.const 0 call $query drop";
     let mut runtime = ControllerRuntime::new().unwrap();
     let mut controller = ready(&mut runtime, &guest(&imports, &data, &body));
     let count = Arc::new(AtomicUsize::new(0));
@@ -907,7 +907,7 @@ fn travel_read_rejects_bad_output_memory_before_calling_world_service() {
         controller
             .run_slice(
                 input(0.),
-                Some(Arc::new(CountingSource(count.clone()))),
+                Some(&CountingSource(count.clone())),
                 FUEL_PER_TICK,
                 FUEL_PER_TICK
             )

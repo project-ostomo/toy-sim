@@ -1,4 +1,4 @@
-use crate::AssetClient;
+use crate::OsgNetClient;
 use bevy::{
     asset::{
         AssetLoader, LoadContext,
@@ -19,7 +19,7 @@ pub(crate) fn path(hash: [u8; 32]) -> String {
     path
 }
 
-struct ServerReader(AssetClient);
+struct ServerReader(OsgNetClient);
 
 impl AssetReader for ServerReader {
     async fn read<'a>(&'a self, path: &'a Path) -> Result<impl Reader + 'a, AssetReaderError> {
@@ -34,7 +34,7 @@ impl AssetReader for ServerReader {
         }
         let bytes = self
             .0
-            .fetch(hash)
+            .fetch_asset(hash)
             .await
             .map_err(|error| std::io::Error::other(format!("{error:#}")))?;
         Ok(VecReader::new(bytes))
@@ -56,7 +56,7 @@ impl AssetReader for ServerReader {
     }
 }
 
-pub(crate) fn register_source(app: &mut App, client: AssetClient) {
+pub(crate) fn register_source(app: &mut App, client: OsgNetClient) {
     app.register_asset_source(
         "server",
         AssetSourceBuilder::new(move || Box::new(ServerReader(client.clone()))),

@@ -34,6 +34,7 @@ pub fn organization_id(name: &str) -> Id {
 
 pub fn initialize(world: &mut World) {
     world.init_resource::<super::gas::GasLedger>();
+    world.init_resource::<super::economy::Economy>();
     if world.contains_resource::<Directory>() {
         return;
     }
@@ -102,6 +103,29 @@ pub fn initialize(world: &mut World) {
             directory.standings.insert((source, target), standing);
         }
     }
+    for (name, alignment) in [
+        ("Union State of Earth", Bloc::Union),
+        ("League of Free States", Bloc::League),
+    ] {
+        let id = principal_id("bloc", name);
+        directory.diplomacy.blocs.insert(
+            id,
+            osg_model::diplomacy::PoliticalBloc {
+                id,
+                name: name.into(),
+                officers: BTreeSet::new(),
+                members: directory
+                    .sovereignties
+                    .values()
+                    .filter(|polity| polity.bloc == alignment)
+                    .map(|polity| polity.id)
+                    .collect(),
+                applications: BTreeSet::new(),
+                withdrawals: BTreeSet::new(),
+                posture: Default::default(),
+            },
+        );
+    }
     let ledger = world.resource::<super::gas::GasLedger>();
     for &id in directory.sovereignties.keys() {
         ledger.ensure_account(Principal::Sovereignty(id), super::gas::STARTING_GAS);
@@ -164,13 +188,37 @@ pub fn principal_access(
     ) else {
         return false;
     };
-    permits_principal(
-        &directory.0,
-        owner.0,
-        world.get::<AssetAccess>(entity).map(|access| &access.0),
-        subject,
-        permission,
-    )
+    treaty_permits(&directory.0, owner.0, subject, permission)
+        || permits_principal(
+            &directory.0,
+            owner.0,
+            world.get::<AssetAccess>(entity).map(|access| &access.0),
+            subject,
+            permission,
+        )
+}
+
+fn treaty_permits(
+    directory: &OwnershipDirectory,
+    owner: Principal,
+    subject: Principal,
+    permission: Permission,
+) -> bool {
+    let terms = directory.lineage(owner).into_iter().flat_map(|party| {
+        directory
+            .lineage(subject)
+            .into_iter()
+            .flat_map(move |partner| directory.diplomacy.active_terms(party, partner))
+    });
+    terms.into_iter().any(|term| match permission {
+        Permission::Dock => matches!(
+            term,
+            osg_model::diplomacy::AgreementTerm::DockingAccess
+                | osg_model::diplomacy::AgreementTerm::BasingAccess
+        ),
+        Permission::Navigate => matches!(term, osg_model::diplomacy::AgreementTerm::BasingAccess),
+        _ => false,
+    })
 }
 
 pub fn port_access(
@@ -224,6 +272,27 @@ pub fn set_access(
             .all(|grant| directory.contains(grant.principal)),
         "grant principal unavailable"
     );
+    let asset = world
+        .get::<identity::Identity>(entity)
+        .context("asset identity unavailable")?
+        .0;
+    let binding = directory.access_bindings.get(&asset).cloned();
+    let policy = if let Some(mut binding) = binding {
+        binding.overrides = policy;
+        let effective = binding.effective(&directory.access_profiles[&binding.profile].policy);
+        ensure!(
+            effective.valid(),
+            "combined access policy exceeds grant limit"
+        );
+        world
+            .resource_mut::<Directory>()
+            .0
+            .access_bindings
+            .insert(asset, binding);
+        effective
+    } else {
+        policy
+    };
     world.entity_mut(entity).insert(AssetAccess(policy));
     Ok(())
 }
@@ -236,6 +305,16 @@ pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) ->
         .revision
         .checked_add(1)
         .context("control revision exhausted")?;
+    if let Some(asset) = world
+        .get::<identity::Identity>(entity)
+        .map(|identity| identity.0)
+    {
+        world
+            .resource_mut::<Directory>()
+            .0
+            .access_bindings
+            .remove(&asset);
+    }
     world.entity_mut(entity).insert((
         Control { account, revision },
         identity::ControlledBy(player),
@@ -247,6 +326,132 @@ pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) ->
 
 pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> Result<()> {
     match command {
+        SocietyCommand::UnlinkAccessProfile { asset } => {
+            let entity = identity::lookup(world, asset)?;
+            authorize(world, account, entity, Permission::ManageAccess)?;
+            world
+                .resource_mut::<Directory>()
+                .0
+                .access_bindings
+                .remove(&asset);
+        }
+        SocietyCommand::SetAccessDenied { asset, denied } => {
+            let entity = identity::lookup(world, asset)?;
+            authorize(world, account, entity, Permission::ManageAccess)?;
+            let directory = &world.resource::<Directory>().0;
+            let mut binding = directory
+                .access_bindings
+                .get(&asset)
+                .context("asset has no linked profile")?
+                .clone();
+            binding.denied = denied;
+            let policy = binding.effective(&directory.access_profiles[&binding.profile].policy);
+            world
+                .resource_mut::<Directory>()
+                .0
+                .access_bindings
+                .insert(asset, binding);
+            world.entity_mut(entity).insert(AssetAccess(policy));
+        }
+        SocietyCommand::SaveAccessProfile(profile) => {
+            let mut directory = world.resource_mut::<Directory>();
+            ensure!(
+                directory.0.administers(account, profile.owner),
+                "profile administration required"
+            );
+            if let Some(previous) = directory.0.access_profiles.get(&profile.id) {
+                ensure!(
+                    previous.owner == profile.owner,
+                    "profile owner cannot change"
+                );
+            }
+            ensure!(
+                directory.0.access_profiles.contains_key(&profile.id)
+                    || directory.0.access_profiles.len() < 1024,
+                "access profile limit"
+            );
+            ensure!(
+                !profile.name.trim().is_empty()
+                    && profile.name.len() <= 128
+                    && !profile.name.chars().any(char::is_control),
+                "invalid profile name"
+            );
+            ensure!(
+                profile.policy.valid()
+                    && profile
+                        .policy
+                        .grants
+                        .iter()
+                        .all(|grant| directory.0.contains(grant.principal)),
+                "invalid profile policy"
+            );
+            let mut updates = Vec::new();
+            for (&asset, binding) in &directory.0.access_bindings {
+                if binding.profile == profile.id {
+                    let policy = binding.effective(&profile.policy);
+                    ensure!(policy.valid(), "combined access policy exceeds grant limit");
+                    updates.push((asset, policy));
+                }
+            }
+            drop(directory);
+            let updates: Vec<_> = updates
+                .into_iter()
+                .map(|(asset, policy)| {
+                    identity::lookup(world, asset).map(|entity| (entity, policy))
+                })
+                .collect::<Result<_>>()?;
+            world
+                .resource_mut::<Directory>()
+                .0
+                .access_profiles
+                .insert(profile.id, profile);
+            for (entity, policy) in updates {
+                world.entity_mut(entity).insert(AssetAccess(policy));
+            }
+        }
+        SocietyCommand::DeleteAccessProfile { id } => {
+            let mut directory = world.resource_mut::<Directory>();
+            let profile = directory
+                .0
+                .access_profiles
+                .get(&id)
+                .context("profile unavailable")?;
+            ensure!(
+                directory.0.administers(account, profile.owner),
+                "profile administration required"
+            );
+            directory.0.access_profiles.remove(&id);
+            directory
+                .0
+                .access_bindings
+                .retain(|_, binding| binding.profile != id);
+        }
+        SocietyCommand::ApplyAccessProfile { asset, profile } => {
+            let directory = &world.resource::<Directory>().0;
+            let profile = directory
+                .access_profiles
+                .get(&profile)
+                .context("profile unavailable")?;
+            ensure!(
+                directory.administers(account, profile.owner),
+                "profile administration required"
+            );
+            let binding = AccessBinding {
+                profile: profile.id,
+                overrides: AccessPolicy::default(),
+                denied: BTreeSet::new(),
+            };
+            let policy = profile.policy.clone();
+            let entity = identity::lookup(world, asset)?;
+            authorize(world, account, entity, Permission::ManageAccess)?;
+            world.entity_mut(entity).insert(AssetAccess(policy));
+            world
+                .resource_mut::<Directory>()
+                .0
+                .access_bindings
+                .insert(asset, binding);
+        }
+        SocietyCommand::Diplomacy(command) => super::diplomacy::apply(world, account, command)?,
         SocietyCommand::CreateOrganization { name } => {
             let name = name.trim();
             ensure!(
@@ -407,6 +612,11 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
             world
                 .entity_mut(entity)
                 .insert((AssetOwner(owner), AssetAccess::default()));
+            world
+                .resource_mut::<Directory>()
+                .0
+                .access_bindings
+                .remove(&asset);
         }
     }
     Ok(())
@@ -416,6 +626,13 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
     let source = &world.resource::<Directory>().0;
     let lineage = source.lineage(Principal::Player(account));
     let mut directory = source.clone();
+    directory
+        .access_profiles
+        .retain(|_, profile| source.administers(account, profile.owner));
+    directory
+        .diplomacy
+        .trust
+        .retain(|(owner, _), _| source.administers(account, *owner));
     directory
         .standings
         .retain(|(observer, _), _| lineage.contains(observer));
@@ -450,8 +667,34 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
         })
         .collect();
     assets.sort_by_key(|asset| asset.entity);
+    for asset in assets.iter().filter(|asset| asset.can_manage) {
+        if let Some(binding) = source.access_bindings.get(&asset.entity) {
+            if let Some(profile) = source.access_profiles.get(&binding.profile) {
+                directory
+                    .access_profiles
+                    .insert(profile.id, profile.clone());
+            }
+        }
+    }
+    directory.access_bindings.retain(|asset, binding| {
+        directory.access_profiles.contains_key(&binding.profile)
+            && assets
+                .iter()
+                .any(|entry| entry.entity == *asset && entry.can_manage)
+    });
+    SocietySnapshot {
+        standing_report: None,
+        account,
+        directory,
+        gas_accounts: gas_accounts(world, account),
+        assets,
+    }
+}
+
+pub(crate) fn gas_accounts(world: &World, account: AccountId) -> Vec<GasAccountSnapshot> {
+    let source = &world.resource::<Directory>().0;
     let ledger = world.resource::<super::gas::GasLedger>();
-    let gas_accounts = std::iter::once(Principal::Player(account))
+    std::iter::once(Principal::Player(account))
         .chain(
             source
                 .organizations
@@ -468,19 +711,95 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
         )
         .filter(|owner| source.administers(account, *owner))
         .filter_map(|owner| ledger.account(owner))
-        .collect();
-
-    SocietySnapshot {
-        account,
-        directory,
-        gas_accounts,
-        assets,
-    }
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_profiles_require_both_profile_and_asset_authority() {
+        let mut world = World::new();
+        let owner = Id([1; 16]);
+        let other = Id([2; 16]);
+        identity::initialize(&mut world, &[owner, other]);
+        let entity = world
+            .spawn((AssetOwner(Principal::Player(other)), AssetAccess::default()))
+            .id();
+        let asset = Id::new();
+        identity::register(&mut world, entity, asset);
+        let profile = AccessProfile {
+            id: Id::new(),
+            owner: Principal::Player(owner),
+            name: "Public observation".into(),
+            policy: AccessPolicy {
+                public: BTreeSet::from([Permission::View]),
+                grants: Vec::new(),
+            },
+        };
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::SaveAccessProfile(profile.clone()),
+        )
+        .unwrap();
+        let command = SocietyCommand::ApplyAccessProfile {
+            asset,
+            profile: profile.id,
+        };
+        assert!(apply(&mut world, owner, command.clone()).is_err());
+        assert!(apply(&mut world, other, command.clone()).is_err());
+        world
+            .entity_mut(entity)
+            .insert(AssetOwner(Principal::Player(owner)));
+        apply(&mut world, owner, command).unwrap();
+        assert_eq!(world.get::<AssetAccess>(entity).unwrap().0, profile.policy);
+        assert!(snapshot(&world, other).directory.access_profiles.is_empty());
+
+        let mut changed = profile.clone();
+        changed.policy.public.insert(Permission::Dock);
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::SaveAccessProfile(changed.clone()),
+        )
+        .unwrap();
+        assert!(can_access(&world, other, entity, Permission::Dock));
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::SetAccessDenied {
+                asset,
+                denied: BTreeSet::from([Permission::Dock]),
+            },
+        )
+        .unwrap();
+        assert!(!can_access(&world, other, entity, Permission::Dock));
+        changed.policy.public.insert(Permission::TransferCargo);
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::SaveAccessProfile(changed),
+        )
+        .unwrap();
+        assert!(!can_access(&world, other, entity, Permission::Dock));
+        assert!(can_access(&world, other, entity, Permission::TransferCargo));
+        assert!(can_access(&world, owner, entity, Permission::Dock));
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::UnlinkAccessProfile { asset },
+        )
+        .unwrap();
+        apply(
+            &mut world,
+            owner,
+            SocietyCommand::SaveAccessProfile(profile),
+        )
+        .unwrap();
+        assert!(can_access(&world, other, entity, Permission::TransferCargo));
+    }
 
     #[test]
     fn public_organization_profiles_seed_exact_owners_and_directed_standings() {

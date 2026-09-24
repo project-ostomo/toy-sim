@@ -18,6 +18,11 @@ pub(super) struct State {
 }
 
 impl State {
+    #[cfg(test)]
+    pub(super) fn show_ships(&mut self) {
+        self.tab = Tab::Ships;
+    }
+
     fn sync(&mut self, model: &FrameModel) {
         let location = model.ship.map(|ship| {
             let host = match ship.presence {

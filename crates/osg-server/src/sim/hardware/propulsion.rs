@@ -86,8 +86,12 @@ pub fn telemetry(
             Equipment::MicropulseEngine { .. } => result.charges.push("micropulse_charge".into()),
             Equipment::Reactor { .. } => result.fuels.push("reactor_fuel".into()),
             Equipment::Generator { .. } => result.fuels.push("fuel".into()),
-            Equipment::Weapon { weapon } if weapon.laser.is_none() => {
-                result.ammunition.push(weapon.ammunition.clone())
+            Equipment::Weapon { weapon } => {
+                if let osg_ships::weapons::WeaponMechanism::Gun { ammunition, .. } =
+                    &weapon.mechanism
+                {
+                    result.ammunition.push(ammunition.clone());
+                }
             }
             _ => {}
         }

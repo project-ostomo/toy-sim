@@ -1,6 +1,7 @@
-# Protocol 49 payload schemas
+# Protocol payload schemas — autopilot updated for version 56
 
-This is the complete reachable schema for main-stream messages, blueprint upload
+This reference retains historical protocol sections; current definitions are in
+`crates/osg-model/src` and `crates/osg-protocol/src`. It covers main-stream messages, blueprint upload
 acknowledgements, and inhabited-directory assets. Field order is wire order;
 enum numbers below are the Postcard discriminants. See [the protocol](protocol.md)
 for primitive encodings, units, constraints, and session behavior.
@@ -118,7 +119,8 @@ pub struct ShipTelemetry {
     pub hull_heat_j: f64,
     pub shield_temperature_k: f64,
     pub coolant_reserve_kg: f64,
-    pub travel: travel::TravelState,
+    pub location: location::LocationContext,
+    pub travel: travel::AutopilotState,
 }
 ```
 
@@ -251,7 +253,7 @@ pub enum Action {
 
 ### ShipCommand
 
-Tags: `0` UseRoute; `1` Flight; `2` SetTransponderEnabled; `3` MarkTarget; `4` StopFiring; `5` UnmarkTarget; `6` StartFiring; `7` Aim; `8` SetIff; `9` SetTravel; `10` SetAutopilot; `11` SetThrottle; `12` SetDockServices; `13` Undock; `14` Dock; `15` ScreenInput.
+Tags: `0` UseRoute; `1` Flight; `2` SetTransponderEnabled; `3` MarkTarget; `4` StopFiring; `5` UnmarkTarget; `6` StartFiring; `7` Aim; `8` SetIff; `9` SetItinerary; `10` SetGuidance; `11` SetAutopilot; `12` SetThrottle; `13` SetDockServices; `14` Undock; `15` Dock; `16` ScreenInput.
 
 ```rust
 pub enum ShipCommand {
@@ -273,12 +275,13 @@ pub enum ShipCommand {
         target: ContactRef,
     },
     SetIff(IffIdentity),
-    SetTravel {
+    SetItinerary {
         preferences: travel::PlanningPreferences,
         engage: bool,
         expected_revision: u64,
-        orders: Vec<travel::Order>,
+        itinerary: Vec<travel::Directive>,
     },
+    SetGuidance(Option<travel::Guidance>),
     SetAutopilot(bool),
     SetThrottle(f64),
     SetDockServices {
@@ -986,23 +989,12 @@ pub enum Destination {
 }
 ```
 
-### Order
-
-Tags: `0` Guidance; `1` TravelTo; `2` TravelToSystem; `3` Sublight; `4` Slip; `5` Dock; `6` Undock; `7` WaitUntil.
+### Directive
 
 ```rust
-pub enum Order {
-    Guidance(Guidance),
-    TravelTo(Destination),
-    TravelToSystem(Id),
-    Sublight(Destination),
-    Slip {
-        destination: Destination,
-        navigation_beacon: Option<EntityId>,
-    },
-    Dock(EntityId),
-    Undock,
-    WaitUntil(u64),
+pub enum Directive {
+    SlipToSystem(Id),
+    DockAt(EntityId),
 }
 ```
 
@@ -1035,30 +1027,58 @@ pub struct FuelBudget {
 }
 ```
 
-### QueuedOrder
+### ItineraryEntry
 
 ```rust
-pub struct QueuedOrder {
+pub struct ItineraryEntry {
+    pub directive: Directive,
     pub label: String,
-    pub transfer_cost: transfer::TransferCost,
-    pub action: Order,
+    pub max_loss_ppm: f64,
+    pub fuel_allowance_kg: f64,
     pub estimated_duration_ticks: Option<u64>,
-    pub estimated_propellant_kg: Option<f64>,
-    pub estimated_loss_ppm: Option<f64>,
 }
 ```
 
-### Status
-
-Tags: `0` Idle; `1` Planning; `2` Active; `3` Paused; `4` Blocked; `5` Completed.
+### PlanMarker
 
 ```rust
-pub enum Status {
+pub struct PlanMarker {
+    pub position: GalacticPosition,
+    pub label: String,
+}
+```
+
+### FirmwareStatus
+
+```rust
+pub struct FirmwareStatus {
+    pub phase: FirmwarePhase,
+    pub summary: String,
+    pub estimated_arrival_tick: Option<u64>,
+    pub capture_body: Option<CelestialRef>,
+    pub aim_offset_m: Option<[f64; 3]>,
+    pub departure_tick: Option<u64>,
+    pub planned_delta_v_m_s: f64,
+    pub planned_loss_ppm: f64,
+    pub spent_loss_ppm: f64,
+    pub planned_exotic_fuel_kg: f64,
+    pub spent_exotic_fuel_kg: f64,
+    pub markers: Vec<PlanMarker>,
+}
+```
+
+### FirmwarePhase
+
+```rust
+pub enum FirmwarePhase {
+    #[default]
     Idle,
     Planning,
-    Active,
-    Paused,
-    Blocked(String),
+    Waiting { until: Option<u64>, why: String },
+    Charging,
+    Transit,
+    Maneuvering,
+    Docking,
     Completed,
 }
 ```
@@ -1085,21 +1105,18 @@ pub struct PlanningProgress {
 }
 ```
 
-### TravelState
+### AutopilotState
 
 ```rust
-pub struct TravelState {
-    pub autopilot_enabled: bool,
+pub struct AutopilotState {
+    pub enabled: bool,
+    pub directive_revision: u64,
+    pub itinerary: Vec<ItineraryEntry>,
     pub preferences: PlanningPreferences,
     pub risk_budget: RiskBudget,
-    pub goals: Vec<Order>,
     pub fuel_budget: Option<FuelBudget>,
-    pub planning: Option<PlanningProgress>,
-    pub revision: u64,
-    pub orders: Vec<QueuedOrder>,
-    pub order: u64,
-    pub status: Status,
-    pub estimated_arrival_tick: Option<u64>,
+    pub status: FirmwareStatus,
+    pub failure: Option<String>,
 }
 ```
 
@@ -1146,6 +1163,31 @@ pub struct Guidance {
 }
 ```
 
+## location
+
+### LocationRegion
+
+```rust
+pub enum LocationRegion {
+    System,
+    Interstellar,
+    SlipTransit,
+}
+```
+
+### LocationContext
+
+```rust
+pub struct LocationContext {
+    pub region: LocationRegion,
+    pub system: Option<Id>,
+    pub primary: Option<CelestialRef>,
+    /// Ancestors followed by the primary, from the system root inward.
+    pub hierarchy: Vec<CelestialRef>,
+    pub sample_tick: u64,
+}
+```
+
 ## routing
 
 ### Request
@@ -1153,7 +1195,7 @@ pub struct Guidance {
 ```rust
 pub struct Request {
     pub id: u64,
-    pub orders: Vec<Order>,
+    pub directives: Vec<Directive>,
     pub preferences: PlanningPreferences,
 }
 ```
@@ -1163,12 +1205,11 @@ pub struct Request {
 ```rust
 pub struct Plan {
     pub planned_tick: u64,
-    pub travel_revision: u64,
+    pub directive_revision: u64,
     pub topology_revision: u64,
-    pub orders: Vec<QueuedOrder>,
+    pub itinerary: Vec<ItineraryEntry>,
     pub fuel_budget: FuelBudget,
     pub estimated_loss_ppm: f64,
-    pub beacon_assumptions: Vec<EntityId>,
     pub exotic_fuel_kg: f64,
 }
 ```

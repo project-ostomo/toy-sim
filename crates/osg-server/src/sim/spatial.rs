@@ -12,21 +12,10 @@ mod index;
 mod lighting;
 pub use index::{SpatialIndex, SpatialKey, SpatialObject, sphere_blocks, sphere_fully_blocks};
 
-#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum SensorSystems {
-    Index,
-}
-
 pub struct SpatialPlugin;
 impl Plugin for SpatialPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SpatialIndex>();
-        app.add_systems(
-            FixedLast,
-            collect
-                .in_set(SensorSystems::Index)
-                .run_if(in_state(super::GameState::Game)),
-        );
     }
 }
 
@@ -35,6 +24,28 @@ pub(crate) fn rebuild(world: &mut World) {
     world
         .run_system_cached(collect)
         .expect("collect spatial records");
+}
+
+/// Refresh membership bounds after celestial motion. Region metadata stays on ECS.
+pub(crate) fn sync_hill_spheres(
+    mut index: ResMut<SpatialIndex>,
+    spheres: Query<(Entity, &PreciseTransform, &super::location::HillSphere)>,
+) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("spatial.sync_hill_spheres");
+    let records = spheres.iter().map(|(entity, pose, sphere)| {
+        (
+            entity,
+            osg_spatial::SpatialRecord {
+                position: pose.translation_um,
+                radius_m: sphere.radius_m,
+                luminosity: 0.0,
+            },
+        )
+    });
+    index
+        .hill_spheres
+        .replace(records)
+        .expect("Hill sphere coordinate range");
 }
 
 pub(crate) fn collect(
@@ -75,7 +86,6 @@ pub(crate) fn collect(
     index
         .sky
         .set_universe(universe.map(|universe| universe.0.clone()));
-    index.seed_catalogue();
     index.sky.epoch = time.as_ref().map_or_else(hifitime::Epoch::default, |time| {
         super::physics::sim_time(&**time)
     });
@@ -83,6 +93,7 @@ pub(crate) fn collect(
     let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_collect_loop");
     let mut celestial_count = 0_usize;
     let mut stars = 0_usize;
+    let profile = crate::sim::diagnostics::ProfileScope::new("spatial.ecs_collection");
     for (entity, pose, body, celestial, celestial_state, star, design, thermal, parts, velocity) in
         &bodies
     {
@@ -128,15 +139,24 @@ pub(crate) fn collect(
             index.insert(object);
         }
     }
+    drop(profile);
+    #[cfg(test)]
+    {
+        crate::sim::diagnostics::samples::count("spatial.collections", 1);
+        crate::sim::diagnostics::samples::count("spatial.objects_collected", index.objects.len());
+        crate::sim::diagnostics::samples::count("spatial.celestials_collected", celestial_count);
+    }
     if std::env::var_os("OSG_SPATIAL_PROFILE").is_some() {
         debug!(target: "osg_server::profile", tick = index.tick,
             objects = index.objects.len(), celestial_count, stars,
             non_celestial = index.objects.len() - celestial_count,
             "spatial population");
     }
+    let profile = crate::sim::diagnostics::ProfileScope::new("spatial.projectiles");
     for (entity, projectile, pose) in &projectiles {
         index.insert_collision(entity, pose.translation_um, projectile.radius_m);
     }
+    drop(profile);
     index.finish_geometry();
     // Exact illumination is evaluated only when an optical observer requests it.
 }
@@ -147,6 +167,135 @@ mod tests {
     use crate::sim::precision::GalacticPosition;
     use bevy::math::DVec3;
     use rand::{RngExt, SeedableRng};
+
+    #[test]
+    fn hill_bounds_follow_ecs_motion_and_remove_deleted_regions() {
+        let mut app = App::new();
+        app.init_resource::<SpatialIndex>()
+            .add_systems(Update, sync_hill_spheres);
+        let reference = osg_model::travel::CelestialRef {
+            system: osg_model::Id::new(),
+            body: osg_model::Id::new(),
+        };
+        let origin = GalacticPosition::new(1_i128 << 90, -(1_i128 << 90), 0);
+        let region = app
+            .world_mut()
+            .spawn((
+                PreciseTransform {
+                    translation_um: origin,
+                    ..Default::default()
+                },
+                crate::sim::location::HillSphere {
+                    reference,
+                    radius_m: 1000.0,
+                    hierarchy: vec![reference],
+                },
+            ))
+            .id();
+        app.update();
+        let snapshot = app.world().resource::<SpatialIndex>().clone();
+        assert_eq!(snapshot.containing_hill_spheres(origin), vec![region]);
+        assert_eq!(
+            snapshot.containing_hill_spheres(origin.offset_by(DVec3::X * 1000.0)),
+            vec![region]
+        );
+        assert!(
+            snapshot
+                .containing_hill_spheres(origin.offset_by(DVec3::X * 1000.1))
+                .is_empty()
+        );
+
+        let moved = origin.offset_by(DVec3::Y * 10_000.0);
+        app.world_mut()
+            .get_mut::<PreciseTransform>(region)
+            .unwrap()
+            .translation_um = moved;
+        app.update();
+        let index = app.world().resource::<SpatialIndex>();
+        assert!(index.containing_hill_spheres(origin).is_empty());
+        assert_eq!(index.containing_hill_spheres(moved), vec![region]);
+        assert_eq!(snapshot.containing_hill_spheres(origin), vec![region]);
+
+        app.world_mut()
+            .entity_mut(region)
+            .remove::<crate::sim::location::HillSphere>();
+        app.update();
+        assert_eq!(app.world().resource::<SpatialIndex>().hill_spheres.len(), 0);
+        app.world_mut()
+            .entity_mut(region)
+            .insert(crate::sim::location::HillSphere {
+                reference,
+                radius_m: 1000.0,
+                hierarchy: vec![reference],
+            });
+        app.update();
+        assert_eq!(app.world().resource::<SpatialIndex>().hill_spheres.len(), 1);
+        app.world_mut().entity_mut(region).despawn();
+        app.update();
+        assert_eq!(app.world().resource::<SpatialIndex>().hill_spheres.len(), 0);
+    }
+
+    #[test]
+    fn hill_bounds_do_not_enlarge_physical_geometry_or_sensor_targets() {
+        let mut app = App::new();
+        app.init_resource::<SpatialIndex>()
+            .add_systems(Update, (rebuild, sync_hill_spheres).chain());
+        let reference = osg_model::travel::CelestialRef {
+            system: osg_model::Id::new(),
+            body: osg_model::Id::new(),
+        };
+        let body = app
+            .world_mut()
+            .spawn((
+                PreciseTransform::default(),
+                SpatialBody {
+                    radius_m: 1.0,
+                    occludes: true,
+                },
+                crate::sim::location::HillSphere {
+                    reference,
+                    radius_m: 1000.0,
+                    hierarchy: vec![reference],
+                },
+            ))
+            .id();
+        let region = app
+            .world_mut()
+            .spawn((
+                PreciseTransform::default(),
+                crate::sim::location::HillSphere {
+                    reference,
+                    radius_m: 2000.0,
+                    hierarchy: vec![],
+                },
+            ))
+            .id();
+        app.update();
+        let position = GalacticPosition::from_meters(DVec3::X * 500.0);
+        let index = app.world().resource::<SpatialIndex>();
+        let containing = index.containing_hill_spheres(position);
+        assert!(containing.contains(&body) && containing.contains(&region));
+        assert_eq!(index.objects.len(), 1);
+        assert_eq!(index.geometry.len(), 1);
+        assert!(index.object_index(region).is_none());
+        assert!(
+            index
+                .geometry
+                .within_radius(position, 0.0, true)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            index
+                .segment_candidates(position, DVec3::X * 100.0)
+                .is_empty()
+        );
+        assert!(index.occluders_in_range(position, 10.0).is_empty());
+
+        // Ordinary physical collection must preserve the independent context index.
+        rebuild(app.world_mut());
+        assert_eq!(app.world().resource::<SpatialIndex>().hill_spheres.len(), 2);
+    }
 
     #[test]
     fn uninstantiated_stars_illuminate_cold_ships() {
@@ -220,6 +369,7 @@ mod tests {
                 optical_occludes: true,
             });
         }
+        index.finish_geometry();
         for radius in [0.0, 0.001, 1e6, 1e7, 1e8, 1e9, 1e10, 1e18] {
             let mut actual = index.within_range(origin, radius);
             let expected: Vec<_> = index

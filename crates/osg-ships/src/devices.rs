@@ -6,7 +6,8 @@ pub struct DeviceHandle(pub u16);
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DeviceKind {
-    Weapon,
+    Gun,
+    Laser,
     Rcs {
         thrust_n: f64,
         propellant_kg_s: f64,
@@ -127,7 +128,7 @@ impl DeviceSetting {
         matches!(
             (self, kind),
             (Self::RcsThrust(_), DeviceKind::Rcs { .. })
-                | (Self::Weapon(_), DeviceKind::Weapon)
+                | (Self::Weapon(_), DeviceKind::Gun | DeviceKind::Laser)
                 | (Self::Throttle(_), DeviceKind::Engine { .. })
                 | (Self::TorqueNm(_), DeviceKind::Torquer { .. })
                 | (Self::GeneratorDemand(_), DeviceKind::Generator { .. })
@@ -145,7 +146,8 @@ pub struct DeviceCommand {
 impl DeviceKind {
     pub fn abi_tag(&self) -> u64 {
         match self {
-            Self::Weapon => 9,
+            Self::Gun => osg_ship_api::abi::DEVICE_GUN,
+            Self::Laser => osg_ship_api::abi::DEVICE_LASER,
             Self::Rcs { .. } => 10,
             Self::Accelerometer => 0,
             Self::Computer => 1,

@@ -5,33 +5,23 @@ use crate::egui::{
     vec2,
 };
 
-const PROPORTIONAL_FONT: &[u8] = include_bytes!("../data/fonts/IosevkaAile-Regular.ttf");
-const MONOSPACE_FONT: &[u8] = include_bytes!("../data/fonts/Iosevka-Regular.ttf");
-
 pub fn install(ctx: &egui::Context) {
     crate::icons::install(ctx);
-    ctx.add_font(FontInsert::new(
-        "Iosevka Aile",
-        egui::FontData::from_static(PROPORTIONAL_FONT),
-        vec![
-            InsertFontFamily {
-                family: FontFamily::Proportional,
-                priority: FontPriority::Highest,
-            },
-            InsertFontFamily {
+    crate::fonts::install_family(ctx, FontFamily::Proportional, false);
+    crate::fonts::install_family(ctx, FontFamily::Monospace, true);
+    for (name, data) in [
+        ("Iosevka Charon", crate::fonts::PROPORTIONAL),
+        ("Toy Sim CJK", crate::fonts::CJK),
+    ] {
+        ctx.add_font(FontInsert::new(
+            name,
+            egui::FontData::from_static(data),
+            vec![InsertFontFamily {
                 family: FontFamily::Name("Phosphor".into()),
                 priority: FontPriority::Lowest,
-            },
-        ],
-    ));
-    ctx.add_font(FontInsert::new(
-        "Iosevka",
-        egui::FontData::from_static(MONOSPACE_FONT),
-        vec![InsertFontFamily {
-            family: FontFamily::Monospace,
-            priority: FontPriority::Highest,
-        }],
-    ));
+            }],
+        ));
+    }
 
     ctx.set_theme(egui::Theme::Dark);
     ctx.set_style_of(egui::Theme::Dark, style());
@@ -39,41 +29,41 @@ pub fn install(ctx: &egui::Context) {
 
 fn style() -> egui::Style {
     let mut style = egui::Style::default();
-    style.spacing.item_spacing = vec2(12., 8.);
+    style.spacing.item_spacing = vec2(8., 4.);
     style.spacing.window_margin = Margin::same(12);
     style.spacing.menu_margin = Margin::same(10);
-    style.spacing.button_padding = vec2(10., 6.);
-    style.spacing.interact_size = vec2(44., 28.);
+    style.spacing.button_padding = vec2(8., 3.);
+    style.spacing.interact_size = vec2(36., 22.);
     style.spacing.indent = 24.;
     style.spacing.icon_width = 16.;
     style.spacing.icon_spacing = 8.;
-    style.spacing.extra_text_line_spacing = 2.;
+    style.spacing.extra_text_line_spacing = 1.;
 
     style.text_styles.extend([
         (TextStyle::Heading, FontId::proportional(20.)),
-        (TextStyle::Body, FontId::proportional(14.)),
-        (TextStyle::Button, FontId::proportional(14.)),
-        (TextStyle::Small, FontId::proportional(12.)),
+        (TextStyle::Body, FontId::proportional(13.)),
+        (TextStyle::Button, FontId::proportional(13.)),
+        (TextStyle::Small, FontId::proportional(11.)),
     ]);
 
     let visuals = &mut style.visuals;
     *visuals = egui::Visuals::dark();
-    visuals.panel_fill = rgb(25, 29, 36);
-    visuals.window_fill = rgb(28, 32, 40);
-    visuals.window_stroke = Stroke::new(1., rgb(60, 71, 86));
-    visuals.faint_bg_color = rgb(31, 37, 46);
-    visuals.extreme_bg_color = rgb(16, 20, 27);
+    visuals.panel_fill = crate::desktop::SURFACE;
+    visuals.window_fill = crate::desktop::SURFACE;
+    visuals.window_stroke = Stroke::new(1., crate::desktop::BORDER);
+    visuals.faint_bg_color = crate::desktop::SURFACE_RAISED;
+    visuals.extreme_bg_color = rgb(11, 17, 24);
     visuals.code_bg_color = rgb(35, 42, 53);
     visuals.weak_text_color = Some(rgb(147, 161, 180));
     visuals.hyperlink_color = rgb(130, 180, 224);
-    visuals.selection.bg_fill = rgb(44, 79, 110);
+    visuals.selection.bg_fill = rgb(34, 67, 80);
     visuals.selection.stroke = Stroke::new(1., rgb(219, 235, 250));
     visuals.text_cursor.stroke = Stroke::new(2., rgb(130, 180, 224));
     visuals.window_corner_radius = CornerRadius::ZERO;
     visuals.menu_corner_radius = CornerRadius::ZERO;
 
-    visuals.widgets.noninteractive = widget(rgb(28, 32, 40), rgb(52, 63, 78), rgb(216, 223, 232));
-    visuals.widgets.inactive = widget(rgb(42, 49, 60), rgb(65, 78, 95), rgb(204, 215, 229));
+    visuals.widgets.noninteractive = widget(rgb(15, 22, 31), rgb(54, 73, 89), rgb(217, 226, 235));
+    visuals.widgets.inactive = widget(rgb(25, 37, 49), rgb(54, 73, 89), rgb(204, 215, 229));
     visuals.widgets.inactive.bg_stroke = Stroke::NONE;
     visuals.widgets.hovered = widget(rgb(57, 71, 89), rgb(108, 149, 184), rgb(235, 242, 250));
     visuals.widgets.active = widget(rgb(57, 91, 121), rgb(130, 180, 224), rgb(241, 247, 253));

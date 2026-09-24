@@ -78,27 +78,22 @@ The throttle ceiling is the smaller of the engaged limit and the power limit. It
 
 The forecast rolls the same law forward with the same response time and alignment gating. Its ETA uses the same terminal condition as guidance: the first sample whose distance to the aim point (the stand-off point, when a stand-off is set, rather than the target itself) is at most 2 m and whose relative velocity is at most 0.5 m/s, so the forecast arrival also matches the target's velocity. The rollout continues for 10 s after it.
 
-### Travel legs
+### Autopilot maneuvers
 
-The public server routing service expands destinations into a complete
-strategic queue stored in host-owned ship state. The flight computer reads only
-the active order. Within that order, it generates local manoeuvre points,
-avoids known obstacles, escapes slip-exclusion volumes and corrects its course.
-These intermediate points are private execution state and do not become server
-queue entries. `LocalSpace` supplies bounded public navigation and current sensor observations with
-an explicit incomplete-result flag; it does not supply steering instructions.
+The strategic router produces system and station directives. Firmware reads the
+remaining itinerary, uses the following directive when choosing a capture, and
+keeps local maneuver geometry private. Future system ephemerides and batched
+slip-clearance queries provide predicted geometry.
 
-For a sublight manoeuvre, the executor builds a contact with ID `u64::MAX` from
-the current local target's relative position and velocity, appends it to the
-scan results, and engages guidance with throttle limit 1 and stand-off 0. The
-contact is rebuilt as the target moves or the local manoeuvre changes. Reaching
-an intermediate point advances local execution only. Reaching the strategic
-command's destination within 2 m and 0.5 m/s submits `CompleteOrder` with its
-queue revision and order index. The host checks those identifiers before
-advancing the queue; obsolete callback actions cannot alter the next command.
-Guidance stops when no active travel contact remains. Docking uses current
-station geometry and physical docking range. See
-[server planning](server-client.md#travel-orders-and-server-planning).
+Local sublight guidance follows a moving position/velocity target. Reaching a
+private maneuver point advances the firmware plan. Completing the directive
+submits `Complete { directive_revision }`; stale completions are ignored.
+Docking uses station geometry and physical docking limits. Waiting for a safe
+departure window has no timeout.
+
+The single flight WASM instance may suspend while planning, delaying control.
+After a long search it checks the current generation and geometry before
+executing. See [autopilot architecture](server-client.md#autopilot-itineraries-and-firmware-planning).
 
 The debug launcher uses the same server world services and planner as a remote client.
 

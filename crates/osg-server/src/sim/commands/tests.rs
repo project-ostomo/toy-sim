@@ -61,7 +61,7 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
         .is_err()
     );
 
-    let before = world.get::<Travel>(ship).unwrap().0.revision;
+    let before = world.get::<Travel>(ship).unwrap().0.directive_revision;
     world
         .get_mut::<ShipSoftware>(ship)
         .unwrap()
@@ -74,22 +74,28 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
             .schedule
             .ready(false)
     );
-    let order = travel::Order::Sublight(travel::Destination::Galactic(GalacticPosition::ZERO));
+    let directive = travel::Directive::SlipToSystem(Id::new());
     execute(
         world,
         officer,
         id,
         revision,
-        ShipCommand::SetTravel {
+        ShipCommand::SetItinerary {
             preferences: Default::default(),
             engage: false,
             expected_revision: before,
-            orders: vec![order.clone()],
+            itinerary: vec![directive.clone()],
         },
     )
     .unwrap();
-    assert_eq!(world.get::<Travel>(ship).unwrap().0.revision, before + 1);
-    assert_eq!(world.get::<Travel>(ship).unwrap().0.orders[0].action, order);
+    assert_eq!(
+        world.get::<Travel>(ship).unwrap().0.directive_revision,
+        before + 1
+    );
+    assert_eq!(
+        world.get::<Travel>(ship).unwrap().0.itinerary[0].directive,
+        directive
+    );
     assert!(
         world
             .get::<ShipSoftware>(ship)
@@ -103,16 +109,16 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
             officer,
             id,
             revision,
-            ShipCommand::SetTravel {
+            ShipCommand::SetItinerary {
                 preferences: Default::default(),
                 engage: false,
                 expected_revision: before,
-                orders: vec![],
+                itinerary: vec![],
             }
         )
         .is_err()
     );
-    assert_eq!(world.get::<Travel>(ship).unwrap().0.orders.len(), 1);
+    assert_eq!(world.get::<Travel>(ship).unwrap().0.itinerary.len(), 1);
 
     let organization = world.resource::<Directory>().0.players[&member]
         .organization
@@ -134,21 +140,39 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
 fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_state() {
     let (mut app, _, officer, ship, id) = fixture();
     let world = app.world_mut();
-    let observed = 42;
-    let hidden = 43;
-    let observation = SensorObservation {
-        spatial_instance: Id::new(),
-        id: observed,
-        entity: None,
-        pose: Pose::default(),
-        radius_m: 10.,
-        iff: None,
-    };
-    let mut snapshot = sim::sensors::ObservationSnapshot::default();
-    snapshot.contacts.insert(observed, observation);
+    let target = world
+        .query_filtered::<Entity, With<sim::travel::DockingBays>>()
+        .iter(world)
+        .next()
+        .unwrap();
+    let origin = world
+        .get::<sim::precision::PreciseTransform>(ship)
+        .unwrap()
+        .translation_um;
+    let target_position = origin.offset_by(DVec3::X * 1000.);
     world
-        .entity_mut(ship)
-        .insert(sim::sensors::Observations(Arc::new(snapshot)));
+        .get_mut::<sim::precision::PreciseTransform>(target)
+        .unwrap()
+        .translation_um = target_position;
+    world.get_mut::<sim::hardware::SensorRange>(ship).unwrap().0 = 2000.;
+    let mut index = sim::spatial::SpatialIndex::default();
+    index.insert(sim::spatial::SpatialObject {
+        entity: target,
+        position: target_position,
+        radius_m: 10.,
+        occludes: false,
+        optical_occludes: false,
+        optical_luminosity_w: 0.,
+    });
+    index.finish_geometry();
+    world.insert_resource(index);
+    world.run_system_cached(sim::sensors::publish).unwrap();
+    let snapshot = sim::sensors::observe(world, ship);
+    let target_id = world.get::<Identity>(target).unwrap().0;
+    let observed = snapshot.targets[&target_id];
+    let hidden = (1..)
+        .find(|handle| !snapshot.contacts.contains_key(handle))
+        .unwrap();
     let reader = source(world, officer, id).unwrap();
     let reference = ContactRef {
         observer: id,
@@ -234,7 +258,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
         }),
         sim::travel::Dormant,
     ));
-    world.get_mut::<Travel>(ship).unwrap().0.revision = 77;
+    world.get_mut::<Travel>(ship).unwrap().0.directive_revision = 77;
     let reader = source(world, officer, id).unwrap();
     let ProgramReply::Travel {
         state,
@@ -251,7 +275,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
     else {
         panic!("expected current travel state")
     };
-    assert_eq!(state.revision, 77);
+    assert_eq!(state.directive_revision, 77);
     assert_eq!(pose, sim::session::ship_pose(world, ship).unwrap());
     assert!(pose.position.relative_to(position).length() < 1000.);
     assert!(!slip_ready);
@@ -285,13 +309,15 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
         mass: 1000.,
         work_j: 10.,
         required_j: 100.,
+        arrival_velocity: None,
+        not_before_tick: None,
     });
     for command in [
-        ShipCommand::SetTravel {
+        ShipCommand::SetItinerary {
             preferences: Default::default(),
             engage: true,
-            expected_revision: travel.revision,
-            orders: vec![],
+            expected_revision: travel.directive_revision,
+            itinerary: vec![],
         },
         ShipCommand::SetAutopilot(true),
     ] {
@@ -316,4 +342,85 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
             10.
         );
     }
+}
+
+#[test]
+fn manual_disengagement_preserves_itinerary_and_invalidates_pending_completion() {
+    let (mut app, _, _, ship, _) = fixture();
+    let world = app.world_mut();
+    let itinerary = vec![travel::ItineraryEntry {
+        directive: travel::Directive::SlipToSystem(Id::new()),
+        label: "Next system".into(),
+        max_loss_ppm: 50.,
+        fuel_allowance_kg: 10.,
+        estimated_duration_ticks: None,
+    }];
+    {
+        let mut state = world.get_mut::<Travel>(ship).unwrap();
+        state.0.enabled = true;
+        state.0.directive_revision = 41;
+        state.0.itinerary = itinerary.clone();
+        state.0.status.phase = travel::FirmwarePhase::Charging;
+        state.0.status.spent_loss_ppm = 12.;
+        state.0.status.spent_exotic_fuel_kg = 3.;
+    }
+
+    disengage_autopilot(world, ship);
+
+    let state = &world.get::<Travel>(ship).unwrap().0;
+    assert!(!state.enabled);
+    assert_eq!(state.directive_revision, 42);
+    assert_eq!(state.itinerary, itinerary);
+    assert_eq!(state.status.phase, travel::FirmwarePhase::Idle);
+    assert_eq!(state.status.spent_loss_ppm, 12.);
+    assert_eq!(state.status.spent_exotic_fuel_kg, 3.);
+
+    disengage_autopilot(world, ship);
+    assert_eq!(world.get::<Travel>(ship).unwrap().0.directive_revision, 42);
+}
+
+#[test]
+fn docked_ship_can_engage_an_itinerary() {
+    let (mut app, _, officer, ship, id) = fixture();
+    let world = app.world_mut();
+    let host = world
+        .query_filtered::<Entity, With<sim::travel::DockingBays>>()
+        .iter(world)
+        .next()
+        .unwrap();
+    let host_id = world.get::<Identity>(host).unwrap().0;
+    world
+        .entity_mut(ship)
+        .insert(PresenceState(travel::Presence::Docked {
+            host: host_id,
+            bay: 0,
+        }));
+    world
+        .get_mut::<Travel>(ship)
+        .unwrap()
+        .0
+        .itinerary
+        .push(travel::ItineraryEntry {
+            directive: travel::Directive::SlipToSystem(Id::new()),
+            label: "Departure".into(),
+            max_loss_ppm: 100.,
+            fuel_allowance_kg: 1.,
+            estimated_duration_ticks: None,
+        });
+    let revision = world.get::<Control>(ship).unwrap().revision;
+
+    execute(
+        world,
+        officer,
+        id,
+        revision,
+        ShipCommand::SetAutopilot(true),
+    )
+    .unwrap();
+
+    assert!(world.get::<Travel>(ship).unwrap().0.enabled);
+    assert!(matches!(
+        world.get::<PresenceState>(ship).unwrap().0,
+        travel::Presence::Docked { .. }
+    ));
 }

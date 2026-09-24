@@ -587,21 +587,26 @@ impl PartDescription {
             }
             Equipment::Weapon { weapon } => {
                 if let Some(spec) = weapon.spec(catalogue) {
-                    if spec.beam_power_w > 0.0 {
-                        performance.quantity("Optical power", spec.beam_power_w, Power);
-                        performance.quantity("Maximum range", spec.beam_range_m, Metres);
-                        performance.quantity("Efficiency", spec.efficiency, Percent);
-                        requirements.quantity(
-                            "Electrical power",
-                            spec.beam_power_w / spec.efficiency,
-                            Power,
+                    if let osg_ships::weapons::WeaponSpec::Laser(spec) = spec {
+                        let power = spec.pulse_energy_j / spec.cycle_interval_s;
+                        performance.quantity("Pulse energy", spec.pulse_energy_j, Energy);
+                        performance.quantity("Pulse frequency", 1.0 / spec.cycle_interval_s, Hertz);
+                        performance.quantity("Optical power", power, Power);
+                        performance.quantity("Maximum range", spec.range_m, Metres);
+                        performance.quantity("Beam waist", spec.beam_waist_m, Metres);
+                        performance.quantity(
+                            "Beam divergence",
+                            spec.divergence_half_angle_rad,
+                            Milliradians,
                         );
+                        performance.quantity("Efficiency", spec.efficiency, Percent);
+                        requirements.quantity("Electrical power", power / spec.efficiency, Power);
                         requirements.quantity(
                             "Waste heat",
-                            spec.beam_power_w * (1.0 / spec.efficiency - 1.0),
+                            power * (1.0 / spec.efficiency - 1.0),
                             Power,
                         );
-                    } else {
+                    } else if let osg_ships::weapons::WeaponSpec::Gun(spec) = spec {
                         let ammunition =
                             &catalogue.resources[spec.ammunition_resource as usize - 1];
                         performance.quantity("Muzzle velocity", spec.muzzle_speed_m_s, Speed);
@@ -658,17 +663,18 @@ impl PartDescription {
                         requirements.text("Ammunition", ammunition.title.clone());
                         requirements.quantity(
                             "Electrical energy per shot",
-                            weapons::shot_energy(&spec),
+                            weapons::shot_energy(&weapons::WeaponSpec::Gun(spec)),
                             Energy,
                         );
                         requirements.quantity(
                             "Sustained power",
-                            weapons::shot_energy(&spec) / spec.cycle_interval_s,
+                            weapons::shot_energy(&weapons::WeaponSpec::Gun(spec))
+                                / spec.cycle_interval_s,
                             Power,
                         );
                         requirements.quantity(
                             "Propellant per shot",
-                            weapons::shot_propellant_kg(&spec),
+                            weapons::shot_propellant_kg(&weapons::WeaponSpec::Gun(spec)),
                             Mass,
                         );
                         requirements.note = Some(
@@ -676,12 +682,9 @@ impl PartDescription {
                         );
                     }
                 } else {
-                    requirements.text(
-                        "Ammunition",
-                        format!("Unknown resource: {}", weapon.ammunition),
-                    );
+                    requirements.text("Ammunition", "Unknown ammunition resource");
                 }
-                if weapon.laser.is_some() {
+                if matches!(weapon.mechanism, weapons::WeaponMechanism::Laser { .. }) {
                     ("Laser", Category::Weapons, "")
                 } else if weapon.slew_rate_rad_s > 0. {
                     (

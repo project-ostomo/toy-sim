@@ -39,7 +39,9 @@ impl Inventory {
     }
 
     pub fn cargo_available(&self, item: &CargoItem, cat: &Catalogue) -> Result<u64> {
-        let reserved = self.reservations.get(item).copied().unwrap_or(0);
+        let reserved = self.reservations.get(item).copied().unwrap_or(0)
+            .checked_add(self.custody.get(item).copied().unwrap_or(0))
+            .context("cargo custody overflow")?;
         self.cargo_quantity(item, cat)?
             .checked_sub(reserved)
             .context("reserved cargo exceeds stock")
@@ -63,7 +65,8 @@ impl Inventory {
             .chain(parts)
             .map(|(item, quantity)| {
                 Ok(CargoStack {
-                    reserved: self.reservations.get(&item).copied().unwrap_or(0),
+                    reserved: self.reservations.get(&item).copied().unwrap_or(0)
+                        + self.custody.get(&item).copied().unwrap_or(0),
                     name: industry::item_name(&item, cat)?.to_owned(),
                     unit_mass_kg: industry::item_mass_kg(&item, cat)?,
                     unit_volume_m3: industry::item_volume_m3(&item, cat)?,
@@ -108,6 +111,10 @@ impl Inventory {
                 *quantity > 0 && *quantity <= self.cargo_quantity(item, cat)?,
                 "invalid cargo reservation"
             );
+        }
+        for (item, quantity) in &self.custody {
+            ensure!(*quantity > 0, "invalid cargo custody");
+            self.cargo_available(item, cat)?;
         }
         Ok(())
     }

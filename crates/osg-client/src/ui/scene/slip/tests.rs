@@ -23,6 +23,7 @@ fn ship_telemetry(id: Id, radius: f64) -> osg_model::ShipTelemetry {
         shield_temperature_k: 300.0,
         coolant_reserve_kg: 0.0,
         travel: default(),
+        location: default(),
     }
 }
 
@@ -216,6 +217,7 @@ fn transitions_follow_the_same_ship_and_fade_continuously() {
                 shield_temperature_k: 0.0,
                 coolant_reserve_kg: 0.0,
                 travel: default(),
+                location: default(),
             }),
             DisplayPose(Pose::default()),
             ShipDetails(details),

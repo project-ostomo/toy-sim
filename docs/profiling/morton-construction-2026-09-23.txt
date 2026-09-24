@@ -1,0 +1,154 @@
+    Blocking waiting for file lock on build directory
+   Compiling osg-spatial-bvh v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-spatial-bvh)
+    Finished `bench` profile [optimized] target(s) in 40.40s
+     Running benches/construction.rs (target/release/deps/construction-8e50a0b31f470666)
+Benchmarking construction/uniform/median/10000
+Benchmarking construction/uniform/median/10000: Warming up for 1.0000 s
+Benchmarking construction/uniform/median/10000: Collecting 20 samples in estimated 3.3167 s (1890 iterations)
+Benchmarking construction/uniform/median/10000: Analyzing
+construction/uniform/median/10000
+                        time:   [1.9967 ms 2.5574 ms 3.1489 ms]
+                        thrpt:  [3.1757 Melem/s 3.9102 Melem/s 5.0083 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking construction/uniform/morton/10000
+Benchmarking construction/uniform/morton/10000: Warming up for 1.0000 s
+Benchmarking construction/uniform/morton/10000: Collecting 20 samples in estimated 3.1041 s (3150 iterations)
+Benchmarking construction/uniform/morton/10000: Analyzing
+construction/uniform/morton/10000
+                        time:   [1.0037 ms 1.0230 ms 1.0416 ms]
+                        thrpt:  [9.6011 Melem/s 9.7749 Melem/s 9.9631 Melem/s]
+Benchmarking construction/uniform/median/46908
+Benchmarking construction/uniform/median/46908: Warming up for 1.0000 s
+Benchmarking construction/uniform/median/46908: Collecting 20 samples in estimated 3.3975 s (420 iterations)
+Benchmarking construction/uniform/median/46908: Analyzing
+construction/uniform/median/46908
+                        time:   [7.1996 ms 7.3526 ms 7.5111 ms]
+                        thrpt:  [6.2452 Melem/s 6.3798 Melem/s 6.5154 Melem/s]
+Benchmarking construction/uniform/morton/46908
+Benchmarking construction/uniform/morton/46908: Warming up for 1.0000 s
+Benchmarking construction/uniform/morton/46908: Collecting 20 samples in estimated 4.4151 s (630 iterations)
+Benchmarking construction/uniform/morton/46908: Analyzing
+construction/uniform/morton/46908
+                        time:   [6.9830 ms 7.4227 ms 7.7132 ms]
+                        thrpt:  [6.0815 Melem/s 6.3195 Melem/s 6.7175 Melem/s]
+Benchmarking construction/uniform/median/100000
+Benchmarking construction/uniform/median/100000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 4.5s, enable flat sampling, or reduce sample count to 10.
+Benchmarking construction/uniform/median/100000: Collecting 20 samples in estimated 4.4627 s (210 iterations)
+Benchmarking construction/uniform/median/100000: Analyzing
+construction/uniform/median/100000
+                        time:   [21.158 ms 21.669 ms 22.300 ms]
+                        thrpt:  [4.4844 Melem/s 4.6149 Melem/s 4.7263 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  1 (5.00%) low mild
+  1 (5.00%) high severe
+Benchmarking construction/uniform/morton/100000
+Benchmarking construction/uniform/morton/100000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 4.2s, enable flat sampling, or reduce sample count to 10.
+Benchmarking construction/uniform/morton/100000: Collecting 20 samples in estimated 4.1960 s (210 iterations)
+Benchmarking construction/uniform/morton/100000: Analyzing
+construction/uniform/morton/100000
+                        time:   [20.242 ms 20.484 ms 20.718 ms]
+                        thrpt:  [4.8268 Melem/s 4.8819 Melem/s 4.9402 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking construction/uniform/median/1000000
+Benchmarking construction/uniform/median/1000000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 7.1s, or reduce sample count to 10.
+Benchmarking construction/uniform/median/1000000: Collecting 20 samples in estimated 7.1352 s (20 iterations)
+Benchmarking construction/uniform/median/1000000: Analyzing
+construction/uniform/median/1000000
+                        time:   [314.26 ms 324.02 ms 332.75 ms]
+                        thrpt:  [3.0052 Melem/s 3.0862 Melem/s 3.1820 Melem/s]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) low mild
+Benchmarking construction/uniform/morton/1000000
+Benchmarking construction/uniform/morton/1000000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 5.6s, or reduce sample count to 10.
+Benchmarking construction/uniform/morton/1000000: Collecting 20 samples in estimated 5.5816 s (20 iterations)
+Benchmarking construction/uniform/morton/1000000: Analyzing
+construction/uniform/morton/1000000
+                        time:   [270.10 ms 276.58 ms 285.01 ms]
+                        thrpt:  [3.5086 Melem/s 3.6156 Melem/s 3.7023 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high severe
+
+Benchmarking construction/clustered/median/10000
+Benchmarking construction/clustered/median/10000: Warming up for 1.0000 s
+Benchmarking construction/clustered/median/10000: Collecting 20 samples in estimated 3.1201 s (1470 iterations)
+Benchmarking construction/clustered/median/10000: Analyzing
+construction/clustered/median/10000
+                        time:   [1.8646 ms 1.9050 ms 1.9365 ms]
+                        thrpt:  [5.1641 Melem/s 5.2494 Melem/s 5.3632 Melem/s]
+Benchmarking construction/clustered/morton/10000
+Benchmarking construction/clustered/morton/10000: Warming up for 1.0000 s
+Benchmarking construction/clustered/morton/10000: Collecting 20 samples in estimated 3.0299 s (2730 iterations)
+Benchmarking construction/clustered/morton/10000: Analyzing
+construction/clustered/morton/10000
+                        time:   [1.0617 ms 1.0805 ms 1.0993 ms]
+                        thrpt:  [9.0968 Melem/s 9.2549 Melem/s 9.4189 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking construction/clustered/median/46908
+Benchmarking construction/clustered/median/46908: Warming up for 1.0000 s
+Benchmarking construction/clustered/median/46908: Collecting 20 samples in estimated 3.5636 s (420 iterations)
+Benchmarking construction/clustered/median/46908: Analyzing
+construction/clustered/median/46908
+                        time:   [8.2195 ms 8.5667 ms 8.8838 ms]
+                        thrpt:  [5.2802 Melem/s 5.4756 Melem/s 5.7069 Melem/s]
+Benchmarking construction/clustered/morton/46908
+Benchmarking construction/clustered/morton/46908: Warming up for 1.0000 s
+Benchmarking construction/clustered/morton/46908: Collecting 20 samples in estimated 4.4638 s (630 iterations)
+Benchmarking construction/clustered/morton/46908: Analyzing
+construction/clustered/morton/46908
+                        time:   [6.9541 ms 7.1024 ms 7.2750 ms]
+                        thrpt:  [6.4479 Melem/s 6.6046 Melem/s 6.7454 Melem/s]
+Benchmarking construction/clustered/median/100000
+Benchmarking construction/clustered/median/100000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 4.1s, enable flat sampling, or reduce sample count to 10.
+Benchmarking construction/clustered/median/100000: Collecting 20 samples in estimated 4.0502 s (210 iterations)
+Benchmarking construction/clustered/median/100000: Analyzing
+construction/clustered/median/100000
+                        time:   [18.464 ms 18.890 ms 19.309 ms]
+                        thrpt:  [5.1789 Melem/s 5.2937 Melem/s 5.4160 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high mild
+Benchmarking construction/clustered/morton/100000
+Benchmarking construction/clustered/morton/100000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 3.5s, enable flat sampling, or reduce sample count to 10.
+Benchmarking construction/clustered/morton/100000: Collecting 20 samples in estimated 3.4973 s (210 iterations)
+Benchmarking construction/clustered/morton/100000: Analyzing
+construction/clustered/morton/100000
+                        time:   [16.175 ms 16.314 ms 16.482 ms]
+                        thrpt:  [6.0673 Melem/s 6.1298 Melem/s 6.1825 Melem/s]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking construction/clustered/median/1000000
+Benchmarking construction/clustered/median/1000000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 9.7s, or reduce sample count to 10.
+Benchmarking construction/clustered/median/1000000: Collecting 20 samples in estimated 9.6517 s (20 iterations)
+Benchmarking construction/clustered/median/1000000: Analyzing
+construction/clustered/median/1000000
+                        time:   [425.22 ms 441.82 ms 458.01 ms]
+                        thrpt:  [2.1834 Melem/s 2.2634 Melem/s 2.3517 Melem/s]
+Benchmarking construction/clustered/morton/1000000
+Benchmarking construction/clustered/morton/1000000: Warming up for 1.0000 s
+
+Warning: Unable to complete 20 samples in 3.0s. You may wish to increase target time to 6.4s, or reduce sample count to 10.
+Benchmarking construction/clustered/morton/1000000: Collecting 20 samples in estimated 6.3818 s (20 iterations)
+Benchmarking construction/clustered/morton/1000000: Analyzing
+construction/clustered/morton/1000000
+                        time:   [287.27 ms 291.43 ms 296.43 ms]
+                        thrpt:  [3.3735 Melem/s 3.4313 Melem/s 3.4810 Melem/s]
+Found 2 outliers among 20 measurements (10.00%)
+  2 (10.00%) high severe
+

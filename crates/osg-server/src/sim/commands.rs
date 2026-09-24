@@ -1,8 +1,9 @@
 use anyhow::{Result, ensure};
 use bevy::prelude::*;
 use osg_model::*;
-use osg_ship_wasm::{Command, ScanSource};
-use std::sync::Arc;
+use osg_ship_wasm::Command;
+#[cfg(test)]
+use osg_ship_wasm::ScanSource;
 
 use super::identity::{self, Control, Identity, Transponder};
 use super::vessel::ShipSoftware;
@@ -55,10 +56,10 @@ pub fn telemetry(world: &World, account: AccountId, ship: EntityId) -> Result<Sh
 }
 
 pub fn source(
-    world: &mut World,
+    world: &World,
     account: AccountId,
     ship: EntityId,
-) -> Result<Arc<dyn ScanSource>> {
+) -> Result<super::services::ShipScan<'_>> {
     let entity = authorize(world, account, ship, None, ownership::Permission::Control)?;
     super::services::current_source(world, entity)
         .ok_or_else(|| anyhow::anyhow!("ship observations unavailable"))
@@ -76,7 +77,8 @@ pub(crate) fn permission(command: &ShipCommand) -> ownership::Permission {
         | ShipCommand::UnmarkTarget
         | ShipCommand::StartFiring
         | ShipCommand::Aim { .. }
-        | ShipCommand::SetTravel { .. }
+        | ShipCommand::SetItinerary { .. }
+        | ShipCommand::SetGuidance(_)
         | ShipCommand::SetAutopilot(_)
         | ShipCommand::SetThrottle(_)
         | ShipCommand::Undock
@@ -138,7 +140,8 @@ pub fn execute(
     let wake = matches!(
         command,
         ShipCommand::UseRoute { .. }
-            | ShipCommand::SetTravel { .. }
+            | ShipCommand::SetItinerary { .. }
+            | ShipCommand::SetGuidance(_)
             | ShipCommand::SetAutopilot(_)
             | ShipCommand::Dock { .. }
             | ShipCommand::Undock
@@ -175,11 +178,11 @@ pub fn execute(
         } => {
             use_route(world, entity, id, expected_revision, engage)?;
         }
-        ShipCommand::SetTravel {
+        ShipCommand::SetItinerary {
             preferences,
             engage,
             expected_revision,
-            orders,
+            itinerary,
         } => {
             ensure!(
                 !matches!(
@@ -193,8 +196,8 @@ pub fn execute(
             ensure!(
                 world
                     .get::<super::travel::Travel>(entity)
-                    .is_some_and(|state| state.0.revision == expected_revision),
-                "stale travel revision"
+                    .is_some_and(|state| state.0.directive_revision == expected_revision),
+                "stale directive revision"
             );
             ensure!(preferences.valid(), "invalid planning preference");
             if engage {
@@ -212,30 +215,49 @@ pub fn execute(
                 )?;
                 enqueue(world, entity, Command::HoldAttitude)?;
             }
+            let count = itinerary.len().max(1) as f64;
+            let loss = travel::slip::ppm_from_log_loss(
+                travel::slip::log_loss_from_ppm(preferences.max_loss_ppm) / count,
+            );
+            let fuel = exotic_fuel_kg(world, entity) * preferences.fuel_fraction / count;
             let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
-            let enabled = engage || state.0.autopilot_enabled;
-            let status = if orders.is_empty() {
-                travel::Status::Completed
-            } else {
-                travel::Status::Planning
-            };
-            state.0 = travel::TravelState {
-                autopilot_enabled: enabled,
+            let enabled = engage && !itinerary.is_empty();
+            state.0 = travel::AutopilotState {
+                enabled,
                 preferences,
-                revision: state.0.revision + 1,
+                directive_revision: state.0.directive_revision.wrapping_add(1),
                 risk_budget: travel::RiskBudget::new(preferences.max_loss_ppm),
-                goals: orders.clone(),
-                orders: orders.into_iter().map(Into::into).collect(),
-                status,
+                itinerary: itinerary
+                    .into_iter()
+                    .map(|directive| travel::ItineraryEntry {
+                        label: directive.label(),
+                        directive,
+                        max_loss_ppm: loss,
+                        fuel_allowance_kg: fuel,
+                        estimated_duration_ticks: None,
+                    })
+                    .collect(),
+                status: travel::FirmwareStatus {
+                    phase: if enabled {
+                        travel::FirmwarePhase::Planning
+                    } else {
+                        travel::FirmwarePhase::Idle
+                    },
+                    ..Default::default()
+                },
                 ..Default::default()
             };
+            super::travel::validate_active_directive(world, entity);
         }
         ShipCommand::SetAutopilot(enabled) => {
             ensure!(
                 world
                     .get::<super::travel::PresenceState>(entity)
-                    .is_some_and(|p| p.0 == travel::Presence::Space),
-                "ship is not in space"
+                    .is_some_and(|p| matches!(
+                        p.0,
+                        travel::Presence::Space | travel::Presence::Docked { .. }
+                    )),
+                "ship cannot change autopilot in its current state"
             );
             queue_capacity(world, entity, 2)?;
             super::travel::cancel_pending(world, entity);
@@ -249,31 +271,37 @@ pub fn execute(
             )?;
             enqueue(world, entity, Command::HoldAttitude)?;
             let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
-            state.0.revision += 1;
-            state.0.autopilot_enabled = enabled;
-            state.0.planning = None;
-            let needs_planning = matches!(
-                state.0.status,
-                travel::Status::Planning | travel::Status::Blocked(_)
-            ) || state.0.orders.iter().skip(state.0.order).any(|stage| {
-                matches!(
-                    stage.action,
-                    travel::Order::TravelTo(_) | travel::Order::TravelToSystem(_)
-                )
-            });
-            state.0.status = if state.0.order >= state.0.orders.len() {
-                travel::Status::Completed
-            } else if needs_planning {
-                travel::Status::Planning
-            } else if enabled {
-                travel::Status::Active
-            } else {
-                travel::Status::Paused
+            state.0.directive_revision = state.0.directive_revision.wrapping_add(1);
+            state.0.enabled = enabled && !state.0.itinerary.is_empty();
+            state.0.failure = None;
+            state.0.status = travel::FirmwareStatus {
+                spent_loss_ppm: state.0.status.spent_loss_ppm,
+                spent_exotic_fuel_kg: state.0.status.spent_exotic_fuel_kg,
+                phase: if state.0.enabled {
+                    travel::FirmwarePhase::Planning
+                } else {
+                    travel::FirmwarePhase::Idle
+                },
+                ..Default::default()
             };
+            super::travel::validate_active_directive(world, entity);
+        }
+        ShipCommand::SetGuidance(guidance) => {
+            ensure_manual_control(world, entity)?;
+            if let Some(travel::Guidance {
+                target: travel::Target::Contact(target),
+                ..
+            }) = &guidance
+            {
+                target_handle(world, entity, *target)?;
+            }
+            enqueue(world, entity, Command::SetGuidance(guidance))?;
+            disengage_autopilot(world, entity);
         }
         ShipCommand::SetThrottle(throttle) => {
             ensure_manual_control(world, entity)?;
             enqueue(world, entity, Command::SetThrottle(throttle))?;
+            disengage_autopilot(world, entity);
         }
         ShipCommand::Dock { station, bay } => {
             let station = identity::lookup(world, station)?;
@@ -333,6 +361,7 @@ pub fn execute(
                 },
             };
             enqueue(world, entity, command)?;
+            disengage_autopilot(world, entity);
         }
         ShipCommand::ScreenInput {
             slot,
@@ -367,7 +396,7 @@ pub(crate) fn use_route(
     let enabled = engage
         || world
             .get::<super::travel::Travel>(ship)
-            .is_some_and(|travel| travel.0.autopilot_enabled);
+            .is_some_and(|travel| travel.0.enabled);
     if enabled {
         queue_capacity(world, ship, 2)?;
     }
@@ -377,9 +406,7 @@ pub(crate) fn use_route(
         revision,
         route.plan,
         route.preferences,
-        engage,
-        route.goals,
-        true,
+        enabled,
     )?;
     if enabled {
         enqueue(
@@ -451,7 +478,49 @@ pub(crate) fn ship_telemetry(
             .get::<super::travel::Travel>(entity)
             .map(|travel| travel.0.clone())
             .unwrap_or_default(),
+        location: world
+            .get::<super::location::SpatialLocation>(entity)
+            .map(|location| location.0.clone())
+            .unwrap_or_default(),
     })
+}
+
+fn exotic_fuel_kg(world: &World, entity: Entity) -> f64 {
+    let Some(catalogue) = world.get_resource::<super::vessel::ShipCatalogue>() else {
+        return 0.;
+    };
+    let Some(index) = catalogue
+        .0
+        .resources
+        .iter()
+        .position(|resource| resource.id == travel::slip::EXOTIC_RESOURCE)
+    else {
+        return 0.;
+    };
+    world
+        .get::<super::hardware::ShipInventory>(entity)
+        .and_then(|inventory| inventory.0.quantities.get(index))
+        .copied()
+        .unwrap_or(0) as f64
+        / 1000.
+}
+
+pub(crate) fn disengage_autopilot(world: &mut World, entity: Entity) {
+    if !world
+        .get::<super::travel::Travel>(entity)
+        .is_some_and(|state| state.0.enabled)
+    {
+        return;
+    }
+    super::travel::cancel_pending(world, entity);
+    let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
+    state.0.enabled = false;
+    state.0.directive_revision = state.0.directive_revision.wrapping_add(1);
+    state.0.status = travel::FirmwareStatus {
+        spent_loss_ppm: state.0.status.spent_loss_ppm,
+        spent_exotic_fuel_kg: state.0.status.spent_exotic_fuel_kg,
+        ..Default::default()
+    };
 }
 
 fn ensure_manual_control(world: &World, entity: Entity) -> anyhow::Result<()> {
@@ -466,14 +535,6 @@ fn ensure_manual_control(world: &World, entity: Entity) -> anyhow::Result<()> {
                 .get::<super::hardware::Hull>(entity)
                 .is_some_and(|h| h.0 > 0.),
         "flight computer unavailable"
-    );
-    ensure!(
-        !world
-            .get::<super::travel::Travel>(entity)
-            .unwrap()
-            .0
-            .autopilot_enabled,
-        "manual controls locked by autopilot"
     );
     ensure!(
         world

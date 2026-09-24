@@ -25,6 +25,10 @@ pub(crate) struct ChatState {
 }
 
 impl ChatState {
+    pub fn loading(&self) -> bool {
+        self.subscription.is_some() && !self.received
+    }
+
     pub fn subscribe(&mut self, wanted: Option<ChatFocus>, outgoing: &mut Outgoing) {
         if self.subscription == wanted {
             return;

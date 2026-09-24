@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use osg_ships::{Equipment, thermal};
 use std::sync::{Arc, Mutex};
 
-pub use osg_space::spatial::OPTICAL_LUMENS_PER_WATT as LUMENS_PER_OPTICAL_WATT;
+pub use osg_spatial::OPTICAL_LUMENS_PER_WATT as LUMENS_PER_OPTICAL_WATT;
 const GEOMETRIC_ALBEDO: f64 = 0.3;
 const MIN_ILLUMINANCE_W_M2: f64 = 1e-7;
 const THERMAL_EXHAUST_OPTICAL_FRACTION: f64 = 0.001;
@@ -158,7 +158,7 @@ impl Sky {
             origin,
             displacement,
             target_radius,
-            &mut osg_space::spatial::QueryBudget::new(1_000_000),
+            &mut osg_spatial::QueryBudget::new(1_000_000),
         ) else {
             return true;
         };
@@ -391,6 +391,7 @@ mod tests {
                 optical_luminosity_w: 0.0,
             });
         }
+        index.finish_geometry();
         let sources = Sky {
             local: vec![Light {
                 position: index.objects[1].position,
@@ -412,6 +413,7 @@ mod tests {
             optical_occludes: true,
             optical_luminosity_w: 0.0,
         });
+        index.finish_geometry();
         assert!(reflection_sources(&index, 0, &sources).is_empty());
         index.set_luminosity(0, 1e12);
         assert!(

@@ -47,7 +47,7 @@ instantiate ──► paid boot work ──► initialization ──► ready
 - **Boot.** A new or rebooted instance consumes `BOOT_GAS` (50,000,000) across its grants before initialization. At the full standard allowance this fee takes 50 ticks, or 5 s; account scarcity and other work can extend it. Initialization code is also metered and may suspend. The displayed countdown estimates the unpaid fixed fee at the physical ceiling, so it can reach zero while initialization is still running.
 - **Callbacks.** An idle computer starts a callback when its interval has elapsed or pending requests or screen events wake it. A suspended callback resumes where it stopped; the host does not start another `ship_tick` concurrently or queue missed tick calls.
 - **Suspension.** Insufficient slice gas pauses execution. A host call waits until its entire bounded cost can be admitted, then runs without preemption. A call that cannot fit the physical tick ceiling returns `ERR_LIMIT`. Insufficient owner gas leaves the continuation waiting until the account can fund its next indivisible operation.
-- **Faults.** Invalid guest memory, traps and rejected hardware commands still reboot the computer. The instance is dropped and session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. Work already consumed remains charged. The fault message is kept until the next successful boot. The server clears the autopilot queue and toggle, staged actions, slip preparation and docking reservations. New requests submitted during startup are delivered after boot.
+- **Faults.** Invalid guest memory, traps and rejected hardware commands still reboot the computer. The instance is dropped and session state is cleared: instruments, spatial publications, tracks, pinned snapshots, screens and pending screen events. Work already consumed remains charged. The fault message is kept until the next successful boot. The server disables autopilot and retains its itinerary with a failure reason; staged actions, slip preparation and docking reservations are cleared. New requests submitted during startup are delivered after boot.
 
 ### Slice commits
 
@@ -146,7 +146,8 @@ The simulator sets `interest` only for the controlled ship, and only while the o
 | Generator | 6 | `GeneratorSpec` (32) | `GeneratorReading` (16) | `SET_GENERATOR_DEMAND` |
 | Shield | 7 | `ShieldSpec` (40) | `ShieldReading` (72) | `SET_SHIELD_ENABLED` |
 | Sensor | 8 | `SensorSpec` (16) | `SensorReading` (16) | `SET_SENSOR_ENABLED` |
-| Weapon | 9 | `WeaponSpec` (176) | `WeaponReading` (72) | `SET_WEAPON` |
+| Gun | 9 | `GunSpec` (160; nested mount `WeaponSpec` is 120) | `WeaponReading` (72) | `SET_WEAPON` |
+| Laser | 11 | `LaserSpec` (152; nested mount `WeaponSpec` is 120) | `WeaponReading` (72) | `SET_WEAPON` |
 | RCS | 10 | `RcsSpec` (32) | `RcsReading` (32) | `SET_RCS` |
 
 Every reading begins with a `DeviceStatus` whose flags are `OPERATIONAL` (1) and `POWERED` (2). A sensor reports powered only while its range is non-zero.
@@ -194,11 +195,13 @@ Typed imports connect firmware to the authoritative travel, beacon and sensor se
 
 | Import | Notes |
 | --- | --- |
-| `travel_read`, `contact_get`, `destination_resolve`, `slip_eligibility` | Read fixed output records. |
-| `orrery_read` | Fills caller-owned local-obstacle records and a page header. |
+| `contact_get`, `destination_resolve`, `slip_eligibility` | Read fixed output records. |
+| `travel_read` | Fills autopilot metadata plus caller-owned itinerary, fuel and location-hierarchy arrays; status contains fixed-capacity plan markers. |
+| `orrery_read`, `orrery_system_read` | Fill caller-owned celestial obstacle records and a page header; the system query predicts a named system at a future offset. |
+| `slip_eligibility_batch` | Evaluates an array of future-time slip probes against one published snapshot and fills corresponding results. |
 | `beacon_read`, `beacons_read` | Fill record arrays, page metadata, and a separate byte arena for variable-length fields. |
-| `route_request`, `route_poll` | Fill route metadata plus separate order and fuel-requirement arrays. |
-| `travel_use_route`, `travel_block`, `travel_estimate`, `travel_complete`, `travel_slip`, `travel_reserve_bay`, `travel_dock`, `travel_undock` | Accept a typed input record and stage the corresponding action. |
+| `route_request`, `route_poll` | Fill route metadata plus separate itinerary and fuel-requirement arrays. |
+| `travel_use_route`, `travel_fail`, `travel_publish_status`, `travel_complete`, `travel_slip`, `travel_cancel_slip`, `travel_reserve_bay`, `travel_dock`, `travel_undock` | Stage typed itinerary publications or physical actions. |
 
 ### Query buffers and gas
 
@@ -219,37 +222,27 @@ without silently truncating its bay lists.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Travel` | `Travel { state, pose, slip_ready, slip_axis }`: `CurrentOrder` with the active stage only, the ship's exact galactic pose, slipdrive readiness, and the drive ring's axis in ship coordinates |
-| `RouteRequest(Request)` | Enqueues an idempotent server planning job and returns `Route { id, status }`. The request contains a nonzero ID, the complete requested order list and planning preferences. |
+| `Travel` | Complete `AutopilotState`, own pose, presence, cached location, tick, exotic fuel, slip readiness and drive axis. |
+| `RouteRequest(Request)` | Enqueues an idempotent server planning job and returns `Route { id, status }`. The request contains a nonzero ID, the requested directive list and planning preferences. |
 | `RoutePoll { id }` | Returns the scoped job's `Unknown`, `Pending { progress }`, `Ready { plan }` or `Failed { reason }` status. |
-| `LocalSpace { destination, range_m, after_seconds }` | `LocalSpace { obstacles, truncated }`: bounded known obstacle and slip-exclusion observations around the ship and destination. |
-| `Continue { cursor, work }` | The next page of a retained cursor |
+| `Orrery { reference }`, `OrrerySystem { system, after_seconds }` | Current nearby or predicted named-system celestial geometry. |
+| `SlipEligibilityBatch(probes)` | Per-candidate readiness, timing or error against a shared snapshot. |
 | `Beacon(entity)` | `Beacons` with zero or one beacon |
 | `Beacons { after, limit }` | `Beacons` in entity ID order, with `limit` from 1 to 256 |
 | `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, navigation_beacon }` | `SlipEligibility { ready, preparation_s, duration_s }`: departure clearance, guidance availability, remaining preparation time, and flight duration at the fixed guided or unguided speed. |
 | `Resolve { destination, after_seconds }` | Predicted `Pose` of a galactic position, beacon, or offset from a beacon or celestial body. Celestials use locally resolved ephemerides; other objects extrapolate current linear and angular motion. |
 
-`LocalSpace` admits 262144 work gas plus the normal call and copy envelope. It
-examines at most 2048 weighted index/ephemeris work units and returns at most 32
-obstacles. Range is finite and between zero and 10¹² metres; prediction time is
-between zero and one Julian year. Volumes containing either query position are
-included even when their centres lie beyond the range. A result carries an
-observed or public reference, predicted pose, physical radius and slip-exclusion
-radius. Observed contacts use the ship's current sensor observations; public bodies use
-catalogue ephemerides. Undetected private objects are not exposed.
-
-The `truncated` flag reports either work exhaustion or result overflow. A program
-must treat it as incomplete knowledge when choosing a safe manoeuvre. The
-service supplies observations only: local waypoints and steering decisions
-remain in the ship program. It does not append manoeuvres to the server queue.
+Celestial queries provide physical and slip-exclusion radii from public ephemerides.
+Firmware chooses maneuvers from these observations. Batch slip probes return one
+result per candidate against the same published geometry snapshot.
 
 Route request and polling each admit 8192 work gas in addition to the normal
 call and copy costs. Search runs outside the non-preemptible syscall;
 the public routing service does not debit the owner's account for search work.
-Requests and ready plans are bounded to 256 orders. Submission
+Requests and ready plans are bounded to 256 directives. Submission
 checks reply capacity before accepting or changing a job. Jobs are scoped to the
 current world, ship, owner and control revision. Commit also requires the
-expected queue revision. Preview age, ordinary movement and unrelated global
+expected directive revision. Preview age, ordinary movement and unrelated global
 topology changes do not expire the plan. Its topology revision records the
 planning context. The executor resolves current geometry within each strategic
 command. Jobs do not reveal another ship's route or observations.
@@ -266,28 +259,33 @@ Track queries are metered as described in [server-client.md](server-client.md#me
 
 ### Travel actions
 
-**Limits.** Each import takes one fixed input record, and a slice can stage at most 8 actions. The call costs 100, plus 1000, plus one gas per 8 input bytes. Invalid values return `ERR_ARGUMENT`; display instances and a full staged-action list return `ERR_UNAVAILABLE`.
-
-**Application.** Staged actions are applied only after a successful slice commit. The world applies them after every ship's slice has run, grouped by ship ID and in staging order. A stale revision or order index is ignored without changing the current queue. Other rejected actions do not fault the computer; an active-command failure sets the ship's travel status to `Blocked(error)`, and the ship's remaining actions from that batch are skipped, so a `CompleteOrder` staged after a rejected `Dock` does not advance travel.
+A slice can stage at most eight actions. Display instances cannot stage flight
+actions. Successful slices commit actions in ship ID and staging order.
+Completion, failure and status publications carry a directive generation;
+stale publications are ignored. Physical actions validate ownership, resources
+and physical admission independently of itinerary indices.
 
 | `ProgramAction` | Effect |
 | --- | --- |
-| `UseRoute { id, revision, engage }` | Commits an authorized ready server plan against the current travel revision. |
-| `Block { revision, order, reason }` | Blocks only the matching active command, cancels unfinished slip preparation and clears its ETA. |
-| `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates the matching active stage. The server combines its remaining fuel estimate with later stages. |
-| `CompleteOrder { revision, order }` | Completes the matching active stage and advances the server's cursor. |
-| `Slip { revision, order, destination, navigation_beacon }` | Starts or updates the matching slip command's charging aim, preserving work and start time; departure commits the trajectory and speed. |
-| `ReserveBay { revision, order, station, bay }`, `Dock { revision, order, station, bay }`, `Undock { revision, order }` | Performs the bay operation only for the matching active command. |
+| `UseRoute { id, directive_revision, engage }` | Commits an authorized ready itinerary. |
+| `Fail { directive_revision, reason }` | Disables autopilot and retains its itinerary and failure reason. |
+| `PublishStatus { directive_revision, status }` | Publishes phase, timing, capture geometry, velocity change, risk and plan markers. |
+| `Complete { directive_revision }` | Removes the completed head directive and advances the generation. |
+| `Slip { destination, navigation_beacon, arrival_velocity, not_before_tick }` | Starts or updates charging toward a galactic aim, with optional arrival velocity and earliest departure tick. |
+| `CancelSlip` | Cancels unfinished preparation without refunding energy. |
+| `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Performs the corresponding physical bay operation. |
 
-The host rules for each action are in [server-client.md](server-client.md#docking-and-travel).
+The host rules are in [server-client.md](server-client.md#docking-and-travel).
+Firmware privately plans each `SlipToSystem` or `DockAt` directive. Concrete
+aim points are physical requests, rather than persisted itinerary waypoints.
+Updating a charging candidate preserves accumulated work. Transit ends at
+natural capture, collision or fuel exhaustion. Velocity change is limited by
+actual distance traveled and consumes exotic fuel; partial transit earns only
+its corresponding velocity allowance. Cancellation does not refund energy.
 
-A queued `Order::Slip` holds a typed `Destination`, including beacon-relative and
-celestial-relative references. Firmware predicts its future pose and supplies
-concrete galactic candidates through `ProgramAction::Slip`. Updating a charging
-candidate preserves accumulated work. The host validates departure clearance and
-guidance before committing. Transit ends at the first natural exclusion capture,
-physical collision, or exotic exhaustion. Blocking cancels an unfinished charge.
-Candidate changes and cancellation do not refund energy already spent.
+The flight instance uses ordinary WASM suspension during planning. A long
+search may delay control across ticks. Firmware rechecks its directive and
+geometry before executing a completed search. Waiting has no timeout.
 
 ### Availability
 
@@ -413,7 +411,7 @@ The navigation record also names `target_contact`, `own_path` and `target_path`.
 
 Depend on `osg-ship-api`. `abi::raw` declares the imports for `wasm32` targets. `sdk` wraps them with `Result<_, i32>` helpers: `tick`, `budget`, `flight`, `resources`, `device`, `device_spec`, `device_read`, `device_write`, `scan`, `request`, `request_read`, `request_reply`, `marker`, `path`, `attitude`, `navigation`, `contacts`, `weapons`, the screen calls, and generic `read`/`write` over any `Record`.
 
-The minimal `no_std` example is [examples/embedded.rs](../crates/osg-ship-api/examples/embedded.rs). It publishes a two-vertex forecast and sets every engine to 25% throttle. The standard firmware in [osg-example-controller](../crates/osg-example-controller) uses `std` collections and exports `game_version` and `ship_tick` from [firmware.rs](../crates/osg-example-controller/src/firmware.rs) behind the default `firmware` feature. Its drawing-only `ship_display` publishes a status screen for requested slots. On `wasm32`, its `Computer` runs the current-order executor in [world.rs](../crates/osg-example-controller/src/world.rs). It reads the host-owned command through `travel_read` and reports estimates, completion and physical actions through typed travel imports, guarded by queue revision and order index. Model helpers convert C records into Rust values without serialization. Route search is provided by the [server routing service](server-client.md#travel-orders-and-server-planning).
+The minimal `no_std` example is [examples/embedded.rs](../crates/osg-ship-api/examples/embedded.rs). The standard firmware in [osg-example-controller](../crates/osg-example-controller) exports `game_version`, `ship_tick` and the drawing-only `ship_display`. Its flight `Computer` privately plans and executes directives read through `travel_read`; typed imports publish status, completion, failure and physical actions. Directive generations protect publications against stale searches. The display instance reads the flight publication. Model helpers convert C records into Rust values without serialization. Strategic route search is provided by the [server routing service](server-client.md#autopilot-itineraries-and-firmware-planning).
 
 [examples/custom_screen.rs](../crates/osg-example-controller/examples/custom_screen.rs) exports `ship_tick`, which runs the standard `Computer`, and `ship_display`, which draws the "Custom diagnostics" screen. It is built with `--no-default-features` so the library does not export the entry points a second time. Its screen is drawn by a display instance when a remote or debug client subscribes.
 

@@ -8,13 +8,13 @@ The server restores durable world state from SQLite checkpoints, including owner
 
 | Package | Path | Role |
 | --- | --- | --- |
-| `osg-model` | [crates/osg-model](../crates/osg-model) | Shared serde types: IDs, poses, sensor observations, queries, frames, actions, debug commands, presentation records, travel orders and drawing lists; explicit conversions to the WASM C ABI records |
+| `osg-model` | [crates/osg-model](../crates/osg-model) | Shared serde types: IDs, poses, sensor observations, queries, frames, actions, debug commands, presentation records, autopilot directives and drawing lists; explicit conversions to the WASM C ABI records |
 | `osg-protocol` | [crates/osg-protocol](../crates/osg-protocol) | Application message framing and validation of client requests |
 | `osg-net` | [crates/osg-net](../crates/osg-net) | TCP handshake, record encryption, Zstd compression and picomux multiplexing |
 | `osg-spatial-bvh` | [crates/osg-spatial-bvh](../crates/osg-spatial-bvh) | Shared immutable BVHs for brightness, radius, nearest-neighbour, segment and metered cursor queries |
 | `osg-universe` | [crates/osg-universe](../crates/osg-universe) | Shared astronomical catalogue, lazy deterministic generation, Keplerian solver and initial population recipe |
 | `osg-server` | [crates/osg-server](../crates/osg-server) | The Bevy ECS simulation in private modules under [src/sim](../crates/osg-server/src/sim), the simulation loop, TCP listener, asset streams, configuration, key provisioning and the benchmark example |
-| `osg-client` | [crates/osg-client](../crates/osg-client) | `connect`, asset fetching, the `Playback` buffer, and the Bevy/egui UI behind the `ui` feature |
+| `osg-client` | [crates/osg-client](../crates/osg-client) | `HeadlessClient`, the `Playback` buffer, and the Bevy/egui UI behind the `ui` feature |
 | `osg-debug` | [apps/osg-debug](../apps/osg-debug) | Local launcher: server child process plus the client UI |
 | picomux | [crates.io](https://crates.io/crates/picomux) | Published picomux 0.3.1 with independent stream read and write shutdown |
 
@@ -73,7 +73,7 @@ Configuration files reject unknown fields.
 - Without `--server`, the server executable is `osg-server` in the same directory as the launcher's executable. If it is not a file, the launcher fails with "build osg-server first, or pass --server EXECUTABLE".
 - It keeps credentials and checkpoints under `$XDG_STATE_HOME/openspacegame/debug`, or `~/.local/state/openspacegame/debug`. `--state-dir` chooses another world; `--ephemeral` creates a disposable directory. Credentials are reused on later launches, and a directory lock prevents concurrent launchers from sharing the same state. The generated configuration listens on `127.0.0.1:0` and designates the local account as `debug_account`. A saved world restores its stored blueprint even if the original `--ship` file has disappeared.
 - It starts the server with `--ready-file` and `--shutdown-on-stdin-close` and a piped standard input. It waits up to 60 s for a parseable address in the ready file, and fails if the server exits first.
-- It connects with `osg_client::connect`. The debug session uses the same TCP, handshake, encryption, compression, multiplexing and session code as a remote client.
+- It connects with `osg_net::OsgNetClient::connect`. The debug session uses the same TCP, handshake, encryption, compression, multiplexing and session code as a remote client.
 - With `--check`, it waits up to 10 s for a state frame, fails with "server did not provision the debug ship" if the frame has no ship telemetry, and prints the address, tick and ship count. Otherwise it runs the client UI with a playback target depth of 1.
 - On exit, it drops the server's standard input and waits up to 120 s for shutdown and its final checkpoint. A server still running after that deadline is killed. Only disposable state directories are removed.
 
@@ -113,7 +113,7 @@ The listener accepts at most 1024 concurrent TCP connections through a semaphore
 
 One tick runs these Bevy schedules ([sim/mod.rs](../crates/osg-server/src/sim/mod.rs), [simulation.rs](../crates/osg-server/src/sim/simulation.rs)):
 
-- **`FixedFirst`.** Travel advances: docked orders, slip intersections and slip preparation ([Docking and travel](#docking-and-travel)).
+- **`FixedFirst`.** Travel advances: docked directives, slip intersections and slip preparation ([Docking and travel](#docking-and-travel)).
 - **`FixedUpdate`.** Star systems are activated for ships inside their influence radius. World-service indexes (beacons, celestial poses, the public snapshot, slip apertures) are published and each ship's world source is prepared. Then, in order: history, `PrepareBodies` (flight programs and typed hardware systems), `Forces` (gravity and drag).
 - **`FixedPostUpdate`.** Firmware world actions are applied in ship ID order. Then `Integrate` (rigid bodies and the collision solver) and `Celestials`.
 - **`FixedLast`.** The spatial index is rebuilt, sensor scans run, and the tick counter increments. Then travel geometry and celestial identities are refreshed, sensor observations are published, and travel events are recorded.
@@ -306,11 +306,11 @@ A bay belongs to a host ship. It has a centre and rotation in host axes, a radiu
   - no unexpired reservation by another ship
 
   A reservation lasts 600 ticks.
-- **`dock`** reserves a compatible bay, then requires the ship to be within 100 m surface clearance of the station (centre distance minus both bounding radii) and moving at no more than 10 m/s relative to the station. Capture works from any direction and does not require matching orientation or entering the hangar. On success the ship becomes dormant with presence `Docked`, the host's stored mass and mass increase by the ship's mass, the ship joins the host's stored inventory and releases the reservation, a current `Dock` leg completes its order, and `docked` is emitted.
+- **`dock`** reserves a compatible bay, then requires the ship to be within 100 m surface clearance of the station (centre distance minus both bounding radii) and moving at no more than 10 m/s relative to the station. Capture works from any direction and does not require matching orientation or entering the hangar. On success the ship becomes dormant with presence `Docked`, the host's stored mass and mass increase by the ship's mass, the ship joins the host's stored inventory and releases the reservation, firmware can complete the active docking directive, and `docked` is emitted.
 - **`undock`** requires the ship not to be destroyed, the host to be in space, and departure access. The ship leaves along the bay's −Z axis, offset from the host centre by host radius + ship radius + 10 m, and inherits the host's velocity plus ω × r at that point. The exit point must be clear of other active ships and bodies. `undocked` is emitted.
 - Destroying a host changes its docked ships to `StoredInWreck`. Their inventory stays inside the wreck.
 
-A docked ship with an `Undock` or due `WaitUntil` order completes it without running its program. A queued space order automatically undocks the ship and then resumes planning the same order; docking at the current host completes immediately.
+A directive requiring space implicitly undocks the ship. Docking at the current host completes immediately.
 
 ### Slipdrive
 
@@ -360,137 +360,103 @@ hulls. Radiators exchange heat with the same environment. Transit thermal
 integration uses the actual elapsed slip time, including partial arrival ticks.
 
 Exotic consumption is cumulative: `1e-5 × departure_mass_kg × distance_ly^1.2`
-kilograms. Inventory uses grams with fractional accounting across updates.
+kilograms plus a linear mass-times-delta-v charge. Cumulative consumption rounds
+up to whole grams; each update debits the difference from the amount already paid.
+The fixed velocity coefficient gives the fully fueled starter ship approximately
+100 km/s before distance costs. Arrival velocity change is capped at 10 km/s per
+light-year actually traveled, including early capture and fuel exhaustion.
 Starter ships receive approximately 1,000 ly of uninterrupted endurance, including
 the fuel's own mass. Refuelling uses ordinary inventory transfers.
 
 Transit sweeps through moving natural exclusions in active and dormant systems.
-The earliest capture restores the retained galactic velocity and activates
+The earliest capture applies retained galactic velocity plus the earned arrival
+velocity change and activates
 required systems before ordinary physics. A surface collision destroys the
 ship; a farther capture cannot rescue a ship that already exhausted its fuel.
 Arrival integrates only the remaining portion of the tick. Controllers resume
 at the next boundary. Unexpected captures replan from the actual emergence
 state and retain the itinerary's spent risk allowance.
 
-### Travel orders and server planning
+### Autopilot itineraries and firmware planning
 
-Player requests contain a complete order queue. Orders include
-`TravelTo(Destination)`, `Sublight(Destination)`,
-`Slip { destination, navigation_beacon }`, `Dock(station)`,
-`Undock`, `WaitUntil(tick)` and guidance.
-Destinations may refer to public beacons, galactic positions, or offsets from
-beacons and celestial bodies. Guidance contact targets must belong to the
-ship's current sensor detections. Celestial references carry their containing
-system and stable local body identity.
+The server stores an `AutopilotState`: engagement, a directive generation token,
+the remaining itinerary, preferences, risk and fuel budgets, published firmware
+status, and an optional failure. Directives are `SlipToSystem(system)` and
+`DockAt(station)`. Each itinerary entry includes a label, risk allowance, fuel
+allowance and optional duration estimate.
 
-The server owns the queue, its revision, active index and route search. The
-standard WASM flight program receives only `CurrentOrder` and executes that
-single strategic command. It does not load the navigation graph, expand later
-orders or publish replacement routes. The client receives the complete queue
-for route and waypoint displays.
+The strategic router searches sequences of systems and allocates budgets.
+It does not choose capture geometry or local maneuvers. Route requests contain
+a caller ID, directives and planning preferences. The typed route request,
+poll and cancel RPCs remain scoped to the ship's current authority. A ready
+plan carries its planning tick, directive and topology revisions, itinerary,
+fuel budget, estimated loss and exotic requirement. Commit checks the current
+directive revision. Requests and plans contain at most 256 directives.
 
-Fine manoeuvres belong to command execution. The ship program generates local
-waypoints, avoids known obstacles, escapes slip-exclusion volumes and corrects
-its course without adding these manoeuvres to the server queue. The public
-`LocalSpace` observation query supplies nearby known volumes; it does not choose
-waypoints or steering directions for the program.
+Firmware owns private plans and can inspect the next directive when choosing
+capture geometry. It compares departure windows, clearance maneuvers, capture
+bodies and optional arrival velocity changes. Charging can overlap movement.
+Docking plans include local transfer, bay reservation and rendezvous.
+`DockAt` requires a station known in the ship's current-system overview when
+the directive becomes active. Waiting has no timeout.
 
-Route preview uses
-`RouteRequest { ship, authority_revision, request }` and
-`RoutePoll { ship, authority_revision, id }`, with `RouteCancel` for abandoned
-previews. A request carries a nonzero caller
-ID, all requested orders and `PlanningPreferences`. Both actions return
-`Reply::Route { id, status }`: unknown, pending with progress, ready with a plan,
-or failed with a bounded explanation. The client polls and offers an explicit
-Engage action for a ready preview. `ShipCommand::UseRoute` commits it against the
-expected travel revision. Current authority is checked at every operation;
-changed ownership or control cannot inherit another caller's job.
-
-A ready plan contains its creation tick, travel and topology revisions, the
-strategic route queue, per-stage time and propellant estimates, and the
-whole-route fuel budget, estimated destruction risk, exotic requirement, and
-navigation-beacon assumptions. Requests and plans contain at most 256 orders;
-serialized plans are limited to 48 KiB. Job enqueue and polling are bounded
-operations. Planning work runs separately from the ship callback and debits the
-owner's global gas account. A full requested queue is expanded before it is
-committed. The server checks current control and queue revisions when committing a plan.
-Its age, ordinary ship movement and changes elsewhere in public infrastructure
-do not invalidate it. The topology revision records the planning context; it is
-not a commit expiry condition. The ship resolves current geometry while
-executing each strategic command, and the host checks physical admission when
-applying that command.
-
-The player sets maximum whole-itinerary ship-destruction risk in decimal ppm,
-defaulting to 100 ppm (1 in 10,000). The planner chooses capture stops and evaluates their fixed-speed edges, rejecting captures above the remaining risk allowance. It accumulates
-risk logarithmically and retains the remaining allowance through automatic
-replanning. Missed intended captures count conservatively as losses. Estimates
-cover slip travel and state their guidance assumptions.
-
-Search considers up to 32 slip legs through spatial candidate queries with a
-shared computation budget. It compares feasible routes using estimated time,
-conventional propulsion, charging, and exotic consumption. A bounded search
-reports whether its budget was exhausted; it does not establish a global
-optimum. Rated hardware estimates can change with gravity and available power.
-
-Each stage retains an optional duration and propulsion fuel estimate. The flight
-program updates only the active stage's remaining time and propellant; the host
-combines it with later stages and current tank balances. Resource shortages are
-checked separately. Unknown and continuous stages make the budget partial.
-Slip preserves departure velocity, so estimates include matching destination
-motion after arrival. Budgets are advisory and require operating margin.
+The flight instance uses the existing WASM suspension mechanism. Planning may
+delay control while a search spans ticks. There is no separate planner instance
+or explicit planning work scheduler. Before committing a computed plan,
+firmware checks the directive token and current physical conditions. It replans
+after arrival, missed capture, lost guidance or material changes in feasibility,
+with hysteresis for replacing a working plan.
 
 | `ProgramQuery` | Reply |
 | --- | --- |
-| `Travel` | Current order, revision, index, status, preferences, active arrival estimate, exact own pose, slip readiness and the drive ring's axis in ship coordinates. |
-| `RouteRequest(request)`, `RoutePoll { id }` | The same scoped asynchronous preview service available to clients. Each call admits 8192 work gas plus its normal call and copy costs. |
+| `Travel` | Complete autopilot state, exact own pose, presence, cached spatial context, tick, exotic fuel, slip readiness and drive axis. |
+| `RouteRequest(request)`, `RoutePoll { id }` | Scoped asynchronous strategic route preview. |
 | `Contact(reference)` | Current sensor pose, radius and opaque firmware handle. |
-| `Orrery { reference }` | Up to 1,024 local celestial obstacle/exclusion records, resolved through the shared universe. |
+| `Orrery { reference }` | Nearby celestial physical and slip-exclusion volumes. |
+| `OrrerySystem { system, after_seconds }` | Predicted celestial geometry in a named system. |
 | `Resolve { destination, after_seconds }` | Predicted public destination pose. |
-| `Beacon(id)`, `Beacons { after, limit }` | Public beacon facts and currently authorized docking bays. |
-| `SlipEligibility { origin, destination, departure_after_seconds, arrival_after_seconds, navigation_beacon }` | Current drive readiness, departure clearance, guidance availability, preparation time and flight duration. |
-
-Local-space observations spend 262144 work gas per query, plus normal call and
-copy costs, with a hard 2048-unit index/ephemeris work budget. Query range is
-finite and at most 10¹² metres. The observations contain no undetected private
-objects, and a truncated reply cannot be treated as an empty or complete scene.
+| `Beacon(id)`, `Beacons { after, limit }` | Public beacon facts and authorized docking bays. |
+| `SlipEligibility` | Readiness, clearance, preparation time and flight duration. |
+| `SlipEligibilityBatch(probes)` | Multiple future-time clearance probes against one published snapshot, including optional arrival velocities; each result carries readiness/timing or an error. |
 
 Prediction offsets are finite, nonnegative and bounded to one Julian year.
-Slip arrival cannot precede departure. Orbital bodies use their
-public ephemerides; other beacons extrapolate current motion. The host rechecks
-physical admission during charging, departure and arrival.
+The host checks physical admission during charging, departure and arrival.
 
-World actions are committed after each successful execution slice. Every action
-that operates on an active stage carries both its travel revision and order
-index. The host checks these and the current command type, so a delayed
-suspended callback cannot dock, undock, launch slip or block a later stage.
-Stale actions are ignored; a real failure of the matching active command blocks
-that command.
-
-| `ProgramAction` | Server behaviour |
+| `ProgramAction` | Server behavior |
 | --- | --- |
-| `UseRoute { id, revision, engage }` | Commits a ready preview using the current travel revision. |
-| `Block { revision, order, reason }` | Blocks the matching command and cancels unfinished slip preparation. |
-| `Estimate { revision, order, remaining_ticks, remaining_propellant_kg }` | Updates only the matching active stage; future estimates remain server-owned. |
-| `CompleteOrder { revision, order }` | Advances the authoritative cursor after the current stage completes. |
-| `Slip { revision, order, destination, navigation_beacon }` | Updates the current slip command's charging aim without resetting work or start time. Departure commits its trajectory. |
-| `ReserveBay`, `Dock`, `Undock` | Executes the corresponding current command with the same revision and index checks. |
+| `UseRoute { id, directive_revision, engage }` | Commits a ready strategic itinerary. |
+| `Fail { directive_revision, reason }` | Disables autopilot, retains the itinerary and records the failure. |
+| `PublishStatus { directive_revision, status }` | Publishes phase, timing, capture details, risk, velocity change and display markers. |
+| `Complete { directive_revision }` | Removes the completed head directive and advances the generation. |
+| `Slip { destination, navigation_beacon, arrival_velocity, not_before_tick }` | Starts or updates charging toward a concrete galactic aim and optional arrival velocity/window. |
+| `CancelSlip` | Cancels unfinished preparation without refunding energy. |
+| `ReserveBay { station, bay }`, `Dock { station, bay }`, `Undock` | Performs physical operations subject to ownership and physical constraints. |
 
-The standard executor resolves the current destination each callback. Sublight
-guidance uses relative position and velocity with the economical navigation
-law. Moving slip destinations are led through preparation and transit time,
-and their charging candidates are refreshed until departure. Bay requests use
-only bays reported as usable. Execution errors block the command for an explicit
-replan; the VM does not replace the queue itself. Server and firmware share `GAME_VERSION` and must be rebuilt together.
+Completion, failure and status use the generation token to reject stale
+publications. Physical actions are independent of itinerary indices. Firmware
+reports risk; the server enforces resources and physical constraints without
+auditing navigation strategy.
+
+Manual throttle, stick input and align/approach/keep-range assists disengage
+autopilot and retain its itinerary. Explicit re-engagement clears the active
+failure and starts planning again. The autopilot MFD shows intent, phase,
+waiting reason, capture target, departure window, ETA, planned velocity change,
+risk and failure. HUD markers come from firmware publication.
+
+Save files retain intent, engagement/failure and budget progress. Private
+firmware plans are rebuilt after loading and published markers are cleared.
+Physical slip transit retains its exact trajectory, consumed fuel and pending
+velocity change. Server and firmware share `GAME_VERSION` and are rebuilt
+together when this interface changes.
 
 ## Client playback
 
-`osg_client::connect` ([connection.rs](../crates/osg-client/src/connection.rs)) opens the `main` stream and returns an `Endpoint` with state and input channels plus a cloneable `AssetClient`:
+`osg_net::OsgNetClient` owns the authenticated picomux connection and opens the main stream. Clones share input sequencing, RPC calls, and asset transfers. See [Client networking and RPC](rpc.md) for the API and wire format.
 
-- incoming states: an unbounded FIFO, drained into the jitter buffer by the client update loop
-- outgoing inputs: 16 frames
-- asset requests: 8 pending requests; each `AssetClient::fetch(hash)` awaits its own response containing complete bytes or an error
-
-Asset requests start independent transfers as they leave the request channel. A slow transfer does not hold up later requests; the channel bounds pending requests rather than active downloads.
+- Each event subscriber has an independent bounded queue of 64 events. Lag is explicit; the graphical client stops playback and requires reconnection.
+- Outgoing inputs have a queue capacity of 16 batches.
+- `fetch_asset(hash)` and `upload_blueprint(bytes)` use independent binary streams.
+- Screen data loads through individual typed RPC calls, with pending work cancelled when its query changes.
 
 `Playback` buffers bursty arrivals. Bevy runs the client at a fixed presentation cadence of 10 Hz.
 
@@ -512,7 +478,7 @@ Asset requests start independent transfers as they leave the request channel. A 
 
 Publications are delivered when playback consumes their frame, including the intermediate frame of a catch-up tick. Combat visibility still follows each event's simulation timestamp. The session keeps the latest 128 delivered command results and generic events for the UI.
 
-**Input.** `FixedPostUpdate` sends an `InputFrame` every 100 ms once the UI knows the world, even when there are no actions. Inputs carry no server snapshot reference or acknowledgement; received actions apply before the next available simulation tick. The command queue supplies command IDs and ship authority revisions, and preserves their order without coalescing. If the input channel is full, queued actions retain their IDs for the next attempt and the status reads "Input queue busy".
+**Input.** `FixedPostUpdate` sends queued actions once the UI knows the world. Inputs carry no server snapshot reference or acknowledgement; received actions apply before the next available simulation tick. The command queue supplies command IDs and ship authority revisions, and preserves their order without coalescing. If the input channel is full, queued actions retain their IDs for the next attempt and the status reads "Input queue busy".
 
 ## Client ECS presentation
 
@@ -536,8 +502,19 @@ Generated definitions contain stable identities, parent relationships, orbital
 elements, rotation, mass, radius, luminosity, and atmosphere parameters. Views
 share resolved definitions. The local solver evaluates them using the agreed
 MJD epoch and simulation clock. Virtual barycentres organize orbits without
-adding physical bodies or duplicate gravitational mass. Releasing local
-consumers permits cache eviction; later resolution reproduces the same result.
+adding physical bodies or duplicate gravitational mass. A lazy process-wide Moka
+cache has a capacity of 4,096 definitions, keyed by universe fingerprint and system ID.
+Concurrent requests for the same missing definition share its generation. Active
+consumers retain immutable `Arc`s independently of cache eviction; later
+resolution reproduces the same definition if it has been evicted.
+
+On the server, activation attaches Hill radius and ancestry components to
+celestial entities. Their current ECS positions supply a dedicated Hill BVH in
+the spatial service. After celestial movement, the server updates this tree and
+queries it in parallel to populate object location components. Docked objects
+inherit their host's location. This pass uses ECS data directly and performs no
+orrery resolution or orbital evaluation. Bootstrap and save restoration rebuild
+the derived tree and location components before publication.
 
 The [asset source](../crates/osg-client/src/assets.rs) registers canonical
 `server://<hash>` paths for ship appearances and inhabited-directory downloads.
@@ -560,7 +537,7 @@ The shared egui theme, embedded fonts, Phosphor icons and desktop toolkit come f
 
 The toolbar opens Overview, Selected Item, Inventory, Industry, Local Chat, Navigation, the map and Society & Ownership. It also toggles orbital paths, returns the camera to the controlled ship, and opens Interface settings. Windows can be dragged, resized, closed, snapped and locked; Interface can reset their layout. They do not collapse, and can overlap the bottom HUD. Layouts last for the application session. The footer shows the game calendar (real UTC plus 400 years), connection status, jitter-buffer depth and display FPS; its timestamp tooltip includes simulation T+ time.
 
-The location indicator names the subscribed system and nearby gravitational reference, shows altitude, and displays the remaining autopilot orders with stage ETAs. Docked ships get a hangar view, a selector for controlled ships at that station, and an Undock button. Changing ships updates the focused view and instrument subscriptions.
+The location indicator names the subscribed system and nearby gravitational reference, shows altitude, and displays the remaining autopilot directives and the firmware ETA. Docked ships get a hangar view, a selector for controlled ships at that station, and an Undock button. Changing ships updates the focused view and instrument subscriptions.
 
 Overview combines sensor contacts, public beacons and orrery bodies. Planets come from celestial definitions, never sensor detections. Rows support sorting, text search and All/Ships/Celestials filters, and show distance and relative speed at the displayed simulation time. Contact and HUD colors use friendly, neutral, hostile or unknown standings derived from advertised IFF and the observer's relationship hierarchy. Personal standing overrides neither grant permissions nor confer command authority.
 
@@ -595,8 +572,8 @@ Initial focus uses the per-session `ShipTelemetry.can_control` permission flag a
 | [displays.rs](../crates/osg-server/src/sim/displays.rs) tests | Subscribers share one instance released 10 ticks after the last viewer, authority and power changes revoke frames and queued input, every ABI input kind is forwarded |
 | [services.rs](../crates/osg-server/src/sim/services.rs) tests | Scans exclude celestials and use stable opaque ship handles, handles differ between observers and after reacquisition, slip aperture checks, beacon pages hide inaccessible bays, celestial references resolve without active bodies |
 | [travel.rs](../crates/osg-server/src/sim/travel.rs) tests | Docking and undocking motion, nested inventory surviving host destruction, capture not unlocking a private bay, blocked slip arrival and retry, slip energy and cancellation, inactive bodies blocking slip arrival, debug recovery rules, simultaneous arrivals |
-| [router_tests.rs](../crates/osg-server/src/sim/travel/router_tests.rs) | `travel_order_runs_in_stock_wasm_and_brakes_at_destination` and other travel orders flown by the stock firmware |
-| [routing](../crates/osg-server/src/sim/routing) tests | Public server route search and full queue expansion |
+| [router_tests.rs](../crates/osg-server/src/sim/travel/router_tests.rs) | Directive execution scenarios flown by the stock firmware |
+| [routing](../crates/osg-server/src/sim/routing) tests | Strategic system routing and itinerary budgets |
 | [tests/network.rs](../crates/osg-server/tests/network.rs) | Starts the real `osg-server` binary with a ready file. A wrong server key and a wrong account key fail to connect. One account receives telemetry, a view with sensor contacts, a stock MFD frame with at least five primitives and an appearance asset. A second account cannot inspect or command the first account's ship. Reset keeps the connection usable, discards delayed inputs for the previous world and accepts a new view subscription. The server shuts down cleanly when standard input closes. |
 | `osg-client` tests | Buffer ordering, reserve refill, positive rate changes and repeated timestamps, ordered publications during catch-up, command ordering and backpressure, concurrent asset transfers, shared Bevy asset handles, explicit retry and unloading; UI tests cover fixed scheduling, spatial lifetimes, celestial loading, orbital projection, effects and selection |
 
@@ -641,7 +618,7 @@ The benchmark:
 
 1. Writes a server configuration in a private temporary directory with one account per ship, `listen = "127.0.0.1:0"` and the first account as `debug_account`. The scenario therefore spawns one player ship per account, plus initial traffic and infrastructure ([Scenario](#scenario)).
 2. Starts the server with `--ready-file` and `--shutdown-on-stdin-close`, and waits up to 120 s for readiness.
-3. Connects `sessions` clients, one per account, through `osg_client::connect`. Each subscribes one view focused on its ship. The first client also enables debug inspection.
+3. Connects `sessions` clients, one per account, through `osg_net::OsgNetClient::connect`. Each subscribes one view focused on its ship. The first client also enables debug inspection.
 4. Acknowledges every frame until `warmup-ticks` ticks after its first frame, then waits for all clients.
 5. Samples the server's CPU time from `/proc/<pid>/stat`, then each client receives `frames` frames. For each frame it re-encodes the received frame as a `State` message and compresses it through its own Zstd encoder (level 3, window log 21) that keeps history across frames, and it records skipped ticks and the server's reported tick duration.
 6. Prints one CSV row after reading `/proc/<pid>/status`.
@@ -666,7 +643,7 @@ Scope and interpretation:
 - `server_tick_ms` is the simulation tick alone. Session frame building, display updates and network writes happen outside it, and are included only in `server_cpu_percent`.
 - `recompressed_zstd_bytes` and `recompress_ms` are isolated measurements of the benchmark's encoder. The real transport splits writes into 32,768-byte chunks, compresses directly in its async transport tasks, and adds encryption, picomux and TCP framing, so these are not the wire size or the server's compression cost.
 - All clients and the server share one machine and loopback networking. There is no network latency, packet loss or bandwidth limit.
-- The ships are the scenario's ships in orbit near one planet. They fly no travel orders and fight no battles.
+- The ships are the scenario's ships in orbit near one planet. They fly no autopilot directives and fight no battles.
 - It reads `/proc` and `getconf CLK_TCK`, so it runs only on Linux.
 
 A local run on 2026-09-16 used an AMD Ryzen 9 5900XT, the optimized development profile, 16 player ships, four sessions, 70 warmup ticks and 30 measured frames per session:
@@ -695,7 +672,7 @@ Native sensor scans cost 3000 gas per requested contact. The standard firmware s
 The client replicates moving public infrastructure into ECS pose samples so its
 markers interpolate on the same clock as ships. The map combines the local
 astronomical catalogue with current public inhabitation. Selected destinations
-become `TravelTo` requests, and the planner exposes maximum destruction risk in
+become system or station directive requests, and the planner exposes maximum destruction risk in
 ppm, route estimates, and guidance assumptions. Queue controls remove, reorder,
 pause, and resume commands. Offscreen destinations use edge markers; distances
 of at least 0.1 light-years use ly.
@@ -759,13 +736,13 @@ Server warnings identify simulation ticks or display/snapshot publication taking
 
 A dedicated egui ECS system draws the bottom console above the timing strip. Floating windows may overlap this console; it does not reserve desktop workspace. Consumable reserves appear on the left, with propulsion and thermal status on the right. Cargo remains in the inventory window. Installed equipment identifies propellants, reactor fuel and pulse charges.
 
-The thrust fill uses server-reported actuator force projected onto the ship control frame, divided by installed forward thrust capacity. Torque meters use installed capacity in each direction. Gravity and collision forces are excluded. The throttle marker comes from the flight computer; a separate pending marker shows requests awaiting confirmation. Click or drag the gauge, or hold Shift/Control to increase/decrease throttle by 25 percentage points per second. Text entry suppresses these shortcuts. Autopilot locks manual controls; navigation actions enable it, while queue edits preserve its state.
+The thrust fill uses server-reported actuator force projected onto the ship control frame, divided by installed forward thrust capacity. Torque meters use installed capacity in each direction. Gravity and collision forces are excluded. The throttle marker comes from the flight computer; a separate pending marker shows requests awaiting confirmation. Click or drag the gauge, or hold Shift/Control to increase/decrease throttle by 25 percentage points per second. Text entry suppresses these shortcuts. Manual control and flight assists disengage autopilot while preserving its itinerary.
 
 Computer telemetry publishes per-tick computer gas usage and its configured positive tick limit. CPU percentage is the gas spent on guest execution and host services divided by that limit; usage cannot exceed the limit. A running computer reports `Ready`, `Suspended` or `WaitingForGas`. The console labels a suspended continuation `SUSPENDED` and an insufficient owner-account balance `NO GAS`; a positive balance can still be too small for the next indivisible operation. Booting, unpowered, paused and faulted computers remain distinct states. Gas suspension preserves the running callback and does not initiate a reboot.
 
 `SocietySnapshot.gas_accounts` carries integer available, reserved and spent amounts, each keyed by its owning `Principal`. Only the caller's player account and organizations or sovereignties the caller administers are included. Ordinary membership does not disclose a group's balance. The Society window displays those authorized accounts; individual computer telemetry does not duplicate the shared balance. Billing follows actual asset ownership, independently of IFF or delegated control.
 
-A computer reset clears pending requests, instruments, marks, firing state and forecasts. The server also clears the autopilot toggle, orders, ETA, staged world actions, slip preparation and docking reservations, and advances the travel revision. Successful reboot starts with idle navigation. Commands explicitly submitted after the reset may be queued during startup. Fault messages remain visible until boot succeeds. The countdown pauses without computer power and follows simulation time on the client.
+A computer reset clears pending requests, instruments, marks, firing state and forecasts. The server disables autopilot, retains its itinerary and records a failure, clears published planning status, staged world actions, slip preparation and docking reservations, and advances the directive generation. Successful reboot requires explicit autopilot re-engagement. Commands explicitly submitted after the reset may be queued during startup. Fault messages remain visible until boot succeeds. The countdown pauses without computer power and follows simulation time on the client.
 
 The society snapshot describes ownership and permissions. Sovereignties,
 organizations, player affiliations, private personal standings, and authorized

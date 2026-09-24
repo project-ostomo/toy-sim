@@ -1,0 +1,74 @@
+   Compiling osg-spatial-bvh v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-spatial-bvh)
+   Compiling osg-spatial v0.1.0 (/home/thisbefruit/develop/toy-sim/crates/osg-spatial)
+    Finished `test` profile [optimized + debuginfo] target(s) in 3.04s
+     Running unittests src/lib.rs (target/debug/deps/osg_spatial-2a84ef3e180ae0b2)
+
+running 6 tests
+test tests::bvh_queries_keep_the_published_tree_until_explicit_rebuild ... ok
+test tests::dynamic_publication_removal_and_clone_are_independent ... ok
+test tests::dynamic_rejects_duplicate_batch_ids - should panic ... ok
+test tests::filtered_ray_uses_role_specific_radii ... ok
+test tests::segment_handles_tangency_overlaps_and_exhaustion ... ok
+test tests::translated_queries_match_exhaustive_checks_after_updates ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running unittests src/lib.rs (target/debug/deps/osg_spatial_bvh-07202eeb1accfacd)
+
+running 53 tests
+test dynamic_bvh::tests::bulk_build_extreme_bounds_reuse_and_clone_independence ... ok
+test dynamic_bvh::tests::invalid_update_leaves_the_existing_record_intact ... ok
+test luminosity_forest::tests::extreme_luminosities_and_adjacent_values_are_retained ... ok
+test luminosity_forest::tests::invalid_entries_are_rejected ... ok
+test luminosity_forest::tests::invalid_thresholds_panic_before_iteration ... ok
+test luminosity_forest::tests::empty_singleton_and_equal_luminosities ... ok
+test luminosity_forest::tests::power_of_two_boundaries_and_overflow ... ok
+test luminosity_forest::tests::iterator_borrows_non_clone_payloads_and_drops_them_once ... ok
+test record::tests::sweeps_preserve_local_motion_at_galactic_coordinates_and_saturate ... ok
+test luminosity_forest::tests::visibility_preserves_bvh_numeric_edge_cases ... ok
+test service::tests::duplicate_ids_in_one_tree_are_rejected - should panic ... ok
+test luminosity_forest::tests::power_of_two_exponents_cover_subnormals_and_normal_boundaries ... ok
+test luminosity_forest::tests::power_of_two_buckets_follow_the_dimmest_input ... ok
+test service::tests::coincident_objects_can_be_paged_without_duplicates ... ok
+test service::tests::empty_queries_and_zero_length_segments_are_defined ... ok
+test service::tests::full_coordinate_span_and_boundary_contacts_remain_conservative ... ok
+test luminosity_forest::tests::visibility_matches_full_scan_across_buckets_and_observers ... ok
+test dynamic_bvh::tests::identical_dark_leaves_still_propagate_height_changes ... ok
+test service::tests::invalid_inputs_and_callback_values_are_rejected ... ok
+test luminosity_forest::tests::visibility_matches_bvh_across_overflow_buckets ... ok
+test service::tests::cursor_charges_nodes_and_objects_and_zero_budgets_pause ... ok
+test service::tests::rebuilding_preserves_static_non_clone_records_and_replaces_dynamic_records ... ok
+test service::tests::entity_proxy_roles_and_explicit_clones_stay_distinct ... ok
+test service::tests::swept_proximity_does_not_leak_into_instantaneous_queries ... ok
+test service::tests::dynamic_scope_excludes_static_work_and_brightest_matches_exact_flux ... ok
+test service::tests::segment_queries_match_axis_aligned_reference_in_both_directions ... ok
+test service::tests::nearest_and_ray_queries_prune_distant_records ... ok
+test tests::coordinate_extremes_and_large_luminosities_do_not_overflow ... ok
+test tests::empty_and_singleton_builds ... ok
+test tests::invalid_bounds_are_rejected_on_every_axis ... ok
+test tests::object_extent_does_not_choose_the_split_axis ... ok
+test tests::negative_and_nonfinite_luminosities_are_rejected ... ok
+test tests::payloads_are_moved_without_clone_or_ordering_requirements ... ok
+test tests::splits_on_the_widest_center_axis ... ok
+test tests::tied_centers_use_input_order_and_tied_axes_prefer_x ... ok
+test tests::visibility::close_objects_remain_distinguishable_at_galactic_coordinates ... ok
+test tests::visibility::empty_zero_threshold_and_zero_distance_are_defined ... ok
+test tests::translating_a_scene_to_galactic_coordinates_preserves_partitioning ... ok
+test tests::visibility::flux_uses_watts_metres_and_four_pi ... ok
+test service::tests::paged_queries_obey_work_and_result_budgets_and_match_complete_queries ... ok
+test tests::rounding_centers_preserves_bounds_and_breaks_ties_by_input_order ... ok
+test tests::construction_preserves_objects_bounds_and_preorder_for_varied_scenes ... ok
+test tests::visibility::invalid_thresholds_are_rejected_even_for_an_empty_tree ... ok
+test tests::visibility::iterator_borrows_non_clone_payloads ... ok
+test tests::visibility::near_threshold_rounding_remains_conservative ... ok
+test tests::visibility::opposite_coordinate_extremes_do_not_overflow ... ok
+test tests::visibility::uses_the_nearest_aabb_point_instead_of_its_center ... ok
+test tests::visibility::very_large_and_subnormal_fluxes_are_handled ... ok
+test service::tests::collision_pairs_match_full_scan_without_duplicates ... ok
+test service::tests::geometry_visibility_and_nearest_match_full_scan ... ok
+test dynamic_bvh::tests::batches_refit_exact_bounds_and_validate_before_mutating ... ok
+test dynamic_bvh::tests::ordered_insertions_and_teleports_stay_balanced ... ok
+test dynamic_bvh::tests::randomized_mutations_match_fresh_tree_and_exhaustive_queries ... ok
+
+test result: ok. 53 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+

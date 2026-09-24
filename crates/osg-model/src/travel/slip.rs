@@ -144,6 +144,43 @@ pub fn exotic_range_ly(departure_mass_kg: f64, fuel_kg: f64) -> f64 {
     (fuel_kg.max(0.0) / (1e-5 * departure_mass_kg)).powf(1.0 / 1.2)
 }
 
+pub const MAX_DELTA_V_PER_LY_M_S: f64 = 10_000.0;
+
+/// Peregrine: 5000 kg full exotic tank and 85811 kg departure mass,
+/// including its default half-filled propulsion tank and shield coolant.
+pub const DELTA_V_FUEL_KG_PER_KG_M_S: f64 = 5000.0 / (85811.0 * 100_000.0);
+
+pub fn earned_delta_v_m_s(requested_m_s: f64, distance_ly: f64) -> f64 {
+    requested_m_s
+        .max(0.0)
+        .min(distance_ly.max(0.0) * MAX_DELTA_V_PER_LY_M_S)
+}
+
+pub fn transit_fuel_kg(mass_kg: f64, distance_ly: f64, requested_delta_v_m_s: f64) -> f64 {
+    exotic_fuel_kg(mass_kg, distance_ly)
+        + DELTA_V_FUEL_KG_PER_KG_M_S
+            * mass_kg
+            * earned_delta_v_m_s(requested_delta_v_m_s, distance_ly)
+}
+
+/// Largest affordable distance, including velocity change earned along the way.
+pub fn transit_range_ly(mass_kg: f64, fuel_kg: f64, requested_delta_v_m_s: f64) -> f64 {
+    let mut upper = exotic_range_ly(mass_kg, fuel_kg);
+    if requested_delta_v_m_s <= 0.0 {
+        return upper;
+    }
+    let mut lower = 0.0;
+    for _ in 0..64 {
+        let middle = (lower + upper) * 0.5;
+        if transit_fuel_kg(mass_kg, middle, requested_delta_v_m_s) <= fuel_kg {
+            lower = middle;
+        } else {
+            upper = middle;
+        }
+    }
+    lower
+}
+
 pub fn log_loss_from_ppm(loss_ppm: f64) -> f64 {
     -(-loss_ppm / 1e6).ln_1p()
 }
@@ -155,6 +192,21 @@ pub fn ppm_from_log_loss(log_loss: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrival_velocity_cost_is_linear_and_earned_by_distance() {
+        assert_eq!(earned_delta_v_m_s(100_000.0, 0.0), 0.0);
+        assert_eq!(earned_delta_v_m_s(100_000.0, 0.25), 2500.0);
+        assert_eq!(earned_delta_v_m_s(100_000.0, 20.0), 100_000.0);
+        let cost = |dv| transit_fuel_kg(85811.0, 20.0, dv) - exotic_fuel_kg(85811.0, 20.0);
+        assert!((cost(100_000.0) - 5000.0).abs() < 1e-9);
+        assert!((cost(50_000.0) * 2.0 - cost(100_000.0)).abs() < 1e-9);
+        for distance in [0.0001, 0.5, 10.0, 100.0] {
+            let fuel = transit_fuel_kg(85811.0, distance, 100_000.0);
+            let affordable = transit_range_ly(85811.0, fuel, 100_000.0);
+            assert!((affordable - distance).abs() < distance * 1e-12);
+        }
+    }
 
     #[test]
     fn fixed_dispersion_preserves_capture_odds_with_tenfold_radii() {

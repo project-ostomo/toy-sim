@@ -8,12 +8,13 @@ use crate::{
 use anyhow::{Context, Result, ensure};
 use glam::{DQuat, DVec3};
 use hifitime::Epoch;
+use moka::sync::Cache;
 use osg_stars::{Star, StarCatalogue};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
-    sync::{Arc, Mutex, Weak},
+    collections::{BTreeMap, HashMap, HashSet},
+    sync::{Arc, LazyLock},
 };
 
 pub type SystemId = [u8; 16];
@@ -172,36 +173,21 @@ enum DefinitionSource {
     Enriched(usize),
 }
 
-#[derive(Default)]
-struct DefinitionCache {
-    entries: HashMap<SystemId, Arc<SystemDefinition>>,
-    resident: HashMap<SystemId, Weak<SystemDefinition>>,
-    recent: VecDeque<SystemId>,
-}
+type DefinitionKey = ([u8; 32], SystemId);
+type DefinitionCache = Cache<DefinitionKey, Arc<SystemDefinition>>;
 
-impl DefinitionCache {
-    fn get(&mut self, id: SystemId) -> Option<Arc<SystemDefinition>> {
-        let Some(definition) = self.entries.get(&id).cloned() else {
-            return self.resident.get(&id)?.upgrade();
-        };
-        self.recent.retain(|entry| *entry != id);
-        self.recent.push_back(id);
-        Some(definition)
-    }
+/// Shared across server, client, and independent Universe handles in this process.
+/// Active systems keep their own Arc when a definition leaves this cache.
+static DEFINITIONS: LazyLock<DefinitionCache> = LazyLock::new(|| Cache::new(4096));
 
-    fn insert(&mut self, id: SystemId, definition: Arc<SystemDefinition>) {
-        self.resident
-            .retain(|_, definition| definition.strong_count() > 0);
-        self.resident.insert(id, Arc::downgrade(&definition));
-        self.recent.retain(|entry| *entry != id);
-        self.recent.push_back(id);
-        self.entries.insert(id, definition);
-        while self.entries.len() > 128 {
-            if let Some(oldest) = self.recent.pop_front() {
-                self.entries.remove(&oldest);
-            }
-        }
-    }
+fn cached_definition(
+    cache: &DefinitionCache,
+    key: DefinitionKey,
+    generate: impl FnOnce() -> Result<Arc<SystemDefinition>>,
+) -> Result<Arc<SystemDefinition>> {
+    cache
+        .try_get_with(key, generate)
+        .map_err(anyhow::Error::msg)
 }
 
 pub struct Universe {
@@ -213,7 +199,6 @@ pub struct Universe {
     identities: HashMap<SystemId, usize>,
     names: HashMap<SmolStr, SystemId>,
     authored_bodies: HashMap<SmolStr, CelestialId>,
-    cache: Mutex<DefinitionCache>,
     cutoff: f64,
 }
 
@@ -360,7 +345,6 @@ impl Universe {
             authored_bodies,
             index: Arc::new(CatalogueIndex::new(entries)),
             fingerprint,
-            cache: Mutex::new(DefinitionCache::default()),
             cutoff,
         })
     }
@@ -389,9 +373,13 @@ impl Universe {
 
     pub fn resolve_index(&self, index: usize) -> Result<Arc<SystemDefinition>> {
         let summary = self.systems.get(index).context("unknown system index")?;
-        if let Some(definition) = self.cache.lock().unwrap().get(summary.id) {
-            return Ok(definition);
-        }
+        cached_definition(&DEFINITIONS, (self.fingerprint, summary.id), || {
+            self.generate_definition(index)
+        })
+    }
+
+    fn generate_definition(&self, index: usize) -> Result<Arc<SystemDefinition>> {
+        let summary = self.systems.get(index).context("unknown system index")?;
         let mut config = match &self.sources[index] {
             DefinitionSource::Authored { config, populate } => {
                 let mut config = (**config).clone();
@@ -425,11 +413,6 @@ impl Universe {
             definition.influence <= summary.influence_bound * (1.0 + 1e-12),
             "generated system exceeds influence bound"
         );
-        let mut cache = self.cache.lock().unwrap();
-        if let Some(existing) = cache.get(summary.id) {
-            return Ok(existing);
-        }
-        cache.insert(summary.id, definition.clone());
         Ok(definition)
     }
 
@@ -488,8 +471,8 @@ impl Universe {
         start: GalacticPosition,
         delta: DVec3,
         ship_radius: f64,
-        budget: &mut osg_space::spatial::QueryBudget,
-    ) -> Result<Vec<usize>, osg_space::spatial::QueryError> {
+        budget: &mut osg_spatial::QueryBudget,
+    ) -> Result<Vec<usize>, osg_spatial::QueryError> {
         self.index.spatial.segment_candidates_filtered(
             start,
             delta,
@@ -520,7 +503,10 @@ impl Universe {
     }
 
     pub fn cached_definitions(&self) -> usize {
-        self.cache.lock().unwrap().entries.len()
+        DEFINITIONS
+            .iter()
+            .filter(|(key, _)| key.0 == self.fingerprint)
+            .count()
     }
 }
 
@@ -721,7 +707,7 @@ mod tests {
 
     #[test]
     fn cache_eviction_preserves_external_references_and_regeneration_at_current_epoch() {
-        let configs = (0..140)
+        let configs = (0..16)
             .map(|index| {
                 let mut config = crate::example_config();
                 config.key = format!("test/system/{index}").into();
@@ -730,25 +716,107 @@ mod tests {
             })
             .collect();
         let universe = Universe::from_configs(configs, 1e-8).unwrap();
-        assert_eq!(universe.cached_definitions(), 0);
-        let pinned = universe.resolve_index(0).unwrap();
+        let cache = DefinitionCache::new(2);
+        let held: Vec<_> = (0..universe.systems.len())
+            .map(|index| {
+                let key = (universe.fingerprint, universe.systems[index].id);
+                let definition =
+                    cached_definition(&cache, key, || universe.generate_definition(index)).unwrap();
+                cache.run_pending_tasks();
+                definition
+            })
+            .collect();
+        assert!(cache.entry_count() <= 2);
+        let index = held
+            .iter()
+            .position(|definition| cache.get(&(universe.fingerprint, definition.id)).is_none())
+            .expect("bounded cache evicts definitions even while external Arcs exist");
+        let pinned = &held[index];
         let reference = pinned.body_id("Helion I Neris").unwrap();
         let epoch = Epoch::from_mjd_utc(100.0);
-        let position = universe.solve_position(reference, epoch).unwrap();
-        for index in 1..140 {
-            universe.resolve_index(index).unwrap();
-        }
-        assert_eq!(universe.cached_definitions(), 128);
-        assert!(Arc::ptr_eq(&pinned, &universe.resolve_index(0).unwrap()));
-        drop(pinned);
-        assert_eq!(universe.solve_position(reference, epoch).unwrap(), position);
-        assert_ne!(
-            universe
-                .solve_position(reference, Epoch::from_mjd_utc(0.0))
-                .unwrap(),
-            position
+        let position = pinned
+            .solver
+            .solve_position("Helion I Neris", epoch)
+            .unwrap();
+        let regenerated = cached_definition(&cache, (universe.fingerprint, pinned.id), || {
+            universe.generate_definition(index)
+        })
+        .unwrap();
+        assert_eq!(regenerated.body_id("Helion I Neris"), Some(reference));
+        assert_eq!(
+            regenerated.solver.solve_position("Helion I Neris", epoch),
+            Some(position)
         );
-        assert!(universe.cached_definitions() <= 128);
+        assert_eq!(
+            pinned.solver.solve_position("Helion I Neris", epoch),
+            Some(position)
+        );
+        assert_ne!(
+            regenerated
+                .solver
+                .solve_position("Helion I Neris", Epoch::from_mjd_utc(0.0)),
+            Some(position)
+        );
+    }
+
+    #[test]
+    fn concurrent_cache_misses_generate_one_definition() {
+        use std::sync::{
+            Barrier,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let universe = Universe::init(crate::example_config()).unwrap();
+        let cache = DefinitionCache::new(8);
+        let barrier = Barrier::new(8);
+        let generated = AtomicUsize::new(0);
+        let key = (universe.fingerprint, universe.systems[0].id);
+        let definitions = std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        cached_definition(&cache, key, || {
+                            generated.fetch_add(1, Ordering::SeqCst);
+                            universe.generate_definition(0)
+                        })
+                        .unwrap()
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(generated.load(Ordering::SeqCst), 1);
+        assert!(
+            definitions
+                .iter()
+                .all(|definition| Arc::ptr_eq(definition, &definitions[0]))
+        );
+    }
+
+    #[test]
+    fn global_cache_shares_equal_universes_and_isolates_different_fingerprints() {
+        let mut config = crate::example_config();
+        config.key = "cache/isolation".into();
+        let body_name = config.bodies[1].name.clone();
+        let first = Universe::init(config.clone()).unwrap();
+        let same = Universe::init(config.clone()).unwrap();
+        config.bodies[1].mass *= 2.;
+        let different = Universe::init(config).unwrap();
+        assert_eq!(first.systems[0].id, different.systems[0].id);
+        assert_ne!(first.fingerprint, different.fingerprint);
+        let a = first.resolve_index(0).unwrap();
+        let b = same.resolve_index(0).unwrap();
+        let c = different.resolve_index(0).unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(a.id, c.id);
+        assert_eq!(
+            c.solver.get_body(&body_name).unwrap().mass,
+            2. * a.solver.get_body(&body_name).unwrap().mass,
+        );
     }
 
     #[test]

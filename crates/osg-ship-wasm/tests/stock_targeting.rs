@@ -4,7 +4,6 @@ use osg_ship_wasm::{
     SensorContact,
 };
 use osg_ships::{DeviceDescriptor, DeviceHandle, DeviceKind, DeviceReading, DeviceStatus};
-use std::sync::Arc;
 
 struct Target;
 
@@ -48,7 +47,7 @@ fn stock_mark_start_stop_flow_publishes_targeting_intent_without_turret_handles(
         computer
             .catalogue
             .iter()
-            .all(|device| { !matches!(device.kind, DeviceKind::Weapon) })
+            .all(|device| { !matches!(device.kind, DeviceKind::Gun | DeviceKind::Laser) })
     );
 
     for _ in 0..64 {
@@ -95,12 +94,7 @@ fn issue(
         *tick += 1;
         observation.commands.extend(request.take());
         let slice = computer
-            .run_slice(
-                observation,
-                Some(Arc::new(Target)),
-                FUEL_PER_TICK / 2,
-                FUEL_PER_TICK,
-            )
+            .run_slice(observation, Some(&Target), FUEL_PER_TICK / 2, FUEL_PER_TICK)
             .unwrap();
         for reply in slice.output.replies {
             assert_eq!(reply.id, id);

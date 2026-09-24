@@ -1,6 +1,6 @@
 use crate::sim::{precision::GalacticPosition, spatial::SpatialIndex};
 use bevy::prelude::*;
-use osg_space::spatial::QueryBudget;
+use osg_spatial::QueryBudget;
 
 /// Query the authoritative tick state. Exhaustion fails closed.
 pub fn candidates(world: &World, position: GalacticPosition, radius: f64) -> Option<Vec<Entity>> {

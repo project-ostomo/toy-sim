@@ -1,3 +1,4 @@
+pub mod assets;
 #[cfg(test)]
 mod benchmark;
 pub mod bootstrap;
@@ -5,13 +6,16 @@ pub mod chat;
 pub mod combat;
 pub mod commands;
 pub mod diagnostics;
+pub mod diplomacy;
 pub mod displays;
+pub mod economy;
 #[cfg(test)]
 mod firmware_tests;
 pub mod gas;
 pub mod hardware;
 pub mod industry;
 pub mod infrastructure;
+pub mod location;
 pub mod presentation;
 pub mod registry;
 pub mod route_service;
@@ -66,6 +70,8 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
             vessel::VesselsPlugin,
         ));
     route_service::install(&mut app);
+    app.add_systems(Last, session::maintain_cache);
+    app.add_systems(First, economy::settle);
     registry::initialize(app.world_mut()).expect("valid universe catalogue");
     app.add_systems(
         FixedUpdate,
@@ -82,17 +88,13 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
     );
     app.add_systems(
         FixedFirst,
-        (
-            travel::advance.before(travel::plan_orders),
-            slip_effects::prune,
-            travel::plan_orders,
-        )
-            .run_if(in_state(GameState::Game)),
+        (travel::advance, slip_effects::prune).run_if(in_state(GameState::Game)),
     );
     app.add_systems(
         FixedLast,
-        travel::finish_arrivals
-            .before(spatial::SensorSystems::Index)
+        (travel::finish_arrivals, location::refresh)
+            .chain()
+            .before(simulation::SimulationSystems::Complete)
             .run_if(in_state(GameState::Game)),
     );
     app.add_systems(

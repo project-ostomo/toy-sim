@@ -8,17 +8,17 @@ mod shell;
 mod standing;
 mod travel_risk;
 
-use crate::{Endpoint, state};
+use crate::{OsgNetClient, state};
 use bevy::prelude::*;
 use selection::{SelectedTarget, Selection};
 
 #[derive(Resource)]
-struct BlueprintAssets(crate::AssetClient);
+struct BlueprintAssets(crate::OsgNetClient);
 
-pub fn run(endpoint: Endpoint, local: bool) {
+pub fn run(endpoint: OsgNetClient, local: bool) {
     let mut app = App::new();
-    app.insert_resource(BlueprintAssets(endpoint.assets.clone()));
-    crate::assets::register_source(&mut app, endpoint.assets.clone());
+    app.insert_resource(BlueprintAssets(endpoint.clone()));
+    crate::assets::register_source(&mut app, endpoint.clone());
     let window = Window {
         title: "OpenSpaceGame".into(),
         ..default()
@@ -32,7 +32,7 @@ pub fn run(endpoint: Endpoint, local: bool) {
     } else {
         window
     };
-    let plugins = DefaultPlugins
+    let mut plugins = DefaultPlugins
         .set(AssetPlugin {
             file_path: concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets").into(),
             ..default()
@@ -41,6 +41,9 @@ pub fn run(endpoint: Endpoint, local: bool) {
             primary_window: Some(window),
             ..default()
         });
+    if std::env::var_os("OSG_HEADLESS_CAPTURE").is_some() {
+        plugins = plugins.disable::<bevy::audio::AudioPlugin>();
+    }
 
     app.add_plugins(plugins)
         .add_plugins(osg_ui::UiPlugin)
@@ -96,6 +99,7 @@ mod tests {
 
     pub(super) fn ship(id: Id) -> OwnedShip {
         OwnedShip(ShipTelemetry {
+            location: Default::default(),
             can_control: true,
             appearance: None,
             radius_m: 10.,
@@ -201,12 +205,15 @@ mod tests {
             bay: 0,
         };
         world.resource_mut::<SessionInfo>().industry.snapshot.hangar = Some(industry::HangarView {
+            berths_used: Some(1),
+            berths_total: Some(4),
             ship: first,
             host: Id([4; 16]),
             host_name: "Test hangar".into(),
             host_inventory: None,
             ships: vec![industry::HangarEntry {
                 inventory: industry::FacilitySummary {
+                    metrics: Default::default(),
                     entity: built,
                     owner: ownership::Principal::Player(Id([1; 16])),
                     name: "Built ship outside telemetry page".into(),
@@ -288,4 +295,7 @@ mod tests {
         );
         assert!(world.resource::<Outgoing>().pending().is_empty());
     }
+}
+pub fn run_render_regressions() -> anyhow::Result<()> {
+    scene::render_regressions::run()
 }

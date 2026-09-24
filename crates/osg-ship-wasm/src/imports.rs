@@ -657,10 +657,11 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
                 let start = std::time::Instant::now();
                 let mut contacts = if maximum == 0 {
                     Vec::new()
-                } else if let Some(source) = &caller.data().source {
-                    source.scan(range_m, maximum as usize)
                 } else {
-                    Vec::new()
+                    crate::scan_scope::with(|source| {
+                        source
+                            .map_or_else(Vec::new, |source| source.scan(range_m, maximum as usize))
+                    })
                 };
                 contacts.truncate(maximum as usize);
 
@@ -695,12 +696,9 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
         },
         {
             status((|| {
-                let contact = caller
-                    .data()
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.contact(id))
-                    .ok_or(w::ERR_UNAVAILABLE)?;
+                let contact =
+                    crate::scan_scope::with(|source| source.and_then(|source| source.contact(id)))
+                        .ok_or(w::ERR_UNAVAILABLE)?;
                 let mut value = w::ContactIff::default();
                 if let Some((entity, iff)) = contact.iff {
                     value.present = 1;
@@ -726,12 +724,9 @@ fn sensors(linker: &mut Linker<Host>) -> Result<()> {
         },
         {
             status((|| {
-                let contact = caller
-                    .data()
-                    .source
-                    .as_ref()
-                    .and_then(|source| source.contact(id))
-                    .ok_or(w::ERR_UNAVAILABLE)?;
+                let contact =
+                    crate::scan_scope::with(|source| source.and_then(|source| source.contact(id)))
+                        .ok_or(w::ERR_UNAVAILABLE)?;
                 let value = w::Text64::new(&contact.name);
                 emit(&mut caller, pointer, bytes, &value)
             })())

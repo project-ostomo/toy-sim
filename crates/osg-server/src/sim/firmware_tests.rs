@@ -280,12 +280,7 @@ fn bundled_firmware_finishes_full_forecasts_with_retained_sources_under_fuel_lim
         }
 
         let out = computer
-            .run_slice(
-                observation,
-                Some(Arc::new(Target)),
-                FUEL_PER_TICK,
-                FUEL_PER_TICK,
-            )
+            .run_slice(observation, Some(&Target), FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap()
             .output;
         assert!(
@@ -438,7 +433,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
         let manual_output = manual_only
             .run_slice(
                 manual_observation,
-                Some(Arc::new(Target)),
+                Some(&Target),
                 FUEL_PER_TICK,
                 FUEL_PER_TICK,
             )
@@ -446,12 +441,7 @@ fn armed_firmware_engagement_does_not_replace_manual_flight_and_stays_within_bud
             .output;
 
         let output = computer
-            .run_slice(
-                observation,
-                Some(Arc::new(Target)),
-                FUEL_PER_TICK,
-                FUEL_PER_TICK,
-            )
+            .run_slice(observation, Some(&Target), FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap()
             .output;
         assert!(!computer.is_booting());
@@ -607,12 +597,7 @@ fn armed_starter_discovers_rcs_and_accepts_distant_pursuit_after_boot() {
         }
 
         let output = computer
-            .run_slice(
-                observation,
-                Some(Arc::new(Player)),
-                FUEL_PER_TICK,
-                FUEL_PER_TICK,
-            )
+            .run_slice(observation, Some(&Player), FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap()
             .output;
         for reply in &output.replies {
@@ -667,7 +652,7 @@ fn armed_idle_computer_publishes_sensor_instrument_with_rotated_ship() {
         let out = computer
             .run_slice(
                 observation,
-                Some(Arc::new(CountedSource(Arc::new(AtomicUsize::new(0))))),
+                Some(&CountedSource(Arc::new(AtomicUsize::new(0)))),
                 FUEL_PER_TICK,
                 FUEL_PER_TICK,
             )
@@ -731,12 +716,7 @@ fn dense_sensor_results_keep_stock_slices_within_physical_gas_budget() {
         observation.devices = hardware.snapshot(&design);
 
         let output = computer
-            .run_slice(
-                observation,
-                Some(Arc::new(Dense)),
-                FUEL_PER_TICK,
-                FUEL_PER_TICK,
-            )
+            .run_slice(observation, Some(&Dense), FUEL_PER_TICK, FUEL_PER_TICK)
             .unwrap()
             .output;
         assert!(computer.last_gas_used <= FUEL_PER_TICK);

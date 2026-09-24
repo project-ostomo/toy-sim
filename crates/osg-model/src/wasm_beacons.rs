@@ -18,7 +18,18 @@ pub fn reply_fits(reply: &ProgramReply, capacity: wasm_world::ReplyCapacity) -> 
         ProgramReply::Route {
             status: routing::Status::Ready { plan },
             ..
-        } => (plan.orders.len(), plan.fuel_budget.resources.len(), 0),
+        } => (plan.itinerary.len(), plan.fuel_budget.resources.len(), 0),
+        ProgramReply::Travel {
+            state, location, ..
+        } => (
+            state.itinerary.len(),
+            state
+                .fuel_budget
+                .as_ref()
+                .map_or(0, |budget| budget.resources.len()),
+            location.hierarchy.len() * size_of::<osg_ship_api::world::CelestialRef>(),
+        ),
+        ProgramReply::SlipEligibilityBatch(results) => (results.len(), 0, 0),
         _ => (0, 0, 0),
     };
     records <= capacity.records && auxiliary <= capacity.auxiliary && bytes <= capacity.bytes
@@ -45,11 +56,14 @@ pub fn encode_beacon(beacon: &Beacon, arena: &mut Vec<u8>) -> w::Beacon {
     }
     w::Beacon {
         entity: beacon.entity.0,
+        system: beacon.system.unwrap_or_default().0,
         pose: (&beacon.pose).into(),
         radius_m: beacon.radius_m,
         owner: beacon.iff.owner.0,
         faction: beacon.iff.faction.unwrap_or(Id([0; 16])).0,
-        flags: u32::from(beacon.iff.enabled) | (u32::from(beacon.iff.faction.is_some()) << 1),
+        flags: u32::from(beacon.iff.enabled)
+            | (u32::from(beacon.iff.faction.is_some()) << 1)
+            | (u32::from(beacon.system.is_some()) << 2),
         labels_offset,
         labels_count: beacon.iff.labels.len() as u32,
         bays_offset,
@@ -75,6 +89,7 @@ fn arena_records<T: Record>(arena: &[u8], offset: u32, count: u32) -> Result<Vec
 pub fn decode_beacon(record: &w::Beacon, arena: &[u8]) -> Result<Beacon, ()> {
     Ok(Beacon {
         entity: Id(record.entity),
+        system: (record.flags & 4 != 0).then_some(Id(record.system)),
         pose: (&record.pose).into(),
         radius_m: record.radius_m,
         iff: IffIdentity {
@@ -159,6 +174,7 @@ mod tests {
     #[test]
     fn beacon_arena_exceeds_old_buffer_without_losing_bays_or_labels() {
         let beacon = Beacon {
+            system: Some(Id([7; 16])),
             radius_m: 2000.,
             entity: Id([1; 16]),
             pose: Pose::default(),

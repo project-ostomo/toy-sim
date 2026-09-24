@@ -1,6 +1,8 @@
 use crate::sim::{precision::PreciseTransform, spatial::SpatialIndex};
 use bevy::prelude::*;
 use osg_model::{Id, SensorObservation};
+#[cfg(test)]
+use osg_ship_wasm::ScanSource;
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Clone, Default)]
@@ -58,9 +60,6 @@ pub fn refresh_iff(world: &mut World, entity: Entity) {
         .map(|value| value.0.clone());
     if let Some(service) = world.get_resource::<SensorService>() {
         let mut scene = service.0.lock().unwrap();
-        if let Some(target) = scene.targets.get_mut(&entity) {
-            target.iff = iff.clone();
-        }
         for (_, snapshot) in scene.cached.values_mut() {
             let snapshot = Arc::make_mut(snapshot);
             if let Some(handle) = snapshot.targets.get(&id).copied()
@@ -90,7 +89,6 @@ pub struct Observer {
     observations: Option<&'static Observations>,
     dormant: Has<super::travel::Dormant>,
     pose: Option<&'static PreciseTransform>,
-    range: Option<&'static super::hardware::SensorRange>,
     override_settings: Option<&'static super::hardware::SensorOverride>,
 }
 
@@ -107,7 +105,7 @@ pub struct Target {
 }
 
 #[derive(Clone)]
-struct ObserverState {
+pub(crate) struct ObserverState {
     instance: Id,
     origin: crate::sim::precision::GalacticPosition,
     sensor: Sensor,
@@ -126,9 +124,6 @@ struct TargetState {
 struct SensorScene {
     revision: u64,
     tick: u64,
-    index: SpatialIndex,
-    observers: ahash::AHashMap<Entity, ObserverState>,
-    targets: ahash::AHashMap<Entity, TargetState>,
     cached: ahash::AHashMap<Entity, (u64, Arc<ObservationSnapshot>)>,
 }
 
@@ -139,8 +134,6 @@ pub struct SensorService(Arc<std::sync::Mutex<SensorScene>>);
 impl SensorService {
     pub(crate) fn invalidate(&self, entity: Entity, id: Option<Id>) {
         let mut scene = self.0.lock().unwrap();
-        scene.observers.remove(&entity);
-        scene.targets.remove(&entity);
         for (&observer, (_, snapshot)) in &mut scene.cached {
             let mut value = Observations(snapshot.clone());
             invalidate_observation(observer, &mut value, entity, id);
@@ -148,8 +141,18 @@ impl SensorService {
         }
     }
 
-    pub fn observe(&self, entity: Entity) -> Arc<ObservationSnapshot> {
+    fn observe(
+        &self,
+        index: &SpatialIndex,
+        entity: Entity,
+        observer: Option<ObserverState>,
+        target: impl Fn(Entity) -> Option<TargetState>,
+    ) -> Arc<ObservationSnapshot> {
         let mut scene = self.0.lock().unwrap();
+        if observer.is_none() {
+            scene.cached.remove(&entity);
+            return Arc::default();
+        }
         if let Some((revision, snapshot)) = scene.cached.get(&entity)
             && *revision == scene.revision
         {
@@ -165,12 +168,11 @@ impl SensorService {
             tick: scene.tick,
             ..Default::default()
         };
-        if let Some(observer) = scene.observers.get(&entity) {
+        if let Some(observer) = observer {
             snapshot.observer_instance = observer.instance;
-            let detections =
-                detect_nearest(&scene.index, entity, observer.origin, &observer.sensor, 256);
+            let detections = detect_nearest(index, entity, observer.origin, &observer.sensor, 256);
             for detection in detections.visible {
-                let Some(target) = scene.targets.get(&detection.entity) else {
+                let Some(target) = target(detection.entity) else {
                     continue;
                 };
                 let handle = old
@@ -229,14 +231,12 @@ impl SensorService {
 }
 
 /// Refresh query inputs without scanning. Old handles survive until the next
-/// requested observation checks whether their targets are still visible.
+/// Requested observations are cached until the next publication revision.
 pub fn publish(
     mut commands: Commands,
     clock: Res<super::simulation::SimulationCounters>,
-    index: Res<SpatialIndex>,
     service: Option<Res<SensorService>>,
-    observers: Query<Observer, With<super::identity::Identity>>,
-    targets: Query<Target>,
+    observers: Query<(Entity, Option<&Observations>), With<super::identity::Identity>>,
 ) {
     let _profile = super::diagnostics::ProfileScope::new("sensor_publish");
     let service = service.map(|service| service.clone()).unwrap_or_default();
@@ -244,58 +244,100 @@ pub fn publish(
         let mut scene = service.0.lock().unwrap();
         scene.revision += 1;
         scene.tick = clock.ticks;
-        scene.index = index.sensor_snapshot();
-        scene.observers.clear();
-        for observer in &observers {
-            if let Some(old) = observer.observations {
-                scene
-                    .cached
-                    .entry(observer.entity)
-                    .or_insert((0, old.0.clone()));
-            }
-            if !observer.dormant
-                && let (Some(instance), Some(pose), Some(range)) =
-                    (observer.instance, observer.pose, observer.range)
-                && range.0 > 0.0
-            {
-                scene.observers.insert(
-                    observer.entity,
-                    ObserverState {
-                        instance: instance.0,
-                        origin: pose.translation_um,
-                        sensor: Sensor {
-                            range_m: range.0,
-                            occlusion: observer
-                                .override_settings
-                                .is_none_or(|value| value.occlusion),
-                        },
-                    },
-                );
+        for (entity, old) in &observers {
+            if let Some(old) = old {
+                scene.cached.entry(entity).or_insert((0, old.0.clone()));
             }
         }
-        scene.targets = targets
-            .iter()
-            .map(|target| {
-                (
-                    target.entity,
-                    TargetState {
-                        id: target.id.0,
-                        instance: target.instance.0,
-                        pose: super::identity::pose(target.pose, target.velocity, target.angular),
-                        radius_m: target.design.0.radius,
-                        iff: target
-                            .transponder
-                            .filter(|value| value.0.enabled)
-                            .map(|value| value.0.clone()),
-                    },
-                )
-            })
-            .collect();
-        let present: ahash::AHashSet<_> =
-            observers.iter().map(|observer| observer.entity).collect();
-        scene.cached.retain(|entity, _| present.contains(entity));
+        scene.cached.retain(|entity, _| observers.contains(*entity));
     }
     commands.insert_resource(service);
+}
+
+#[derive(bevy::ecs::system::SystemParam)]
+pub(crate) struct SensorAccess<'w, 's> {
+    index: Option<Res<'w, SpatialIndex>>,
+    service: Option<Res<'w, SensorService>>,
+    observers: Query<'w, 's, Observer>,
+    targets: Query<'w, 's, Target>,
+}
+
+impl SensorAccess<'_, '_> {
+    pub fn observe(&self, entity: Entity, range_m: f64) -> Arc<ObservationSnapshot> {
+        let (Some(index), Some(service)) = (&self.index, &self.service) else {
+            return Arc::default();
+        };
+        let observer = self.observers.get(entity).ok().and_then(|value| {
+            if value.dormant || range_m <= 0.0 {
+                return None;
+            }
+            Some(ObserverState {
+                instance: value.instance?.0,
+                origin: value.pose?.translation_um,
+                sensor: Sensor {
+                    range_m,
+                    occlusion: value.override_settings.is_none_or(|value| value.occlusion),
+                },
+            })
+        });
+        service.observe(index, entity, observer, |entity| {
+            let target = self.targets.get(entity).ok()?;
+            Some(TargetState {
+                id: target.id.0,
+                instance: target.instance.0,
+                pose: super::identity::pose(target.pose, target.velocity, target.angular),
+                radius_m: target.design.0.radius,
+                iff: target
+                    .transponder
+                    .filter(|value| value.0.enabled)
+                    .map(|value| value.0.clone()),
+            })
+        })
+    }
+}
+
+pub(crate) fn observe_read(world: &World, entity: Entity) -> Arc<ObservationSnapshot> {
+    let (Some(index), Some(service)) = (
+        world.get_resource::<SpatialIndex>(),
+        world.get_resource::<SensorService>(),
+    ) else {
+        return Arc::default();
+    };
+    let observer = (|| {
+        if world.get::<super::travel::Dormant>(entity).is_some() {
+            return None;
+        }
+        let range_m = world.get::<super::hardware::SensorRange>(entity)?.0;
+        if range_m <= 0.0 {
+            return None;
+        }
+        Some(ObserverState {
+            instance: world.get::<super::identity::SpatialInstance>(entity)?.0,
+            origin: world.get::<PreciseTransform>(entity)?.translation_um,
+            sensor: Sensor {
+                range_m,
+                occlusion: world
+                    .get::<super::hardware::SensorOverride>(entity)
+                    .is_none_or(|value| value.occlusion),
+            },
+        })
+    })();
+    service.observe(index, entity, observer, |entity| {
+        Some(TargetState {
+            id: world.get::<super::identity::Identity>(entity)?.0,
+            instance: world.get::<super::identity::SpatialInstance>(entity)?.0,
+            pose: super::identity::pose(
+                world.get::<PreciseTransform>(entity)?,
+                world.get::<super::physics::Velocity>(entity),
+                world.get::<super::physics::AngularVelocity>(entity),
+            ),
+            radius_m: world.get::<super::vessel::ShipDesign>(entity)?.0.radius,
+            iff: world
+                .get::<super::identity::Transponder>(entity)
+                .filter(|value| value.0.enabled)
+                .map(|value| value.0.clone()),
+        })
+    })
 }
 
 /// Make computer-requested handles available to command processing. This copies
@@ -308,19 +350,15 @@ pub fn flush(mut commands: Commands, service: Option<Res<SensorService>>) {
     for (&entity, (_, snapshot)) in &scene.cached {
         commands
             .entity(entity)
-            .insert(Observations(snapshot.clone()));
+            .try_insert(Observations(snapshot.clone()));
     }
 }
 
 pub fn observe(world: &mut World, entity: Entity) -> Arc<ObservationSnapshot> {
-    let snapshot = world
-        .get_resource::<SensorService>()
-        .filter(|_| world.get::<super::travel::Dormant>(entity).is_none())
-        .map(|service| service.observe(entity))
-        .unwrap_or_default();
-    world
-        .entity_mut(entity)
-        .insert(Observations(snapshot.clone()));
+    let snapshot = observe_read(world, entity);
+    if let Ok(mut entity) = world.get_entity_mut(entity) {
+        entity.insert(Observations(snapshot.clone()));
+    }
     snapshot
 }
 
@@ -518,6 +556,7 @@ mod tests {
             optical_occludes: false,
             optical_luminosity_w: 0.,
         });
+        index.finish_geometry();
         world.insert_resource(index);
 
         world.run_system_cached(publish).unwrap();
@@ -532,9 +571,9 @@ mod tests {
             service.cached(other).is_none(),
             "publishing inputs must not scan"
         );
-        let first = service.observe(other);
+        let first = observe_read(world, other);
         assert!(
-            Arc::ptr_eq(&first, &service.observe(other)),
+            Arc::ptr_eq(&first, &observe_read(world, other)),
             "repeated requests must reuse the same scene observation"
         );
         observe(world, observer);
@@ -636,6 +675,7 @@ mod tests {
             range_m: 100.,
             occlusion: true,
         };
+        index.finish_geometry();
         let result = detect_nearest(&index, observer, GalacticPosition::ZERO, &sensor, 1);
         assert_eq!(result.candidates, 1);
         assert_eq!(result.blocked, 1);
@@ -698,6 +738,7 @@ mod tests {
             range_m: 20e6,
             occlusion: true,
         };
+        index.finish_geometry();
         let result = detect(&index, observer, origin, &sensor);
         assert_eq!(result.candidates, 2);
         assert_eq!(result.blocked, 1);
@@ -734,6 +775,7 @@ mod tests {
                 optical_occludes: i % 7 == 0,
             });
         }
+        index.finish_geometry();
         for range_m in [1e7, 5e7, 1e8, 2e8] {
             let actual = detect(
                 &index,

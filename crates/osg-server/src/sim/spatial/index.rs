@@ -1,6 +1,6 @@
 use crate::sim::precision::GalacticPosition;
 use bevy::{math::DVec3, prelude::*};
-use osg_space::spatial::{GalacticIndex, QueryBudget, QueryError, SpatialRecord as HashRecord};
+use osg_spatial::{GalacticIndex, QueryBudget, QueryError, SpatialRecord};
 use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -19,7 +19,7 @@ pub struct SpatialObject {
     pub optical_luminosity_w: f64,
 }
 
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone)]
 pub struct SpatialIndex {
     pub objects: Vec<SpatialObject>,
     entities: ahash::AHashMap<Entity, usize>,
@@ -28,16 +28,41 @@ pub struct SpatialIndex {
     maximum_object_radius_m: f64,
     pub velocities: ahash::AHashMap<Entity, DVec3>,
     pub capture_radii: ahash::AHashMap<Entity, f64>,
+    /// Prepared before collection; includes full collision hull/shield bounds.
+    pub(crate) collision_radii: ahash::AHashMap<Entity, f64>,
     collision_entities: ahash::AHashSet<Entity>,
     pub tick_seconds: f64,
     pub tick: u64,
     celestial_systems: ahash::AHashSet<usize>,
     illumination: Vec<OnceLock<Illumination>>,
     pub sky: super::lighting::Sky,
-    pub hash: std::sync::Arc<std::sync::RwLock<GalacticIndex<SpatialKey>>>,
-    indexed_entities: ahash::AHashSet<Entity>,
-    indexed_universe: Option<std::sync::Arc<osg_universe::universe::Universe>>,
+    pub geometry: GalacticIndex<SpatialKey>,
+    /// Context regions have their own bounds and never participate in physics.
+    pub hill_spheres: GalacticIndex<Entity>,
     collecting: bool,
+}
+
+impl Default for SpatialIndex {
+    fn default() -> Self {
+        Self {
+            objects: Vec::new(),
+            entities: Default::default(),
+            targets: Vec::new(),
+            maximum_object_radius_m: 0.0,
+            velocities: Default::default(),
+            capture_radii: Default::default(),
+            collision_radii: Default::default(),
+            collision_entities: Default::default(),
+            tick_seconds: 0.0,
+            tick: 0,
+            celestial_systems: Default::default(),
+            illumination: Vec::new(),
+            sky: Default::default(),
+            geometry: GalacticIndex::bvh(),
+            hill_spheres: GalacticIndex::bvh(),
+            collecting: false,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -47,17 +72,10 @@ struct Illumination {
 }
 
 impl SpatialIndex {
-    /// Immutable sensor metadata sharing the persistent hash, without copying
-    /// catalogue records or optical caches. Consumers run between scene updates.
-    pub(crate) fn sensor_snapshot(&self) -> Self {
-        Self {
-            objects: self.objects.clone(),
-            entities: self.entities.clone(),
-            targets: self.targets.clone(),
-            maximum_object_radius_m: self.maximum_object_radius_m,
-            hash: self.hash.clone(),
-            ..Default::default()
-        }
+    pub fn containing_hill_spheres(&self, position: GalacticPosition) -> Vec<Entity> {
+        self.hill_spheres
+            .within_radius(position, 0.0, true)
+            .expect("Hill sphere query coordinates")
     }
 
     pub fn clear(&mut self) {
@@ -102,30 +120,45 @@ impl SpatialIndex {
     pub fn finish_geometry(&mut self) {
         let _profile = crate::sim::diagnostics::ProfileScope::new("spatial_finish_geometry");
         self.collecting = false;
-        for id in 0..self.objects.len() {
-            self.sync_object(id);
+        let profile = crate::sim::diagnostics::ProfileScope::new("spatial.prepare_records");
+        let mut records: Vec<_> = (0..self.objects.len())
+            .map(|id| (SpatialKey::Entity(self.objects[id].entity), self.record(id)))
+            .collect();
+        for entity in &self.collision_entities {
+            if !self.entities.contains_key(entity)
+                && let Some(record) = self.geometry.get(&SpatialKey::Entity(*entity))
+            {
+                records.push((SpatialKey::Entity(*entity), *record));
+            }
         }
-        let mut present: ahash::AHashSet<_> = self.entities.keys().copied().collect();
-        present.extend(self.collision_entities.iter().copied());
-        for &entity in self.indexed_entities.difference(&present) {
-            self.hash
-                .write()
-                .unwrap()
-                .remove(&SpatialKey::Entity(entity));
+        drop(profile);
+        let _profile = crate::sim::diagnostics::ProfileScope::new("spatial.replace");
+        self.geometry
+            .replace(records)
+            .expect("scene coordinate range");
+        #[cfg(test)]
+        if let Some((stats, unchanged, bytes, height)) = self.geometry.take_dynamic_stats() {
+            use crate::sim::diagnostics::samples::count;
+            count("bvh.unchanged", unchanged);
+            count("bvh.insertions", stats.insertions);
+            count("bvh.removals", stats.removals);
+            count("bvh.bounds_updates", stats.bounds_updates);
+            count("bvh.reinsertions", stats.reinsertions);
+            count("bvh.luminosity_updates", stats.luminosity_updates);
+            count("bvh.payload_updates", stats.payload_updates);
+            count("bvh.rotations", stats.rotations);
+            count("bvh.allocated_bytes", bytes);
+            count("bvh.height", height as usize);
         }
-        self.indexed_entities = present;
     }
 
     pub fn insert_collision(&mut self, entity: Entity, position: GalacticPosition, radius_m: f64) {
         self.collision_entities.insert(entity);
-        self.indexed_entities.insert(entity);
         if !self.entities.contains_key(&entity) {
-            self.hash
-                .write()
-                .unwrap()
+            self.geometry
                 .insert(
                     SpatialKey::Entity(entity),
-                    HashRecord {
+                    SpatialRecord {
                         position,
                         radius_m,
                         luminosity: 0.0,
@@ -135,56 +168,37 @@ impl SpatialIndex {
         }
     }
 
-    pub fn seed_catalogue(&mut self) {
-        if self.indexed_universe.as_ref().map(std::sync::Arc::as_ptr)
-            == self.sky.universe.as_ref().map(std::sync::Arc::as_ptr)
-        {
-            return;
-        }
-        *self.hash.write().unwrap() = GalacticIndex::new();
-        self.indexed_entities.clear();
-        self.indexed_universe = self.sky.universe.clone();
-        if let Some(universe) = &self.indexed_universe {
-            for (id, entry) in universe.index.entries.iter().enumerate() {
-                self.hash
-                    .write()
-                    .unwrap()
-                    .insert(
-                        SpatialKey::Catalogue(id),
-                        HashRecord {
-                            position: entry.position,
-                            radius_m: 0.0,
-                            luminosity: entry.luminosity / super::lighting::LUMENS_PER_OPTICAL_WATT,
-                        },
-                    )
-                    .expect("catalogue coordinate range");
-            }
-        }
+    fn sync_object(&mut self, id: usize) {
+        let record = self.record(id);
+        self.geometry
+            .insert(SpatialKey::Entity(self.objects[id].entity), record)
+            .expect("body coordinate range");
     }
 
-    fn sync_object(&mut self, id: usize) {
+    fn record(&self, id: usize) -> SpatialRecord {
         let object = self.objects[id];
-        self.hash
-            .write()
-            .unwrap()
-            .insert(
-                SpatialKey::Entity(object.entity),
-                HashRecord {
-                    position: object.position,
-                    radius_m: object.radius_m.max(
-                        self.capture_radii
-                            .get(&object.entity)
-                            .copied()
-                            .unwrap_or(0.0),
-                    ),
-                    luminosity: if self.targets.binary_search(&id).is_ok() {
-                        self.peak(id)
-                    } else {
-                        0.0
-                    },
-                },
-            )
-            .expect("body coordinate range");
+        SpatialRecord {
+            position: object.position,
+            radius_m: object
+                .radius_m
+                .max(
+                    self.collision_radii
+                        .get(&object.entity)
+                        .copied()
+                        .unwrap_or(0.0),
+                )
+                .max(
+                    self.capture_radii
+                        .get(&object.entity)
+                        .copied()
+                        .unwrap_or(0.0),
+                ),
+            luminosity: if self.targets.binary_search(&id).is_ok() {
+                self.peak(id)
+            } else {
+                0.0
+            },
+        }
     }
 
     fn peak(&self, id: usize) -> f64 {
@@ -200,9 +214,7 @@ impl SpatialIndex {
         let _profile = crate::sim::diagnostics::ProfileScope::new("sensor_segment_query");
         let mut budget = QueryBudget::new(usize::MAX);
         let candidates = self
-            .hash
-            .read()
-            .unwrap()
+            .geometry
             .segment_candidates_filtered(
                 origin,
                 displacement,
@@ -243,9 +255,7 @@ impl SpatialIndex {
         budget: &mut QueryBudget,
     ) -> Result<Vec<Entity>, QueryError> {
         Ok(self
-            .hash
-            .read()
-            .unwrap()
+            .geometry
             .within_radius_budgeted(position, radius, true, budget)?
             .into_iter()
             .filter_map(|key| self.key_object(key))
@@ -261,6 +271,7 @@ impl SpatialIndex {
             reflected: Vec::new(),
         });
         self.sync_object(id);
+        self.geometry.rebuild();
     }
 
     #[cfg(test)]
@@ -303,9 +314,7 @@ impl SpatialIndex {
     }
 
     pub fn within_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.hash
-            .read()
-            .unwrap()
+        self.geometry
             .within_radius(centre, radius, false)
             .expect("scene query coordinates")
             .into_iter()
@@ -319,9 +328,7 @@ impl SpatialIndex {
         centre: GalacticPosition,
         min_luminosity_over_distance2: f64,
     ) -> Vec<usize> {
-        self.hash
-            .read()
-            .unwrap()
+        self.geometry
             .visibility_candidates(centre, min_luminosity_over_distance2, 0.0)
             .expect("scene query coordinates")
             .into_iter()
@@ -380,9 +387,7 @@ impl SpatialIndex {
             self.object_index(observer)
                 .is_some_and(|id| self.targets.binary_search(&id).is_ok()),
         ));
-        self.hash
-            .read()
-            .unwrap()
+        self.geometry
             .nearest_many(
                 centre,
                 n.min(available),
@@ -402,9 +407,7 @@ impl SpatialIndex {
     }
 
     pub fn occluders_in_range(&self, centre: GalacticPosition, radius: f64) -> Vec<usize> {
-        self.hash
-            .read()
-            .unwrap()
+        self.geometry
             .within_radius(centre, radius, true)
             .expect("scene query coordinates")
             .into_iter()
@@ -525,6 +528,7 @@ mod tests {
                 optical_luminosity_w: 0.0,
             });
         }
+        index.finish_geometry();
         index.set_illumination(0, 10.0, vec![(1, 1000.0)]);
         let bright = GalacticPosition::from_meters(DVec3::X * 1000.0);
         let dark = GalacticPosition::from_meters(DVec3::NEG_X * 1000.0);
@@ -564,6 +568,7 @@ mod tests {
                     optical_luminosity_w: 0.0,
                 });
             }
+            index.finish_geometry();
             assert_eq!(
                 index.fully_occluded(observer, 0, GalacticPosition::ZERO),
                 optical_occludes
@@ -594,6 +599,7 @@ mod tests {
             });
         }
 
+        index.finish_geometry();
         assert!(!index.fully_occluded(observer, 0, origin));
         index.insert(SpatialObject {
             entity: world.spawn_empty().id(),
@@ -603,6 +609,7 @@ mod tests {
             optical_occludes: true,
             optical_luminosity_w: 0.0,
         });
+        index.finish_geometry();
         assert!(index.fully_occluded(observer, 0, origin));
     }
 }

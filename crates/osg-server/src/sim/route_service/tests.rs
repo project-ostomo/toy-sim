@@ -1,14 +1,12 @@
 use super::*;
 use crate::sim::{
     gas::{GasLedger, STARTING_GAS},
-    precision::PreciseTransform,
     vessel,
 };
-use bevy::math::DVec3;
-use osg_model::travel::{Destination, Order, PlanningPreferences};
+use osg_model::travel::{Directive, PlanningPreferences};
 
 #[test]
-fn starting_orbit_allows_slip_departure_without_a_clearance_burn() {
+fn starting_orbit_route_contains_only_system_directives() {
     let account = Id::new();
     let mut app = crate::sim::provision(&[account], Some(account), None).unwrap();
     for _ in 0..3 {
@@ -31,7 +29,7 @@ fn starting_orbit_allows_slip_departure_without_a_clearance_burn() {
         .unwrap();
     let request = Request {
         id: 1,
-        orders: vec![Order::TravelToSystem(Id(system.id))],
+        directives: vec![Directive::SlipToSystem(Id(system.id))],
         preferences: PlanningPreferences::default(),
     };
     let admitted = caller(app.world(), ship).unwrap();
@@ -44,11 +42,12 @@ fn starting_orbit_allows_slip_departure_without_a_clearance_burn() {
     .unwrap();
     environment.prepare().unwrap();
     let plan = routing::plan(&input, &environment).unwrap();
-    assert!(matches!(plan.orders[0].action, Order::Slip { .. }));
-    assert!(matches!(
-        plan.orders.last().unwrap().action,
-        Order::Slip { .. }
-    ));
+    assert!(!plan.itinerary.is_empty());
+    assert!(
+        plan.itinerary
+            .iter()
+            .all(|entry| matches!(entry.directive, Directive::SlipToSystem(_)))
+    );
     assert!(
         plan.fuel_budget
             .resources
@@ -64,16 +63,15 @@ fn identity() -> Caller {
         ship: Id::new(),
         owner: Principal::Player(Id::new()),
         authority_revision: 1,
-        travel_revision: 1,
+        directive_revision: 1,
         topology_revision: 7,
-        origin: Origin::Explicit,
     }
 }
 
 fn request(id: u64) -> Request {
     Request {
         id,
-        orders: vec![Order::WaitUntil(500)],
+        directives: vec![],
         preferences: PlanningPreferences::default(),
     }
 }
@@ -101,7 +99,7 @@ fn enqueue_idempotence_namespace_and_revision_checks_precede_mutation() {
         .unwrap();
     assert_eq!(service.0.lock().unwrap().queue.len(), 1);
     let mut conflict = request(1);
-    conflict.orders = vec![Order::WaitUntil(700)];
+    conflict.directives = vec![Directive::SlipToSystem(Id::new())];
     assert!(
         service
             .submit(
@@ -112,18 +110,8 @@ fn enqueue_idempotence_namespace_and_revision_checks_precede_mutation() {
             .is_err()
     );
 
-    let mut automatic = caller;
-    automatic.origin = Origin::Automatic;
-    service
-        .submit(
-            automatic,
-            request(1),
-            osg_model::wasm_world::ReplyCapacity::UNLIMITED,
-        )
-        .unwrap();
-    assert_eq!(service.0.lock().unwrap().queue.len(), 2);
     let mut stale = caller;
-    stale.travel_revision += 1;
+    stale.directive_revision += 1;
     assert!(matches!(service.poll(stale, 1), Status::Failed { .. }));
     stale.owner = Principal::Organization(Id::new());
     assert!(matches!(service.poll(stale, 1), Status::Unknown));
@@ -172,24 +160,29 @@ fn worker_uses_public_inputs_without_charging_route_computation() {
         .resource::<GasLedger>()
         .account(current.owner)
         .unwrap();
-    let origin = world.get::<PreciseTransform>(ship).unwrap().translation_um;
+    let system = Id(world
+        .resource::<crate::sim::orrery::Universe>()
+        .0
+        .systems
+        .iter()
+        .find(|system| system.name == "HIP 117953")
+        .unwrap()
+        .id);
     submit(
         world,
         ship,
         Request {
             id: 19,
-            orders: vec![Order::Sublight(Destination::Galactic(
-                origin.offset_by(DVec3::Z * 10_000.0),
-            ))],
+            directives: vec![Directive::SlipToSystem(system)],
             preferences: PlanningPreferences::default(),
         },
     )
     .unwrap();
     let plan = completed(world, ship, 19);
-    assert_eq!(plan.travel_revision, current.travel_revision);
+    assert_eq!(plan.directive_revision, current.directive_revision);
     assert_eq!(plan.topology_revision, current.topology_revision);
-    assert!(!plan.orders.is_empty());
-    assert!(ready(world, ship, 19, current.travel_revision).is_ok());
+    assert!(!plan.itinerary.is_empty());
+    assert!(ready(world, ship, 19, current.directive_revision).is_ok());
     let paid = world
         .resource::<GasLedger>()
         .account(current.owner)

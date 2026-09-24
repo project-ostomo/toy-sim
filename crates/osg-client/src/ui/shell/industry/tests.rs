@@ -15,6 +15,9 @@ impl Fixture {
     fn new() -> Self {
         let owner = ownership::Principal::Player(Id([1; 16]));
         let mut facility = FacilityView {
+            metrics: Default::default(),
+            service: Default::default(),
+            can_configure_service: true,
             entity: Id([2; 16]),
             owner,
             name: "Test works".into(),
@@ -55,6 +58,7 @@ impl Fixture {
             quantity: 3,
         }];
         let summary = FacilitySummary {
+            metrics: Default::default(),
             entity: facility.entity,
             owner,
             name: facility.name.clone(),
@@ -105,6 +109,10 @@ impl Fixture {
 
     fn model(&self) -> FrameModel<'_> {
         FrameModel {
+            services: empty_services(),
+            declaration_history: &[],
+            declaration_history_next: None,
+            declaration_history_key: None,
             industry: &self.snapshot,
             industry_ready: true,
             society: &self.society,
@@ -112,7 +120,6 @@ impl Fixture {
             inhabited: Default::default(),
             navigation_status: &NavigationStatus::Ready,
             navigation_hash: None,
-            ships: vec![&self.ship],
             rows: Vec::new(),
             ship: Some(&self.ship),
             details: Some(&self.details),

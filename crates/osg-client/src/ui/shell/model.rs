@@ -1,6 +1,13 @@
 use super::*;
 
 #[cfg(test)]
+pub(super) fn empty_services() -> &'static crate::state::requests::services::View {
+    static EMPTY: std::sync::OnceLock<crate::state::requests::services::View> =
+        std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
+#[cfg(test)]
 pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
     static EMPTY: std::sync::OnceLock<industry_model::IndustrySnapshot> =
         std::sync::OnceLock::new();
@@ -8,7 +15,6 @@ pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
 }
 
 pub(super) struct Row {
-    pub slip_order: Option<travel::Order>,
     pub celestial: Option<travel::CelestialRef>,
     pub target: SelectedTarget,
     pub contact: Option<ContactRef>,
@@ -44,6 +50,14 @@ impl Row {
 }
 
 pub(super) struct FrameModel<'a> {
+    pub declaration_history: &'a [osg_model::diplomacy::Declaration],
+    pub declaration_history_next: Option<u64>,
+    pub declaration_history_key: Option<(
+        ownership::Principal,
+        osg_model::diplomacy::DeclarationCategory,
+        ownership::Principal,
+    )>,
+    pub services: &'a crate::state::requests::services::View,
     pub industry_ready: bool,
     pub industry: &'a industry_model::IndustrySnapshot,
     pub society: &'a ownership::SocietySnapshot,
@@ -51,7 +65,6 @@ pub(super) struct FrameModel<'a> {
     pub inhabited: std::sync::Arc<osg_model::InhabitedDirectory>,
     pub navigation_status: &'a NavigationStatus,
     pub navigation_hash: Option<[u8; 32]>,
-    pub ships: Vec<&'a ShipTelemetry>,
     pub rows: Vec<Row>,
     pub ship: Option<&'a ShipTelemetry>,
     pub details: Option<&'a ShipPresentation>,
@@ -121,14 +134,22 @@ pub(super) fn sorted_rows<'a>(
     rows
 }
 
-pub(super) fn travel_status(status: &travel::Status) -> String {
-    match status {
-        travel::Status::Idle => "No route".into(),
-        travel::Status::Planning => "Planning route".into(),
-        travel::Status::Active => "Following route".into(),
-        travel::Status::Paused => "Route paused".into(),
-        travel::Status::Blocked(reason) => format!("Route blocked: {reason}"),
-        travel::Status::Completed => "Route complete".into(),
+pub(super) fn travel_status(state: &travel::AutopilotState) -> String {
+    if let Some(reason) = &state.failure {
+        return format!("Autopilot stopped: {reason}");
+    }
+    if !state.enabled && !state.itinerary.is_empty() {
+        return "Autopilot disengaged".into();
+    }
+    match &state.status.phase {
+        travel::FirmwarePhase::Idle => "No route".into(),
+        travel::FirmwarePhase::Planning => "Planning maneuvers".into(),
+        travel::FirmwarePhase::Waiting { why, .. } => format!("Waiting: {why}"),
+        travel::FirmwarePhase::Charging => "Charging slipdrive".into(),
+        travel::FirmwarePhase::Transit => "Slip transit".into(),
+        travel::FirmwarePhase::Maneuvering => "Maneuvering".into(),
+        travel::FirmwarePhase::Docking => "Docking".into(),
+        travel::FirmwarePhase::Completed => "Route complete".into(),
     }
 }
 

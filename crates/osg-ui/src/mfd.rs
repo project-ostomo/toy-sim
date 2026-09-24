@@ -47,25 +47,34 @@ impl Surface {
         let origin = self.point(egui::pos2(at[0] as f32, at[1] as f32));
         let mut cursor = origin;
         let cell = egui::vec2(FONT_WIDTH as f32, FONT_HEIGHT as f32) * self.scale;
-        // Each Unicode scalar occupies one cell; no shaping/kerning across cells.
+        // Full-width CJK glyphs occupy two cells; other scalars occupy one.
         let shapes = self.painter.fonts_mut(|fonts| {
             let mut shapes = Vec::new();
+            let mono_width = fonts.glyph_width(&self.font, 'M');
             for ch in text.chars() {
                 if ch == '\n' {
                     cursor.x = origin.x;
                     cursor.y += cell.y;
                     continue;
                 }
-                let rect = egui::Rect::from_min_size(cursor, cell);
+                let columns = if !ch.is_ascii_control()
+                    && fonts.glyph_width(&self.font, ch) > mono_width * 1.5
+                {
+                    2.0
+                } else {
+                    1.0
+                };
+                let glyph_cell = egui::vec2(cell.x * columns, cell.y);
+                let rect = egui::Rect::from_min_size(cursor, glyph_cell);
                 if !ch.is_ascii_control() && ch != ' ' && self.painter.clip_rect().intersects(rect)
                 {
                     let ch = if font::has_glyph(ch) { ch } else { '?' };
                     let galley =
                         fonts.layout_no_wrap(ch.to_string(), self.font.clone(), rgb(color));
-                    let pos = cursor + (cell - galley.size()) * 0.5;
+                    let pos = cursor + (glyph_cell - galley.size()) * 0.5;
                     shapes.push(egui::Shape::galley(pos, galley, rgb(color)));
                 }
-                cursor.x += cell.x;
+                cursor.x += glyph_cell.x;
             }
             shapes
         });

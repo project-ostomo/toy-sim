@@ -150,15 +150,12 @@ fn slipping_observer_receives_its_own_trailing_wake() {
         variance_m2: 0.0,
         speed_ly_s: osg_model::travel::slip::CRUISE_SPEED_LY_S,
         retained_velocity: [0.0; 3],
+        requested_delta_v: [0.0; 3],
         departure_mass_kg: 1000.0,
         distance_ly: 0.003,
-        consumed_fuel_g: 0.0,
+        consumed_fuel_g: 0,
         navigation_beacon: None,
         beacon_lost: false,
-        intended_capture: None,
-        risk_target: None,
-        capture_radius_m: 0.0,
-        planned_log_loss: 0.0,
     });
     let views = [ViewState {
         id: 7,
