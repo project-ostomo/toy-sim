@@ -92,6 +92,7 @@ impl OpticalSession {
         account: AccountId,
         views: &[ViewState],
         contacts: &BTreeMap<EntityId, BTreeMap<u64, SensorObservation>>,
+        readings: &super::super::presentation::DeviceReadings,
     ) -> (Vec<OpticalObservation>, BTreeSet<Id>) {
         let _profile = crate::sim::diagnostics::ProfileScope::new("optical_observe");
         let tick = world.resource::<SimulationCounters>().ticks;
@@ -156,7 +157,9 @@ impl OpticalSession {
                         let Some(pose) = ship_pose(world, entity) else {
                             return false;
                         };
-                        let Some(visual) = super::super::presentation::visual(world, entity) else {
+                        let Some(visual) =
+                            super::super::presentation::visual(world, entity, readings)
+                        else {
                             return false;
                         };
                         let visual_bytes = postcard::experimental::serialized_size(&visual)
@@ -380,7 +383,13 @@ mod tests {
             .0
             .enabled = false;
         let world = fixture.app.world();
-        let (observed, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (observed, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert_eq!(world.get::<SensorRange>(fixture.observer).unwrap().0, 0.);
         assert!(
             observed
@@ -401,7 +410,13 @@ mod tests {
             .unwrap()
             .0
             .enabled = true;
-        let (observed, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (observed, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         let identified = observed
             .iter()
             .find(|object| object.known_entity == Some(fixture.target_id))
@@ -414,7 +429,13 @@ mod tests {
             .unwrap()
             .0
             .enabled = false;
-        let (unidentified, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (unidentified, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         let anonymous = unidentified
             .iter()
             .find(|object| object.id == opaque_id)
@@ -430,13 +451,25 @@ mod tests {
         world
             .resource_mut::<SpatialIndex>()
             .set_luminosity(target_index, 0.);
-        let (dark, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (dark, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert_eq!(dark.len(), 1);
         world.resource_mut::<SimulationCounters>().ticks += 5;
         world
             .resource_mut::<SpatialIndex>()
             .set_luminosity(target_index, 100.);
-        let (lit_again, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (lit_again, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert!(lit_again.iter().any(|object| object.id == opaque_id));
 
         let blocker = world.spawn_empty().id();
@@ -449,7 +482,13 @@ mod tests {
             optical_luminosity_w: 0.,
         });
         world.resource_mut::<SpatialIndex>().finish_geometry();
-        let (occluded, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (occluded, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert_eq!(occluded.len(), 1);
         assert_eq!(occluded[0].known_entity, Some(fixture.own_id));
     }
@@ -490,6 +529,7 @@ mod tests {
                 fixture.account,
                 &[fixture.view.clone()],
                 &BTreeMap::new(),
+                &Default::default(),
             );
             assert_eq!(objects.len(), 1);
             assert_eq!(objects[0].known_entity, Some(fixture.own_id));
@@ -504,7 +544,13 @@ mod tests {
         let world = fixture.app.world_mut();
         let mut optical = OpticalSession::default();
         let views = [fixture.view.clone()];
-        let (before, _) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (before, _) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert!(
             before
                 .iter()
@@ -518,8 +564,13 @@ mod tests {
                 crate::sim::travel::Dormant,
                 crate::sim::travel::PresenceState(presence),
             ));
-            let (objects, visible) =
-                optical.observe(world, fixture.account, &views, &BTreeMap::new());
+            let (objects, visible) = optical.observe(
+                world,
+                fixture.account,
+                &views,
+                &BTreeMap::new(),
+                &Default::default(),
+            );
             assert!(objects.is_empty());
             assert!(visible.is_empty());
         }
@@ -534,7 +585,13 @@ mod tests {
         second_view.origin = GalacticPosition::ZERO.offset_by(DVec3::Y * 1e12);
         let mut optical = OpticalSession::default();
         let views = [fixture.view.clone(), second_view];
-        let (objects, visible) = optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        let (objects, visible) = optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert_eq!(objects.iter().filter(|object| object.view == 7).count(), 2);
         assert_eq!(objects.iter().filter(|object| object.view == 8).count(), 1);
         let own: Vec<_> = objects
@@ -543,13 +600,25 @@ mod tests {
             .collect();
         assert_eq!(own[0].id, own[1].id);
         optical.previous_entities = visible;
-        optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert!(!optical.previous_entities.is_empty());
         world
             .get_mut::<SpatialInstance>(fixture.observer)
             .unwrap()
             .0 = Id::new();
-        optical.observe(world, fixture.account, &views, &BTreeMap::new());
+        optical.observe(
+            world,
+            fixture.account,
+            &views,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         assert!(optical.previous_entities.is_empty());
     }
 

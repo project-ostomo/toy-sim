@@ -50,7 +50,7 @@ pub fn telemetry(world: &World, account: AccountId, ship: EntityId) -> Result<Sh
             .map_or_else(|| "Ship".into(), |vessel| vessel.vessel_name.to_string()),
         telemetry: ship_telemetry(world, entity, account)
             .ok_or_else(|| anyhow::anyhow!("ship telemetry unavailable"))?,
-        presentation: super::presentation::ship(world, entity, true)
+        presentation: super::presentation::ship(world, entity, true, &Default::default())
             .ok_or_else(|| anyhow::anyhow!("ship presentation unavailable"))?,
     })
 }

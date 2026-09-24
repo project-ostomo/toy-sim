@@ -280,6 +280,7 @@ fn run_loop(
             epoch_mjd_utc: 0.,
             sim_time_origin_ns: 0,
         };
+        sim::session::prepare_publication(app.world_mut());
         for entity in sessions {
             match sim::session::frame(app.world_mut(), entity) {
                 Ok(frame) => {

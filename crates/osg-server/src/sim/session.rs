@@ -10,6 +10,7 @@ use super::vessel::SoftwareDiagnostics;
 
 mod cache;
 pub(super) use cache::maintain as maintain_cache;
+pub use cache::prepare_publication;
 mod chat;
 mod optical;
 
@@ -119,6 +120,8 @@ pub fn input(world: &mut World, entity: Entity, input: InputFrame) -> Result<()>
     result
 }
 
+/// Publish after navigation publication, display updates, and `prepare_publication`,
+/// with no intervening changes to simulation or authorization data.
 pub fn frame(world: &mut World, entity: Entity) -> Result<Frame> {
     let _profile = super::diagnostics::ProfileScope::new("session.frame");
     let mut session = world
@@ -288,6 +291,9 @@ impl Session {
 
 impl Session {
     fn frame(&mut self, world: &mut World) -> Result<Frame> {
+        let readings = world
+            .resource::<super::presentation::DeviceReadings>()
+            .clone();
         let profile = super::diagnostics::ProfileScope::new("session.contacts_and_events");
         self.views.retain(|_, view| {
             view.focused_ship
@@ -330,9 +336,10 @@ impl Session {
             .flat_map(|contacts| contacts.values().filter_map(|contact| contact.entity))
             .collect();
         let history = &world.resource::<Events>().0;
-        let events = history
+        let mut events: Vec<_> = history
             .iter()
-            .filter(|event| event.sequence > self.sent_event)
+            .rev()
+            .take_while(|event| event.sequence > self.sent_event)
             .filter(|event| {
                 event.subject.is_some_and(|id| {
                     visible.contains(&id) || observe(world, self.account, id).is_ok()
@@ -340,17 +347,11 @@ impl Session {
             })
             .cloned()
             .collect();
+        events.reverse();
         let published_event = history
             .back()
             .map_or(self.sent_event, |event| event.sequence);
         self.sequence += 1;
-        let focused: BTreeSet<_> = self
-            .views
-            .values()
-            .filter_map(|view| view.focused_ship)
-            .chain(self.screens.keys().map(|(ship, _)| *ship))
-            .chain(self.instruments.iter().copied())
-            .collect();
         drop(profile);
         let profile = super::diagnostics::ProfileScope::new("session.observable_ships");
         let owned = observable_ships(world, self.account, &focused);
@@ -377,13 +378,14 @@ impl Session {
             .iter()
             .filter(|(id, _)| focused.contains(id))
             .filter_map(|(id, entity)| {
-                super::presentation::ship(world, *entity, self.instruments.contains(id))
+                super::presentation::ship(world, *entity, self.instruments.contains(id), &readings)
             })
             .collect();
         drop(profile);
         let profile = super::diagnostics::ProfileScope::new("session.optical_combat");
         let (optical, optically_visible) =
-            self.optical.observe(world, self.account, &views, &contacts);
+            self.optical
+                .observe(world, self.account, &views, &contacts, &readings);
         presentation.combat = super::combat::for_session(
             world,
             &self.optical.references(),
@@ -694,6 +696,7 @@ mod tests {
             identity::register(&mut world, entity, id).unwrap();
         }
 
+        prepare_publication(&mut world);
         let ships = observable_ships(&mut world, account, &BTreeSet::new());
         assert_eq!(ships.len(), 64);
         assert_eq!(ships[0].0, Id([250; 16]));
@@ -909,8 +912,14 @@ mod tests {
                 kind: "test".into(),
                 position: None,
             }));
+        prepare_publication(world);
         let one = frame(world, first).unwrap();
         assert_eq!(one.events.len(), 9000);
+        assert!(
+            one.events
+                .windows(2)
+                .all(|events| events[0].sequence < events[1].sequence)
+        );
         assert_eq!(one.results.len(), 1);
         assert_eq!(one.results[0].id, command);
         prune_events(world);
@@ -930,6 +939,7 @@ mod tests {
             Action::Debug(DebugCommand::SetRate(2.)),
         );
         input(world, first, input_frame).unwrap();
+        prepare_publication(world);
         assert_eq!(frame(world, first).unwrap().results.len(), 1);
     }
 

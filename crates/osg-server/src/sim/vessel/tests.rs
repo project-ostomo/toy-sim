@@ -440,7 +440,8 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
                 .reservation
                 .is_none()
         );
-        let presentation = crate::sim::presentation::ship(world, entity, false).unwrap();
+        let presentation =
+            crate::sim::presentation::ship(world, entity, false, &Default::default()).unwrap();
         assert!(matches!(
             presentation.computer,
             osg_model::ComputerStatus::Fault {
@@ -616,7 +617,8 @@ fn fault_reboot_budget_pauses_without_power() {
             .boot_remaining_gas(),
         osg_ship_wasm::BOOT_GAS
     );
-    let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
+    let state =
+        crate::sim::presentation::ship(app.world(), ship, false, &Default::default()).unwrap();
     assert!(matches!(
         state.computer,
         osg_model::ComputerStatus::Fault {
@@ -632,7 +634,8 @@ fn fault_reboot_budget_pauses_without_power() {
     for _ in 0..5 {
         step(&mut app);
     }
-    let state = crate::sim::presentation::ship(app.world(), ship, false).unwrap();
+    let state =
+        crate::sim::presentation::ship(app.world(), ship, false, &Default::default()).unwrap();
     assert!(
         matches!(state.computer, osg_model::ComputerStatus::Fault { reboot_remaining_s: Some(seconds), .. } if seconds > 0. && seconds < 5.)
     );

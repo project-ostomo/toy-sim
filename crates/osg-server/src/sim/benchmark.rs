@@ -76,6 +76,7 @@ fn fresh_world_slip_load() {
         let world = app.world_mut();
         infrastructure::publish_navigation(world);
         displays::update(world);
+        session::prepare_publication(world);
         let snapshot = session::frame(world, session).unwrap();
         std::hint::black_box(snapshot);
         elapsed.push(started.elapsed().as_secs_f64() * 1000.0);
@@ -150,6 +151,16 @@ fn production_tick_and_publication() {
         .parse()
         .unwrap();
     let scene = std::env::var("OSG_BENCH_SCENE").unwrap_or("sparse".into());
+    let sessions_per_player: usize = std::env::var("OSG_BENCH_SESSIONS_PER_PLAYER")
+        .unwrap_or("1".into())
+        .parse()
+        .unwrap();
+    let views_per_session: u64 = std::env::var("OSG_BENCH_VIEWS_PER_SESSION")
+        .unwrap_or("0".into())
+        .parse()
+        .unwrap();
+    assert!(sessions_per_player > 0);
+    assert!(views_per_session <= 8);
     let repeats: usize = std::env::var("OSG_BENCH_REPEATS")
         .unwrap_or("3".into())
         .parse()
@@ -231,7 +242,6 @@ fn production_tick_and_publication() {
         }
         let mut sessions = Vec::new();
         for account in accounts {
-            let session = session::connect(world, account, Default::default()).unwrap();
             let id = world
                 .query::<(&identity::Identity, &identity::Control)>()
                 .iter(world)
@@ -239,17 +249,30 @@ fn production_tick_and_publication() {
                 .unwrap()
                 .0
                 .0;
-            let mut subscription = world.get_mut::<session::Session>(session).unwrap();
-            subscription.screens.insert((id, 0), 10);
-            subscription.instruments.insert(id);
-            sessions.push(session);
+            for _ in 0..sessions_per_player {
+                let session = session::connect(world, account, Default::default()).unwrap();
+                let mut subscription = world.get_mut::<session::Session>(session).unwrap();
+                subscription.screens.insert((id, 0), 10);
+                subscription.instruments.insert(id);
+                for view in 0..views_per_session {
+                    subscription.views.insert(
+                        view,
+                        osg_model::ViewSubscription {
+                            id: view,
+                            revision: 1,
+                            focused_ship: Some(id),
+                        },
+                    );
+                }
+                sessions.push(session);
+            }
         }
         spatial::rebuild(world);
         let records = world.resource::<spatial::SpatialIndex>().geometry().len();
         let catalogue = world.resource::<orrery::Universe>().systems().len();
         assert!(catalogue >= 1_000_000);
         println!(
-            "setup players={players} placement=scattered_systems placement_seed=0x5343415454455231 scene={scene} repeat={repeat} seconds={:.3} catalogue={catalogue} records={records}",
+            "setup players={players} sessions_per_player={sessions_per_player} views_per_session={views_per_session} placement=scattered_systems placement_seed=0x5343415454455231 scene={scene} repeat={repeat} seconds={:.3} catalogue={catalogue} records={records}",
             started.elapsed().as_secs_f64()
         );
 
@@ -295,6 +318,7 @@ fn production_tick_and_publication() {
             displays::update(world);
             let displays_ms = displays_started.elapsed().as_secs_f64() * 1000.0;
             let snapshots_started = Instant::now();
+            session::prepare_publication(world);
             for &session in &sessions {
                 let snapshot = session::frame(world, session).unwrap();
                 let _profile = diagnostics::ProfileScope::new("session.serialization");
