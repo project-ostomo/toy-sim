@@ -29,7 +29,7 @@ fn stock(world: &mut World, entity: Entity, items: &[ItemStack]) {
             .insert_item(&item.item, item.quantity, capacity, &catalogue)
             .unwrap();
     }
-    industry::synchronize_mass(world, &[entity]);
+    crate::sim::hardware::synchronize_mass(world, &[entity]);
 }
 
 fn advance(world: &mut World) {
@@ -266,7 +266,7 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
         .jobs;
     assert_eq!(jobs.len(), 2);
     assert!(jobs.iter().any(|job| {
-        matches!(&job.output, industry::JobOutput::Ship(bytes) if *bytes == blueprint_bytes)
+        matches!(&job.output, industry::JobOutput::Ship(bytes) if bytes.as_ref() == blueprint_bytes)
     }));
     assert!(jobs.iter().all(|job| job.view.progress_ticks == 3));
     assert!(!inventory(world, facility).reservations.is_empty());
@@ -425,7 +425,10 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
 }
 
 fn assert_corruption_is_rejected(world: &mut World, bytes: &[u8], facility_id: Id) {
-    let identities = world.resource::<identity::IdentityIndex>().0.clone();
+    let identities = world
+        .resource::<identity::IdentityIndex>()
+        .entries()
+        .clone();
     let balances = world
         .resource::<gas::GasLedger>()
         .snapshot()
@@ -459,7 +462,7 @@ fn assert_corruption_is_rejected(world: &mut World, bytes: &[u8], facility_id: I
                 _ => unreachable!(),
             },
             5 => match &mut jobs[1].output {
-                industry::JobOutput::Ship(bytes) => bytes.clear(),
+                industry::JobOutput::Ship(bytes) => *bytes = std::sync::Arc::from([]),
                 _ => unreachable!(),
             },
             6 => saved.mine.as_mut().unwrap().remainder = 10,
@@ -471,7 +474,10 @@ fn assert_corruption_is_rejected(world: &mut World, bytes: &[u8], facility_id: I
             restore(world, &postcard::to_stdvec(&invalid).unwrap()).is_err(),
             "case {case}"
         );
-        assert_eq!(world.resource::<identity::IdentityIndex>().0, identities);
+        assert_eq!(
+            world.resource::<identity::IdentityIndex>().entries(),
+            &identities
+        );
         assert_eq!(
             world
                 .resource::<gas::GasLedger>()

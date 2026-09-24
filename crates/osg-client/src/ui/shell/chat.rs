@@ -3,7 +3,7 @@ mod layout;
 use super::*;
 use osg_model::chat::{ChatMessage, MAX_MESSAGE_BYTES, valid_text};
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     draft: String,
     search: String,

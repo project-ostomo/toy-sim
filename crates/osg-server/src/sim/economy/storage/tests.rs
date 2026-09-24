@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn failed_payment_restores_stock_after_delivery() {
+    let seller = Principal::Player(Id([1; 16]));
+    let buyer = Principal::Player(Id([2; 16]));
+    let station = Id([3; 16]);
+    let item = CargoItem::Resource("water".into());
+    let instrument = Instrument::Commodity {
+        station,
+        item: item.clone(),
+        currency: Currency::Uec,
+    };
+    let mut economy = Economy::at(0);
+    economy.issue(seller, Currency::Uec, u64::MAX, 0).unwrap();
+    economy.issue(buyer, Currency::Uec, 100, 0).unwrap();
+    economy
+        .storage
+        .insert((station, seller), BTreeMap::from([(item, 1)]));
+    let before = postcard::to_stdvec(&economy).unwrap();
+
+    let result = economy.transaction(|transaction| {
+        transaction.move_stock(seller, buyer, &instrument, 1)?;
+        transaction.transfer(None, buyer, seller, Currency::Uec, 1, false, 0)
+    });
+    assert!(result.is_err());
+    assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
+}
+
+#[test]
 fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
     let mut world = World::new();
     let seller = Id([1; 16]);
@@ -32,7 +59,7 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
             },
         ))
         .id();
-    identity::register(&mut world, station_entity, station);
+    identity::register(&mut world, station_entity, station).unwrap();
     let ship_entity = world
         .spawn((
             hardware::ShipInventory(osg_ships::Inventory::empty(&catalogue)),
@@ -46,7 +73,7 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
             }),
         ))
         .id();
-    identity::register(&mut world, ship_entity, ship);
+    identity::register(&mut world, ship_entity, ship).unwrap();
     world.insert_resource(vessel::ShipCatalogue(catalogue.clone()));
     world
         .resource_mut::<Economy>()

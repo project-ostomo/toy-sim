@@ -11,7 +11,7 @@ pub(crate) struct ChatFocus {
     pub ship: Id,
 }
 
-#[derive(Default)]
+#[derive(bevy::prelude::Resource, Default)]
 pub(crate) struct ChatState {
     pub messages: VecDeque<ChatMessage>,
     pub generation: u64,

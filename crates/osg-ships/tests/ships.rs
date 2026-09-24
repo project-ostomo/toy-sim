@@ -9,6 +9,31 @@ fn fixture() -> (Catalogue, CompiledShipDesign, ShipState) {
 }
 
 #[test]
+fn command_batch_rejects_mismatched_settings_before_mutation() {
+    let (_, design, state) = fixture();
+    let mut settings = state.settings;
+    settings.pop();
+    let before = settings.clone();
+    let engine = design
+        .device_catalogue
+        .iter()
+        .find(|device| matches!(device.kind, DeviceKind::Engine { .. }))
+        .unwrap();
+
+    let result = apply_device_commands(
+        &design,
+        &mut settings,
+        &[DeviceCommand {
+            device: engine.handle,
+            setting: DeviceSetting::Throttle(0.5),
+        }],
+    );
+
+    assert!(result.is_err());
+    assert_eq!(settings, before);
+}
+
+#[test]
 fn control_configuration_roundtrips() {
     let (cat, d, _) = fixture();
     let mut ship = d.blueprint;

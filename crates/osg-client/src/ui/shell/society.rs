@@ -21,7 +21,7 @@ enum Tab {
     Politics,
 }
 
-#[derive(Default)]
+#[derive(Resource, Default)]
 pub(super) struct State {
     tab: Tab,
     selected: Option<Principal>,
@@ -89,7 +89,7 @@ impl State {
     pub(super) fn request(
         &mut self,
         open: bool,
-        session: &SessionInfo,
+        session: &crate::state::SocietyState,
     ) -> crate::state::requests::SocietyInterest {
         self.next = session.directory_next;
         self.assets_next = session.society_assets_next;

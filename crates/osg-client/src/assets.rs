@@ -116,13 +116,14 @@ struct NavigationLoad {
 }
 
 fn synchronize_navigation(
-    session: Option<ResMut<crate::state::SessionInfo>>,
+    identity: Option<Res<crate::state::SessionInfo>>,
+    session: Option<ResMut<crate::state::NavigationState>>,
     mut load: ResMut<NavigationLoad>,
     server: Res<AssetServer>,
     assets: Res<Assets<NavigationDefinition>>,
 ) {
     use crate::state::NavigationStatus;
-    let Some(mut session) = session else {
+    let (Some(mut session), Some(identity)) = (session, identity) else {
         return;
     };
     if session.navigation.systems.is_empty() {
@@ -130,7 +131,7 @@ fn synchronize_navigation(
             let catalogue = osg_model::NavigationCatalogue {
                 topology_revision: 1,
                 systems: universe
-                    .systems
+                    .systems()
                     .iter()
                     .map(|system| osg_model::NavigationSystem {
                         id: Id(system.id),
@@ -144,8 +145,8 @@ fn synchronize_navigation(
             session.navigation = std::sync::Arc::new(catalogue);
         }
     }
-    if load.generation != session.generation || load.hash != session.navigation_hash {
-        load.generation = session.generation;
+    if load.generation != identity.generation || load.hash != session.navigation_hash {
+        load.generation = identity.generation;
         load.hash = session.navigation_hash;
         load.asset = load.hash.map(|hash| server.load(path(hash)));
     }

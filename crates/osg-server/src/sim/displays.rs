@@ -96,7 +96,7 @@ fn prepare(
     wanted.0.clear();
     for session in &sessions {
         for (&(id, slot), &hz) in &session.screens {
-            let Some(&ship) = index.0.get(&id) else {
+            let Some(&ship) = index.entries().get(&id) else {
                 continue;
             };
             let Ok((_, _, owner, access, env, _, _, dormant)) = ships.get(ship) else {
@@ -169,7 +169,7 @@ fn execute(
         &Identity,
         &super::ownership::AssetOwner,
         &mut Display,
-        &mut super::vessel::ShipSoftware,
+        &mut super::vessel::ComputerBudget,
         &DisplayEnvironment,
         &super::hardware::HardwareClock,
     )>,
@@ -180,8 +180,7 @@ fn execute(
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (ship, slots) in wanted {
-        let Ok((identity, owner, mut display, mut software, env, clock)) = ships.get_mut(ship)
-        else {
+        let Ok((identity, owner, mut display, mut budget, env, clock)) = ships.get_mut(ship) else {
             continue;
         };
         let id = identity.0;
@@ -212,8 +211,8 @@ fn execute(
             continue;
         }
 
-        software.begin_gas_tick(clock.0);
-        let maximum = software.remaining_gas();
+        budget.begin_gas_tick(clock.0);
+        let maximum = budget.remaining_gas();
         let minimum = display.program.minimum_to_progress();
         let owner = owner.0;
         ledger.ensure_account(owner, super::gas::STARTING_GAS);
@@ -242,7 +241,7 @@ fn execute(
     }
     let mut starts = 0;
     for (ship, id, input, source, origin, slots) in work {
-        let (_, owner, mut display, mut software, _, _) = ships.get_mut(ship).unwrap();
+        let (_, owner, mut display, mut budget, _, _) = ships.get_mut(ship).unwrap();
         let mut reservation = grants.remove(&ship);
         let mut grant = reservation.as_ref().map_or(0, |grant| grant.limit());
         if display.program.needs_instance_start() && grant > display.program.boot_remaining_gas() {
@@ -253,7 +252,7 @@ fn execute(
                 starts += 1;
             }
         }
-        let physical_limit = software.last_gas_limit;
+        let physical_limit = budget.gas_limit();
         display.program.observer_origin = origin;
         let services = super::vessel::ProgramServices::new(
             chat.as_deref().cloned(),
@@ -282,8 +281,7 @@ fn execute(
         } else {
             assert_eq!(used, 0, "unfunded display execution");
         }
-        software.last_gas_used += used;
-        assert!(software.last_gas_used <= software.last_gas_limit);
+        budget.charge_gas(used);
         drop(reservation);
 
         match result {
@@ -473,7 +471,7 @@ mod tests {
                 },
             ))
             .id();
-        identity::register(&mut world, ship, id);
+        identity::register(&mut world, ship, id).unwrap();
         let first = session::connect(
             &mut world,
             account,
@@ -561,15 +559,15 @@ mod tests {
             assert_eq!(
                 ledger.account(owner).unwrap().spent - before,
                 world
-                    .get::<crate::sim::vessel::ShipSoftware>(ship)
+                    .get::<crate::sim::vessel::ComputerBudget>(ship)
                     .unwrap()
-                    .last_gas_used
+                    .used_gas()
             );
             assert!(
                 world
-                    .get::<crate::sim::vessel::ShipSoftware>(ship)
+                    .get::<crate::sim::vessel::ComputerBudget>(ship)
                     .unwrap()
-                    .last_gas_used
+                    .used_gas()
                     <= osg_ship_wasm::FUEL_PER_TICK
             );
             if frame(world, ship, 0)
@@ -709,17 +707,17 @@ mod tests {
             .0 = 1;
         {
             let mut software = world
-                .get_mut::<crate::sim::vessel::ShipSoftware>(ship)
+                .get_mut::<crate::sim::vessel::ComputerBudget>(ship)
                 .unwrap();
             software.begin_gas_tick(1);
-            software.last_gas_used = 900_000;
+            software.charge_gas(900_000);
         }
         update(&mut world);
         assert_eq!(
             world
-                .get::<crate::sim::vessel::ShipSoftware>(ship)
+                .get::<crate::sim::vessel::ComputerBudget>(ship)
                 .unwrap()
-                .last_gas_used,
+                .used_gas(),
             1_000_000
         );
         assert_eq!(ledger.account(owner).unwrap().available, before - 100_000);

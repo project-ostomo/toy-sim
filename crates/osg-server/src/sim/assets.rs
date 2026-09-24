@@ -31,8 +31,8 @@ fn system_name(world: &World, entity: Entity) -> Option<String> {
             let position = world
                 .get::<super::precision::PreciseTransform>(entity)?
                 .translation_um;
-            let index = universe.index.nearest(position)?;
-            Some(universe.systems[index].name.to_string())
+            let index = universe.index().nearest(position)?;
+            Some(universe.systems()[index].name.to_string())
         })
 }
 
@@ -88,7 +88,7 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
     let mut sources = BTreeMap::<StockKey, StockLocation>::new();
     let mut public_reserved =
         BTreeMap::<(Id, osg_model::ownership::Principal, CargoItem), u64>::new();
-    for (&station, &entity) in &world.resource::<identity::IdentityIndex>().0 {
+    for (&station, &entity) in world.resource::<identity::IdentityIndex>().entries() {
         if let Some(facility) = world.get::<super::industry::IndustryFacility>(entity) {
             for job in &facility.jobs {
                 if let Some(payment) = &job.view.payment {
@@ -121,7 +121,7 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
         }
     };
 
-    for (&id, &entity) in &world.resource::<identity::IdentityIndex>().0 {
+    for (&id, &entity) in world.resource::<identity::IdentityIndex>().entries() {
         let Some(owner) = world
             .get::<ownership::AssetOwner>(entity)
             .map(|owner| owner.0)

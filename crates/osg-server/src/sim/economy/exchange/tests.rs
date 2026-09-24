@@ -294,23 +294,64 @@ fn overflow_rolls_back_all_fills_and_orders() {
 }
 
 #[test]
+fn later_fill_failure_restores_completed_fills_and_full_history() {
+    let mut world = world();
+    place(&mut world, 1, Side::Buy, MONEY_SCALE, 4 * MONEY_SCALE);
+    place(&mut world, 2, Side::Buy, MONEY_SCALE, 4 * MONEY_SCALE);
+    let now = osg_model::calendar::now_unix_ms();
+    let mut economy = world.resource_mut::<Economy>();
+    economy
+        .issue(owner(3), Currency::Uec, u64::MAX - 6 * MONEY_SCALE, now)
+        .unwrap();
+    // Retention must not discard pre-transaction history before commit.
+    let template = economy.exchange.orders.values().next().unwrap().clone();
+    for _ in 0..ORDER_HISTORY_LIMIT {
+        let mut order = template.clone();
+        order.id = Id::new();
+        economy.exchange.archive(order, now);
+    }
+    let before = postcard::to_stdvec(&*economy).unwrap();
+    drop(economy);
+
+    let result = apply(
+        &mut world,
+        Id([3; 16]),
+        Id::new(),
+        MarketCommand::Immediate {
+            instrument: Instrument::Fx,
+            owner: owner(3),
+            side: Side::Sell,
+            quantity: 2 * MONEY_SCALE,
+            price: 4 * MONEY_SCALE,
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(
+        postcard::to_stdvec(world.resource::<Economy>()).unwrap(),
+        before
+    );
+}
+
+#[test]
 fn demurrage_cancels_unfunded_bids_and_snapshot_is_bounded() {
     let mut economy = Economy::at(0);
     economy
         .issue(owner(1), Currency::Uec, 100_000 * MONEY_SCALE, 0)
         .unwrap();
     economy
-        .execute_order(
-            Instrument::Fx,
-            None,
-            Id::new(),
-            owner(1),
-            Side::Buy,
-            25_000 * MONEY_SCALE,
-            4 * MONEY_SCALE,
-            true,
-            0,
-        )
+        .transaction(|transaction| {
+            transaction.execute_order(
+                Instrument::Fx,
+                None,
+                Id::new(),
+                owner(1),
+                Side::Buy,
+                25_000 * MONEY_SCALE,
+                4 * MONEY_SCALE,
+                true,
+                0,
+            )
+        })
         .unwrap();
     assert_eq!(
         economy.reserved(owner(1), Currency::Uec),

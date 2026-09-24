@@ -6,7 +6,7 @@ use osg_ship_wasm::Command;
 use osg_ship_wasm::ScanSource;
 
 use super::identity::{self, Control, Identity, Transponder};
-use super::vessel::ShipSoftware;
+use super::vessel::{ShipMailbox, ShipSoftware};
 
 #[cfg(test)]
 mod tests;
@@ -103,19 +103,23 @@ fn target_handle(world: &World, ship: Entity, target: ContactRef) -> Result<u64>
 
 fn enqueue(world: &mut World, ship: Entity, command: Command) -> Result<()> {
     queue_capacity(world, ship, 1)?;
-    let mut software = world
-        .get_mut::<ShipSoftware>(ship)
+    let mut mailbox = world
+        .get_mut::<ShipMailbox>(ship)
         .expect("queue capacity checked");
-    software.command(command);
+    mailbox.command(command);
     Ok(())
 }
 
 fn queue_capacity(world: &World, ship: Entity, count: usize) -> Result<()> {
-    let software = world
-        .get::<ShipSoftware>(ship)
+    ensure!(
+        world.get::<ShipSoftware>(ship).is_some(),
+        "ship computer unavailable"
+    );
+    let mailbox = world
+        .get::<ShipMailbox>(ship)
         .ok_or_else(|| anyhow::anyhow!("ship computer unavailable"))?;
     ensure!(
-        software.inbox.len().saturating_add(count) <= 255,
+        mailbox.inbox.len().saturating_add(count) <= 255,
         "ship command queue full"
     );
     Ok(())

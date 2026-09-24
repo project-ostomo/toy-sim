@@ -236,22 +236,22 @@ fn generated_orbits_respect_spacing_hill_roche_and_atmosphere_relations() {
 #[test]
 fn full_catalogue_is_lazy_and_resolves_authored_and_distant_systems() {
     let universe = Universe::bundled().unwrap();
-    assert_eq!(universe.systems.len(), 1_001_760);
-    assert!(universe.cached_definitions() < universe.systems.len());
+    assert_eq!(universe.systems().len(), 1_001_760);
+    assert!(universe.cached_definitions() < universe.systems().len());
     let sol = universe
         .resolve(universe.system_id_for_name("Sol").unwrap())
         .unwrap();
     let earth = sol.solver.get_body("Earth").unwrap();
     assert!(earth.orbit.inclination < 1e-5);
     assert!((earth.rotation.obliquity - 23.439281_f64.to_radians()).abs() < 1e-14);
-    for (index, _) in universe.systems.iter().enumerate().step_by(7919) {
+    for (index, _) in universe.systems().iter().enumerate().step_by(7919) {
         let definition = universe.resolve_index(index).unwrap();
-        assert!(definition.influence <= universe.systems[index].influence_bound);
+        assert!(definition.influence <= universe.systems()[index].influence_bound);
         for body in definition.solver.iter() {
             assert!(definition.body_id(&body.name).is_some());
         }
     }
-    assert!(universe.cached_definitions() < universe.systems.len());
+    assert!(universe.cached_definitions() < universe.systems().len());
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use super::*;
-use osg_ships::{ShipBlueprint, industry as manufacturing};
+use osg_ships::{Equipment, ShipBlueprint, industry as manufacturing, utilities::UtilityDef};
 
 fn stack_totals(stacks: &[ItemStack], catalogue: &Catalogue) -> Result<BTreeMap<CargoItem, u64>> {
     ensure!(

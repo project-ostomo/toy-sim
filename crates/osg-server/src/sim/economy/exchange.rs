@@ -12,10 +12,10 @@ pub struct Exchange {
     pub sequence: u64,
 }
 
-const ORDER_HISTORY_LIMIT: usize = 10_000;
+pub(super) const ORDER_HISTORY_LIMIT: usize = 10_000;
 
 impl Exchange {
-    fn archive(&mut self, mut order: Order, now: i64) {
+    pub(super) fn append_archive(&mut self, mut order: Order, now: i64) {
         order.status = if order.filled_quantity == order.original_quantity {
             OrderStatus::Completed
         } else {
@@ -24,6 +24,10 @@ impl Exchange {
         order.closed_ms = Some(now);
         order.remaining = 0;
         self.history.push(order);
+    }
+
+    fn archive(&mut self, order: Order, now: i64) {
+        self.append_archive(order, now);
         if self.history.len() > ORDER_HISTORY_LIMIT {
             self.history.remove(0);
         }
@@ -209,7 +213,9 @@ impl Economy {
         }
         Ok(())
     }
+}
 
+impl Transaction<'_> {
     pub(super) fn move_money(
         &mut self,
         directory: Option<&osg_model::ownership::OwnershipDirectory>,
@@ -227,7 +233,7 @@ impl Economy {
             self.available(from, currency) >= amount,
             "insufficient available funds"
         );
-        let target = self.balances.entry(to).or_default();
+        let target = self.balance_mut(to);
         let value = match currency {
             Currency::Uec => &mut target.uec,
             Currency::Lat => &mut target.lat,
@@ -236,10 +242,7 @@ impl Economy {
             .checked_add(amount)
             .context("recipient balance overflow")?;
         *value = next;
-        let source = self
-            .balances
-            .get_mut(&from)
-            .context("source account unavailable")?;
+        let source = self.balance_mut(from);
         match currency {
             Currency::Uec => source.uec -= amount,
             Currency::Lat => source.lat -= amount,
@@ -276,7 +279,7 @@ impl Economy {
             self.move_stock(seller, buyer, instrument, quantity)?;
         }
         if backstop {
-            let balance = &mut self.balances.entry(seller).or_default().uec;
+            let balance = &mut self.balance_mut(seller).uec;
             *balance = balance
                 .checked_add(payment)
                 .context("recipient balance overflow")?;
@@ -294,7 +297,7 @@ impl Economy {
             let restricted = instrument.currency() == Currency::Lat
                 && directory.is_some_and(|directory| self.restricted(directory, seller));
             if restricted {
-                self.transfer_inner(directory, buyer, seller, Currency::Lat, payment, true, now)?;
+                self.transfer(directory, buyer, seller, Currency::Lat, payment, true, now)?;
             } else {
                 self.move_money(
                     directory,
@@ -307,7 +310,7 @@ impl Economy {
                 )?;
             }
         }
-        self.exchange.trades.push(Trade {
+        self.record_trade(Trade {
             instrument: instrument.clone(),
             sequence: self.exchange.trades.len() as u64 + 1,
             time_ms: now,
@@ -320,7 +323,7 @@ impl Economy {
         Ok(())
     }
 
-    /// Called on a staged economy; the caller commits only after every fill succeeds.
+    /// Every fill belongs to the surrounding transaction.
     pub(super) fn execute_order(
         &mut self,
         instrument: Instrument,
@@ -370,12 +373,7 @@ impl Economy {
             quantity
         };
         ensure!(available >= required, "insufficient available funds");
-        self.exchange.sequence = self
-            .exchange
-            .sequence
-            .checked_add(1)
-            .context("order sequence overflow")?;
-        let sequence = self.exchange.sequence;
+        let sequence = self.next_order_sequence()?;
         let mut remaining = quantity;
         while remaining > 0 {
             let best = self
@@ -437,7 +435,7 @@ impl Economy {
 
                 maker.remaining -= quantity;
                 maker.filled_quantity += quantity;
-                self.exchange.orders.remove(&maker.id);
+                self.remove_order(maker.id);
                 let (buyer, seller) = if side == Side::Buy {
                     (owner, maker.owner)
                 } else {
@@ -461,9 +459,9 @@ impl Economy {
                     maker.remaining = maker.remaining.min(affordable);
                 }
                 if maker.remaining > 0 {
-                    self.exchange.orders.insert(maker.id, maker);
+                    self.insert_order(maker);
                 } else {
-                    self.exchange.archive(maker, now);
+                    self.archive(maker, now);
                 }
                 remaining -= quantity;
             } else {
@@ -495,9 +493,9 @@ impl Economy {
             time_ms: now,
         };
         if resting && remaining > 0 {
-            self.exchange.orders.insert(id, order);
+            self.insert_order(order);
         } else {
-            self.exchange.archive(order, now);
+            self.archive(order, now);
         }
         Ok(())
     }
@@ -515,67 +513,70 @@ pub fn apply(world: &mut World, account: AccountId, id: Id, command: MarketComma
     if matches!(command, MarketCommand::MoveStorage { .. }) {
         return super::storage::apply(world, account, id, command);
     }
-    let directory = &world.resource::<Directory>().0;
-    let mut staged = world.resource::<Economy>().clone();
     let now = osg_model::calendar::now_unix_ms();
     let resting = matches!(command, MarketCommand::Limit { .. });
-    match command {
-        MarketCommand::Cancel { order } => {
-            let order = staged
-                .exchange
-                .orders
-                .get(&order)
-                .context("order unavailable")?;
-            ensure!(
-                directory.administers(account, order.owner),
-                "order administration required"
-            );
-            let id = order.id;
-            let order = staged.exchange.orders.remove(&id).unwrap();
-            staged.exchange.archive(order, now);
-        }
-        MarketCommand::Limit {
-            instrument,
-            owner,
-            side,
-            quantity,
-            price,
-        }
-        | MarketCommand::Immediate {
-            instrument,
-            owner,
-            side,
-            quantity,
-            price,
-        } => {
-            ensure!(
-                directory.administers(account, owner),
-                "account administration required"
-            );
-            ensure!(
-                instrument != Instrument::Fx
-                    && (instrument.currency() != Currency::Lat || side == Side::Sell)
-                    || !staged.restricted(directory, owner),
-                "LAT licence required"
-            );
-            super::storage::validate_instrument(world, &instrument)?;
-            staged.execute_order(
-                instrument,
-                Some(directory),
-                id,
-                owner,
-                side,
-                quantity,
-                price,
-                resting,
-                now,
-            )?;
-        }
-        MarketCommand::MoveStorage { .. } => unreachable!(),
-    }
-    staged.completed.insert((account, id));
-    *world.resource_mut::<Economy>() = staged;
-    Ok(())
+    world.resource_scope(|world, mut economy: Mut<Economy>| {
+        let directory = &world.resource::<Directory>().0;
+        economy.transaction(|staged| {
+            match command {
+                MarketCommand::Cancel { order } => {
+                    let order = staged
+                        .exchange
+                        .orders
+                        .get(&order)
+                        .context("order unavailable")?;
+                    ensure!(
+                        directory.administers(account, order.owner),
+                        "order administration required"
+                    );
+                    let id = order.id;
+                    let order = staged.remove_order(id).unwrap();
+                    staged.archive(order, now);
+                }
+                MarketCommand::Limit {
+                    instrument,
+                    owner,
+                    side,
+                    quantity,
+                    price,
+                }
+                | MarketCommand::Immediate {
+                    instrument,
+                    owner,
+                    side,
+                    quantity,
+                    price,
+                } => {
+                    ensure!(
+                        directory.administers(account, owner),
+                        "account administration required"
+                    );
+                    ensure!(
+                        instrument != Instrument::Fx
+                            && (instrument.currency() != Currency::Lat || side == Side::Sell)
+                            || !staged.restricted(directory, owner),
+                        "LAT licence required"
+                    );
+                    super::storage::validate_instrument(world, &instrument)?;
+                    staged.execute_order(
+                        instrument,
+                        Some(directory),
+                        id,
+                        owner,
+                        side,
+                        quantity,
+                        price,
+                        resting,
+                        now,
+                    )?;
+                }
+                MarketCommand::MoveStorage { .. } => unreachable!(),
+            }
+            Ok(())
+        })?;
+        economy.completed.insert((account, id));
+        Ok(())
+    })
 }
 
 pub fn snapshot(world: &World, account: AccountId, subscription: &MarketQuery) -> MarketSnapshot {
@@ -596,7 +597,7 @@ pub fn snapshot(world: &World, account: AccountId, subscription: &MarketQuery) -
     let owner = subscription.owner;
     let mut stations: Vec<_> = world
         .resource::<crate::sim::identity::IdentityIndex>()
-        .0
+        .entries()
         .iter()
         .filter(|(id, _)| subscription.stations_after.is_none_or(|after| **id > after))
         .filter_map(|(id, entity)| {

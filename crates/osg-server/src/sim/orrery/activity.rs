@@ -75,7 +75,7 @@ impl ActiveSystems {
             Some(systems) => std::borrow::Cow::Borrowed(systems),
             // Objects can be created after the activation phase of this tick.
             None => {
-                std::borrow::Cow::Owned(universe.index.containing_segment(position, DVec3::ZERO))
+                std::borrow::Cow::Owned(universe.index().containing_segment(position, DVec3::ZERO))
             }
         }
     }
@@ -144,12 +144,12 @@ pub fn activate(
                         key[2] * CELL_UM + CELL_UM / 2,
                     );
                     universe
-                        .index
+                        .index()
                         .intersecting_sphere(centre, (3_f64.sqrt() + 1.) * CELL_UM as f64 / 2e6)
                 })
                 .clone()
         } else {
-            universe.index.containing_segment(position, displacement)
+            universe.index().containing_segment(position, displacement)
         };
         for id in candidates {
             let definition = active

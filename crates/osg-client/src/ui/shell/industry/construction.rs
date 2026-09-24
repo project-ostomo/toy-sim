@@ -168,15 +168,17 @@ impl State {
 
 pub(in crate::ui::shell) fn update(
     mut shell: ResMut<Shell>,
+    mut industry: ResMut<industry::State>,
     session: Res<SessionInfo>,
-    mut requests: ResMut<crate::state::requests::Requests>,
+    commands: Res<CommandState>,
+    mut requests: ResMut<crate::state::requests::Mutations>,
     client: Res<crate::ui::BlueprintAssets>,
 ) {
     let key = session
         .world
         .filter(|_| session.status.is_empty())
         .map(|world| (world, session.generation));
-    if let Some((command, build)) = shell.industry.construction.update(key, &session.results) {
+    if let Some((command, build)) = industry.construction.update(key, &commands.results) {
         let (world, generation) = key.unwrap();
         let net = client.0.clone();
         requests.submit(world, generation, command, async move {
@@ -194,7 +196,7 @@ pub(in crate::ui::shell) fn update(
         });
     }
 
-    let construction = &mut shell.industry.construction;
+    let construction = &mut industry.construction;
     if matches!(construction.status, Status::Queued) {
         construction.start(
             construction.request.clone().unwrap(),

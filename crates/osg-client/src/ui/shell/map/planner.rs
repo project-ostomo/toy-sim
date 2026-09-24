@@ -1,5 +1,5 @@
 use super::*;
-use crate::state::requests::{Requests, RouteCall};
+use crate::state::requests::{RouteCall, Routes};
 use osg_model::routing;
 use std::time::Duration;
 
@@ -49,7 +49,7 @@ impl Preview {
         orders: Vec<travel::Directive>,
         append: bool,
         preferences: travel::PlanningPreferences,
-        outgoing: &mut Requests,
+        outgoing: &mut Routes,
     ) {
         if let Some(action) = self.cancel_action() {
             outgoing.route(action);
@@ -101,7 +101,7 @@ impl Preview {
         &mut self,
         ship: Option<&ShipTelemetry>,
         results: &[CommandResult],
-        outgoing: &mut Requests,
+        outgoing: &mut Routes,
         now: Duration,
     ) {
         let context = ship.map(|ship| {
@@ -167,7 +167,7 @@ impl Preview {
         self.committing = Some(id);
     }
 
-    pub fn retry(&mut self, ship: &ShipTelemetry, outgoing: &mut Requests) {
+    pub fn retry(&mut self, ship: &ShipTelemetry, outgoing: &mut Routes) {
         if let Some(request) = self.request.clone() {
             self.begin(
                 ship,
@@ -347,7 +347,7 @@ mod tests {
     #[test]
     fn cancelling_preview_rejects_late_results_and_cancels_server_work() {
         let ship = ship();
-        let mut outgoing = Requests::default();
+        let mut outgoing = Routes::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
@@ -383,7 +383,7 @@ mod tests {
         ship.travel.fuel_budget = Some(plan.fuel_budget.clone());
 
         let mut state = super::super::State::default();
-        let mut outgoing = Requests::default();
+        let mut outgoing = Routes::default();
         state.route.begin(
             &ship,
             vec![travel::Directive::DockAt(Id([1; 16]))],
@@ -501,7 +501,7 @@ mod tests {
             fuel_fraction: 0.42,
             ..Default::default()
         };
-        let mut outgoing = Requests::default();
+        let mut outgoing = Routes::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
@@ -595,7 +595,7 @@ mod tests {
     fn route_preview_rejects_stale_ship_authority_and_queue() {
         for change in 0..4 {
             let mut ship = ship();
-            let mut outgoing = Requests::default();
+            let mut outgoing = Routes::default();
             let mut preview = Preview::default();
             preview.begin(
                 &ship,
@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn strategic_preview_survives_motion_time_and_map_catalogue_updates() {
         let mut ship = ship();
-        let mut outgoing = Requests::default();
+        let mut outgoing = Routes::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn ready_preview_displays_server_stages_eta_and_fuel_warning_before_engage() {
         let ship = ship();
-        let mut outgoing = Requests::default();
+        let mut outgoing = Routes::default();
         let mut preview = Preview::default();
         preview.begin(
             &ship,

@@ -154,11 +154,19 @@ fn update(
         let selected = choose_atmosphere(
             bodies.iter().filter_map(|(body, pose, system)| {
                 let atmosphere = body.0.atmosphere.as_ref()?;
+                let distance = pose.0.position.relative_to(position).length();
+                // The Moon's apparent radius from Earth is approximately 0.25°.
+                // sin(angular radius) = body radius / distance from its centre.
+                let minimum_angular_radius = 0.25_f64.to_radians();
+                if body.0.radius_m <= distance * minimum_angular_radius.sin() {
+                    return None;
+                }
+
                 systems.0.iter().any(|entry| *entry == system.0).then(|| {
                     (
                         body.0.entity,
                         AtmosphereDistance::new(
-                            pose.0.position.relative_to(position).length(),
+                            distance,
                             body.0.radius_m,
                             atmosphere.height_m,
                         ),

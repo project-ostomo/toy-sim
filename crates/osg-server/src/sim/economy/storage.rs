@@ -44,7 +44,9 @@ impl Economy {
             .checked_sub(self.stock_reserved(owner, *station, item))
             .context("stock reservations exceed custody")
     }
+}
 
+impl Transaction<'_> {
     pub(super) fn move_stock(
         &mut self,
         from: Principal,
@@ -59,20 +61,22 @@ impl Economy {
             from != to && quantity > 0 && self.stock_available(from, instrument)? >= quantity,
             "insufficient available stock"
         );
-        let recipient = self.storage.entry((*station, to)).or_default();
+        let recipient = self.stock_mut((*station, to));
         ensure!(
             recipient.contains_key(item) || recipient.len() < 1024,
             "storage item limit"
         );
         let amount = recipient.entry(item.clone()).or_default();
         *amount = amount.checked_add(quantity).context("stock overflow")?;
-        let source = self.storage.get_mut(&(*station, from)).unwrap();
+        let source = self.stock_mut((*station, from));
         *source.get_mut(item).unwrap() -= quantity;
         source.retain(|_, quantity| *quantity > 0);
-        self.storage.retain(|_, stock| !stock.is_empty());
+        self.remove_empty_stock((*station, from));
         Ok(())
     }
+}
 
+impl Economy {
     pub(super) fn stock_snapshot(
         &self,
         owner: Principal,
@@ -162,7 +166,7 @@ pub fn apply(world: &mut World, account: AccountId, id: Id, command: MarketComma
         .context("ship inventory unavailable")?
         .0
         .clone();
-    let mut economy = world.resource::<Economy>().clone();
+    let economy = world.resource::<Economy>();
     let current = economy
         .storage
         .get(&(station, owner))
@@ -221,18 +225,11 @@ pub fn apply(world: &mut World, account: AccountId, id: Id, command: MarketComma
         }
         current - quantity
     };
-    let stock = economy.storage.entry((station, owner)).or_default();
+    let stock = economy.storage.get(&(station, owner));
     ensure!(
-        stock.contains_key(&item) || stock.len() < 1024,
+        stock.is_none_or(|stock| stock.contains_key(&item) || stock.len() < 1024),
         "storage item limit"
     );
-    if next > 0 {
-        stock.insert(item, next);
-    } else {
-        stock.remove(&item);
-    }
-    economy.storage.retain(|_, stock| !stock.is_empty());
-    economy.completed.insert((account, id));
     station_inventory.validate_cargo(catalogue)?;
     ship_inventory.validate_cargo(catalogue)?;
 
@@ -246,8 +243,18 @@ pub fn apply(world: &mut World, account: AccountId, id: Id, command: MarketComma
             .unwrap()
             .0 = ship_inventory;
     }
-    *world.resource_mut::<Economy>() = economy;
-    industry::synchronize_mass(world, &[station_entity, ship_entity]);
+    let mut economy = world.resource_mut::<Economy>();
+    let stock = economy.storage.entry((station, owner)).or_default();
+    if next > 0 {
+        stock.insert(item, next);
+    } else {
+        stock.remove(&item);
+    }
+    if stock.is_empty() {
+        economy.storage.remove(&(station, owner));
+    }
+    economy.completed.insert((account, id));
+    crate::sim::hardware::synchronize_mass(world, &[station_entity, ship_entity]);
     industry::refresh_publication(world);
     Ok(())
 }

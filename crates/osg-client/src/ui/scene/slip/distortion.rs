@@ -196,17 +196,13 @@ pub(super) fn prepare(
             }
         }
         if !view.private {
-            let own = ships
+            let own_transit = ships
                 .iter()
                 .find(|(ship, _)| Some(ship.0.ship) == observation.0.focused_ship)
-                .and_then(|(ship, pose)| {
-                    super::wakes::own_wake(ship, pose, slip, view.view, clock.display_ns)
-                });
-            let own_transit = own.is_some();
+                .is_some_and(|(ship, _)| matches!(ship.0.presence, Presence::SlipTransit(_)));
             super::wakes::prepare(
                 &mut settings,
-                own.into_iter()
-                    .chain(history.0.wakes.iter().filter(|_| !own_transit).cloned()),
+                history.0.wakes.iter().filter(|_| !own_transit).cloned(),
                 view,
                 transform,
                 projection,

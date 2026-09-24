@@ -177,7 +177,7 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
         "Docked tender".into(),
     )
     .unwrap();
-    identity::attach_ship(world, other, account).unwrap();
+    identity::attach_ship(world, other, account, osg_model::Id::new()).unwrap();
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let hold = world
         .get::<vessel::ShipDesign>(player)
@@ -195,7 +195,7 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
             &catalogue,
         )
         .unwrap();
-    crate::sim::industry::synchronize_mass(world, &[player]);
+    crate::sim::hardware::synchronize_mass(world, &[player]);
     for ship in [player, other] {
         let berth = travel::reserve_bay(world, ship, station, 0).unwrap();
         world.entity_mut(ship).insert((

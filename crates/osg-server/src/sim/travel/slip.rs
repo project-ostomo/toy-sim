@@ -376,7 +376,7 @@ fn first_capture(
         let Some(scene) = world.get_resource::<crate::sim::spatial::SpatialIndex>() else {
             return Ok(None);
         };
-        for entity in scene.geometry.segment_candidates(
+        for entity in scene.geometry().segment_candidates(
             origin,
             velocity * duration,
             ship_radius,
@@ -402,10 +402,10 @@ fn first_capture(
                 if radius > 0.0
                     && let Some(seconds) = sphere_entry(
                         origin.relative_to(
-                            scene.objects[scene.object_index(entity).expect("indexed celestial")]
+                            scene.objects()[scene.object_index(entity).expect("indexed celestial")]
                                 .position,
                         ),
-                        velocity - scene.velocities.get(&entity).copied().unwrap_or_default(),
+                        velocity - scene.velocity(entity),
                         radius,
                         duration,
                     )
@@ -681,10 +681,7 @@ pub(crate) struct Arrival {
     pending: &'static PendingArrival,
     pose: &'static mut PreciseTransform,
     design: &'static ShipDesign,
-    identity: Option<&'static Identity>,
-    motion: Option<&'static DormantMotion>,
-    software: Option<&'static mut crate::sim::vessel::ShipSoftware>,
-    parts: Option<&'static crate::sim::hardware::PartDevices>,
+    program: Option<&'static mut crate::sim::vessel::ProgramWorld>,
     hull: Option<&'static mut crate::sim::hardware::Hull>,
     thermal: Option<&'static mut crate::sim::hardware::ShipThermal>,
 }
@@ -693,8 +690,6 @@ pub(crate) fn finish_arrivals(
     mut commands: Commands,
     clock: Res<SimulationCounters>,
     mut ships: Query<Arrival>,
-    mut observations: Query<(Entity, &mut crate::sim::sensors::Observations)>,
-    sensors: Option<Res<crate::sim::sensors::SensorService>>,
     mut history: ResMut<crate::sim::slip_effects::SlipHistory>,
     mut events: ResMut<TravelEvents>,
 ) {
@@ -721,52 +716,17 @@ pub(crate) fn finish_arrivals(
             seed: rand::random(),
         });
         ship.pose.translation_um = transit.position;
-        let mut entity = commands.entity(ship.entity);
-        entity
-            .remove::<(
-                Transit,
-                PendingArrival,
-                Dormant,
-                DormantMotion,
-                SystemsSuspended,
-            )>()
-            .insert((
-                Velocity(transit.arrival_velocity()),
-                PresenceState(Presence::Space),
-                identity::SpatialInstance(Id::new()),
-            ));
-        if let Some(motion) = ship.motion {
-            entity.insert(AngularVelocity(motion.angular_velocity));
-            if motion.rigid_body {
-                entity.insert(crate::sim::physics::RigidBody);
-            }
-            if motion.collision_body {
-                entity.insert(crate::sim::physics::collision::CollisionBody);
-            }
-            if let Some(spatial) = motion.spatial {
-                entity.insert(spatial);
-            }
-        }
-        if let Some(sensors) = &sensors {
-            sensors.invalidate(ship.entity, ship.identity.map(|id| id.0));
-        }
-        for (observer, mut observation) in &mut observations {
-            crate::sim::sensors::invalidate_observation(
-                observer,
-                &mut observation,
-                ship.entity,
-                ship.identity.map(|id| id.0),
-            );
-        }
-        if let Some(parts) = ship.parts {
-            for &part in &parts.0 {
-                commands
-                    .entity(part)
-                    .insert(crate::sim::hardware::ActiveDevice);
-            }
-        }
-        if let Some(software) = ship.software.as_mut() {
-            software.world_actions.clear();
+        let entity = ship.entity;
+        let velocity = transit.arrival_velocity();
+        commands.queue(move |world: &mut World| {
+            world
+                .entity_mut(entity)
+                .remove::<(Transit, PendingArrival)>()
+                .insert(Velocity(velocity));
+            set_active(world, entity);
+        });
+        if let Some(program) = ship.program.as_mut() {
+            program.world_actions.clear();
         }
         events
             .0
@@ -948,7 +908,7 @@ mod tests {
                 PresenceState::default(),
             ))
             .id();
-        identity::register(&mut world, ship, Id::new());
+        identity::register(&mut world, ship, Id::new()).unwrap();
         crate::sim::spatial::rebuild(&mut world);
         (world, ship)
     }
@@ -1512,7 +1472,7 @@ mod tests {
             ))
             .id();
         let beacon_id = Id::new();
-        identity::register(&mut world, beacon, beacon_id);
+        identity::register(&mut world, beacon, beacon_id).unwrap();
         let origin = world.get::<PreciseTransform>(ship).unwrap().translation_um;
         // The controller aims away from its queued star, beyond its prediction horizon.
         // Neither the route's risk budget nor inadequate range prevents commitment.

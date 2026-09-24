@@ -139,7 +139,7 @@ impl OpticalSession {
                     let pose = ship_pose(world, observer)?;
                     Some(
                         view.origin
-                            .offset_by(index.objects[slot].position.relative_to(pose.position)),
+                            .offset_by(index.objects()[slot].position.relative_to(pose.position)),
                     )
                 })
                 .unwrap_or(view.origin);
@@ -253,7 +253,7 @@ impl OpticalSession {
                 .visible(origin, 4. * std::f64::consts::PI * MIN_OPTICAL_FLUX_W_M2)
                 .into_iter()
                 .filter_map(|candidate| {
-                    let object = &index.objects[candidate];
+                    let object = &index.objects()[candidate];
                     if object.entity == observer
                         || world.get::<ShipDesign>(object.entity).is_none()
                         || world
@@ -280,7 +280,7 @@ impl OpticalSession {
                 if index.fully_occluded(observer, candidate.index, origin) {
                     continue;
                 }
-                let object = &index.objects[candidate.index];
+                let object = &index.objects()[candidate.index];
                 if append(object.entity, object.radius_m, candidate.luminosity_w) {
                     break;
                 }

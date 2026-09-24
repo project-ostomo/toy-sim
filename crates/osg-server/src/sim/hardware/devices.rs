@@ -220,7 +220,7 @@ pub(crate) fn prepare_micropulse_engines(
     mut ships: Query<
         (
             &ShipDesign,
-            HardwareWrite,
+            GenerationHardware,
             &mut DeviceOutputs,
             &mut ElectricalTick,
             Has<super::super::travel::Dormant>,

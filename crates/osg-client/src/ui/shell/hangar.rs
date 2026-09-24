@@ -7,7 +7,7 @@ enum Tab {
     Ships,
 }
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     location: Option<(Id, Id)>,
     pub after: Option<Id>,

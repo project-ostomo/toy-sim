@@ -9,7 +9,7 @@ mod planner;
 mod spatial;
 use layout::{ActiveRoute, Cache};
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     color_by: ColorBy,
     selected: Option<Id>,
@@ -123,7 +123,10 @@ pub(super) fn draw(
         .ship
         .and_then(|ship| ship.location.system)
         .or_else(|| {
-            model.ship?.pose.as_ref()
+            model
+                .ship?
+                .pose
+                .as_ref()
                 .and_then(|pose| state.cache.nearest(catalogue, pose.position))
         })
         .or_else(|| {

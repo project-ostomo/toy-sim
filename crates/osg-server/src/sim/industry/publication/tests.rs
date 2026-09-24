@@ -54,7 +54,7 @@ impl Fixture {
                 travel::PresenceState(Presence::Space),
             ))
             .id();
-        identity::register(&mut self.world, entity, id(number));
+        identity::register(&mut self.world, entity, id(number)).unwrap();
         entity
     }
 

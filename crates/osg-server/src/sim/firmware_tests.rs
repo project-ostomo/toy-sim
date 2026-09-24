@@ -2,7 +2,7 @@ use super::{hardware, vessel};
 use bevy::{
     ecs::system::RunSystemOnce,
     math as glam,
-    prelude::{App, Entity, Fixed, FixedUpdate, Time},
+    prelude::{App, Entity, Fixed, FixedUpdate, IntoScheduleConfigs, Time},
 };
 use osg_ship_api::abi;
 use osg_ship_wasm::*;
@@ -34,7 +34,7 @@ impl HardwareFixture {
             "Firmware test".into(),
         )
         .unwrap();
-        super::identity::attach_ship(app.world_mut(), ship, account).unwrap();
+        super::identity::attach_ship(app.world_mut(), ship, account, osg_model::Id::new()).unwrap();
         app.world_mut()
             .run_system_once(hardware::initialize)
             .unwrap();
@@ -749,7 +749,10 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
     ));
 
     let mut fixture = HardwareFixture::new(&design, &catalogue);
-    fixture.app.add_systems(FixedUpdate, vessel::run);
+    fixture.app.add_systems(
+        FixedUpdate,
+        (vessel::allocate_gas, vessel::run, vessel::settle_gas).chain(),
+    );
     fixture
         .app
         .world_mut()
@@ -762,7 +765,7 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
     fixture
         .app
         .world_mut()
-        .get_mut::<vessel::ShipSoftware>(fixture.ship)
+        .get_mut::<vessel::ShipMailbox>(fixture.ship)
         .unwrap()
         .command(Command::Manual {
             throttle: 0.5,
@@ -782,7 +785,11 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
             "{:?}",
             software.controller.fault
         );
-        accepted |= software
+        accepted |= fixture
+            .app
+            .world()
+            .get::<vessel::ShipMailbox>(fixture.ship)
+            .unwrap()
             .results
             .iter()
             .any(|reply| reply.result == abi::REPLY_ACCEPTED);
@@ -842,11 +849,14 @@ fn common_sky_boots_standard_computer_and_flies_with_supported_passengers() {
     assert!(engines.iter().all(|device| device.control_enabled));
 
     let mut fixture = HardwareFixture::new(&design, &catalogue);
-    fixture.app.add_systems(FixedUpdate, vessel::run);
+    fixture.app.add_systems(
+        FixedUpdate,
+        (vessel::allocate_gas, vessel::run, vessel::settle_gas).chain(),
+    );
     fixture
         .app
         .world_mut()
-        .get_mut::<vessel::ShipSoftware>(fixture.ship)
+        .get_mut::<vessel::ShipMailbox>(fixture.ship)
         .unwrap()
         .command(Command::Manual {
             throttle: 0.5,

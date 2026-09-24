@@ -1,4 +1,7 @@
-use bevy::prelude::*;
+use bevy::{
+    ecs::{lifecycle::HookContext, world::DeferredWorld},
+    prelude::*,
+};
 use osg_model::{AccountId, Id, IffIdentity};
 use std::{
     collections::HashMap,
@@ -6,7 +9,30 @@ use std::{
 };
 
 #[derive(Component, Clone, Copy)]
+#[component(immutable, on_insert = index_identity, on_discard = unindex_identity)]
 pub struct Identity(pub Id);
+
+fn index_identity(mut world: DeferredWorld<'_>, HookContext { entity, .. }: HookContext) {
+    let id = world.get::<Identity>(entity).unwrap().0;
+    let Some(mut index) = world.get_resource_mut::<IdentityIndex>() else {
+        return;
+    };
+    assert!(
+        index.0.get(&id).is_none_or(|previous| *previous == entity),
+        "Identity already belongs to another entity"
+    );
+    index.0.insert(id, entity);
+}
+
+fn unindex_identity(mut world: DeferredWorld<'_>, HookContext { entity, .. }: HookContext) {
+    let id = world.get::<Identity>(entity).unwrap().0;
+    let Some(mut index) = world.get_resource_mut::<IdentityIndex>() else {
+        return;
+    };
+    if index.0.get(&id) == Some(&entity) {
+        index.0.remove(&id);
+    }
+}
 
 #[derive(Component, Clone, Copy)]
 pub struct SpatialInstance(pub Id);
@@ -38,7 +64,13 @@ pub struct Account {
 }
 
 #[derive(Resource, Default)]
-pub struct IdentityIndex(pub HashMap<Id, Entity>);
+pub struct IdentityIndex(HashMap<Id, Entity>);
+
+impl IdentityIndex {
+    pub fn entries(&self) -> &HashMap<Id, Entity> {
+        &self.0
+    }
+}
 
 #[derive(Resource)]
 pub struct WorldEpoch(pub Id);
@@ -97,14 +129,23 @@ impl AppearanceAssets {
     }
 }
 
-pub fn register(world: &mut World, entity: Entity, id: Id) {
+pub fn register(world: &mut World, entity: Entity, id: Id) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        world
+            .resource::<IdentityIndex>()
+            .0
+            .get(&id)
+            .is_none_or(|owner| *owner == entity),
+        "Identity already belongs to another entity"
+    );
+    anyhow::ensure!(world.get_entity(entity).is_ok(), "Entity unavailable");
     world.entity_mut(entity).insert(Identity(id));
     if world.get::<super::vessel::ShipDesign>(entity).is_some()
         && world.get::<SpatialInstance>(entity).is_none()
     {
         renew_spatial_instance(world, entity);
     }
-    world.resource_mut::<IdentityIndex>().0.insert(id, entity);
+    Ok(())
 }
 
 pub fn lookup(world: &World, id: Id) -> anyhow::Result<Entity> {
@@ -113,7 +154,11 @@ pub fn lookup(world: &World, id: Id) -> anyhow::Result<Entity> {
         .0
         .get(&id)
         .copied()
-        .filter(|entity| world.get_entity(*entity).is_ok())
+        .filter(|entity| {
+            world
+                .get::<Identity>(*entity)
+                .is_some_and(|identity| identity.0 == id)
+        })
         .ok_or_else(|| anyhow::anyhow!("Entity unavailable"))
 }
 
@@ -144,11 +189,20 @@ pub fn add_account(world: &mut World, id: Id, debug: bool) -> Entity {
         return entity;
     }
     let entity = world.spawn((Account { debug }, OwnedShips::default())).id();
-    register(world, entity, id);
+    register(world, entity, id).expect("new account identity is available");
     entity
 }
 
-pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result<()> {
+pub fn attach_ship(world: &mut World, ship: Entity, owner: Id, id: Id) -> anyhow::Result<()> {
+    anyhow::ensure!(id != owner, "Ship identity must differ from its account");
+    anyhow::ensure!(
+        world
+            .resource::<IdentityIndex>()
+            .0
+            .get(&id)
+            .is_none_or(|entity| *entity == ship),
+        "Identity already belongs to another entity"
+    );
     let account = add_account(world, owner, false);
     let design = &world.get::<super::vessel::ShipDesign>(ship).unwrap().0;
     let bytes = osg_ships::appearance::ShipAppearance::from(design.as_ref()).to_bytes()?;
@@ -177,30 +231,17 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id) -> anyhow::Result
         }),
         Appearance(appearance),
     ));
-    register(world, ship, Id::new());
+    register(world, ship, id)?;
     Ok(())
 }
 
 pub fn identify_celestials(
     mut commands: Commands,
-    mut index: ResMut<IdentityIndex>,
     bodies: Query<(Entity, &super::orrery::activity::CelestialState), Without<Identity>>,
 ) {
     for (entity, celestial) in &bodies {
         let id = super::registry::celestial_identity(celestial.reference);
         commands.entity(entity).insert(Identity(id));
-        index.0.insert(id, entity);
-    }
-}
-
-pub fn clean_indexes(mut identities: ResMut<IdentityIndex>, alive: Query<Entity>) {
-    let previous_len = identities.0.len();
-    identities
-        .bypass_change_detection()
-        .0
-        .retain(|_, entity| alive.contains(*entity));
-    if identities.0.len() != previous_len {
-        identities.set_changed();
     }
 }
 
@@ -216,3 +257,6 @@ pub fn pose(
         angular_velocity: angular.map_or([0.; 3], |value| value.0.to_array()),
     }
 }
+
+#[cfg(test)]
+mod tests;

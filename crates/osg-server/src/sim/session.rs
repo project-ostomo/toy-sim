@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::commands::{authorize as ship_authority, observe};
 use super::identity::{self, Account, Control, Identity, WorldEpoch};
 use super::simulation::SimulationCounters;
-use super::vessel::ShipSoftware;
+use super::vessel::SoftwareDiagnostics;
 
 mod cache;
 pub(super) use cache::maintain as maintain_cache;
@@ -412,7 +412,7 @@ impl Session {
                 let mut active_ships = 0;
                 let mut dormant_ships = 0;
                 let mut timings = super::vessel::ShipStepTimings::default();
-                for (dormant, software) in world.query_filtered::<(Has<super::travel::Dormant>, Option<&ShipSoftware>), With<super::vessel::Vessel>>().iter(world) {
+                for (dormant, software) in world.query_filtered::<(Has<super::travel::Dormant>, Option<&SoftwareDiagnostics>), With<super::vessel::Vessel>>().iter(world) {
                     if dormant {
                         dormant_ships += 1;
                     } else {
@@ -513,28 +513,60 @@ impl Session {
 }
 
 pub fn ship_pose(world: &World, entity: Entity) -> Option<Pose> {
-    let pose = world.get::<super::precision::PreciseTransform>(entity)?;
-    if let Some(super::travel::PresenceState(travel::Presence::Docked { host, bay })) =
-        world.get::<super::travel::PresenceState>(entity)
-    {
-        let station = identity::lookup(world, *host).ok()?;
-        let host_pose = ship_pose(world, station)?;
-        return Some(super::travel::bay_pose(
-            &host_pose,
-            world
-                .get::<super::travel::DockingBays>(station)?
-                .0
-                .get(*bay as usize)?,
-        ));
+    resolve_ship_pose(
+        entity,
+        |entity| {
+            Some((
+                world.get::<super::precision::PreciseTransform>(entity)?,
+                world.get::<super::physics::Velocity>(entity),
+                world.get::<super::physics::AngularVelocity>(entity),
+                world.get::<super::travel::PresenceState>(entity),
+                world.get::<super::travel::Transit>(entity),
+                world.get::<super::travel::DockingBays>(entity),
+            ))
+        },
+        |id| identity::lookup(world, id).ok(),
+    )
+}
+
+pub(crate) type ShipPoseParts<'a> = (
+    &'a super::precision::PreciseTransform,
+    Option<&'a super::physics::Velocity>,
+    Option<&'a super::physics::AngularVelocity>,
+    Option<&'a super::travel::PresenceState>,
+    Option<&'a super::travel::Transit>,
+    Option<&'a super::travel::DockingBays>,
+);
+
+pub(crate) fn resolve_ship_pose<'a>(
+    entity: Entity,
+    parts: impl Fn(Entity) -> Option<ShipPoseParts<'a>>,
+    lookup: impl Fn(Id) -> Option<Entity>,
+) -> Option<Pose> {
+    let mut current = entity;
+    let mut visited = Vec::new();
+    let mut bays = Vec::new();
+    let mut pose = loop {
+        if visited.contains(&current) {
+            return None;
+        }
+        let (transform, velocity, angular, presence, transit, _) = parts(current)?;
+        if let Some(super::travel::PresenceState(travel::Presence::Docked { host, bay })) = presence
+        {
+            visited.push(current);
+            current = lookup(*host)?;
+            bays.push(parts(current)?.5?.0.get(*bay as usize)?);
+        } else {
+            break transit.map_or_else(
+                || super::identity::pose(transform, velocity, angular),
+                |transit| transit.pose(transform.rotation.to_array()),
+            );
+        }
+    };
+    for bay in bays.into_iter().rev() {
+        pose = super::travel::bay_pose(&pose, bay);
     }
-    if let Some(transit) = world.get::<super::travel::Transit>(entity) {
-        return Some(transit.pose(pose.rotation.to_array()));
-    }
-    Some(super::identity::pose(
-        pose,
-        world.get::<super::physics::Velocity>(entity),
-        world.get::<super::physics::AngularVelocity>(entity),
-    ))
+    Some(pose)
 }
 
 fn observable_ships(
@@ -596,7 +628,7 @@ mod tests {
                 }),
             ))
             .id();
-        identity::register(&mut world, ship, ship_id);
+        identity::register(&mut world, ship, ship_id).unwrap();
         let session = connect(
             &mut world,
             account,
@@ -638,7 +670,7 @@ mod tests {
                     }),
                 ))
                 .id();
-            identity::register(&mut world, entity, id);
+            identity::register(&mut world, entity, id).unwrap();
             last_view_only = id;
         }
         for (id, presence) in [
@@ -659,7 +691,7 @@ mod tests {
                     super::super::travel::PresenceState(presence),
                 ))
                 .id();
-            identity::register(&mut world, entity, id);
+            identity::register(&mut world, entity, id).unwrap();
         }
 
         let ships = observable_ships(&mut world, account, &BTreeSet::new());

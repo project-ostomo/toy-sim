@@ -449,7 +449,7 @@ fn celestial_conditions(
         let epoch = slip::epoch(world);
         let mut clear = true;
         let mut outside = true;
-        for system in universe.index.containing_segment(position, DVec3::ZERO) {
+        for system in universe.index().containing_segment(position, DVec3::ZERO) {
             let Ok(definition) = universe.resolve_index(system) else {
                 return (false, false);
             };
@@ -472,7 +472,7 @@ fn celestial_conditions(
     let Some(scene) = world.get_resource::<super::spatial::SpatialIndex>() else {
         return (false, false);
     };
-    let hash = &scene.geometry;
+    let hash = scene.geometry();
     let Ok(candidates) = hash.within_radius(position, radius, true) else {
         return (false, false);
     };
@@ -656,28 +656,30 @@ pub(crate) fn set_dormant(world: &mut World, ship: Entity, presence: Presence) {
         super::hardware::shutdown(world, ship);
         world.entity_mut(ship).insert(SystemsSuspended);
     }
-    let velocity = world.get::<Velocity>(ship).map_or(DVec3::ZERO, |v| v.0);
-    let angular_velocity = world
-        .get::<AngularVelocity>(ship)
-        .map_or(DVec3::ZERO, |v| v.0);
-    let spatial = world.get::<super::spatial::SpatialBody>(ship).copied();
-    let rigid_body = world.get::<super::physics::RigidBody>(ship).is_some();
-    let collision_body = world
-        .get::<super::physics::collision::CollisionBody>(ship)
-        .is_some();
+    // Dormant transitions retain the physical state captured on departure.
+    if world.get::<DormantMotion>(ship).is_none() {
+        let velocity = world.get::<Velocity>(ship).map_or(DVec3::ZERO, |v| v.0);
+        let angular_velocity = world
+            .get::<AngularVelocity>(ship)
+            .map_or(DVec3::ZERO, |v| v.0);
+        let spatial = world.get::<super::spatial::SpatialBody>(ship).copied();
+        let rigid_body = world.get::<super::physics::RigidBody>(ship).is_some();
+        let collision_body = world
+            .get::<super::physics::collision::CollisionBody>(ship)
+            .is_some();
+
+        world.entity_mut(ship).insert(DormantMotion {
+            velocity,
+            angular_velocity,
+            spatial,
+            rigid_body,
+            collision_body,
+        });
+    }
+
     world
         .entity_mut(ship)
-        .insert((
-            Dormant,
-            PresenceState(presence),
-            DormantMotion {
-                velocity,
-                angular_velocity,
-                spatial,
-                rigid_body,
-                collision_body,
-            },
-        ))
+        .insert((Dormant, PresenceState(presence)))
         .remove::<(
             Velocity,
             AngularVelocity,
@@ -851,153 +853,28 @@ pub fn destroy(world: &mut World, ship: Entity) {
             .flat_map(|ships| ships.iter())
             .collect();
         for child in children {
-            world
-                .entity_mut(child)
-                .insert(PresenceState(Presence::StoredInWreck(uuid)));
+            set_dormant(world, child, Presence::StoredInWreck(uuid));
         }
     }
     set_dormant(world, ship, Presence::Destroyed);
-    world
-        .entity_mut(ship)
-        .remove::<(DirectoryEmitter, NavigationBeaconEmitter)>();
     emit(world, ship, "destroyed", None);
-}
-
-#[derive(bevy::ecs::query::QueryData)]
-#[query_data(mutable)]
-pub(crate) struct DestructionTarget {
-    design: &'static ShipDesign,
-    identity: Option<&'static Identity>,
-    velocity: Option<&'static Velocity>,
-    angular: Option<&'static AngularVelocity>,
-    spatial: Option<&'static super::spatial::SpatialBody>,
-    rigid: Has<super::physics::RigidBody>,
-    collision: Has<super::physics::collision::CollisionBody>,
-    travel: Option<&'static mut Travel>,
-    drive: Option<&'static mut SlipDrive>,
-    stored: Option<&'static StoredShips>,
-    parts: Option<&'static super::hardware::PartDevices>,
-    settings: Option<&'static mut super::hardware::DeviceSettings>,
-    avionics: Option<&'static mut super::hardware::Avionics>,
-    sensors: Option<&'static mut super::hardware::SensorRange>,
-    power: Option<&'static mut super::hardware::PowerFlow>,
-    thermal: Option<&'static mut super::hardware::ShipThermal>,
 }
 
 pub(crate) fn destroy_collisions(
     mut commands: Commands,
     report: Res<super::physics::collision::CollisionReport>,
-    mut targets: Query<DestructionTarget>,
-    mut parts: Query<(
-        &mut super::hardware::Device,
-        Option<&mut super::hardware::Weapon>,
-        Option<&mut super::hardware::DevicePower>,
-    )>,
-    mut observations: Query<(Entity, &mut super::sensors::Observations)>,
-    sensors: Option<Res<super::sensors::SensorService>>,
-    mut events: ResMut<TravelEvents>,
 ) {
     for death in &report.report.destroyed {
         let entity = death.entity;
-        let Ok(mut target) = targets.get_mut(entity) else {
-            commands.entity(entity).despawn();
-            continue;
-        };
-        if let Some(travel) = target.travel.as_mut() {
-            travel.0.enabled = false;
-        }
-        if let Some(drive) = target.drive.as_mut() {
-            drive.preparation = None;
-        }
-        if let Some(identity) = target.identity {
-            for child in target.stored.into_iter().flat_map(|stored| stored.iter()) {
-                commands
-                    .entity(child)
-                    .insert(PresenceState(Presence::StoredInWreck(identity.0)));
+        commands.queue(move |world: &mut World| {
+            if world.get::<ShipDesign>(entity).is_some() {
+                destroy(world, entity);
+            } else if let Ok(entity) = world.get_entity_mut(entity) {
+                entity.despawn();
             }
-        }
-        if let Some(settings) = target.settings.as_mut() {
-            settings.0 = super::hardware::default_settings(&target.design.0);
-        }
-        if let Some(avionics) = target.avionics.as_mut() {
-            avionics.0.powered = false;
-        }
-        if let Some(sensors) = target.sensors.as_mut() {
-            sensors.0 = 0.0;
-        }
-        if let Some(power) = target.power.as_mut() {
-            **power = Default::default();
-        }
-        if let Some(thermal) = target.thermal.as_mut() {
-            thermal.0.shield_enabled = false;
-            thermal.0.shield_powered = false;
-            thermal.0.shield_state = osg_ship_api::abi::SHIELD_OFF;
-        }
-        for part in target
-            .parts
-            .into_iter()
-            .flat_map(|parts| parts.0.iter().copied())
-        {
-            commands
-                .entity(part)
-                .remove::<super::hardware::ActiveDevice>();
-            if let Ok((mut device, weapon, power)) = parts.get_mut(part) {
-                device.0.actual = 0.0;
-                device.0.generated_w = 0.0;
-                device.0.thrust_n = [0.0; 3];
-                device.0.powered = false;
-                if let Some(mut weapon) = weapon {
-                    weapon.0.powered = false;
-                    weapon.0.command = None;
-                }
-                if let Some(mut power) = power {
-                    *power = Default::default();
-                }
-            }
-        }
-        if let Some(sensors) = &sensors {
-            sensors.invalidate(entity, target.identity.map(|identity| identity.0));
-        }
-        for (observer, mut observation) in &mut observations {
-            super::sensors::invalidate_observation(
-                observer,
-                &mut observation,
-                entity,
-                target.identity.map(|identity| identity.0),
-            );
-        }
-        commands
-            .entity(entity)
-            .insert((
-                Dormant,
-                SystemsSuspended,
-                PresenceState(Presence::Destroyed),
-                identity::SpatialInstance(Id::new()),
-                DormantMotion {
-                    velocity: target.velocity.map_or(DVec3::ZERO, |velocity| velocity.0),
-                    angular_velocity: target.angular.map_or(DVec3::ZERO, |angular| angular.0),
-                    spatial: target.spatial.copied(),
-                    rigid_body: target.rigid,
-                    collision_body: target.collision,
-                },
-            ))
-            .remove::<(
-                Transit,
-                Velocity,
-                AngularVelocity,
-                super::physics::RigidBody,
-                super::physics::AccumulatedForce,
-                super::physics::AccumulatedTorque,
-                super::physics::WithinSoi,
-                super::physics::collision::CollisionBody,
-                super::spatial::SpatialBody,
-                DirectoryEmitter,
-                NavigationBeaconEmitter,
-            )>();
-        events.0.push((entity, "destroyed", None));
+        });
     }
 }
-
 pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
     let presence = world
         .get::<PresenceState>(ship)
@@ -1037,9 +914,13 @@ pub fn debug_recover(world: &mut World, ship: Entity) -> Result<()> {
     }
     if let Some(mut software) = world.get_mut::<super::vessel::ShipSoftware>(ship) {
         software.controller.reboot();
-        software.inbox.clear();
-        software.world_actions.clear();
         software.last_input = None;
+    }
+    if let Some(mut mailbox) = world.get_mut::<super::vessel::ShipMailbox>(ship) {
+        mailbox.inbox.clear();
+    }
+    if let Some(mut program) = world.get_mut::<super::vessel::ProgramWorld>(ship) {
+        program.world_actions.clear();
     }
     Ok(())
 }
@@ -1093,7 +974,7 @@ mod tests {
                 },
             ))
             .id();
-        identity::register(world, entity, Id::new());
+        identity::register(world, entity, Id::new()).unwrap();
         entity
     }
 
@@ -1332,6 +1213,48 @@ mod tests {
             world.get::<PresenceState>(cargo).unwrap().0,
             Presence::Docked { .. }
         ));
+    }
+
+    #[test]
+    fn recovery_after_destruction_in_slip_restores_the_physical_body() {
+        let mut world = world();
+        world.insert_resource(super::super::vessel::ShipCatalogue(
+            osg_ships::Catalogue::builtin(),
+        ));
+        let ship = ship(&mut world, DVec3::ZERO, Id::new());
+        let velocity = DVec3::new(1.0, 2.0, 3.0);
+        let angular = DVec3::Y * 0.5;
+        world.entity_mut(ship).insert((
+            super::super::physics::RigidBody,
+            super::super::physics::collision::CollisionBody,
+            Velocity(velocity),
+            AngularVelocity(angular),
+        ));
+
+        set_dormant(&mut world, ship, Presence::SlipTransit(Id::new()));
+        destroy(&mut world, ship);
+        debug_recover(&mut world, ship).unwrap();
+
+        assert_eq!(world.get::<PresenceState>(ship).unwrap().0, Presence::Space);
+        assert!(
+            world
+                .get::<super::super::physics::RigidBody>(ship)
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<super::super::physics::collision::CollisionBody>(ship)
+                .is_some()
+        );
+        assert!(
+            world
+                .get::<super::super::spatial::SpatialBody>(ship)
+                .is_some()
+        );
+        assert_eq!(world.get::<Velocity>(ship).unwrap().0, velocity);
+        assert_eq!(world.get::<AngularVelocity>(ship).unwrap().0, angular);
+        assert!(world.get::<DormantMotion>(ship).is_none());
+        assert!(world.get::<SystemsSuspended>(ship).is_none());
     }
 
     #[test]

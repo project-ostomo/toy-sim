@@ -120,7 +120,8 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
             "Regression vessel".into(),
         )
         .unwrap();
-        crate::sim::identity::attach_ship(app.world_mut(), entity, account).unwrap();
+        crate::sim::identity::attach_ship(app.world_mut(), entity, account, osg_model::Id::new())
+            .unwrap();
         entities.push(entity);
     }
     crate::sim::hardware::install(&mut app);
@@ -128,7 +129,7 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
         FixedUpdate,
         (
             prepare_resets.before(HardwareSystems::Initialize),
-            (run, clear_computer_resets).chain(),
+            (allocate_gas, run, settle_gas, clear_computer_resets).chain(),
         ),
     );
     (app, entities)
@@ -181,7 +182,13 @@ fn slip_transit_keeps_computer_callbacks_running() {
         step(&mut app);
         let software = app.world().get::<ShipSoftware>(ship).unwrap();
         assert!(software.controller.fault.is_none());
-        assert!(software.last_gas_used > 0);
+        assert!(
+            app.world()
+                .get::<ComputerBudget>(ship)
+                .unwrap()
+                .last_gas_used
+                > 0
+        );
     }
     assert_eq!(
         app.world().get::<HardwareClock>(ship).unwrap().0,
@@ -199,18 +206,25 @@ fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold()
         .unwrap()
         .0 = spin;
     app.world_mut()
-        .get_mut::<ShipSoftware>(target)
+        .get_mut::<ShipMailbox>(target)
         .unwrap()
         .command(Command::Manual {
             throttle: crate::sim::scenario::TRAFFIC_CHALLENGE_THROTTLE,
             steering: [0.; 3],
         });
-    let request_id = app.world().get::<ShipSoftware>(target).unwrap().request_id;
+    let request_id = app.world().get::<ShipMailbox>(target).unwrap().request_id;
     boot(&mut app, target);
     for tick in 0..10 {
         let software = app.world().get::<ShipSoftware>(target).unwrap();
         assert!(software.controller.fault.is_none());
-        if let Some(reply) = software.results.iter().find(|reply| reply.id == request_id) {
+        if let Some(reply) = app
+            .world()
+            .get::<ShipMailbox>(target)
+            .unwrap()
+            .results
+            .iter()
+            .find(|reply| reply.id == request_id)
+        {
             assert_eq!(reply.result, abi::REPLY_ACCEPTED, "{}", reply.message);
             break;
         }
@@ -243,7 +257,7 @@ fn manual_tumbling_ship_keeps_requested_thrust_without_automatic_attitude_hold()
         assert_eq!(throttle(world, entities[0]), 0.);
         let software = world.get::<ShipSoftware>(target).unwrap();
         assert!(software.controller.fault.is_none());
-        assert!(software.inbox.is_empty());
+        assert!(world.get::<ShipMailbox>(target).unwrap().inbox.is_empty());
         assert_eq!(
             software.controller.state.attitude.as_ref().unwrap().present,
             0
@@ -359,7 +373,11 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
             valid_until_s: 1000.,
             ..default()
         });
-        software.command(Command::HoldAttitude);
+        drop(software);
+        app.world_mut()
+            .get_mut::<ShipMailbox>(entity)
+            .unwrap()
+            .command(Command::HoldAttitude);
     }
     step(&mut app);
     assert!(
@@ -381,13 +399,26 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
     {
         let world = app.world();
         let software = world.get::<ShipSoftware>(entity).unwrap();
-        assert!(software.last_gas_used > 0);
-        assert!(software.last_gas_used <= osg_ship_wasm::FUEL_PER_TICK);
-        assert_eq!(software.last_gas_limit, osg_ship_wasm::FUEL_PER_TICK);
+        assert!(world.get::<ComputerBudget>(entity).unwrap().last_gas_used > 0);
+        assert!(
+            world.get::<ComputerBudget>(entity).unwrap().last_gas_used
+                <= osg_ship_wasm::FUEL_PER_TICK
+        );
+        assert_eq!(
+            world.get::<ComputerBudget>(entity).unwrap().last_gas_limit,
+            osg_ship_wasm::FUEL_PER_TICK
+        );
         assert!(software.controller.state.weapons.is_none());
         assert!(software.controller.state.navigation.is_none());
         assert!(!software.controller.has_pending_input());
-        assert!(software.inbox.is_empty() && software.world_actions.is_empty());
+        assert!(
+            world.get::<ShipMailbox>(entity).unwrap().inbox.is_empty()
+                && world
+                    .get::<ProgramWorld>(entity)
+                    .unwrap()
+                    .world_actions
+                    .is_empty()
+        );
         assert_eq!(
             world.get::<travel::Travel>(entity).unwrap().0,
             AutopilotState {
@@ -472,7 +503,7 @@ fn one_fault_does_not_reset_other_computers() {
     let (mut app, entities) = fleet(8);
     boot(&mut app, entities[0]);
     app.world_mut()
-        .get_mut::<ShipSoftware>(entities[0])
+        .get_mut::<ShipMailbox>(entities[0])
         .unwrap()
         .command(Command::HoldAttitude);
     step(&mut app);
@@ -500,14 +531,14 @@ fn sleeping_computers_keep_hardware_running_and_commands_wake_them() {
         assert_eq!(throttle(app.world(), entity), 0.4);
         assert_eq!(
             app.world()
-                .get::<ShipSoftware>(entity)
+                .get::<ComputerBudget>(entity)
                 .unwrap()
                 .last_gas_used,
             0
         );
     }
     app.world_mut()
-        .get_mut::<ShipSoftware>(entity)
+        .get_mut::<ShipMailbox>(entity)
         .unwrap()
         .command(Command::HoldAttitude);
     step(&mut app);
@@ -623,16 +654,32 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
             software.controller.boot_remaining_gas(),
             osg_ship_wasm::BOOT_GAS
         );
-        assert_eq!(software.last_gas_used, 0);
+        assert_eq!(
+            app.world()
+                .get::<ComputerBudget>(ship)
+                .unwrap()
+                .last_gas_used,
+            0
+        );
         assert_eq!(throttle(app.world(), ship), 0.);
     }
     ledger.deposit(owner, 1_000_000).unwrap();
     step(&mut app);
     let mut total = 0;
     for &ship in &ships {
-        let software = app.world().get::<ShipSoftware>(ship).unwrap();
-        assert!((333_333..=333_334).contains(&software.last_gas_used));
-        total += software.last_gas_used;
+        assert!(
+            (333_333..=333_334).contains(
+                &app.world()
+                    .get::<ComputerBudget>(ship)
+                    .unwrap()
+                    .last_gas_used
+            )
+        );
+        total += app
+            .world()
+            .get::<ComputerBudget>(ship)
+            .unwrap()
+            .last_gas_used;
     }
     assert_eq!(total, 1_000_000);
     let account = ledger.account(owner).unwrap();
@@ -671,7 +718,13 @@ fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
         step(&mut app);
         let software = app.world().get::<ShipSoftware>(ship).unwrap();
         assert!(software.controller.fault.is_none());
-        assert!(software.last_gas_used <= osg_ship_wasm::FUEL_PER_TICK);
+        assert!(
+            app.world()
+                .get::<ComputerBudget>(ship)
+                .unwrap()
+                .last_gas_used
+                <= osg_ship_wasm::FUEL_PER_TICK
+        );
         suspended |= software.controller.is_suspended();
         if throttle(app.world(), ship) == 0.4 {
             completed = true;
@@ -715,7 +768,13 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
         "Later healthy computer".into(),
     )
     .unwrap();
-    crate::sim::identity::attach_ship(app.world_mut(), later, osg_model::Id([11; 16])).unwrap();
+    crate::sim::identity::attach_ship(
+        app.world_mut(),
+        later,
+        osg_model::Id([11; 16]),
+        osg_model::Id::new(),
+    )
+    .unwrap();
     boot(&mut app, later);
     assert_eq!(throttle(app.world(), later), 0.4);
     for ship in pending {

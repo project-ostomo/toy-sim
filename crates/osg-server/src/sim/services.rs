@@ -3,7 +3,7 @@ use super::physics::{AngularVelocity, Velocity};
 use super::precision::PreciseTransform;
 use super::sensors::{ObservationSnapshot, Observations};
 use super::simulation::SimulationCounters;
-use super::vessel::ShipSoftware;
+use super::vessel::ProgramWorld;
 use anyhow::{Result, ensure};
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
@@ -741,12 +741,12 @@ pub fn publish_indexes(
         let Some(slot) = scene.object_index(entity) else {
             continue;
         };
-        let object = scene.objects[slot];
+        let object = scene.objects()[slot];
         let aperture = Aperture {
             reference: Some(Reference::Beacon(id.0)),
             entity,
             position: object.position,
-            velocity: scene.velocities.get(&entity).copied().unwrap_or_default(),
+            velocity: scene.velocity(entity),
             radius: object.radius_m,
         };
         if public_beacons.contains(&entity) {
@@ -754,7 +754,7 @@ pub fn publish_indexes(
         }
         apertures.push(aperture);
     }
-    let age_seconds = clock.ticks.saturating_sub(scene.tick) as f64 * osg_model::TICK_SECONDS;
+    let age_seconds = clock.ticks.saturating_sub(scene.tick()) as f64 * osg_model::TICK_SECONDS;
     {
         let _profile = super::diagnostics::ProfileScope::new("aperture_indexes");
         publication.apertures = Arc::new(ApertureIndex::new(apertures, age_seconds));
@@ -778,7 +778,7 @@ pub fn publish_indexes(
                                 .universe
                                 .containing_segment(pose.position, DVec3::ZERO)
                                 .into_iter()
-                                .map(|index| Id(registry.universe.systems[index].id))
+                                .map(|index| Id(registry.universe.systems()[index].id))
                                 .collect()
                         })
                     });
@@ -837,6 +837,57 @@ struct SourceContext {
     location: location::LocationContext,
     exotic_fuel_kg: f64,
     slip: Option<super::travel::SlipDrive>,
+}
+
+/// Borrowed inputs shared by firmware preparation and immediate world queries.
+struct SourceState<'a> {
+    entity: Entity,
+    id: &'a Identity,
+    owner: &'a super::ownership::AssetOwner,
+    design: &'a super::vessel::ShipDesign,
+    mass: &'a super::physics::MassProps,
+    travel: Option<&'a super::travel::Travel>,
+    presence: Option<&'a super::travel::PresenceState>,
+    location: Option<&'a super::location::SpatialLocation>,
+    inventory: Option<&'a super::hardware::ShipInventory>,
+    slip: Option<&'a super::travel::SlipDrive>,
+    dormant: bool,
+}
+
+impl SourceState<'_> {
+    fn resolve(
+        self,
+        pose: Pose,
+        catalogue: &osg_ships::Catalogue,
+        routing: Option<(
+            super::route_service::RouteService,
+            super::route_service::Caller,
+        )>,
+    ) -> SourceContext {
+        SourceContext {
+            routing,
+            entity: self.entity,
+            id: self.id.0,
+            owner: self.owner.0,
+            radius: self.design.0.radius,
+            mass: self.mass.mass,
+            pose,
+            travel: self
+                .travel
+                .map(|travel| travel.0.clone())
+                .unwrap_or_default(),
+            presence: self
+                .presence
+                .map(|presence| presence.0.clone())
+                .unwrap_or(Presence::Space),
+            location: self
+                .location
+                .map(|location| location.0.clone())
+                .unwrap_or_default(),
+            exotic_fuel_kg: exotic_fuel_kg(self.inventory, catalogue),
+            slip: self.slip.filter(|_| !self.dormant).cloned(),
+        }
+    }
 }
 
 fn exotic_fuel_kg(
@@ -907,35 +958,24 @@ fn current_ship_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
                 .ok()
                 .map(|caller| (service, caller))
         });
-    let context = SourceContext {
-        routing,
+    let context = SourceState {
         entity: ship,
-        id: world.get::<Identity>(ship)?.0,
-        owner: world.get::<super::ownership::AssetOwner>(ship)?.0,
-        radius: world.get::<super::vessel::ShipDesign>(ship)?.0.radius,
-        mass: world.get::<super::physics::MassProps>(ship)?.mass,
-        pose: super::session::ship_pose(world, ship)?,
-        travel: world
-            .get::<super::travel::Travel>(ship)
-            .map(|travel| travel.0.clone())
-            .unwrap_or_default(),
-        presence: world
-            .get::<super::travel::PresenceState>(ship)
-            .map(|presence| presence.0.clone())
-            .unwrap_or(Presence::Space),
-        location: world
-            .get::<super::location::SpatialLocation>(ship)
-            .map(|location| location.0.clone())
-            .unwrap_or_default(),
-        exotic_fuel_kg: exotic_fuel_kg(
-            world.get::<super::hardware::ShipInventory>(ship),
-            &world.resource::<super::vessel::ShipCatalogue>().0,
-        ),
-        slip: world
-            .get::<super::travel::SlipDrive>(ship)
-            .filter(|_| world.get::<super::travel::Dormant>(ship).is_none())
-            .cloned(),
-    };
+        id: world.get::<Identity>(ship)?,
+        owner: world.get::<super::ownership::AssetOwner>(ship)?,
+        design: world.get::<super::vessel::ShipDesign>(ship)?,
+        mass: world.get::<super::physics::MassProps>(ship)?,
+        travel: world.get::<super::travel::Travel>(ship),
+        presence: world.get::<super::travel::PresenceState>(ship),
+        location: world.get::<super::location::SpatialLocation>(ship),
+        inventory: world.get::<super::hardware::ShipInventory>(ship),
+        slip: world.get::<super::travel::SlipDrive>(ship),
+        dormant: world.get::<super::travel::Dormant>(ship).is_some(),
+    }
+    .resolve(
+        super::session::ship_pose(world, ship)?,
+        &world.resource::<super::vessel::ShipCatalogue>().0,
+        routing,
+    );
     let source = ship_source(
         world.get_resource::<PublishedWorld>()?,
         world.get_resource::<SimulationCounters>()?.ticks,
@@ -961,15 +1001,15 @@ pub fn prepare_sources(
     routing: Option<Res<super::route_service::RouteService>>,
     locations: Query<&super::location::SpatialLocation>,
     catalogue: Res<super::vessel::ShipCatalogue>,
+    identities: Res<super::identity::IdentityIndex>,
+    poses: Query<super::session::ShipPoseParts<'static>>,
     mut ships: Query<
         (
             Entity,
             &Identity,
             &super::ownership::AssetOwner,
             Option<&super::identity::Control>,
-            &PreciseTransform,
-            Option<&Velocity>,
-            Option<&AngularVelocity>,
+            Has<super::travel::Dormant>,
             &super::vessel::ShipDesign,
             &super::physics::MassProps,
             Option<&super::travel::Travel>,
@@ -978,9 +1018,8 @@ pub fn prepare_sources(
             (
                 Option<&super::travel::PresenceState>,
                 Option<&super::hardware::ShipInventory>,
-                Option<&super::travel::DormantMotion>,
             ),
-            &mut ShipSoftware,
+            &mut ProgramWorld,
         ),
         Without<super::travel::SystemsSuspended>,
     >,
@@ -991,29 +1030,49 @@ pub fn prepare_sources(
         id,
         owner,
         authority,
-        transform,
-        velocity,
-        angular,
+        dormant,
         design,
         mass,
         travel,
         slip,
         state,
-        (presence, inventory, dormant_motion),
+        (presence, inventory),
         mut software,
     ) in &mut ships
     {
-        let mut pose = super::identity::pose(transform, velocity, angular);
-        if let Some(motion) = dormant_motion {
-            pose.velocity = motion.velocity.to_array();
-            pose.angular_velocity = motion.angular_velocity.to_array();
-        }
+        let Some(pose) = super::session::resolve_ship_pose(
+            entity,
+            |entity| poses.get(entity).ok(),
+            |id| identities.entries().get(&id).copied(),
+        ) else {
+            software.world_source = None;
+            continue;
+        };
         software.world_source = Some(ship_source(
             &publication,
             clock.ticks,
-            state.map(|value| value.0.clone()).unwrap_or_default(),
-            SourceContext {
-                routing: routing.as_ref().zip(authority).map(|(service, authority)| {
+            if dormant {
+                Arc::default()
+            } else {
+                state.map(|value| value.0.clone()).unwrap_or_default()
+            },
+            SourceState {
+                entity,
+                id,
+                owner,
+                design,
+                mass,
+                travel,
+                presence,
+                location: locations.get(entity).ok(),
+                inventory,
+                slip,
+                dormant,
+            }
+            .resolve(
+                pose,
+                &catalogue.0,
+                routing.as_ref().zip(authority).map(|(service, authority)| {
                     (
                         (**service).clone(),
                         super::route_service::Caller {
@@ -1027,30 +1086,14 @@ pub fn prepare_sources(
                         },
                     )
                 }),
-                entity,
-                id: id.0,
-                owner: owner.0,
-                radius: design.0.radius,
-                mass: mass.mass,
-                pose,
-                travel: travel.map(|travel| travel.0.clone()).unwrap_or_default(),
-                presence: presence
-                    .map(|presence| presence.0.clone())
-                    .unwrap_or(Presence::Space),
-                location: locations
-                    .get(entity)
-                    .map(|location| location.0.clone())
-                    .unwrap_or_default(),
-                exotic_fuel_kg: exotic_fuel_kg(inventory, &catalogue.0),
-                slip: slip.cloned(),
-            },
+            ),
         ));
     }
 }
 
 pub fn dispatch_actions(world: &mut World) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("services.dispatch_actions");
-    let mut query = world.query::<(Entity, &Identity, &mut ShipSoftware)>();
+    let mut query = world.query::<(Entity, &Identity, &mut ProgramWorld)>();
     let mut batches: Vec<_> = query
         .iter_mut(world)
         .filter_map(|(entity, id, mut software)| {
@@ -1246,7 +1289,114 @@ impl UniverseApertures {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::system::RunSystemOnce;
     use osg_ship_wasm::ScanSource;
+
+    #[test]
+    fn prepared_sources_follow_docking_hosts_and_match_immediate_transit_queries() {
+        use super::super::travel::{Bay, DockingBays, PresenceState, SlipDrive, Transit};
+
+        let account = Id::new();
+        let mut app = crate::sim::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query::<(Entity, &super::super::identity::Control)>()
+            .iter(world)
+            .find(|(_, control)| control.account == account)
+            .unwrap()
+            .0;
+        world.entity_mut(ship).insert(SlipDrive::default());
+        let host_id = Id::new();
+        let host = world
+            .spawn((
+                PreciseTransform {
+                    translation_um: GalacticPosition::from_meters(DVec3::X * 500.0),
+                    rotation: DQuat::IDENTITY,
+                },
+                Velocity(DVec3::Y * 25.0),
+                AngularVelocity(DVec3::Z),
+                DockingBays(vec![Bay {
+                    centre_m: [10.0, 0.0, 0.0],
+                    rotation: DQuat::IDENTITY.to_array(),
+                    radius_m: 100.0,
+                    mass_capacity_kg: 1e12,
+                    public: true,
+                    allowed: Default::default(),
+                    reservation: None,
+                }]),
+            ))
+            .id();
+        super::super::identity::register(world, host, host_id).unwrap();
+        super::super::travel::set_dormant(
+            world,
+            ship,
+            Presence::Docked {
+                host: host_id,
+                bay: 0,
+            },
+        );
+
+        for position in [500.0, 1_000.0] {
+            world
+                .get_mut::<PreciseTransform>(host)
+                .unwrap()
+                .translation_um = GalacticPosition::from_meters(DVec3::X * position);
+            world.run_system_once(prepare_sources).unwrap();
+            let prepared = world
+                .get::<ProgramWorld>(ship)
+                .unwrap()
+                .world_source
+                .as_ref()
+                .unwrap();
+            let immediate = current_source(world, ship).unwrap();
+            assert_eq!(
+                prepared.pose.position,
+                GalacticPosition::from_meters(DVec3::X * (position + 10.0))
+            );
+            assert_eq!(prepared.pose.position, immediate.pose.position);
+            assert_eq!(prepared.pose.velocity, [0.0, 35.0, 0.0]);
+            assert_eq!(prepared.pose.velocity, immediate.pose.velocity);
+            assert_eq!(prepared.slip_ready, immediate.slip_ready);
+            assert!(!prepared.slip_ready);
+        }
+
+        let transit = Transit {
+            origin: GalacticPosition::ZERO,
+            position: GalacticPosition::from_meters(DVec3::Z * 1e12),
+            destination: GalacticPosition::from_meters(DVec3::Z * 2e12),
+            departed: 0,
+            advanced_tick: 0,
+            direction: DVec3::Z.to_array(),
+            speed_ly_s: 0.01,
+            retained_velocity: DVec3::X.to_array(),
+            requested_delta_v: [0.0; 3],
+            departure_mass_kg: 1_000.0,
+            distance_ly: 0.001,
+            consumed_fuel_g: 0,
+            navigation_beacon: None,
+            beacon_lost: false,
+            nominal_direction: DVec3::Z.to_array(),
+            variance_m2: 0.0,
+        };
+        let expected = transit.pose(DQuat::IDENTITY.to_array());
+        world
+            .entity_mut(ship)
+            .insert((PresenceState(Presence::SlipTransit(Id::new())), transit));
+        world.run_system_once(prepare_sources).unwrap();
+        let prepared = world
+            .get::<ProgramWorld>(ship)
+            .unwrap()
+            .world_source
+            .as_ref()
+            .unwrap();
+        let immediate = current_source(world, ship).unwrap();
+        assert_eq!(prepared.pose.position, expected.position);
+        assert_eq!(prepared.pose.velocity, expected.velocity);
+        assert_eq!(prepared.pose.position, immediate.pose.position);
+        assert_eq!(prepared.pose.velocity, immediate.pose.velocity);
+        assert_eq!(prepared.slip_ready, immediate.slip_ready);
+        assert!(!prepared.slip_ready);
+    }
 
     #[test]
     fn slip_departure_checks_the_line_and_future_clearance_but_allows_target_capture() {
@@ -1306,7 +1456,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        world.get_mut::<ShipSoftware>(ship).unwrap().world_actions = vec![
+        world.get_mut::<ProgramWorld>(ship).unwrap().world_actions = vec![
             ProgramAction::Fail {
                 directive_revision: 7,
                 reason: "late error from previous stage".into(),
@@ -1333,7 +1483,7 @@ mod tests {
         assert_eq!(state.status.estimated_arrival_tick, Some(now + 15));
         assert!(
             world
-                .get::<ShipSoftware>(ship)
+                .get::<ProgramWorld>(ship)
                 .unwrap()
                 .world_actions
                 .is_empty()

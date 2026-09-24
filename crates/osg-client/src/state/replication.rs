@@ -49,7 +49,6 @@ pub(super) fn reset(
         world: playback.0.world,
         generation: session.generation + 1,
         status: std::mem::take(&mut session.status),
-        universe_descriptor: session.universe_descriptor.take(),
         ..default()
     };
     commands.trigger(SessionReset);
@@ -61,6 +60,10 @@ pub(super) fn apply(
     mut replication: ResMut<Replication>,
     mut clock: ResMut<RenderTime>,
     mut info: ResMut<SessionInfo>,
+    mut navigation_state: ResMut<NavigationState>,
+    mut playback_state: ResMut<PlaybackState>,
+    mut feedback: ResMut<CommandState>,
+    mut chat: ResMut<ChatState>,
     mut slip: ResMut<SlipEffects>,
     old_samples: Query<(&SpatialInstance, &PoseSamples, Option<&VisualSamples>)>,
     old_optical: Query<&Optical>,
@@ -68,8 +71,8 @@ pub(super) fn apply(
 ) {
     let playback = &mut playback.0;
     let advanced = playback.tick().is_some();
-    info.target_frames = playback.target_frames;
-    info.underruns = playback.underruns;
+    playback_state.target_frames = playback.target_frames;
+    playback_state.underruns = playback.underruns;
     if !advanced {
         return;
     }
@@ -94,10 +97,10 @@ pub(super) fn apply(
         }
     });
     info.capabilities = frame.presentation.capabilities.clone();
-    info.diagnostics = frame.presentation.diagnostics.clone();
+    playback_state.diagnostics = frame.presentation.diagnostics.clone();
     let catalogue = frame.presentation.navigation.directory;
-    if info.navigation.beacons != frame.presentation.navigation.beacons {
-        let navigation = std::sync::Arc::make_mut(&mut info.navigation);
+    if navigation_state.navigation.beacons != frame.presentation.navigation.beacons {
+        let navigation = std::sync::Arc::make_mut(&mut navigation_state.navigation);
         if navigation
             .beacons
             .iter()
@@ -113,12 +116,17 @@ pub(super) fn apply(
         }
         navigation.beacons = frame.presentation.navigation.beacons.clone();
     }
-    if info.navigation_hash != catalogue {
-        info.navigation_hash = catalogue;
+    if navigation_state.navigation_hash != catalogue {
+        navigation_state.navigation_hash = catalogue;
         if catalogue.is_none() {
-            let owned: Vec<_> = info.inhabited.ownership.keys().copied().collect();
+            let owned: Vec<_> = navigation_state
+                .inhabited
+                .ownership
+                .keys()
+                .copied()
+                .collect();
             if let Ok(universe) = crate::ui::celestials::shared_universe() {
-                let navigation = std::sync::Arc::make_mut(&mut info.navigation);
+                let navigation = std::sync::Arc::make_mut(&mut navigation_state.navigation);
                 for id in owned {
                     if let Some(index) = universe.system_index(id.0) {
                         if let Some(system) = navigation.systems.get_mut(index) {
@@ -128,23 +136,23 @@ pub(super) fn apply(
                 }
                 navigation.topology_revision = navigation.topology_revision.wrapping_add(1);
             }
-            info.inhabited = Default::default();
+            navigation_state.inhabited = Default::default();
         }
-        info.navigation_status = if catalogue.is_some() {
+        navigation_state.navigation_status = if catalogue.is_some() {
             NavigationStatus::Loading
         } else {
             NavigationStatus::Unavailable
         };
     }
-    for chat in publications.chat {
-        info.chat.apply(chat);
+    for update in publications.chat {
+        chat.apply(update);
     }
-    info.events.extend(publications.events);
-    let excess = info.events.len().saturating_sub(128);
-    info.events.drain(..excess);
-    info.results.extend(publications.results);
-    let excess = info.results.len().saturating_sub(128);
-    info.results.drain(..excess);
+    feedback.events.extend(publications.events);
+    let excess = feedback.events.len().saturating_sub(128);
+    feedback.events.drain(..excess);
+    feedback.results.extend(publications.results);
+    let excess = feedback.results.len().saturating_sub(128);
+    feedback.results.drain(..excess);
 
     let mut seen_beacons = BTreeSet::new();
     for beacon in &frame.presentation.navigation.beacons {
@@ -362,7 +370,7 @@ mod tests {
         });
         step(&mut app, 0.1, Some(first.clone()));
         assert_eq!(
-            app.world().resource::<SessionInfo>().navigation_status,
+            app.world().resource::<NavigationState>().navigation_status,
             NavigationStatus::Loading
         );
         assert_eq!(
@@ -376,13 +384,13 @@ mod tests {
             beacons: vec![beacon],
             ..Default::default()
         });
-        app.world_mut().resource_mut::<SessionInfo>().navigation = installed.clone();
+        app.world_mut().resource_mut::<NavigationState>().navigation = installed.clone();
         let mut next = snapshot(2, group, track, 0.);
         next.presentation.navigation = first.presentation.navigation;
         step(&mut app, 0.2, Some(next));
         assert!(std::sync::Arc::ptr_eq(
             &installed,
-            &app.world().resource::<SessionInfo>().navigation
+            &app.world().resource::<NavigationState>().navigation
         ));
 
         let mut replacement = snapshot(3, group, track, 0.);
@@ -393,13 +401,13 @@ mod tests {
         step(&mut app, 0.3, Some(replacement));
         assert!(
             app.world()
-                .resource::<SessionInfo>()
+                .resource::<NavigationState>()
                 .navigation
                 .beacons
                 .is_empty()
         );
         assert_eq!(
-            app.world().resource::<SessionInfo>().navigation_status,
+            app.world().resource::<NavigationState>().navigation_status,
             NavigationStatus::Loading
         );
         assert_eq!(
@@ -455,6 +463,14 @@ mod tests {
             .init_resource::<RenderTime>()
             .init_resource::<SlipEffects>()
             .init_resource::<SessionInfo>()
+            .init_resource::<NavigationState>()
+            .init_resource::<PlaybackState>()
+            .init_resource::<CommandState>()
+            .init_resource::<ChatState>()
+            .add_observer(domains::reset_navigation)
+            .add_observer(reset_resource::<PlaybackState>)
+            .add_observer(reset_resource::<CommandState>)
+            .add_observer(reset_resource::<ChatState>)
             .insert_resource(BufferedPlayback(Playback::new(true)))
             .add_systems(FixedUpdate, (reset, apply).chain())
             .add_systems(Update, interpolate);
@@ -482,17 +498,14 @@ mod tests {
         let track = 3_u64;
         step(&mut app, 0.1, Some(snapshot(1, group, track, 0.)));
         let mut outgoing = Outgoing::default();
-        app.world_mut()
-            .resource_mut::<SessionInfo>()
-            .chat
-            .subscribe(
-                Some(ChatFocus {
-                    view: 1,
-                    view_revision: 7,
-                    ship: Id([4; 16]),
-                }),
-                &mut outgoing,
-            );
+        app.world_mut().resource_mut::<ChatState>().subscribe(
+            Some(ChatFocus {
+                view: 1,
+                view_revision: 7,
+                ship: Id([4; 16]),
+            }),
+            &mut outgoing,
+        );
 
         for sequence in 2..=10 {
             let mut frame = snapshot(sequence, group, track, 0.);
@@ -524,12 +537,10 @@ mod tests {
                 .receive(frame);
         }
         step(&mut app, 0.2, None);
-        let session = app.world().resource::<SessionInfo>();
-        assert_eq!(session.sequence, 3);
+        assert_eq!(app.world().resource::<SessionInfo>().sequence, 3);
+        let chat = app.world().resource::<ChatState>();
         assert_eq!(
-            session
-                .chat
-                .messages
+            chat.messages
                 .iter()
                 .map(|message| message.text.as_str())
                 .collect::<Vec<_>>(),
@@ -540,16 +551,12 @@ mod tests {
     #[test]
     fn industry_queries_ignore_stale_revisions_and_clear_on_close() {
         let mut industry = IndustryState::default();
-        let mut requests = requests::Requests::default();
-        industry.subscribe(
-            Some(industry::IndustryQuery {
-                directory: true,
-                catalogue: true,
-                ..Default::default()
-            }),
-            &mut requests,
-        );
-        let revision = requests.industry.as_ref().unwrap().revision;
+        industry.subscribe(Some(industry::IndustryQuery {
+            directory: true,
+            catalogue: true,
+            ..Default::default()
+        }));
+        let revision = industry.interest.as_ref().unwrap().revision;
         industry.apply(industry::IndustrySnapshot {
             subscription_revision: revision,
             catalogue: Some(industry::IndustryCatalogue {
@@ -570,8 +577,8 @@ mod tests {
             industry.snapshot.catalogue.as_ref().unwrap().revision,
             [7; 32]
         );
-        industry.subscribe(None, &mut requests);
-        assert!(requests.industry.is_none());
+        industry.subscribe(None);
+        assert!(industry.interest.is_none());
         assert_eq!(industry.snapshot, Default::default());
     }
 
@@ -823,7 +830,7 @@ mod tests {
             assert_eq!(app.world().resource::<SessionInfo>().sequence, 2);
             assert_eq!(clock.display_ns, 150_000_000);
         }
-        assert_eq!(app.world().resource::<SessionInfo>().underruns, 1);
+        assert_eq!(app.world().resource::<PlaybackState>().underruns, 1);
         step(&mut app, 0.5, Some(snapshot(3, group, track, 200.)));
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 2);
         step(&mut app, 0.6, Some(snapshot(4, group, track, 300.)));
@@ -924,7 +931,7 @@ mod tests {
         }
         step(&mut app, 0.2, None);
         assert_eq!(app.world().resource::<SessionInfo>().sequence, 3);
-        let session = app.world().resource::<SessionInfo>();
+        let session = app.world().resource::<CommandState>();
         assert_eq!(
             session
                 .results
@@ -961,7 +968,7 @@ mod tests {
             .unwrap();
         assert!((pose.0.position.relative_to(GalacticPosition::ZERO).x - 500.).abs() < 1e-6);
         assert_eq!(app.world().resource::<RenderTime>().display_ns, 600_000_000);
-        assert_eq!(app.world().resource::<SessionInfo>().results.len(), 2);
+        assert_eq!(app.world().resource::<CommandState>().results.len(), 2);
     }
     fn optical(view: u64, position: f64, luminosity_w: f64) -> optical::OpticalObservation {
         optical::OpticalObservation {

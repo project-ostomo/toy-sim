@@ -56,7 +56,7 @@ impl Fixture {
         inventory.0.packaged_parts.clear();
         inventory.0.reservations.clear();
         inventory.0.energy_j = 0;
-        synchronize_mass(world, &[station]);
+        hardware::synchronize_mass(world, &[station]);
 
         Self {
             account,
@@ -137,7 +137,7 @@ impl Fixture {
             .unwrap()
             .0
             .energy_j = 0;
-        synchronize_mass(world, &[ship]);
+        hardware::synchronize_mass(world, &[ship]);
         let inventory = &world.get::<hardware::ShipInventory>(ship).unwrap().0;
         assert_eq!(inventory.quantities[fuel], 0);
         assert_eq!(inventory.quantities[spent], 10);
@@ -403,7 +403,7 @@ fn unloading_products_rechecks_both_inventories_and_requires_a_shared_dock() {
             &catalogue,
         )
         .unwrap();
-    synchronize_mass(fixture.app.world_mut(), &[station]);
+    hardware::synchronize_mass(fixture.app.world_mut(), &[station]);
     let full_state = fixture.state();
     assert!(fixture.unload(visitor, "spent_fuel", 10).is_err());
     assert_eq!(fixture.state(), full_state);
@@ -416,7 +416,7 @@ fn unloading_products_rechecks_both_inventories_and_requires_a_shared_dock() {
         .0
         .withdraw_cargo(&CargoItem::Resource("spent_fuel".into()), full, &catalogue)
         .unwrap();
-    synchronize_mass(fixture.app.world_mut(), &[station]);
+    hardware::synchronize_mass(fixture.app.world_mut(), &[station]);
     fixture.unload(visitor, "spent_fuel", 10).unwrap();
     assert_eq!(fixture.inventory(fixture.ship).quantities[spent], 0);
     assert_eq!(fixture.cargo(fixture.station, "spent_fuel"), 10);

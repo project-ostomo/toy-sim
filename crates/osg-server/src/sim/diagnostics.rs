@@ -39,7 +39,9 @@ pub(crate) mod samples {
 }
 
 use super::{
-    physics::collision::CollisionStats, simulation::SimulationCounters, vessel::ShipSoftware,
+    physics::collision::CollisionStats,
+    simulation::SimulationCounters,
+    vessel::{ComputerBudget, SoftwareDiagnostics},
 };
 
 /// Opt-in wall-clock scopes for spatial profiling, including early returns.
@@ -104,8 +106,10 @@ pub fn tick(world: &mut World, duration_ms: f64) {
     let tick = counters.ticks;
     let sim_time_s = world.resource::<Time<Fixed>>().elapsed_secs_f64();
     let collision = world.resource::<CollisionStats>().clone();
-    let mut ships =
-        world.query_filtered::<(Entity, &ShipSoftware), Without<super::travel::Dormant>>();
+    let mut ships = world.query_filtered::<
+        (Entity, &SoftwareDiagnostics, &ComputerBudget),
+        Without<super::travel::Dormant>,
+    >();
     let mut software_count = 0;
     let mut software_work_ms = 0.0;
     let mut worst_ship = None;
@@ -113,16 +117,16 @@ pub fn tick(world: &mut World, duration_ms: f64) {
     let mut worst_callback_ms = 0.0;
     let mut worst_prepare_ms = 0.0;
     let mut worst_gas = 0;
-    for (entity, software) in ships.iter(world) {
+    for (entity, diagnostics, budget) in ships.iter(world) {
         software_count += 1;
-        let ms = software.last_seconds * 1000.0;
+        let ms = diagnostics.last_seconds * 1000.0;
         software_work_ms += ms;
         if ms > worst_ship_ms {
             worst_ship = Some(entity);
             worst_ship_ms = ms;
-            worst_callback_ms = software.timings.callback * 1000.0;
-            worst_prepare_ms = software.timings.prepare * 1000.0;
-            worst_gas = software.last_gas_used;
+            worst_callback_ms = diagnostics.timings.callback * 1000.0;
+            worst_prepare_ms = diagnostics.timings.prepare * 1000.0;
+            worst_gas = budget.used_gas();
         }
     }
 

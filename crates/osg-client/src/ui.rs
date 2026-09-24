@@ -129,6 +129,7 @@ mod tests {
         world.init_resource::<selection::Subscriptions>();
         world.init_resource::<Selection>();
         world.init_resource::<Outgoing>();
+        world.init_resource::<state::IndustryState>();
         world.insert_resource(SessionInfo {
             world: Some(Id([3; 16])),
             ..Default::default()
@@ -157,6 +158,7 @@ mod tests {
         world.init_resource::<selection::Subscriptions>();
         world.init_resource::<Selection>();
         world.init_resource::<Outgoing>();
+        world.init_resource::<state::IndustryState>();
         world.init_resource::<SessionInfo>();
 
         let station_id = Id([1; 16]);
@@ -193,6 +195,7 @@ mod tests {
         world.init_resource::<selection::Subscriptions>();
         world.init_resource::<Selection>();
         world.init_resource::<Outgoing>();
+        world.init_resource::<state::IndustryState>();
         let first = Id([1; 16]);
         let built = Id([2; 16]);
         world.insert_resource(SessionInfo {
@@ -204,7 +207,7 @@ mod tests {
             host: Id([4; 16]),
             bay: 0,
         };
-        world.resource_mut::<SessionInfo>().industry.snapshot.hangar = Some(industry::HangarView {
+        world.resource_mut::<state::IndustryState>().snapshot.hangar = Some(industry::HangarView {
             berths_used: Some(1),
             berths_total: Some(4),
             ship: first,
@@ -242,7 +245,7 @@ mod tests {
 
         assert_eq!(world.resource::<Selection>().ship, Some(built));
         world.spawn(hull);
-        world.resource_mut::<SessionInfo>().industry.snapshot.hangar = None;
+        world.resource_mut::<state::IndustryState>().snapshot.hangar = None;
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(built));
 
@@ -281,6 +284,7 @@ mod tests {
         });
         world.add_observer(state::reset_resource::<Selection>);
         world.init_resource::<Outgoing>();
+        world.init_resource::<state::IndustryState>();
         world.insert_resource(SessionInfo {
             world: Some(Id([5; 16])),
             ..Default::default()

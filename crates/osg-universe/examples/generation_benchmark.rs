@@ -7,7 +7,7 @@ fn main() {
     let universe = Universe::bundled().expect("valid universe catalogue");
     println!(
         "catalogue: systems={} generated={} elapsed_ms={:.2}",
-        universe.systems.len(),
+        universe.systems().len(),
         universe.cached_definitions(),
         start.elapsed().as_secs_f64() * 1000.0
     );

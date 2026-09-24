@@ -193,7 +193,7 @@ impl PhysicalOrigins<'_, '_> {
                     | osg_model::travel::Presence::StoredInWreck(_),
                 ) => return None,
                 Some(osg_model::travel::Presence::Docked { host, .. }) => {
-                    entity = *self.index.0.get(host)?;
+                    entity = *self.index.entries().get(host)?;
                 }
                 _ => {
                     return transit
@@ -429,7 +429,7 @@ mod tests {
                 ..Default::default()
             })
             .id();
-        identity::register(&mut world, host, host_id);
+        identity::register(&mut world, host, host_id).unwrap();
         let ship = world
             .spawn((
                 PreciseTransform::default(),

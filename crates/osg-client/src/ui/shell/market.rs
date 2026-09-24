@@ -4,7 +4,7 @@ use osg_model::market::{Instrument, MarketCommand, MarketQuery, MarketSnapshot, 
 use osg_ui::components;
 use ownership::Principal;
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     instrument: Instrument,
     stations_after: Option<Id>,

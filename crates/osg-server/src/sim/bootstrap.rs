@@ -1,7 +1,11 @@
 use super::{identity, physics, precision, sensors, session, travel, vessel};
 use anyhow::Result;
 use bevy::{math::DVec3, prelude::*};
-use osg_model::{AccountId, DebugCommand, Id};
+use osg_model::{
+    AccountId, DebugCommand, Id,
+    economy::{Currency, MONEY_SCALE},
+    ownership::Principal,
+};
 use std::path::PathBuf;
 
 #[derive(Resource, Clone)]
@@ -53,7 +57,7 @@ fn provision_inner(
         Some(super::ownership::organization_id("Terminus Privateers")),
     )?;
     let owner = accounts.first().copied().unwrap_or_else(Id::new);
-    identity::attach_ship(world, player, owner)?;
+    identity::attach_ship(world, player, owner, osg_model::Id::new())?;
     let design = world.get::<vessel::ShipDesign>(player).unwrap().0.clone();
     let pose = *world.get::<precision::PreciseTransform>(player).unwrap();
     let velocity = world.get::<physics::Velocity>(player).unwrap().0;
@@ -80,7 +84,7 @@ fn provision_inner(
             velocity,
             format!("Explorer {}", index + 1),
         )?;
-        identity::attach_ship(world, ship, account)?;
+        identity::attach_ship(world, ship, account, osg_model::Id::new())?;
         vessel::seed_exotic_fuel(world, ship, vessel::STARTING_EXOTIC_RANGE_LY)?;
     }
     let unowned = world
@@ -88,7 +92,7 @@ fn provision_inner(
         .iter(world)
         .collect::<Vec<_>>();
     for &ship in &unowned {
-        identity::attach_ship(world, ship, hostile_account)?;
+        identity::attach_ship(world, ship, hostile_account, osg_model::Id::new())?;
         world.entity_mut(ship).insert(super::ownership::AssetOwner(
             osg_model::ownership::Principal::Organization(super::ownership::organization_id(
                 "Terminus Privateers",
@@ -103,6 +107,16 @@ fn provision_inner(
     }
     if let Some(account) = debug_account {
         identity::add_account(world, account, true);
+        let now = osg_model::calendar::now_unix_ms();
+        let mut economy = world.resource_mut::<super::economy::Economy>();
+        for currency in [Currency::Uec, Currency::Lat] {
+            economy.issue(
+                Principal::Player(account),
+                currency,
+                1_000_000_000 * MONEY_SCALE,
+                now,
+            )?;
+        }
     }
     super::infrastructure::spawn(world, player)?;
     let mut publish = Schedule::default();
@@ -122,13 +136,13 @@ fn provision_inner(
     publish.run(world);
     for hostile in unowned {
         let contact = super::services::handle_for_entity(world, hostile, player)?;
-        let mut software = world.get_mut::<vessel::ShipSoftware>(hostile).unwrap();
-        software.command(osg_ship_wasm::Command::AimContact(contact));
-        software.command(osg_ship_wasm::Command::MarkTarget {
+        let mut mailbox = world.get_mut::<vessel::ShipMailbox>(hostile).unwrap();
+        mailbox.command(osg_ship_wasm::Command::AimContact(contact));
+        mailbox.command(osg_ship_wasm::Command::MarkTarget {
             contact,
             maximum_flight_time_s: 2.0,
         });
-        software.command(osg_ship_wasm::Command::StartFiring);
+        mailbox.command(osg_ship_wasm::Command::StartFiring);
     }
     super::infrastructure::publish_navigation(world);
     Ok(app)
@@ -157,8 +171,8 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                 ));
                 world.entity_mut(entity).remove::<physics::WithinSoi>();
                 identity::renew_spatial_instance(world, entity);
-                if let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity) {
-                    software.command(osg_ship_wasm::Command::StopGuidance);
+                if let Some(mut mailbox) = world.get_mut::<vessel::ShipMailbox>(entity) {
+                    mailbox.command(osg_ship_wasm::Command::StopGuidance);
                 }
             }
             DebugCommand::Recover { ship } => {
@@ -173,8 +187,8 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                 let Ok(entity) = identity::lookup(world, ship) else {
                     continue;
                 };
-                if let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity) {
-                    software.hull_energy_j += joules;
+                if let Some(mut damage) = world.get_mut::<vessel::PendingDamage>(entity) {
+                    damage.hull_energy_j += joules;
                 }
             }
             DebugCommand::ConfigureSensor {
@@ -190,9 +204,9 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
             }
             DebugCommand::InjectShieldHeat { ship, joules } => {
                 if let Ok(entity) = identity::lookup(world, ship)
-                    && let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity)
+                    && let Some(mut damage) = world.get_mut::<vessel::PendingDamage>(entity)
                 {
-                    software.shield_energy_j += joules;
+                    damage.shield_energy_j += joules;
                 }
             }
             DebugCommand::InspectBody { body } => {
@@ -245,8 +259,8 @@ pub fn apply_debug_requests(world: &mut World) -> Result<()> {
                     .remove::<physics::WithinSoi>();
                 travel::cancel_pending(world, entity);
                 identity::renew_spatial_instance(world, entity);
-                if let Some(mut software) = world.get_mut::<vessel::ShipSoftware>(entity) {
-                    software.command(osg_ship_wasm::Command::StopGuidance);
+                if let Some(mut mailbox) = world.get_mut::<vessel::ShipMailbox>(entity) {
+                    mailbox.command(osg_ship_wasm::Command::StopGuidance);
                 }
             }
             DebugCommand::SetRate(_) | DebugCommand::Reset | DebugCommand::Inspect(_) => {}

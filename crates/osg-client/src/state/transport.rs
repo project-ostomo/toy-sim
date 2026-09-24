@@ -9,6 +9,7 @@ pub(super) fn receive(
     mut playback: ResMut<BufferedPlayback>,
     mut outgoing: ResMut<Outgoing>,
     mut info: ResMut<SessionInfo>,
+    mut navigation: ResMut<NavigationState>,
 ) {
     if transport.failed {
         return;
@@ -19,7 +20,7 @@ pub(super) fn receive(
                 if playback.0.world != Some(world) {
                     outgoing.clear();
                 }
-                info.universe_descriptor = Some(universe);
+                navigation.universe_descriptor = Some(universe);
             }
             Ok(NetEvent::Frame(frame)) => {
                 if playback.0.world != Some(frame.world) {

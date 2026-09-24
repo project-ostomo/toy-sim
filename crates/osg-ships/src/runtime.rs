@@ -206,7 +206,7 @@ impl ShipState {
         self.inventory.energy_j = d.battery_j;
     }
     pub fn computer_running(&self, _d: &CompiledShipDesign) -> bool {
-        self.hull > 0. && self.avionics.operational && self.avionics.powered
+        computer_running(self.hull, &self.avionics)
     }
     /// Validate the entire command buffer before applying any of it.
     pub fn apply_commands(
@@ -214,25 +214,7 @@ impl ShipState {
         d: &CompiledShipDesign,
         commands: &[DeviceCommand],
     ) -> Result<()> {
-        ensure!(
-            commands.len() <= crate::MAX_DEVICES,
-            "too many device commands"
-        );
-        for command in commands {
-            let descriptor = d
-                .device_catalogue
-                .get(usize::from(command.device.0))
-                .context("unknown device handle")?;
-            ensure!(
-                command.setting.finite() && command.setting.supports(&descriptor.kind),
-                "invalid setting for device {}",
-                descriptor.alias
-            );
-        }
-        for command in commands {
-            self.settings[usize::from(command.device.0)] = Some(command.setting.clone());
-        }
-        Ok(())
+        apply_device_commands(d, &mut self.settings, commands)
     }
     pub fn reset_commands(&mut self, d: &CompiledShipDesign) {
         self.settings = default_settings(d);
@@ -241,6 +223,35 @@ impl ShipState {
         }
     }
     pub fn snapshot(&self, d: &CompiledShipDesign) -> Vec<DeviceStatus> {
+        DeviceTelemetry {
+            inventory: &self.inventory,
+            thermal: &self.thermal,
+            avionics: &self.avionics,
+            sensor_range: self.sensor_range,
+        }
+        .snapshot(d, |part| &self.devices[part], |index| &self.weapons[index])
+    }
+
+    pub fn mass_properties(&self, d: &CompiledShipDesign, cat: &Catalogue) -> (f64, DMat3) {
+        mass_properties(d, cat, &self.inventory, &self.thermal)
+    }
+}
+
+/// Borrowed inputs for device telemetry, independent of the storage layout.
+pub struct DeviceTelemetry<'a> {
+    pub inventory: &'a Inventory,
+    pub thermal: &'a crate::thermal::ThermalState,
+    pub avionics: &'a DeviceState,
+    pub sensor_range: f64,
+}
+
+impl DeviceTelemetry<'_> {
+    pub fn snapshot<'a>(
+        &self,
+        d: &CompiledShipDesign,
+        device: impl Fn(usize) -> &'a DeviceState,
+        weapon: impl Fn(usize) -> &'a crate::weapons::WeaponState,
+    ) -> Vec<DeviceStatus> {
         let states: Vec<_> = d
             .device_catalogue
             .iter()
@@ -248,9 +259,9 @@ impl ShipState {
             .map(|(descriptor, source)| {
                 let state = match source {
                     DeviceSource::Part(part) | DeviceSource::MicropulseGenerator(part) => {
-                        &self.devices[*part]
+                        device(*part)
                     }
-                    DeviceSource::Avionics => &self.avionics,
+                    DeviceSource::Avionics => self.avionics,
                 };
                 let actual = if state.operational && state.powered {
                     if matches!(source, DeviceSource::MicropulseGenerator(_)) {
@@ -274,7 +285,7 @@ impl ShipState {
                     DeviceKind::Gun | DeviceKind::Laser => {
                         let part = d.part_for_device(descriptor.handle).unwrap();
                         let index = d.part_weapons[part].unwrap();
-                        let weapon = &self.weapons[index];
+                        let weapon = weapon(index);
                         let spec = &d.weapon_specs[index];
                         use osg_ship_api::abi;
 
@@ -333,13 +344,13 @@ impl ShipState {
                     DeviceKind::Generator { .. } => DeviceReading::Generator { power_w: actual },
                     DeviceKind::Shield { .. } => DeviceReading::Shield {
                         state: self.thermal.shield_state,
-                        temperature_k: self.shield_temperature(d),
+                        temperature_k: self.thermal.shield_temperature(d.into()),
                         reserve_kg: self.thermal.shield_reserve_kg(),
                         reserve_capacity_kg: d.shield_reserve_capacity_kg,
                         strength: self.thermal.shield_strength(d.into()),
                         ablation_kg_s: self.thermal.ablation_kg_s,
                         radiated_power_w: crate::thermal::radiation(
-                            self.shield_temperature(d),
+                            self.thermal.shield_temperature(d.into()),
                             self.thermal.radiator_area(d.into()),
                         ),
                         power_w: actual,
@@ -363,17 +374,55 @@ impl ShipState {
             .collect();
         states
     }
-
-    pub fn mass_properties(&self, d: &CompiledShipDesign, cat: &Catalogue) -> (f64, DMat3) {
-        let m = d.dry_mass
-            + self.inventory.mass(cat)
-            + self.thermal.shield_reserve_kg()
-            + self.thermal.shield_deployed_kg;
-        (m, d.inertia * (m / d.dry_mass))
-    }
 }
 
-fn default_settings(d: &CompiledShipDesign) -> Vec<Option<DeviceSetting>> {
+pub fn computer_running(hull: f64, avionics: &DeviceState) -> bool {
+    hull > 0.0 && avionics.operational && avionics.powered
+}
+
+/// Validate the entire command buffer before applying any of it.
+pub fn apply_device_commands(
+    d: &CompiledShipDesign,
+    settings: &mut [Option<DeviceSetting>],
+    commands: &[DeviceCommand],
+) -> Result<()> {
+    ensure!(
+        settings.len() == d.device_catalogue.len(),
+        "device settings do not match design"
+    );
+    ensure!(
+        commands.len() <= crate::MAX_DEVICES,
+        "too many device commands"
+    );
+    for command in commands {
+        let descriptor = d
+            .device_catalogue
+            .get(usize::from(command.device.0))
+            .context("unknown device handle")?;
+        ensure!(
+            command.setting.finite() && command.setting.supports(&descriptor.kind),
+            "invalid setting for device {}",
+            descriptor.alias
+        );
+    }
+    for command in commands {
+        settings[usize::from(command.device.0)] = Some(command.setting.clone());
+    }
+    Ok(())
+}
+
+pub fn mass_properties(
+    d: &CompiledShipDesign,
+    cat: &Catalogue,
+    inventory: &Inventory,
+    thermal: &crate::thermal::ThermalState,
+) -> (f64, DMat3) {
+    let mass =
+        d.dry_mass + inventory.mass(cat) + thermal.shield_reserve_kg() + thermal.shield_deployed_kg;
+    (mass, d.inertia * (mass / d.dry_mass))
+}
+
+pub fn default_settings(d: &CompiledShipDesign) -> Vec<Option<DeviceSetting>> {
     d.device_catalogue
         .iter()
         .map(|device| match device.kind {

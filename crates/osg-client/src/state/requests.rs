@@ -10,24 +10,40 @@ pub(crate) mod services;
 pub(crate) struct NetworkClient(pub OsgNetClient);
 
 #[derive(Resource, Default)]
-pub(crate) struct Requests {
-    pub services: Option<services::Interest>,
-    service_load: Load<services::Interest, services::View>,
+pub(crate) struct Routes {
     context: Option<(Id, u64)>,
     pub routes: Vec<(Id, RouteCall)>,
     pub route_results: Vec<RouteResponse>,
     route_jobs: Vec<RouteJob>,
-    pub society: SocietyInterest,
-    society_load: Load<SocietyInterest, SocietyView>,
-    pub wallet: Option<economy::WalletQuery>,
-    pub market: Option<osg_model::market::MarketQuery>,
-    pub assets: Option<osg_model::assets::AssetsQuery>,
-    pub industry: Option<industry::IndustryQuery>,
-    wallet_load: Load<economy::WalletQuery, economy::WalletSnapshot>,
-    market_load: Load<osg_model::market::MarketQuery, osg_model::market::MarketSnapshot>,
-    assets_load: Load<osg_model::assets::AssetsQuery, osg_model::assets::AssetsSnapshot>,
-    industry_load: Load<industry::IndustryQuery, industry::IndustrySnapshot>,
+}
+
+#[derive(Resource, Default)]
+pub(crate) struct Mutations {
     jobs: Vec<Job>,
+    refresh_revision: u64,
+}
+
+pub(super) fn install(app: &mut App) {
+    app.init_resource::<Routes>()
+        .init_resource::<Mutations>()
+        .add_observer(reset_resource::<Routes>)
+        .add_observer(reset_resource::<Mutations>)
+        .add_systems(
+            Update,
+            (
+                update_routes,
+                update_mutations,
+                (
+                    update_services,
+                    update_society,
+                    update_wallet,
+                    update_market,
+                    update_assets,
+                    update_industry,
+                )
+                    .after(update_mutations),
+            ),
+        );
 }
 
 #[derive(Clone, Debug)]
@@ -76,7 +92,7 @@ pub(crate) struct SocietyInterest {
     pub assets_after: Option<Id>,
 }
 
-struct SocietyView {
+pub(crate) struct SocietyView {
     history_key: Option<(
         ownership::Principal,
         osg_model::diplomacy::DeclarationCategory,
@@ -98,7 +114,8 @@ struct Job {
     receive: oneshot::Receiver<Result<(), String>>,
 }
 
-struct Load<Q, T> {
+pub(crate) struct Load<Q, T> {
+    refresh_revision: u64,
     context: Option<(Id, u64, Q)>,
     pending: Option<oneshot::Receiver<Result<T, String>>>,
     next: Duration,
@@ -107,6 +124,7 @@ struct Load<Q, T> {
 impl<Q, T> Default for Load<Q, T> {
     fn default() -> Self {
         Self {
+            refresh_revision: 0,
             context: None,
             pending: None,
             next: Duration::ZERO,
@@ -115,6 +133,18 @@ impl<Q, T> Default for Load<Q, T> {
 }
 
 impl<Q: Clone + PartialEq, T: Send + 'static> Load<Q, T> {
+    pub(crate) fn loading(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    fn refresh(&mut self, revision: u64) {
+        if self.refresh_revision != revision {
+            self.pending = None;
+            self.next = Duration::ZERO;
+            self.refresh_revision = revision;
+        }
+    }
+
     fn update<F, Fut>(
         &mut self,
         context: Option<(Id, u64, Q)>,
@@ -175,24 +205,15 @@ pub(crate) struct Loading {
     pub services: bool,
 }
 
-impl Requests {
-    pub(crate) fn loading(&self) -> Loading {
-        Loading {
-            society: self.society_load.pending.is_some(),
-            wallet: self.wallet_load.pending.is_some(),
-            market: self.market_load.pending.is_some(),
-            assets: self.assets_load.pending.is_some(),
-            industry: self.industry_load.pending.is_some(),
-            services: self.service_load.pending.is_some(),
-        }
-    }
-
+impl Routes {
     pub(crate) fn route(&mut self, call: RouteCall) -> Id {
         let id = Id::new();
         self.routes.push((id, call));
         id
     }
+}
 
+impl Mutations {
     pub(crate) fn submit<F>(&mut self, world: Id, generation: u64, id: Id, future: F)
     where
         F: Future<Output = Result<(), String>> + Send + 'static,
@@ -210,21 +231,6 @@ impl Requests {
             })
             .detach();
     }
-
-    fn refresh(&mut self) {
-        self.service_load.pending = None;
-        self.service_load.next = Duration::ZERO;
-        self.society_load.pending = None;
-        self.society_load.next = Duration::ZERO;
-        self.wallet_load.pending = None;
-        self.market_load.pending = None;
-        self.assets_load.pending = None;
-        self.industry_load.pending = None;
-        self.wallet_load.next = Duration::ZERO;
-        self.market_load.next = Duration::ZERO;
-        self.assets_load.next = Duration::ZERO;
-        self.industry_load.next = Duration::ZERO;
-    }
 }
 
 pub(crate) async fn call<T>(
@@ -236,11 +242,10 @@ pub(crate) async fn call<T>(
         .map_err(|error| error.to_string())
 }
 
-pub(super) fn update(
-    mut requests: ResMut<Requests>,
+fn update_routes(
+    mut requests: ResMut<Routes>,
     client: Res<NetworkClient>,
-    mut session: ResMut<SessionInfo>,
-    time: Res<Time<Real>>,
+    session: Res<SessionInfo>,
 ) {
     let context = session.world.filter(|_| session.status.is_empty());
     let generation = session.generation;
@@ -312,6 +317,15 @@ pub(super) fn update(
     requests.route_results.extend(route_results);
     let excess = requests.route_results.len().saturating_sub(128);
     requests.route_results.drain(..excess);
+}
+
+fn update_mutations(
+    mut requests: ResMut<Mutations>,
+    session: Res<SessionInfo>,
+    mut feedback: ResMut<CommandState>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
     let mut refresh = false;
     requests.jobs.retain_mut(|job| {
         if Some(job.world) != context || job.generation != generation {
@@ -325,124 +339,196 @@ pub(super) fn update(
             }
         };
         refresh |= result.is_ok();
-        session.results.push(CommandResult {
+        feedback.results.push(CommandResult {
             id: job.id,
             error: result.err(),
         });
         false
     });
     if refresh {
-        requests.refresh();
+        requests.refresh_revision = requests.refresh_revision.wrapping_add(1);
     }
+}
+fn update_services(
+    mut state: ResMut<ServiceState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
     let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
     let wanted = context.and_then(|world| {
-        requests
-            .services
+        state
+            .interest
             .clone()
             .map(|query| (world, generation, query))
     });
     let net = client.0.clone();
-    let (changed, result) = requests
-        .service_load
-        .update(wanted, now, move |world, query| {
-            services::fetch(net, world, query)
-        });
+    let (changed, result) = state.load.update(wanted, now, move |world, query| {
+        services::fetch(net, world, query)
+    });
     if changed {
-        session.services = Default::default();
+        state.services = Default::default();
     }
     if let Some(result) = result {
-        session.services = result.unwrap_or_else(|error| services::View {
+        state.services = result.unwrap_or_else(|error| services::View {
             error: Some(error),
             ..Default::default()
         });
     }
+}
 
-    let wanted = context.map(|world| (world, generation, requests.society.clone()));
+fn update_society(
+    mut state: ResMut<SocietyState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
+    let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
+    let current = context.map(|world| (world, generation));
+    let context_changed = state.context != current;
+    state.context = current;
+    let wanted = context.map(|world| (world, generation, state.interest.clone()));
     let net = client.0.clone();
-    let (_, result) = requests
-        .society_load
+    let (_, result) = state
+        .load
         .update(wanted, now, move |world, query| society(net, world, query));
-    apply_society(&mut session, context_changed, result);
+    apply_society(&mut state, context_changed, result);
+}
 
+fn update_wallet(
+    mut state: ResMut<WalletState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
+    let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
     let wanted = context
-        .zip(requests.wallet.clone())
+        .zip(state.interest.clone())
         .map(|(world, query)| (world, generation, query));
     let net = client.0.clone();
-    let (changed, result) = requests
-        .wallet_load
+    let (changed, result) = state
+        .load
         .update(wanted, now, move |world, query| wallet(net, world, query));
     if changed {
-        session.wallet = None;
+        state.wallet = None;
     }
     if let Some(result) = result {
-        session.wallet = Some(result.unwrap_or_else(|error| economy::WalletSnapshot {
+        state.wallet = Some(result.unwrap_or_else(|error| economy::WalletSnapshot {
             error: Some(error),
             ..Default::default()
         }));
     }
+}
 
+fn update_market(
+    mut state: ResMut<MarketState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
+    let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
     let wanted = context
-        .zip(requests.market.clone())
+        .zip(state.interest.clone())
         .map(|(world, query)| (world, generation, query));
     let net = client.0.clone();
-    let (changed, result) = requests
-        .market_load
+    let (changed, result) = state
+        .load
         .update(wanted, now, move |world, query| market(net, world, query));
     if changed {
-        session.market = None;
+        state.market = None;
     }
     if let Some(result) = result {
-        session.market = Some(
+        state.market = Some(
             result.unwrap_or_else(|error| osg_model::market::MarketSnapshot {
                 error: Some(error),
                 ..Default::default()
             }),
         );
     }
+}
 
+fn update_assets(
+    mut state: ResMut<AssetsState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
+    let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
     let wanted = context
-        .zip(requests.assets.clone())
+        .zip(state.interest.clone())
         .map(|(world, query)| (world, generation, query));
     let net = client.0.clone();
-    let (changed, result) = requests
-        .assets_load
+    let (changed, result) = state
+        .load
         .update(wanted, now, move |world, query| assets(net, world, query));
     if changed {
-        session.assets = None;
+        state.assets = None;
     }
     if let Some(result) = result {
-        session.assets = Some(
+        state.assets = Some(
             result.unwrap_or_else(|error| osg_model::assets::AssetsSnapshot {
                 error: Some(error),
                 ..Default::default()
             }),
         );
     }
+}
 
+fn update_industry(
+    mut state: ResMut<IndustryState>,
+    client: Res<NetworkClient>,
+    session: Res<SessionInfo>,
+    time: Res<Time<Real>>,
+    mutations: Res<Mutations>,
+) {
+    let context = session.world.filter(|_| session.status.is_empty());
+    let generation = session.generation;
+    let now = time.elapsed();
+    state.load.refresh(mutations.refresh_revision);
     let wanted = context
-        .zip(requests.industry.clone())
+        .zip(state.interest.clone())
         .map(|(world, query)| (world, generation, query));
     let net = client.0.clone();
-    let (changed, result) = requests
-        .industry_load
+    let (changed, result) = state
+        .load
         .update(wanted, now, move |world, query| industry(net, world, query));
     if changed {
-        session.industry.snapshot = Default::default();
+        state.snapshot = Default::default();
     }
     if let Some(result) = result {
-        let revision = requests.industry.as_ref().map_or(0, |query| query.revision);
-        session.industry.apply(result.unwrap_or_else(|error| {
-            osg_model::industry::IndustrySnapshot {
+        let revision = state.interest.as_ref().map_or(0, |query| query.revision);
+        state.apply(
+            result.unwrap_or_else(|error| osg_model::industry::IndustrySnapshot {
                 subscription_revision: revision,
                 error: Some(error),
                 ..Default::default()
-            }
-        }));
+            }),
+        );
     }
 }
 
 fn apply_society(
-    session: &mut SessionInfo,
+    session: &mut SocietyState,
     context_changed: bool,
     result: Option<Result<SocietyView, String>>,
 ) {
@@ -806,12 +892,74 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mutation_completion_refreshes_domains_and_discards_stale_generations() {
+        let world = Id([1; 16]);
+        let current_id = Id([2; 16]);
+        let stale_id = Id([3; 16]);
+        let (current_send, current_receive) = oneshot::channel();
+        let (stale_send, stale_receive) = oneshot::channel();
+        current_send.send(Ok(())).unwrap();
+        stale_send.send(Ok(())).unwrap();
+
+        let mut app = App::new();
+        app.insert_resource(SessionInfo {
+            world: Some(world),
+            generation: 2,
+            ..Default::default()
+        })
+        .init_resource::<CommandState>()
+        .insert_resource(Mutations {
+            jobs: vec![
+                Job {
+                    world,
+                    generation: 1,
+                    id: stale_id,
+                    receive: stale_receive,
+                },
+                Job {
+                    world,
+                    generation: 2,
+                    id: current_id,
+                    receive: current_receive,
+                },
+            ],
+            refresh_revision: 0,
+        })
+        .add_systems(Update, update_mutations);
+        app.update();
+
+        let results = &app.world().resource::<CommandState>().results;
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id, current_id);
+        assert!(results[0].error.is_none());
+        let revision = app.world().resource::<Mutations>().refresh_revision;
+        assert_eq!(revision, 1);
+
+        let mut load = Load::<u8, u8>::default();
+        let (_, pending) = oneshot::channel();
+        load.pending = Some(pending);
+        load.next = Duration::from_secs(10);
+        load.refresh(revision);
+        assert!(load.pending.is_none());
+        assert_eq!(load.next, Duration::ZERO);
+        load.next = Duration::from_secs(20);
+        load.refresh(revision);
+        assert_eq!(load.next, Duration::from_secs(20));
+
+        app.update();
+        assert_eq!(
+            app.world().resource::<Mutations>().refresh_revision,
+            revision
+        );
+    }
+
+    #[test]
     fn directory_keeps_content_until_replacement_and_clears_on_session_change() {
         use ownership::{PlayerAffiliation, Principal};
 
         let account = Id([1; 16]);
         let principal = Principal::Player(account);
-        let mut session = SessionInfo::default();
+        let mut session = SocietyState::default();
         session.society.account = account;
         session.society.directory.players.insert(
             account,
@@ -840,7 +988,12 @@ mod tests {
         assert_eq!(session.society_error.as_deref(), Some("Offline"));
 
         let mut replacement = session.society.clone();
-        replacement.directory.players.get_mut(&account).unwrap().name = "New page".into();
+        replacement
+            .directory
+            .players
+            .get_mut(&account)
+            .unwrap()
+            .name = "New page".into();
         apply_society(
             &mut session,
             false,

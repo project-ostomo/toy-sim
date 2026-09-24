@@ -516,7 +516,7 @@ pub(super) fn list_market_stations(
 ) -> Result<Page<MarketStation, Id>> {
     let mut stations: Vec<_> = world
         .resource::<identity::IdentityIndex>()
-        .0
+        .entries()
         .iter()
         .filter(|(id, _)| after.is_none_or(|after| **id > after))
         .filter_map(|(id, entity)| {
@@ -566,7 +566,7 @@ pub(super) fn compare_commodity_offers(
         }
         let Some(entity) = world
             .resource::<identity::IdentityIndex>()
-            .0
+            .entries()
             .get(station)
             .copied()
         else {
@@ -758,10 +758,7 @@ mod market_comparison_tests {
                     }),
                 ))
                 .id();
-            world
-                .resource_mut::<identity::IdentityIndex>()
-                .0
-                .insert(station, entity);
+            identity::register(&mut world, entity, station).unwrap();
             for (offset, side, price, quantity) in [
                 (0, Side::Sell, 2 * MONEY_SCALE, 7),
                 (1, Side::Sell, 3 * MONEY_SCALE, 4),

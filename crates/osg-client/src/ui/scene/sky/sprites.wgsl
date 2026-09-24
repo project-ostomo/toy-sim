@@ -54,6 +54,8 @@ const MAX_OUTPUT: f32 = 60000.0;
 // Anchor to the dark-adapted camera (EV 5), while retaining a visible response
 // to exposure in daylight. Use the same gain for sizing and culling.
 const NIGHT_EXPOSURE: f32 = 0.026041667;
+// Artistic boost for the visible background star field.
+const STAR_BRIGHTNESS_GAIN: f32 = 1000.0;
 
 fn gaussian(r2: f32, sigma: f32) -> f32 {
     return exp(-r2 / (2.0 * sigma * sigma)) / (2.0 * PI * sigma * sigma);
@@ -70,7 +72,7 @@ fn vertex(in: Vertex) -> Output {
 
     // Solid angle of one pixel at the screen centre.
     let pixel = 2.0 / (view.clip_from_view[1][1] * view.viewport.w);
-    let star_exposure = 2.0 * sqrt(max(view.exposure, 0.0) * NIGHT_EXPOSURE);
+    let star_exposure = STAR_BRIGHTNESS_GAIN * 2.0 * sqrt(max(view.exposure, 0.0) * NIGHT_EXPOSURE);
     let exposed = illuminance * fade * star_exposure / (pixel * pixel);
     let core_peak = exposed * gaussian(0.0, CORE_SIGMA);
 

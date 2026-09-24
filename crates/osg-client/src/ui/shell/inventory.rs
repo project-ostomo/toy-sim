@@ -1,7 +1,7 @@
 use super::*;
 use industry_model::{CargoItem, IndustryCommand};
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     consumables: bool,
     cargo: cargo::PaneState,

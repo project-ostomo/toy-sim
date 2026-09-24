@@ -7,7 +7,9 @@ use osg_model::{
     industry::*,
     ownership::{OwnershipDirectory, Permission, Principal},
 };
-use osg_ships::{Catalogue, CompiledShipDesign, Equipment, Inventory, utilities::UtilityDef};
+use osg_ships::{Catalogue, CompiledShipDesign, Inventory};
+#[cfg(test)]
+use osg_ships::{Equipment, utilities::UtilityDef};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -52,8 +54,21 @@ pub struct IndustryJob {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum JobOutput {
     Cargo(Vec<ItemStack>),
-    Ship(Vec<u8>),
+    Ship(std::sync::Arc<[u8]>),
 }
+
+/// Installed production capability, populated when hardware devices are created.
+#[derive(Component, Clone, Copy)]
+pub struct IndustryModule {
+    pub part: u64,
+    pub capability: IndustryCapability,
+    pub power_w: u64,
+    pub lanes: u32,
+    pub radius_m: f64,
+}
+
+#[derive(Resource, Default)]
+struct ProductionPlan(BTreeMap<Entity, Vec<Option<Lane>>>);
 
 #[derive(Component, Clone, Debug, Serialize, Deserialize)]
 pub struct MineSource {
@@ -169,7 +184,7 @@ pub fn seed_demo(world: &mut World, station: Entity, account: AccountId) -> Resu
             ..Default::default()
         });
     }
-    synchronize_mass(world, &[station]);
+    hardware::synchronize_mass(world, &[station]);
     publication::refresh(world);
     Ok(())
 }
@@ -448,7 +463,7 @@ pub fn transfer(
     from.transfer_item(&mut to, &item, quantity, capacity, &catalogue)?;
     world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
     world.get_mut::<hardware::ShipInventory>(target).unwrap().0 = to;
-    synchronize_mass(world, &[source, target]);
+    hardware::synchronize_mass(world, &[source, target]);
     Ok(())
 }
 
@@ -497,7 +512,7 @@ fn unload_product(
         world.get_mut::<hardware::ShipInventory>(target).unwrap().0 = to;
     }
 
-    synchronize_mass(world, &[source, target]);
+    hardware::synchronize_mass(world, &[source, target]);
     Ok(())
 }
 
@@ -550,7 +565,7 @@ fn refill(
             .context("coolant quantity overflow")?;
         world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
         world.get_mut::<hardware::ShipThermal>(target).unwrap().0 = thermal;
-        synchronize_mass(world, &[source, target]);
+        hardware::synchronize_mass(world, &[source, target]);
         return Ok(());
     }
     if source == target {
@@ -567,7 +582,7 @@ fn refill(
         world.get_mut::<hardware::ShipInventory>(source).unwrap().0 = from;
         world.get_mut::<hardware::ShipInventory>(target).unwrap().0 = to;
     }
-    synchronize_mass(world, &[source, target]);
+    hardware::synchronize_mass(world, &[source, target]);
     Ok(())
 }
 
@@ -633,51 +648,26 @@ fn lanes(world: &World, facility: Entity) -> Vec<Lane> {
     if !available(world, facility) || world.get::<travel::Dormant>(facility).is_some() {
         return Vec::new();
     }
-    let (Some(design), Some(parts)) = (
-        world.get::<vessel::ShipDesign>(facility),
-        world.get::<hardware::PartDevices>(facility),
-    ) else {
+    let Some(parts) = world.get::<hardware::PartDevices>(facility) else {
         return Vec::new();
     };
     let mut lanes = Vec::new();
-    for (index, &device) in parts.0.iter().enumerate() {
+    for &device in &parts.0 {
         if !world
             .get::<hardware::Device>(device)
             .is_some_and(|value| value.0.operational)
         {
             continue;
         }
-        let part = &design.0.parts[index];
-        let (capability, power_w, count, radius_m) = match part.definition.equipment {
-            Equipment::Utility {
-                utility:
-                    UtilityDef::Factory {
-                        capability,
-                        power_per_lane_w,
-                        lanes,
-                    },
-            } => (capability, power_per_lane_w, lanes, f64::INFINITY),
-            Equipment::Utility {
-                utility:
-                    UtilityDef::Shipyard {
-                        power_per_lane_w,
-                        lanes,
-                        max_radius_m,
-                    },
-            } => (
-                IndustryCapability::Shipyard,
-                power_per_lane_w,
-                lanes,
-                max_radius_m,
-            ),
-            _ => continue,
+        let Some(module) = world.get::<IndustryModule>(device) else {
+            continue;
         };
-        lanes.extend((0..count).map(|_| Lane {
-            part: part.placed.id,
+        lanes.extend((0..module.lanes).map(|_| Lane {
+            part: module.part,
             device,
-            capability,
-            power_w,
-            radius_m,
+            capability: module.capability,
+            power_w: module.power_w,
+            radius_m: module.radius_m,
         }));
     }
     lanes
@@ -687,23 +677,101 @@ fn cumulative_energy(energy: u64, ticks: u64, duration: u64) -> u64 {
     (u128::from(energy) * u128::from(ticks) / u128::from(duration)) as u64
 }
 
-pub fn advance(world: &mut World) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("industry.advance");
-    let Some(catalogue) = world
-        .get_resource::<PhysicalCatalogue>()
-        .map(|catalogue| catalogue.0.clone())
-    else {
-        return;
-    };
+pub(super) fn schedule(
+    mut commands: Commands,
+    mut facilities: Query<(
+        Entity,
+        &mut IndustryFacility,
+        &hardware::Hull,
+        &travel::PresenceState,
+        Option<&travel::Dormant>,
+        &hardware::PartDevices,
+    )>,
+    modules: Query<(&IndustryModule, &hardware::Device)>,
+) {
+    let mut plan = ProductionPlan::default();
+    for (entity, mut facility, hull, presence, dormant, parts) in &mut facilities {
+        let active = hull.0 > 0.
+            && dormant.is_none()
+            && matches!(
+                presence.0,
+                osg_model::travel::Presence::Space | osg_model::travel::Presence::Docked { .. }
+            );
+        let all_lanes: Vec<_> = parts
+            .0
+            .iter()
+            .filter_map(|&device| {
+                let (module, state) = modules.get(device).ok()?;
+                (active && state.0.operational).then_some((device, module))
+            })
+            .flat_map(|(device, module)| {
+                (0..module.lanes).map(move |_| Lane {
+                    part: module.part,
+                    device,
+                    capability: module.capability,
+                    power_w: module.power_w,
+                    radius_m: module.radius_m,
+                })
+            })
+            .collect();
+        let mut free_lanes = all_lanes.clone();
+        let mut public_lanes = BTreeMap::<IndustryCapability, u32>::new();
+        let IndustryFacility { jobs, service, .. } = &mut *facility;
+        let assignments = jobs
+            .iter_mut()
+            .map(|job| {
+                job.view.module_part = None;
+                job.view.requested_power_w = 0;
+                job.view.supplied_power_w = 0;
+                if !active {
+                    job.view.status = JobStatus::ModuleUnavailable;
+                    return None;
+                }
+                if job.view.payment.is_some() {
+                    let limit = service
+                        .rates
+                        .iter()
+                        .find(|rate| rate.capability == job.view.capability)
+                        .map_or(1, |rate| rate.public_lanes.max(1));
+                    let used = public_lanes.entry(job.view.capability).or_default();
+                    if *used >= limit {
+                        job.view.status = JobStatus::Queued;
+                        return None;
+                    }
+                    *used += 1;
+                }
+                let Some(index) = free_lanes.iter().position(|lane| suitable(lane, job)) else {
+                    job.view.status = if all_lanes.iter().any(|lane| suitable(lane, job)) {
+                        JobStatus::Queued
+                    } else {
+                        JobStatus::ModuleUnavailable
+                    };
+                    return None;
+                };
+                let lane = free_lanes.remove(index);
+                job.view.module_part = Some(lane.part);
+                Some(lane)
+            })
+            .collect();
+        plan.0.insert(entity, assignments);
+    }
+    commands.insert_resource(plan);
+}
+
+pub(super) fn settle(world: &mut World) {
+    let plan = world
+        .remove_resource::<ProductionPlan>()
+        .unwrap_or_default();
     let facilities: Vec<_> = world
         .query_filtered::<Entity, With<IndustryFacility>>()
         .iter(world)
         .collect();
-    let mut mass_changed = BTreeSet::new();
     for entity in facilities {
-        let mut queue = world.get::<IndustryFacility>(entity).unwrap().clone();
-        let mut available_lanes = lanes(world, entity);
-        for lane in &available_lanes {
+        let Some(assignments) = plan.0.get(&entity) else {
+            continue;
+        };
+        let mut queue = std::mem::take(&mut *world.get_mut::<IndustryFacility>(entity).unwrap());
+        for lane in lanes(world, entity) {
             if let Some(mut device) = world.get_mut::<hardware::Device>(lane.device) {
                 device.0.powered = false;
                 device.0.actual = 0.;
@@ -712,42 +780,10 @@ pub fn advance(world: &mut World) {
                 *power = hardware::DevicePower::default();
             }
         }
-        let mut completed = Vec::new();
-        let mut public_lanes = BTreeMap::<IndustryCapability, u32>::new();
         for (index, job) in queue.jobs.iter_mut().enumerate() {
-            let was_awaiting_berth = job.view.status == JobStatus::AwaitingBerth;
-            job.view.module_part = None;
-            job.view.requested_power_w = 0;
-            job.view.supplied_power_w = 0;
-            if !available(world, entity) || world.get::<travel::Dormant>(entity).is_some() {
-                job.view.status = JobStatus::ModuleUnavailable;
-                continue;
-            }
-            if job.view.payment.is_some() {
-                let limit = queue
-                    .service
-                    .rates
-                    .iter()
-                    .find(|rate| rate.capability == job.view.capability)
-                    .map_or(1, |rate| rate.public_lanes.max(1));
-                let used = public_lanes.entry(job.view.capability).or_default();
-                if *used >= limit {
-                    job.view.status = JobStatus::Queued;
-                    continue;
-                }
-                *used += 1;
-            }
-            let Some(lane_index) = available_lanes.iter().position(|lane| suitable(lane, job))
-            else {
-                job.view.status = if lanes(world, entity).iter().any(|lane| suitable(lane, job)) {
-                    JobStatus::Queued
-                } else {
-                    JobStatus::ModuleUnavailable
-                };
+            let Some(lane) = &assignments[index] else {
                 continue;
             };
-            let lane = available_lanes.remove(lane_index);
-            job.view.module_part = Some(lane.part);
             if job.view.progress_ticks < job.view.duration_ticks {
                 let paid = cumulative_energy(
                     job.energy_j,
@@ -798,9 +834,35 @@ pub fn advance(world: &mut World) {
                     power.supplied_w += job.view.supplied_power_w as f64;
                 }
             }
-            if job.view.progress_ticks != job.view.duration_ticks {
+        }
+        *world.get_mut::<IndustryFacility>(entity).unwrap() = queue;
+    }
+}
+
+pub(super) fn complete(world: &mut World) {
+    let Some(catalogue) = world
+        .get_resource::<PhysicalCatalogue>()
+        .map(|catalogue| catalogue.0.clone())
+    else {
+        return;
+    };
+    let facilities: Vec<_> = world
+        .query_filtered::<Entity, With<IndustryFacility>>()
+        .iter(world)
+        .collect();
+    let mut mass_changed = BTreeSet::new();
+    for entity in facilities {
+        if !available(world, entity) || world.get::<travel::Dormant>(entity).is_some() {
+            continue;
+        }
+        let mut queue = std::mem::take(&mut *world.get_mut::<IndustryFacility>(entity).unwrap());
+        let mut completed = Vec::new();
+        for (index, job) in queue.jobs.iter_mut().enumerate() {
+            if job.view.module_part.is_none() || job.view.progress_ticks != job.view.duration_ticks
+            {
                 continue;
             }
+            let was_awaiting_berth = job.view.status == JobStatus::AwaitingBerth;
             let capacity = world
                 .get::<vessel::ShipDesign>(entity)
                 .unwrap()
@@ -821,10 +883,9 @@ pub fn advance(world: &mut World) {
                         continue;
                     }
                     if let Some(payment) = &job.view.payment {
-                        let mut economy = world.resource::<super::economy::Economy>().clone();
                         let station = world.get::<identity::Identity>(entity).unwrap().0;
                         if service::credit_storage(
-                            &mut economy,
+                            &mut world.resource_mut::<super::economy::Economy>(),
                             &mut inventory,
                             station,
                             payment.payer,
@@ -835,7 +896,6 @@ pub fn advance(world: &mut World) {
                             job.view.status = JobStatus::AwaitingCargoSpace;
                             continue;
                         }
-                        world.insert_resource(economy);
                     }
                 }
                 JobOutput::Ship(_) => {
@@ -864,14 +924,20 @@ pub fn advance(world: &mut World) {
         for index in completed.into_iter().rev() {
             queue.jobs.remove(index);
         }
-        world.entity_mut(entity).insert(queue);
+        *world.get_mut::<IndustryFacility>(entity).unwrap() = queue;
     }
-    advance_mines(world, &catalogue, &mut mass_changed);
-    synchronize_mass(world, &mass_changed.into_iter().collect::<Vec<_>>());
-    publication::refresh(world);
+    hardware::synchronize_mass(world, &mass_changed.into_iter().collect::<Vec<_>>());
 }
 
-fn advance_mines(world: &mut World, catalogue: &Catalogue, changed: &mut BTreeSet<Entity>) {
+pub(super) fn advance_mines(world: &mut World) {
+    let Some(catalogue) = world
+        .get_resource::<PhysicalCatalogue>()
+        .map(|catalogue| catalogue.0.clone())
+    else {
+        return;
+    };
+    let catalogue = catalogue.as_ref();
+    let mut changed = BTreeSet::new();
     let mines: Vec<_> = world
         .query::<(Entity, &MineSource)>()
         .iter(world)
@@ -940,6 +1006,16 @@ fn advance_mines(world: &mut World, catalogue: &Catalogue, changed: &mut BTreeSe
         }
         world.entity_mut(host).insert(mine);
     }
+    hardware::synchronize_mass(world, &changed.into_iter().collect::<Vec<_>>());
+}
+
+#[cfg(test)]
+pub(crate) fn advance(world: &mut World) {
+    world.run_system_once(schedule).unwrap();
+    settle(world);
+    complete(world);
+    advance_mines(world);
+    publication::refresh(world);
 }
 
 fn loading_shares(mut rooms: Vec<u64>, production: u64) -> (u64, u64) {
@@ -957,84 +1033,4 @@ fn loading_shares(mut rooms: Vec<u64>, production: u64) -> (u64, u64) {
         recipients -= 1;
     }
     (level, 0)
-}
-
-pub fn synchronize_mass(world: &mut World, affected: &[Entity]) {
-    let mut visited_ships = BTreeSet::new();
-    for &entity in affected {
-        if !visited_ships.insert(entity) {
-            continue;
-        }
-        let updated = {
-            let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
-            let (Some(design), Some(inventory), Some(thermal)) = (
-                world.get::<vessel::ShipDesign>(entity),
-                world.get::<hardware::ShipInventory>(entity),
-                world.get::<hardware::ShipThermal>(entity),
-            ) else {
-                continue;
-            };
-            design.0.dry_mass
-                + inventory.0.mass(catalogue)
-                + thermal.0.shield_deployed_kg
-                + thermal.0.shield_reserve_kg()
-                + world
-                    .get::<travel::StoredMass>(entity)
-                    .map_or(0., |stored| stored.0)
-        };
-        let previous = world
-            .get::<super::physics::MassProps>(entity)
-            .map_or(updated, |mass| mass.mass);
-        update_mass(world, entity, updated);
-        let delta = updated - previous;
-        if delta == 0. {
-            continue;
-        }
-
-        let mut ancestor = containing_ship(world, entity);
-        let mut seen = BTreeSet::from([entity]);
-        for _ in 0..8 {
-            let Some(parent) = ancestor else {
-                break;
-            };
-            assert!(
-                seen.insert(parent),
-                "validated containment hierarchy has no cycle"
-            );
-            let stored = world
-                .get::<travel::StoredMass>(parent)
-                .map_or(0., |stored| stored.0);
-            world
-                .entity_mut(parent)
-                .insert(travel::StoredMass((stored + delta).max(0.)));
-            if let Some(mass) = world.get::<super::physics::MassProps>(parent) {
-                update_mass(world, parent, (mass.mass + delta).max(0.));
-            }
-            ancestor = containing_ship(world, parent);
-        }
-    }
-}
-
-fn containing_ship(world: &World, entity: Entity) -> Option<Entity> {
-    let presence = &world.get::<travel::PresenceState>(entity)?.0;
-    let host = match presence {
-        osg_model::travel::Presence::Docked { host, .. }
-        | osg_model::travel::Presence::StoredInWreck(host) => *host,
-        _ => return None,
-    };
-    identity::lookup(world, host).ok()
-}
-
-fn update_mass(world: &mut World, entity: Entity, total: f64) {
-    let Some(design) = world
-        .get::<vessel::ShipDesign>(entity)
-        .map(|design| design.0.clone())
-    else {
-        return;
-    };
-    if let Some(mut mass) = world.get_mut::<super::physics::MassProps>(entity) {
-        mass.mass = total;
-        mass.inertia = design.inertia * (total / design.dry_mass);
-        mass.inertia_inv = mass.inertia.inverse();
-    }
 }

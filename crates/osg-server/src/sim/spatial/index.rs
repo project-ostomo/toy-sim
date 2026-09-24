@@ -21,24 +21,23 @@ pub struct SpatialObject {
 
 #[derive(Resource, Clone)]
 pub struct SpatialIndex {
-    pub objects: Vec<SpatialObject>,
+    objects: Vec<SpatialObject>,
     entities: ahash::AHashMap<Entity, usize>,
     targets: Vec<usize>,
     /// Physical radius bound for segment queries over `objects`.
     maximum_object_radius_m: f64,
-    pub velocities: ahash::AHashMap<Entity, DVec3>,
-    pub capture_radii: ahash::AHashMap<Entity, f64>,
+    velocities: ahash::AHashMap<Entity, DVec3>,
+    capture_radii: ahash::AHashMap<Entity, f64>,
     /// Prepared before collection; includes full collision hull/shield bounds.
-    pub(crate) collision_radii: ahash::AHashMap<Entity, f64>,
+    collision_radii: ahash::AHashMap<Entity, f64>,
     collision_entities: ahash::AHashSet<Entity>,
-    pub tick_seconds: f64,
-    pub tick: u64,
+    tick: u64,
     celestial_systems: ahash::AHashSet<usize>,
     illumination: Vec<OnceLock<Illumination>>,
-    pub sky: super::lighting::Sky,
-    pub geometry: GalacticIndex<SpatialKey>,
+    sky: super::lighting::Sky,
+    geometry: GalacticIndex<SpatialKey>,
     /// Context regions have their own bounds and never participate in physics.
-    pub hill_spheres: GalacticIndex<Entity>,
+    hill_spheres: GalacticIndex<Entity>,
     collecting: bool,
 }
 
@@ -53,7 +52,6 @@ impl Default for SpatialIndex {
             capture_radii: Default::default(),
             collision_radii: Default::default(),
             collision_entities: Default::default(),
-            tick_seconds: 0.0,
             tick: 0,
             celestial_systems: Default::default(),
             illumination: Vec::new(),
@@ -72,6 +70,99 @@ struct Illumination {
 }
 
 impl SpatialIndex {
+    pub fn objects(&self) -> &[SpatialObject] {
+        &self.objects
+    }
+
+    pub fn geometry(&self) -> &GalacticIndex<SpatialKey> {
+        &self.geometry
+    }
+
+    pub fn hill_spheres(&self) -> &GalacticIndex<Entity> {
+        &self.hill_spheres
+    }
+
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    pub fn velocity(&self, entity: Entity) -> DVec3 {
+        self.velocities.get(&entity).copied().unwrap_or_default()
+    }
+
+    pub fn collision_radius(&self, entity: Entity) -> Option<f64> {
+        self.collision_radii.get(&entity).copied()
+    }
+
+    pub fn set_collision_radii(&mut self, radii: impl IntoIterator<Item = (Entity, f64)>) {
+        let radii: ahash::AHashMap<_, _> = radii.into_iter().collect();
+        let old = std::mem::replace(&mut self.collision_radii, radii);
+        if !self.collecting {
+            let mut changed = false;
+            for id in 0..self.objects.len() {
+                let entity = self.objects[id].entity;
+                if old.get(&entity) != self.collision_radii.get(&entity) {
+                    self.sync_object(id);
+                    changed = true;
+                }
+            }
+            if changed {
+                self.geometry.rebuild();
+            }
+        }
+    }
+
+    pub(super) fn replace_hill_spheres(
+        &mut self,
+        records: impl IntoIterator<Item = (Entity, SpatialRecord)>,
+    ) {
+        self.hill_spheres
+            .replace(records)
+            .expect("Hill sphere coordinate range");
+    }
+
+    pub(super) fn begin_collection(
+        &mut self,
+        tick: u64,
+        universe: Option<std::sync::Arc<osg_universe::universe::Universe>>,
+        epoch: hifitime::Epoch,
+    ) {
+        self.clear();
+        self.tick = tick;
+        self.sky.set_universe(universe);
+        self.sky.epoch = epoch;
+    }
+
+    pub(super) fn collect_motion(&mut self, entity: Entity, velocity: DVec3, mass: Option<f64>) {
+        assert!(
+            self.collecting,
+            "motion is collected before geometry publication"
+        );
+        self.velocities.insert(entity, velocity);
+        if self.sky.universe.is_none()
+            && let Some(mass) = mass
+        {
+            self.capture_radii
+                .insert(entity, osg_model::travel::slip::exclusion_radius_m(mass));
+        }
+    }
+
+    pub(super) fn collect_light(&mut self, light: super::lighting::Light) {
+        assert!(
+            self.collecting,
+            "lights are collected before geometry publication"
+        );
+        self.sky.local.push(light);
+    }
+
+    /// Switch query implementations while retaining every indexed record.
+    pub fn replace_geometry_backend(&mut self, mut geometry: GalacticIndex<SpatialKey>) {
+        geometry
+            .replace(self.geometry.iter().map(|(key, record)| (*key, *record)))
+            .expect("existing spatial coordinates");
+        self.geometry = geometry;
+    }
+
     pub fn containing_hill_spheres(&self, position: GalacticPosition) -> Vec<Entity> {
         self.hill_spheres
             .within_radius(position, 0.0, true)
@@ -102,6 +193,10 @@ impl SpatialIndex {
     }
 
     fn insert_object(&mut self, object: SpatialObject, system: Option<usize>) {
+        assert!(
+            !self.entities.contains_key(&object.entity),
+            "each spatial entity must be collected once"
+        );
         self.maximum_object_radius_m = self.maximum_object_radius_m.max(object.radius_m);
         let id = self.objects.len();
         if let Some(system) = system {
@@ -166,6 +261,10 @@ impl SpatialIndex {
                 )
                 .expect("collision body coordinate range");
         }
+    }
+
+    pub fn finish_collision_geometry(&mut self) {
+        self.geometry.rebuild();
     }
 
     fn sync_object(&mut self, id: usize) {

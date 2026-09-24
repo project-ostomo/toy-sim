@@ -61,15 +61,15 @@ impl Sky {
             key[2] * CELL_UM + CELL_UM / 2,
         );
         let radius = 3.0_f64.sqrt() * CELL_UM as f64 / 2e6;
-        let systems = universe.index.illumination_sources(
+        let systems = universe.index().illumination_sources(
             anchor,
             radius,
             4.0 * std::f64::consts::PI * MIN_ILLUMINANCE_W_M2 * LUMENS_PER_OPTICAL_WATT,
         );
         // The discarded sources each contribute less than the selection threshold.
-        let mut irradiance_bound = universe.systems.len() as f64 * MIN_ILLUMINANCE_W_M2;
+        let mut irradiance_bound = universe.systems().len() as f64 * MIN_ILLUMINANCE_W_M2;
         for &system in &systems {
-            let summary = &universe.systems[system];
+            let summary = &universe.systems()[system];
             let minimum_distance =
                 (summary.position.relative_to(anchor).length() - summary.influence_bound - radius)
                     .max(0.);
@@ -199,7 +199,7 @@ pub fn reflection_sources(
     object_id: usize,
     sky: &Sky,
 ) -> Vec<(GalacticPosition, f64)> {
-    let object = index.objects[object_id];
+    let object = index.objects()[object_id];
     let mut reflected = Vec::new();
     for source in sky.sources(object.position) {
         let luminosity_w = source.power;
@@ -213,7 +213,7 @@ pub fn reflection_sources(
         }
         let blocked =
             index.any_optical_blocker_on_segment(object.position, offset, |id| {
-                let blocker = index.objects[id];
+                let blocker = index.objects()[id];
                 id != object_id
                     && blocker.position != source.position
                     && sphere_fully_blocks(
@@ -394,7 +394,7 @@ mod tests {
         index.finish_geometry();
         let sources = Sky {
             local: vec![Light {
-                position: index.objects[1].position,
+                position: index.objects()[1].position,
                 radius: 100.0,
                 power: 1e18,
             }],

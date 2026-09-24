@@ -31,7 +31,7 @@ fn fresh_world_slip_load() {
     let universe = world.resource::<orrery::Universe>().0.clone();
     let current = universe.containing_segment(origin, DVec3::ZERO);
     let target = universe
-        .systems
+        .systems()
         .iter()
         .enumerate()
         .filter(|(index, _)| !current.contains(index))
@@ -109,7 +109,7 @@ fn fresh_world_slip_load() {
 fn scatter_players(world: &mut World, accounts: &[osg_model::AccountId]) {
     let universe = world.resource::<orrery::Universe>().clone();
     let epoch = physics::sim_time(world.resource::<Time<Fixed>>());
-    let mut systems: Vec<_> = (0..universe.systems.len()).collect();
+    let mut systems: Vec<_> = (0..universe.systems().len()).collect();
     let mut rng = ChaCha8Rng::seed_from_u64(0x5343_4154_5445_5231);
     systems.shuffle(&mut rng);
     assert!(accounts.len() <= systems.len(), "one player per system");
@@ -125,7 +125,7 @@ fn scatter_players(world: &mut World, accounts: &[osg_model::AccountId]) {
     let tangent = radial.cross(DVec3::Y).normalize();
     for (&account, system) in accounts.iter().zip(systems) {
         let ship = ships[&account];
-        let summary = &universe.systems[system];
+        let summary = &universe.systems()[system];
         let primary = universe.body(summary.primary).expect("system primary");
         let position = universe.solve_position(summary.primary, epoch).unwrap();
         let velocity = universe.solve_velocity(summary.primary, epoch).unwrap();
@@ -177,11 +177,14 @@ fn production_tick_and_publication() {
         let mut app = provision(&accounts, None, None).unwrap();
         let world = app.world_mut();
         if let Ok(backend) = std::env::var("OSG_BENCH_BVH") {
-            world.resource_mut::<spatial::SpatialIndex>().geometry = match backend.as_str() {
+            let geometry = match backend.as_str() {
                 "static" => osg_spatial::GalacticIndex::bvh(),
                 "dynamic" => osg_spatial::GalacticIndex::dynamic_bvh(),
                 _ => panic!("OSG_BENCH_BVH must be static or dynamic"),
             };
+            world
+                .resource_mut::<spatial::SpatialIndex>()
+                .replace_geometry_backend(geometry);
         }
         scatter_players(world, &accounts);
         let first_player = world
@@ -242,8 +245,8 @@ fn production_tick_and_publication() {
             sessions.push(session);
         }
         spatial::rebuild(world);
-        let records = world.resource::<spatial::SpatialIndex>().geometry.len();
-        let catalogue = world.resource::<orrery::Universe>().systems.len();
+        let records = world.resource::<spatial::SpatialIndex>().geometry().len();
+        let catalogue = world.resource::<orrery::Universe>().systems().len();
         assert!(catalogue >= 1_000_000);
         println!(
             "setup players={players} placement=scattered_systems placement_seed=0x5343415454455231 scene={scene} repeat={repeat} seconds={:.3} catalogue={catalogue} records={records}",
@@ -323,7 +326,7 @@ fn production_tick_and_publication() {
             {
                 let index = world.resource::<spatial::SpatialIndex>();
                 let mut records: Vec<_> = index
-                    .geometry
+                    .geometry()
                     .iter()
                     .map(|(key, record)| {
                         let spatial::SpatialKey::Entity(entity) = key else {
@@ -332,7 +335,7 @@ fn production_tick_and_publication() {
                         (
                             entity.to_bits(),
                             *record,
-                            index.collision_radii.get(entity).copied().unwrap_or(-1.0),
+                            index.collision_radius(*entity).unwrap_or(-1.0),
                         )
                     })
                     .collect();
@@ -442,7 +445,7 @@ fn production_tick_and_publication() {
             "population records={} entities={} occupied_systems={}",
             app.world()
                 .resource::<spatial::SpatialIndex>()
-                .geometry
+                .geometry()
                 .len(),
             app.world().entities().len(),
             app.world()

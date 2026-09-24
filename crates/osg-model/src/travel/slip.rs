@@ -1,8 +1,7 @@
 //! Shared slip geometry, probability, and resource calculations.
 
-pub const AU_M: f64 = 149_597_870_700.0;
+pub use osg_space::{AU_M, SOLAR_MASS_KG, exclusion_radius_m};
 pub const LY_M: f64 = 9.460_730_472_580_8e15;
-pub const SOLAR_MASS_KG: f64 = 1.988_47e30;
 pub const DISPERSION_RAD: f64 = 1.074_392_580_830_121_9e-7;
 pub const BEACON_PRECISION: f64 = 36.0;
 pub const CRUISE_SPEED_LY_S: f64 = 0.3;
@@ -13,10 +12,6 @@ pub const EXOTIC_RESOURCE: &str = "exotic_fuel";
 
 pub fn charging_energy_j(mass_kg: f64, distance_ly: f64) -> f64 {
     CHARGE_J_PER_KG_LY * mass_kg * distance_ly.max(0.0)
-}
-
-pub fn exclusion_radius_m(mass_kg: f64) -> f64 {
-    0.08 * AU_M * (mass_kg.max(0.0) / SOLAR_MASS_KG).cbrt()
 }
 
 pub fn dispersion_rad(assisted: bool) -> f64 {

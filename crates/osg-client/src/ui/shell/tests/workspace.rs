@@ -297,18 +297,19 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
             ctx.style_mut_of(egui::Theme::Dark, |style| style.animation_time = 0.);
             let mut renderer = software::Renderer::default();
             let mut shell = Shell::default();
-            shell.map.gallery(&ship);
+            let mut panes = TestPanes::default();
+            panes.get().map.gallery(&ship);
             if variant == "consumables" {
-                shell.inventory.show_consumables();
+                panes.get().inventory.show_consumables();
             }
             if variant == "hangar" {
-                shell.hangar.show_ships();
+                panes.get().hangar.show_ships();
             }
             if variant == "settings" {
                 shell.desktop.open(SETTINGS);
             }
             if variant == "quantity" {
-                shell.transfers.gallery_quantity(
+                panes.get().transfers.gallery_quantity(
                     ship_id,
                     station,
                     CargoItem::Resource("water".into()),
@@ -348,6 +349,7 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
                         panels::draw(
                             ui.ctx(),
                             &mut shell,
+                            &mut panes.get(),
                             &model,
                             &selection,
                             &[],

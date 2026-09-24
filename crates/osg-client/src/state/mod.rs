@@ -7,7 +7,9 @@ mod chat;
 pub(super) use calendar::CalendarClock;
 pub(crate) use chat::{ChatFocus, ChatState};
 mod diagnostics;
+mod domains;
 pub(super) use diagnostics::ClientDiagnostics;
+pub(super) use domains::*;
 mod presentation;
 pub(crate) use crate::Outgoing;
 mod replication;
@@ -97,53 +99,25 @@ pub(super) struct SessionInfo {
     pub tick: u64,
     pub sequence: u64,
     pub capabilities: Vec<DebugCapability>,
-    pub diagnostics: Option<Diagnostics>,
-    pub universe_descriptor: Option<UniverseDescriptor>,
-    pub inhabited: std::sync::Arc<InhabitedDirectory>,
-    pub navigation: std::sync::Arc<NavigationCatalogue>,
-    pub navigation_hash: Option<[u8; 32]>,
-    pub navigation_status: NavigationStatus,
-    pub society: ownership::SocietySnapshot,
-    pub directory_entries: Vec<ownership::Principal>,
-    pub directory_next: Option<ownership::Principal>,
-    pub society_assets_next: Option<Id>,
-    pub society_asset_loaded: Option<Id>,
-    pub declaration_history: Vec<osg_model::diplomacy::Declaration>,
-    pub declaration_history_next: Option<u64>,
-    pub declaration_history_key: Option<(ownership::Principal, osg_model::diplomacy::DeclarationCategory, ownership::Principal)>,
-    pub society_error: Option<String>,
-    pub wallet: Option<economy::WalletSnapshot>,
-    pub market: Option<osg_model::market::MarketSnapshot>,
-    pub assets: Option<osg_model::assets::AssetsSnapshot>,
-    pub industry: IndustryState,
-    pub services: requests::services::View,
-    pub chat: ChatState,
-    pub results: Vec<CommandResult>,
-    pub events: Vec<osg_model::Event>,
-    pub target_frames: usize,
-    pub underruns: u64,
     pub status: String,
 }
 
-#[derive(Default)]
+#[derive(Resource, Default)]
 pub(super) struct IndustryState {
     pub snapshot: industry::IndustrySnapshot,
-    subscription: Option<industry::IndustryQuery>,
+    pub interest: Option<industry::IndustryQuery>,
+    pub(crate) load: requests::Load<industry::IndustryQuery, industry::IndustrySnapshot>,
     revision: u64,
 }
 
 impl IndustryState {
     pub fn ready(&self) -> bool {
-        self.subscription.as_ref().is_some_and(|subscription| {
+        self.interest.as_ref().is_some_and(|subscription| {
             subscription.revision == self.snapshot.subscription_revision
         })
     }
 
-    pub fn subscribe(
-        &mut self,
-        mut wanted: Option<industry::IndustryQuery>,
-        requests: &mut requests::Requests,
-    ) {
+    pub fn subscribe(&mut self, mut wanted: Option<industry::IndustryQuery>) {
         if let Some(wanted) = &mut wanted {
             let mut seen = std::collections::BTreeSet::new();
             wanted
@@ -151,7 +125,7 @@ impl IndustryState {
                 .retain(|inventory| seen.insert(*inventory));
             wanted.revision = self.revision;
         }
-        if wanted == self.subscription {
+        if wanted == self.interest {
             return;
         }
         if let Some(mut wanted) = wanted {
@@ -160,18 +134,16 @@ impl IndustryState {
                 .checked_add(1)
                 .expect("industry revision exhausted");
             wanted.revision = self.revision;
-            requests.industry = Some(wanted.clone());
-            self.subscription = Some(wanted);
+            self.interest = Some(wanted);
         } else {
-            requests.industry = None;
-            self.subscription = None;
+            self.interest = None;
             self.snapshot = Default::default();
         }
     }
 
     fn apply(&mut self, mut snapshot: industry::IndustrySnapshot) {
         if self
-            .subscription
+            .interest
             .as_ref()
             .is_none_or(|subscription| subscription.revision != snapshot.subscription_revision)
         {
@@ -231,9 +203,8 @@ pub(super) enum PresentationSet {
 }
 
 pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
-    app.insert_resource(requests::NetworkClient(client.clone()))
-        .init_resource::<requests::Requests>()
-        .add_systems(Update, requests::update);
+    app.insert_resource(requests::NetworkClient(client.clone()));
+    requests::install(app);
     app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
         .insert_resource(Transport {
             events: client.subscribe_events(),
@@ -249,6 +220,26 @@ pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
         .add_observer(reset_resource::<SlipEffects>)
         .init_resource::<CalendarClock>()
         .init_resource::<SessionInfo>()
+        .init_resource::<NavigationState>()
+        .init_resource::<SocietyState>()
+        .init_resource::<WalletState>()
+        .init_resource::<MarketState>()
+        .init_resource::<AssetsState>()
+        .init_resource::<IndustryState>()
+        .init_resource::<ServiceState>()
+        .init_resource::<ChatState>()
+        .init_resource::<CommandState>()
+        .init_resource::<PlaybackState>()
+        .add_observer(domains::reset_navigation)
+        .add_observer(reset_resource::<SocietyState>)
+        .add_observer(reset_resource::<WalletState>)
+        .add_observer(reset_resource::<MarketState>)
+        .add_observer(reset_resource::<AssetsState>)
+        .add_observer(reset_resource::<IndustryState>)
+        .add_observer(reset_resource::<ServiceState>)
+        .add_observer(reset_resource::<ChatState>)
+        .add_observer(reset_resource::<CommandState>)
+        .add_observer(reset_resource::<PlaybackState>)
         .init_resource::<Outgoing>()
         .add_observer(reset_resource::<Outgoing>)
         .configure_sets(

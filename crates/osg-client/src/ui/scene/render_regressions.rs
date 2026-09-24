@@ -168,9 +168,7 @@ fn setup(
             Exposure::SUNLIGHT,
             bevy::post_process::bloom::Bloom::NATURAL,
         ));
-        if std::env::var_os("OSG_CAPTURE_NO_TAA").is_none() {
-            camera.insert(bevy::anti_alias::taa::TemporalAntiAliasing::default());
-        }
+        camera.insert(bevy::anti_alias::fxaa::Fxaa::default());
         let view = camera.id();
         let ship = commands
             .spawn((

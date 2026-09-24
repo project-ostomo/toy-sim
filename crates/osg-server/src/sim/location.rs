@@ -116,7 +116,7 @@ pub(crate) fn update_locations(
                     .into_iter()
                     .filter_map(|entity| {
                         let sphere = spheres.get(entity).ok()?;
-                        let position = index.hill_spheres.get(&entity)?.position;
+                        let position = index.hill_spheres().get(&entity)?.position;
                         let distance = position.relative_to(pose.translation_um).length_squared()
                             / sphere.radius_m.powi(2);
                         Some((sphere, distance))

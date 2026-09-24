@@ -113,6 +113,17 @@ pub fn install_ship(
     }
 }
 
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub struct UtilityHardware {
+    inventory: &'static mut ShipInventory,
+    hull: &'static Hull,
+    thermal: &'static mut ShipThermal,
+    settings: &'static DeviceSettings,
+    range: &'static mut SensorRange,
+    parts: &'static PartDevices,
+}
+
 pub fn run(
     mut commands: Commands,
     time: Res<Time<Fixed>>,
@@ -121,7 +132,7 @@ pub fn run(
         (
             Entity,
             &ShipDesign,
-            HardwareWrite,
+            UtilityHardware,
             &mut Crew,
             &mut DockServices,
             Has<DirectoryEmitter>,
@@ -152,8 +163,7 @@ pub fn run(
         let mut beacon = false;
         let mut navigation = false;
         let mut supported = 0.;
-        let ids = h.parts.0.clone();
-        for entity in ids {
+        for &entity in &h.parts.0 {
             let Ok((utility, mut device, mut power)) = parts.get_mut(entity) else {
                 continue;
             };
@@ -197,9 +207,6 @@ pub fn run(
             h.thermal.0.add_waste_heat(power.supplied_w * dt, dt);
             device.0.powered = fraction >= 1. - 1e-9;
             match utility.0 {
-                UtilityDef::Command { .. } if device.0.powered => {
-                    h.avionics.0.powered = h.avionics.0.operational;
-                }
                 UtilityDef::Sensor { range_m, .. } if device.0.powered => {
                     let enabled = matches!(
                         h.settings.0[design.0.avionics_handles[2].0 as usize],
@@ -677,10 +684,12 @@ mod tests {
             .world_mut()
             .entity_mut(guest)
             .insert(crate::sim::travel::DockedIn(fixture.ship));
+        fixture.app.world_mut().init_resource::<IdentityIndex>();
         fixture
             .app
             .world_mut()
-            .insert_resource(IdentityIndex([(guest_id, guest)].into()));
+            .entity_mut(guest)
+            .insert(crate::sim::identity::Identity(guest_id));
         fixture
             .app
             .world_mut()

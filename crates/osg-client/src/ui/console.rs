@@ -3,7 +3,9 @@ mod resources;
 mod systems;
 
 use super::selection::Selection;
-use crate::state::{Outgoing, OwnedShip, RenderTime, SessionInfo, SessionReset, ShipDetails};
+use crate::state::{
+    CommandState, Outgoing, OwnedShip, RenderTime, SessionInfo, SessionReset, ShipDetails,
+};
 use bevy::prelude::*;
 use osg_model::*;
 use osg_ui::{
@@ -216,6 +218,7 @@ fn input(
     mut outgoing: ResMut<Outgoing>,
     ships: Query<(&OwnedShip, &ShipDetails)>,
     session: Res<SessionInfo>,
+    feedback: Res<CommandState>,
     clock: Res<RenderTime>,
     time: Res<Time<Real>>,
 ) -> Result {
@@ -232,7 +235,7 @@ fn input(
     };
     let command = throttle(&details.0, clock.display_ns);
     if let Some((id, value, started)) = state.pending {
-        if let Some(result) = session.results.iter().find(|r| r.id == id) {
+        if let Some(result) = feedback.results.iter().find(|r| r.id == id) {
             if let Some(error) = &result.error {
                 state.feedback = Some(error.clone());
                 state.pending = None;

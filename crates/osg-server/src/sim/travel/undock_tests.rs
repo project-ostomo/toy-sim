@@ -97,7 +97,7 @@ fn undocking_appears_at_docking_distance_even_when_the_exit_is_occupied() {
         ))
         .id();
     let host_id = Id::new();
-    identity::register(&mut world, host, host_id);
+    identity::register(&mut world, host, host_id).unwrap();
     let child = world
         .spawn((
             ShipDesign(child_design),
@@ -116,7 +116,7 @@ fn undocking_appears_at_docking_distance_even_when_the_exit_is_occupied() {
             DockedIn(host),
         ))
         .id();
-    identity::register(&mut world, child, Id::new());
+    identity::register(&mut world, child, Id::new()).unwrap();
     set_dormant(
         &mut world,
         child,

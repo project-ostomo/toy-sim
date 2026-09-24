@@ -13,7 +13,7 @@ use super::{
     physics::{MassProps, Velocity},
     precision::PreciseTransform,
     simulation::SimulationCounters,
-    vessel::{ShipCatalogue, ShipDesign, ShipSoftware},
+    vessel::{ComputerBudget, ShipCatalogue, ShipDesign, ShipSoftware, SoftwareDiagnostics},
 };
 
 fn bounded(text: &str, limit: usize) -> String {
@@ -40,15 +40,21 @@ fn nanoseconds(seconds: f64) -> u64 {
 pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<ShipPresentation> {
     let id = world.get::<Identity>(entity)?.0;
     let design = &world.get::<ShipDesign>(entity)?.0;
-    let state = hardware::snapshot(world, entity)?;
+    let cargo = &world.get::<hardware::ShipInventory>(entity)?.0;
+    let hull = world.get::<hardware::Hull>(entity)?.0;
+    let thermal = &world.get::<hardware::ShipThermal>(entity)?.0;
+    let settings = &world.get::<hardware::DeviceSettings>(entity)?.0;
+    let readings = hardware::device_readings(world, entity)?;
     let software = world.get::<ShipSoftware>(entity)?;
+    let budget = world.get::<ComputerBudget>(entity)?;
+    let diagnostics = world.get::<SoftwareDiagnostics>(entity)?;
     let catalogue = &world.resource::<ShipCatalogue>().0;
     let mass = world.get::<MassProps>(entity)?;
     let tick = world.resource::<SimulationCounters>().ticks;
     let inventory: Vec<_> = catalogue
         .resources
         .iter()
-        .zip(&state.inventory.quantities)
+        .zip(&cargo.quantities)
         .enumerate()
         .map(|(index, (resource, quantity))| ResourceAmount {
             name: bounded(&resource.title, 128),
@@ -58,19 +64,20 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             quantity: *quantity,
             amount_kg: *quantity as f64 * resource.mass_kg,
             capacity_kg: if resource.volume_m3 > 0.0 {
-                state.inventory.tank_capacities_m3[index] / resource.volume_m3 * resource.mass_kg
+                cargo.tank_capacities_m3[index] / resource.volume_m3 * resource.mass_kg
             } else {
                 0.0
             },
         })
         .collect();
     let reboot_remaining_s = software.controller.boot_remaining_gas() as f64
-        / software.last_gas_limit as f64
+        / budget.gas_limit() as f64
         * osg_model::TICK_SECONDS;
     let suspended = world
         .get::<super::travel::SystemsSuspended>(entity)
         .is_some();
-    let computer_powered = !suspended && state.computer_running(design);
+    let computer_powered = !suspended
+        && osg_ships::computer_running(hull, &world.get::<hardware::Avionics>(entity)?.0);
     let computer = if suspended {
         ComputerStatus::Paused
     } else if let Some(fault) = &software.controller.fault {
@@ -87,10 +94,10 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         }
     } else {
         ComputerStatus::Running {
-            gas_used: software.last_gas_used,
-            gas_limit: software.last_gas_limit,
+            gas_used: budget.used_gas(),
+            gas_limit: budget.gas_limit(),
             execution: match software.controller.execution_status() {
-                osg_model::ExecutionStatus::WaitingForGas if software.display_limited => {
+                osg_model::ExecutionStatus::WaitingForGas if budget.display_limited() => {
                     osg_model::ExecutionStatus::Suspended
                 }
                 status => status,
@@ -139,18 +146,15 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
     Some(ShipPresentation {
         serial: software.controller.state.serial.screen.clone(),
         memory_limit_bytes: osg_ship_wasm::MEMORY_LIMIT as u64,
-        cargo: state
-            .inventory
-            .cargo_stacks(catalogue)
-            .expect("valid ship cargo"),
+        cargo: cargo.cargo_stacks(catalogue).expect("valid ship cargo"),
         cargo_capacity_m3: design.capacity_m3,
-        cargo_used_m3: state.inventory.cargo_volume(catalogue),
+        cargo_used_m3: cargo.cargo_volume(catalogue),
         propulsion: {
             let mut reading = world
                 .get::<hardware::propulsion::InstalledRatings>(entity)?
                 .0
                 .clone();
-            if world.get::<super::travel::Dormant>(entity).is_none() && state.hull > 0. {
+            if world.get::<super::travel::Dormant>(entity).is_none() && hull > 0. {
                 let output = world.get::<hardware::propulsion::ActuatorOutput>(entity)?;
                 reading.force_n = output.force.to_array();
                 reading.torque_nm = output.torque.to_array();
@@ -179,19 +183,19 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
             life_support_fraction: world
                 .get::<hardware::utilities::Crew>(entity)
                 .map_or(1., |crew| crew.support_fraction),
-            hull_hp: state.hull,
+            hull_hp: hull,
             hull_max_hp: design.hull,
             shield_reserve_capacity_kg: design.shield_reserve_capacity_kg,
-            shield_strength: state.shield_strength(design),
+            shield_strength: thermal.shield_strength(design.as_ref().into()),
         }),
         execution: Some(ExecutionMetrics {
             memory_bytes: software.controller.memory_bytes() as u64,
-            step_us: software.last_seconds * 1e6,
-            prepare_us: software.timings.prepare * 1e6,
-            callback_us: software.timings.callback * 1e6,
-            publish_us: software.timings.publish * 1e6,
-            hardware_us: software.timings.hardware * 1e6,
-            scan_us: software.timings.scan * 1e6,
+            step_us: diagnostics.last_seconds * 1e6,
+            prepare_us: diagnostics.timings.prepare * 1e6,
+            callback_us: diagnostics.timings.callback * 1e6,
+            publish_us: diagnostics.timings.publish * 1e6,
+            hardware_us: diagnostics.timings.hardware * 1e6,
+            scan_us: diagnostics.timings.scan * 1e6,
         }),
         mass_kg: mass.mass,
         inertia_kg_m2: mass.inertia.to_cols_array(),
@@ -205,7 +209,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         generation_capacity_w: design
             .device_catalogue
             .iter()
-            .zip(state.snapshot(design))
+            .zip(readings)
             .filter_map(|(descriptor, status)| match descriptor.kind {
                 DeviceKind::Generator { power_w } if status.operational => {
                     let reactor = design
@@ -213,7 +217,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                         .and_then(|index| world.get::<hardware::PartDevices>(entity)?.0.get(index))
                         .and_then(|part| world.get::<hardware::reactors::Reactor>(*part));
                     Some(reactor.map_or(power_w, |reactor| {
-                        let sink = hardware::reactors::sink_temperature(&state.thermal, design);
+                        let sink = hardware::reactors::sink_temperature(thermal, design);
                         let spec = reactor.spec;
                         let heat = (spec.heat_transfer_w_k
                             * (spec.hot_temperature_k - sink).max(0.))
@@ -232,7 +236,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 let reactor = world.get::<hardware::reactors::Reactor>(*part)?;
                 let device = world.get::<hardware::Device>(*part)?;
                 let setting = design.part_devices[index]
-                    .and_then(|handle| state.settings.get(handle))
+                    .and_then(|handle| settings.get(handle))
                     .cloned()
                     .flatten();
                 let status = if !device.0.operational {
@@ -252,10 +256,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                     status,
                     temperature_k: 300.
                         + reactor.core_energy_j / reactor.spec.core_heat_capacity_j_k,
-                    coolant_temperature_k: hardware::reactors::sink_temperature(
-                        &state.thermal,
-                        design,
-                    ),
+                    coolant_temperature_k: hardware::reactors::sink_temperature(thermal, design),
                     operating_temperature_k: reactor.spec.hot_temperature_k,
                     shutdown_temperature_k: reactor.spec.shutdown_temperature_k,
                 })
@@ -267,7 +268,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
                 .resources
                 .iter()
                 .position(|resource| resource.id == osg_model::travel::slip::EXOTIC_RESOURCE)
-                .and_then(|index| state.inventory.quantities.get(index))
+                .and_then(|index| cargo.quantities.get(index))
                 .copied()
                 .unwrap_or(0) as f64;
             grams * 0.001
@@ -466,10 +467,14 @@ fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instrume
 
 pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
     let design = &world.get::<ShipDesign>(entity)?.0;
-    let state = hardware::snapshot(world, entity)?;
+    let thermal = &world.get::<hardware::ShipThermal>(entity)?.0;
     let mut engines = Vec::new();
     let mut turrets = Vec::new();
-    for (descriptor, status) in design.device_catalogue.iter().zip(state.snapshot(design)) {
+    for (descriptor, status) in design
+        .device_catalogue
+        .iter()
+        .zip(hardware::device_readings(world, entity)?)
+    {
         match (descriptor.kind.clone(), status.reading) {
             (
                 DeviceKind::Engine {
@@ -503,9 +508,9 @@ pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
         slip_readiness: slip_readiness(world, entity),
         engines,
         turrets,
-        shield: state.shield_active().then(|| ShieldVisual {
-            temperature_k: state.shield_temperature(design),
-            coverage: state.shield_strength(design),
+        shield: (thermal.shield_state == abi::SHIELD_ACTIVE).then(|| ShieldVisual {
+            temperature_k: thermal.shield_temperature(design.as_ref().into()),
+            coverage: thermal.shield_strength(design.as_ref().into()),
         }),
     })
 }
@@ -571,7 +576,7 @@ mod tests {
                     _ => [0.4, -0.5, -0.2],
                 };
                 app.world_mut()
-                    .get_mut::<ShipSoftware>(entity)
+                    .get_mut::<super::super::vessel::ShipMailbox>(entity)
                     .unwrap()
                     .command(osg_ship_wasm::Command::Manual {
                         throttle: if phase == 2 { 0.0 } else { 0.8 },

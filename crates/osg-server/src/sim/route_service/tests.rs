@@ -23,7 +23,7 @@ fn starting_orbit_route_contains_only_system_directives() {
         .0
         .clone();
     let system = universe
-        .systems
+        .systems()
         .iter()
         .find(|system| system.name == "HIP 117953")
         .unwrap();
@@ -163,7 +163,7 @@ fn worker_uses_public_inputs_without_charging_route_computation() {
     let system = Id(world
         .resource::<crate::sim::orrery::Universe>()
         .0
-        .systems
+        .systems()
         .iter()
         .find(|system| system.name == "HIP 117953")
         .unwrap()

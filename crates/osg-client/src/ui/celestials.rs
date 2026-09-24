@@ -1,5 +1,5 @@
 use crate::state::{
-    Celestial, CelestialSystem, DisplayPose, RenderTime, SessionInfo, SessionReset,
+    Celestial, CelestialSystem, DisplayPose, NavigationState, RenderTime, SessionReset,
     ViewObservation, ViewSystems, WorldMember,
 };
 pub(crate) use crate::universe::shared_universe;
@@ -128,10 +128,10 @@ fn select_views(
     for (entity, observation, camera, previous) in &views {
         let position = camera.map_or(observation.0.origin, |camera| camera.origin);
         let mut desired: Vec<_> = universe
-            .index
+            .index()
             .containing_segment(position, Default::default())
             .into_iter()
-            .map(|index| Id(universe.systems[index].id))
+            .map(|index| Id(universe.systems()[index].id))
             .collect();
         desired.sort_unstable();
         desired.dedup();
@@ -145,7 +145,7 @@ fn synchronize(
     mut commands: Commands,
     mut definitions: ResMut<Definitions>,
     views: Query<(Entity, &ViewSystems)>,
-    session: Res<SessionInfo>,
+    session: Res<NavigationState>,
     clock: Res<RenderTime>,
 ) {
     let Some(epoch) = session.universe_descriptor.as_ref() else {
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn local_definition_renders_without_asset_transport_and_releases_view_interest() {
         let universe = shared_universe().unwrap();
-        let id = Id(universe.systems[0].id);
+        let id = Id(universe.systems()[0].id);
         let definition = universe.resolve(id.0).unwrap();
         let expected = definition
             .solver
@@ -343,9 +343,9 @@ mod tests {
             .count();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(SessionInfo {
+            .insert_resource(NavigationState {
                 universe_descriptor: Some(UniverseDescriptor {
-                    fingerprint: universe.fingerprint,
+                    fingerprint: universe.fingerprint(),
                     epoch_mjd_utc: 60_000.0,
                     sim_time_origin_ns: 0,
                 }),

@@ -28,7 +28,7 @@ pub(super) fn production(players: usize, include_catalogue: bool) -> Result<Fixt
         .collect();
     let universe = world.resource::<crate::sim::orrery::Universe>().clone();
     let catalogue: Vec<_> = universe
-        .index
+        .index()
         .entries
         .iter()
         .enumerate()

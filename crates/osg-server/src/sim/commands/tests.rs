@@ -237,7 +237,7 @@ fn target_handles_and_director_queries_use_own_observed_tracks_and_fresh_docked_
     )
     .unwrap();
     assert!(
-        matches!(world.get::<ShipSoftware>(ship).unwrap().inbox.last().unwrap().command, Command::MarkTarget { contact, .. } if contact == handle)
+        matches!(world.get::<ShipMailbox>(ship).unwrap().inbox.last().unwrap().command, Command::MarkTarget { contact, .. } if contact == handle)
     );
 
     let host = world
@@ -292,13 +292,13 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
     let revision = world.get::<Control>(ship).unwrap().revision;
     let travel = world.get::<Travel>(ship).unwrap().0.clone();
     {
-        let mut software = world.get_mut::<ShipSoftware>(ship).unwrap();
+        let mut software = world.get_mut::<ShipMailbox>(ship).unwrap();
         software.inbox.clear();
         for _ in 0..254 {
             software.command(Command::StopFiring);
         }
     }
-    let request_id = world.get::<ShipSoftware>(ship).unwrap().request_id;
+    let request_id = world.get::<ShipMailbox>(ship).unwrap().request_id;
     world
         .get_mut::<sim::travel::SlipDrive>(ship)
         .unwrap()
@@ -327,7 +327,7 @@ fn rejected_two_request_autopilot_change_leaves_queue_and_slip_preparation_intac
                 .to_string()
                 .contains("queue full")
         );
-        let software = world.get::<ShipSoftware>(ship).unwrap();
+        let software = world.get::<ShipMailbox>(ship).unwrap();
         assert_eq!(software.inbox.len(), 254);
         assert_eq!(software.request_id, request_id);
         assert_eq!(world.get::<Travel>(ship).unwrap().0, travel);

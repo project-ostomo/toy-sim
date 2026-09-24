@@ -33,31 +33,58 @@ pub struct Vessel {
 #[derive(Component)]
 pub struct ShipDesign(pub Arc<CompiledShipDesign>);
 #[derive(Component)]
+#[require(
+    ShipMailbox,
+    PendingDamage,
+    ComputerBudget,
+    SoftwareDiagnostics,
+    ProgramWorld
+)]
 pub struct ShipSoftware {
     observed_restart: u64,
     pub controller: Controller,
     pub(crate) program_hash: [u8; 32],
-    pub inbox: Vec<Request>,
-    pub results: Vec<RequestReply>,
     pub reset: bool,
-    pub hull_energy_j: f64,
-    pub shield_energy_j: f64,
-    pub last_seconds: f64,
-    pub timings: ShipStepTimings,
     /// Simulation time since the last observation delivered to the controller.
     pub callback_dt: f64,
     pub schedule: osg_ship_wasm::CallbackSchedule,
+    pub last_input: Option<Input>,
+}
+
+#[derive(Component, Default)]
+pub struct ShipMailbox {
+    pub inbox: Vec<Request>,
+    pub results: Vec<RequestReply>,
     pub request_id: u64,
     pub(crate) last_weapon_request_id: u64,
+}
+
+#[derive(Component, Default)]
+pub struct PendingDamage {
+    pub hull_energy_j: f64,
+    pub shield_energy_j: f64,
+}
+
+#[derive(Component, Default)]
+pub struct ProgramWorld {
     pub world_source: Option<Arc<super::services::ShipScan<'static>>>,
     pub world_actions: Vec<osg_model::ProgramAction>,
-    pub last_input: Option<Input>,
-    pub last_gas_used: u64,
-    pub last_gas_limit: u64,
-    pub(crate) gas_tick: Option<u64>,
+}
+
+#[derive(Component, Default)]
+pub struct SoftwareDiagnostics {
+    pub last_seconds: f64,
+    pub timings: ShipStepTimings,
+}
+
+#[derive(Component)]
+pub struct ComputerBudget {
+    last_gas_used: u64,
+    last_gas_limit: u64,
+    gas_tick: Option<u64>,
     gas_reservation: Option<super::gas::GasReservation>,
     display_priority: bool,
-    pub(crate) display_limited: bool,
+    display_limited: bool,
 }
 impl ShipSoftware {
     pub fn new(controller: Controller) -> Self {
@@ -66,21 +93,18 @@ impl ShipSoftware {
         Self {
             controller,
             program_hash,
-            inbox: vec![],
-            results: vec![],
             reset: false,
-            hull_energy_j: 0.,
-            shield_energy_j: 0.,
-            last_seconds: 0.,
-            timings: default(),
             callback_dt: 0.,
             schedule: default(),
-            request_id: 0,
-            last_weapon_request_id: 0,
-            world_source: None,
-            world_actions: Vec::new(),
             last_input: None,
             observed_restart,
+        }
+    }
+}
+
+impl Default for ComputerBudget {
+    fn default() -> Self {
+        Self {
             last_gas_used: 0,
             last_gas_limit: osg_ship_wasm::FUEL_PER_TICK,
             gas_tick: None,
@@ -88,6 +112,32 @@ impl ShipSoftware {
             display_priority: false,
             display_limited: false,
         }
+    }
+}
+
+impl ComputerBudget {
+    pub fn used_gas(&self) -> u64 {
+        self.last_gas_used
+    }
+
+    pub fn gas_limit(&self) -> u64 {
+        self.last_gas_limit
+    }
+
+    pub fn gas_tick(&self) -> Option<u64> {
+        self.gas_tick
+    }
+
+    pub fn display_limited(&self) -> bool {
+        self.display_limited
+    }
+
+    pub(crate) fn charge_gas(&mut self, used: u64) {
+        assert!(
+            used <= self.remaining_gas(),
+            "computer gas exceeds tick allowance"
+        );
+        self.last_gas_used += used;
     }
 
     pub(crate) fn begin_gas_tick(&mut self, tick: u64) {
@@ -103,7 +153,9 @@ impl ShipSoftware {
     pub(crate) fn remaining_gas(&self) -> u64 {
         self.last_gas_limit - self.last_gas_used
     }
+}
 
+impl ShipMailbox {
     pub fn command(&mut self, command: Command) {
         if self.inbox.len() < 255 {
             self.request_id += 1;
@@ -147,7 +199,13 @@ impl Plugin for VesselsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (run, super::sensors::flush, clear_computer_resets)
+                (
+                    allocate_gas,
+                    run,
+                    settle_gas,
+                    super::sensors::flush,
+                    clear_computer_resets,
+                )
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),
@@ -260,19 +318,25 @@ fn spawn(
 fn prepare_resets(
     mut commands: Commands,
     cat: Res<ShipCatalogue>,
-    mut ships: Query<(Entity, &ShipDesign, &mut ShipSoftware)>,
+    mut ships: Query<(
+        Entity,
+        &ShipDesign,
+        &mut ShipSoftware,
+        &mut ShipMailbox,
+        &mut ProgramWorld,
+    )>,
 ) {
-    for (entity, design, mut software) in &mut ships {
+    for (entity, design, mut software, mut mailbox, mut context) in &mut ships {
         if software.reset {
             software.reset = false;
             let mut state = ShipState::new(&design.0, &cat.0);
             state.test_loadout(&design.0, &cat.0);
             commands.entity(entity).insert(PendingHardwareReset(state));
             software.controller.reboot();
-            software
+            mailbox
                 .inbox
                 .retain(|r| matches!(r.command, Command::Manual { .. }));
-            software.world_actions.clear();
+            context.world_actions.clear();
             software.last_input = None;
         }
     }
@@ -296,62 +360,51 @@ fn flight_allowance(
     if flight_minimum <= grant { grant } else { 0 }
 }
 
-pub(crate) fn run(
-    sensors: super::sensors::SensorAccess,
+pub(crate) fn allocate_gas(
     ledger: Res<super::gas::GasLedger>,
-    chat: Option<Res<super::chat::ChatService>>,
-    epoch: Res<super::identity::WorldEpoch>,
     time: Res<Time<Fixed>>,
-    parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     mut ships: Query<(
         Entity,
-        &ShipDesign,
-        HardwareWrite,
+        &Hull,
+        &super::hardware::Avionics,
+        &HardwareClock,
         &mut ShipSoftware,
-        &mut super::displays::DisplayEnvironment,
+        &ShipMailbox,
+        &mut ComputerBudget,
         Option<&super::displays::Display>,
-        &PreciseTransform,
-        Option<&Velocity>,
-        Option<&AngularVelocity>,
-        &crate::sim::physics::AccelerometerState,
-        &MassProps,
         &super::identity::Identity,
         &super::ownership::AssetOwner,
         Has<super::travel::SystemsSuspended>,
     )>,
 ) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("vessel.run");
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (
         entity,
-        design,
-        hardware,
+        hull,
+        avionics,
+        clock,
         mut software,
-        _,
+        mailbox,
+        mut budget,
         active_display,
-        _,
-        _,
-        _,
-        _,
-        _,
         identity,
         owner,
         dormant,
     ) in &mut ships
     {
-        software.begin_gas_tick(hardware.clock.0);
+        budget.begin_gas_tick(clock.0);
         software.callback_dt += time.delta_secs_f64();
         software.schedule.advance(time.delta_secs_f64());
-        let parent_running = !dormant && hardware.computer_running(&design.0);
+        let parent_running = !dormant && osg_ships::computer_running(hull.0, &avionics.0);
         let ready = software.controller.is_booting()
             || software.controller.is_suspended()
             || software
                 .schedule
-                .ready(!software.inbox.is_empty() || software.controller.has_pending_input());
+                .ready(!mailbox.inbox.is_empty() || software.controller.has_pending_input());
         let display_minimum = active_display
             .filter(|_| parent_running)
-            .and_then(|display| display.minimum_to_progress(hardware.clock.0));
+            .and_then(|display| display.minimum_to_progress(clock.0));
         if !parent_running || (!ready && display_minimum.is_none()) {
             continue;
         }
@@ -363,7 +416,7 @@ pub(crate) fn run(
             .chain(display_minimum)
             .min()
             .unwrap();
-        let maximum = software.remaining_gas();
+        let maximum = budget.remaining_gas();
         if minimum <= maximum {
             requests
                 .entry(owner.0)
@@ -381,15 +434,13 @@ pub(crate) fn run(
             .reserve_fair(owner, &requests)
             .expect("valid flight gas requests")
         {
-            let (_, _, _, mut software, ..) = ships.get_mut(entities[&id]).unwrap();
-            software.gas_reservation = Some(reservation);
+            let (_, _, _, _, _, _, mut budget, ..) = ships.get_mut(entities[&id]).unwrap();
+            budget.gas_reservation = Some(reservation);
         }
     }
     let mut starts = 0;
-    for (_, _, hardware, mut software, _, active_display, _, _, _, _, _, _, _, dormant) in
-        &mut ships
-    {
-        let grant = software
+    for (_, _, _, clock, software, _, mut budget, active_display, _, _, dormant) in &mut ships {
+        let grant = budget
             .gas_reservation
             .as_ref()
             .map_or(0, |grant| grant.limit());
@@ -398,25 +449,57 @@ pub(crate) fn run(
             software.controller.minimum_to_progress(),
             active_display
                 .filter(|_| !dormant)
-                .and_then(|display| display.minimum_to_progress(hardware.clock.0)),
-            software.display_priority,
+                .and_then(|display| display.minimum_to_progress(clock.0)),
+            budget.display_priority,
         );
         if software.controller.needs_instance_start()
             && grant > software.controller.boot_remaining_gas()
         {
             if starts == osg_ship_wasm::MAX_BOOTS_PER_TICK {
-                drop(software.gas_reservation.take());
+                drop(budget.gas_reservation.take());
             } else {
                 starts += 1;
             }
         }
     }
+}
+
+pub(crate) fn run(
+    sensors: super::sensors::SensorAccess,
+    chat: Option<Res<super::chat::ChatService>>,
+    epoch: Res<super::identity::WorldEpoch>,
+    time: Res<Time<Fixed>>,
+    parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
+    mut ships: Query<(
+        Entity,
+        &ShipDesign,
+        HardwareWrite,
+        (
+            &mut ShipSoftware,
+            &mut ShipMailbox,
+            &mut ComputerBudget,
+            &mut SoftwareDiagnostics,
+            &mut ProgramWorld,
+        ),
+        &mut super::displays::DisplayEnvironment,
+        Option<&super::displays::Display>,
+        &PreciseTransform,
+        Option<&Velocity>,
+        Option<&AngularVelocity>,
+        &crate::sim::physics::AccelerometerState,
+        &MassProps,
+        &super::identity::Identity,
+        &super::ownership::AssetOwner,
+        Has<super::travel::SystemsSuspended>,
+    )>,
+) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("vessel.run");
     ships.par_iter_mut().for_each(
         |(
             entity,
             d,
             mut h,
-            mut software,
+            (mut software, mut mailbox, mut budget, mut diagnostics, mut context),
             mut display,
             active_display,
             pose,
@@ -433,7 +516,7 @@ pub(crate) fn run(
             let design = &d.0;
             let parent_running = !dormant && h.computer_running(design);
             display.powered = parent_running;
-            display.source = software.world_source.clone();
+            display.source = context.world_source.clone();
             display.origin = [
                 pose.translation_um.x,
                 pose.translation_um.y,
@@ -443,7 +526,7 @@ pub(crate) fn run(
                 && (software.controller.is_booting()
                     || software.controller.is_suspended()
                     || software.schedule.ready(
-                        !software.inbox.is_empty() || software.controller.has_pending_input(),
+                        !mailbox.inbox.is_empty() || software.controller.has_pending_input(),
                     ));
             let current_input = if ready || (parent_running && active_display.is_some()) {
                 let observation = Observation {
@@ -495,21 +578,17 @@ pub(crate) fn run(
             timings.prepare = start.elapsed().as_secs_f64();
             if ready {
                 let mut input = current_input.expect("ready computer observation");
-                input.commands = std::mem::take(&mut software.inbox);
-                let reserved = software.gas_reservation.as_ref().map_or(0, |r| r.limit());
+                input.commands = std::mem::take(&mut mailbox.inbox);
+                let reserved = budget.gas_reservation.as_ref().map_or(0, |r| r.limit());
                 let minimum = software.controller.minimum_to_progress();
                 let display_minimum = active_display
                     .filter(|_| parent_running)
                     .and_then(|display| display.minimum_to_progress(h.clock.0));
-                let grant = flight_allowance(
-                    reserved,
-                    minimum,
-                    display_minimum,
-                    software.display_priority,
-                );
-                software.display_limited = reserved >= minimum && grant < minimum;
+                let grant =
+                    flight_allowance(reserved, minimum, display_minimum, budget.display_priority);
+                budget.display_limited = reserved >= minimum && grant < minimum;
                 if display_minimum.is_some_and(|display| reserved >= minimum.min(display)) {
-                    software.display_priority = !software.display_priority;
+                    budget.display_priority = !budget.display_priority;
                 }
                 let callback_start = std::time::Instant::now();
                 let booting = software.controller.is_booting();
@@ -519,7 +598,7 @@ pub(crate) fn run(
                 {
                     input.dt = std::mem::take(&mut software.callback_dt);
                 }
-                let source = software.world_source.clone();
+                let source = context.world_source.clone();
                 let observe = || sensors.observe(entity, h.range.0);
                 let source = source
                     .as_ref()
@@ -533,7 +612,7 @@ pub(crate) fn run(
                     false,
                 );
                 software.controller.set_services(Some(Arc::new(services)));
-                let limit = software.last_gas_limit;
+                let limit = budget.last_gas_limit;
                 let result = software.controller.run_slice(
                     input.clone(),
                     source
@@ -543,9 +622,9 @@ pub(crate) fn run(
                     limit,
                 );
                 let used = software.controller.last_gas_used;
-                software.last_gas_used += used;
+                budget.charge_gas(used);
                 timings.scan += software.controller.last_scan_seconds;
-                if let Some(reservation) = software.gas_reservation.as_mut() {
+                if let Some(reservation) = budget.gas_reservation.as_mut() {
                     reservation
                         .record_used(used)
                         .expect("computer gas within allowance");
@@ -554,22 +633,22 @@ pub(crate) fn run(
                 }
 
                 if booting {
-                    h.reset_commands(design);
+                    h.reset_settings(design);
                     if !software.controller.is_booting() {
                         software.callback_dt = 0.;
                         software.schedule = default();
-                        software.results.clear();
+                        mailbox.results.clear();
                     }
                 }
                 match result {
                     Ok(slice) => {
                         if let Err(error) = h.apply_commands(design, &slice.output.devices) {
-                            h.reset_commands(design);
+                            h.reset_settings(design);
                             software.controller.fail(format!("{error:#}"));
                             warn!("Invalid device commands: {error:#}");
                         } else {
-                            software.results.extend(slice.output.replies);
-                            software.world_actions.extend(slice.output.world_actions);
+                            mailbox.results.extend(slice.output.replies);
+                            context.world_actions.extend(slice.output.world_actions);
                             if slice.callback_completed {
                                 input.commands.clear();
                                 software.last_input = Some(input);
@@ -580,13 +659,13 @@ pub(crate) fn run(
                         }
                     }
                     Err(error) => {
-                        h.reset_commands(design);
+                        h.reset_settings(design);
                         warn!("Ship controller fault: {error:#}");
                     }
                 }
                 timings.callback = callback_start.elapsed().as_secs_f64();
             } else if !parent_running {
-                h.reset_commands(design);
+                h.reset_settings(design);
             }
             let publish_start = std::time::Instant::now();
             software
@@ -594,18 +673,23 @@ pub(crate) fn run(
                 .state
                 .expire(time.elapsed_secs_f64() - time.delta_secs_f64());
             timings.publish = publish_start.elapsed().as_secs_f64();
-            software.timings = timings;
-            software.last_seconds = start.elapsed().as_secs_f64();
+            diagnostics.timings = timings;
+            diagnostics.last_seconds = start.elapsed().as_secs_f64();
         },
     );
-    for (_, _, _, mut software, ..) in &mut ships {
-        drop(software.gas_reservation.take());
+}
+
+pub(crate) fn settle_gas(mut budgets: Query<&mut ComputerBudget>) {
+    for mut budget in &mut budgets {
+        drop(budget.gas_reservation.take());
     }
 }
 
 fn clear_computer_resets(
     mut ships: Query<(
         &mut ShipSoftware,
+        &mut ShipMailbox,
+        &mut ProgramWorld,
         Option<&mut super::travel::Travel>,
         Option<&mut super::travel::SlipDrive>,
         Option<&super::identity::Identity>,
@@ -613,14 +697,14 @@ fn clear_computer_resets(
     mut stations: Query<&mut super::travel::DockingBays>,
 ) {
     let mut released = std::collections::HashSet::new();
-    for (mut software, travel, drive, identity) in &mut ships {
+    for (mut software, mut mailbox, mut context, travel, drive, identity) in &mut ships {
         if software.observed_restart == software.controller.restart_revision {
             continue;
         }
         software.observed_restart = software.controller.restart_revision;
-        software.inbox.clear();
-        software.world_actions.clear();
-        software.results.clear();
+        mailbox.inbox.clear();
+        context.world_actions.clear();
+        mailbox.results.clear();
         software.last_input = None;
         if let Some(mut travel) = travel {
             travel.0.enabled = false;

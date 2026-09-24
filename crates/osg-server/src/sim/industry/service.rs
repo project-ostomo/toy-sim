@@ -85,7 +85,7 @@ pub fn list(
     );
     let search = search.to_lowercase();
     let mut items = Vec::new();
-    for (&id, &entity) in &world.resource::<identity::IdentityIndex>().0 {
+    for (&id, &entity) in world.resource::<identity::IdentityIndex>().entries() {
         if after.is_some_and(|after| id <= after) || !available(world, entity) {
             continue;
         }
@@ -344,8 +344,10 @@ pub fn order(
         .cloned()
         .unwrap_or_default();
     ensure!(queue.jobs.len() < MAX_JOBS, "facility queue full");
-    let mut economy = world.resource::<Economy>().clone();
-    economy.settle(osg_model::calendar::now_unix_ms());
+    world
+        .resource_mut::<Economy>()
+        .settle(osg_model::calendar::now_unix_ms());
+    let economy = world.resource::<Economy>();
     ensure!(
         economy.available(current.payer, current.currency) >= current.total,
         "insufficient available funds"
@@ -357,35 +359,37 @@ pub fn order(
         amount: current.total,
         charged: false,
     };
-    economy.service_holds.insert(id, payment.clone());
-    job.view.payment = Some(payment);
+    job.view.payment = Some(payment.clone());
+    let storage_key = (current.facility, current.payer);
+    let mut stock = economy
+        .storage
+        .get(&storage_key)
+        .cloned()
+        .unwrap_or_default();
     let mut inventory = world
         .get::<hardware::ShipInventory>(entity)
         .context("inventory unavailable")?
         .0
         .clone();
     for stack in &job.inputs {
-        let stock = economy
+        let available_stock = economy
             .storage
             .get(&(current.facility, current.payer))
             .and_then(|stock| stock.get(&stack.item))
             .copied()
             .unwrap_or(0);
         ensure!(
-            stock.saturating_sub(economy.stock_reserved(
+            available_stock.saturating_sub(economy.stock_reserved(
                 current.payer,
                 current.facility,
                 &stack.item
             )) >= stack.quantity,
             "deliver required inputs to your station storage first"
         );
-        let stock = economy
-            .storage
-            .get_mut(&(current.facility, current.payer))
-            .unwrap()
-            .get_mut(&stack.item)
-            .unwrap();
-        *stock -= stack.quantity;
+        let amount = stock.get_mut(&stack.item).context("input stock missing")?;
+        *amount = amount
+            .checked_sub(stack.quantity)
+            .context("input stock shortage")?;
         let custody = inventory
             .custody
             .get_mut(&stack.item)
@@ -394,11 +398,7 @@ pub fn order(
             .checked_sub(stack.quantity)
             .context("input custody shortage")?;
     }
-    economy
-        .storage
-        .values_mut()
-        .for_each(|stock| stock.retain(|_, quantity| *quantity > 0));
-    economy.storage.retain(|_, stock| !stock.is_empty());
+    stock.retain(|_, quantity| *quantity > 0);
     inventory.custody.retain(|_, quantity| *quantity > 0);
     let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
     inventory.reserve_cargo(&job.inputs, catalogue)?;
@@ -416,7 +416,13 @@ pub fn order(
     )?;
     world.get_mut::<hardware::ShipInventory>(entity).unwrap().0 = inventory;
     world.entity_mut(entity).insert(queue);
-    world.insert_resource(economy);
+    let mut economy = world.resource_mut::<Economy>();
+    economy.service_holds.insert(id, payment);
+    if stock.is_empty() {
+        economy.storage.remove(&storage_key);
+    } else {
+        economy.storage.insert(storage_key, stock);
+    }
     Ok(())
 }
 
@@ -427,19 +433,58 @@ pub(super) fn credit_storage(
     owner: Principal,
     stacks: &[ItemStack],
 ) -> Result<()> {
-    let stock = economy.storage.entry((station, owner)).or_default();
+    let mut stock = economy
+        .storage
+        .get(&(station, owner))
+        .cloned()
+        .unwrap_or_default();
+    let mut custody = inventory.custody.clone();
     for stack in stacks {
         let amount = stock.entry(stack.item.clone()).or_default();
         *amount = amount
             .checked_add(stack.quantity)
             .context("storage overflow")?;
-        let amount = inventory.custody.entry(stack.item.clone()).or_default();
+        let amount = custody.entry(stack.item.clone()).or_default();
         *amount = amount
             .checked_add(stack.quantity)
             .context("custody overflow")?;
     }
     ensure!(stock.len() <= 1024, "storage item limit");
+    economy.storage.insert((station, owner), stock);
+    inventory.custody = custody;
     Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn storage_credit_rolls_back_all_items_when_later_custody_overflows() {
+    let mut economy = Economy::default();
+    let mut inventory = Inventory::empty(&Catalogue::builtin());
+    let station = Id::new();
+    let owner = Principal::Player(Id::new());
+    let first = CargoItem::Resource("first".into());
+    let second = CargoItem::Resource("second".into());
+    inventory.custody.insert(second.clone(), u64::MAX);
+    let before = inventory.custody.clone();
+    let result = credit_storage(
+        &mut economy,
+        &mut inventory,
+        station,
+        owner,
+        &[
+            ItemStack {
+                item: first,
+                quantity: 1,
+            },
+            ItemStack {
+                item: second,
+                quantity: 1,
+            },
+        ],
+    );
+    assert!(result.is_err());
+    assert!(economy.storage.is_empty());
+    assert_eq!(inventory.custody, before);
 }
 
 pub fn cancel(world: &mut World, account: AccountId, facility: Id, job: Id) -> Result<()> {
@@ -473,19 +518,20 @@ pub fn cancel(world: &mut World, account: AccountId, facility: Id, job: Id) -> R
         .0
         .clone();
     inventory.release_cargo(&job.inputs, &world.resource::<vessel::ShipCatalogue>().0)?;
-    let mut economy = world.resource::<Economy>().clone();
     credit_storage(
-        &mut economy,
+        &mut world.resource_mut::<Economy>(),
         &mut inventory,
         facility,
         payment.payer,
         &job.inputs,
     )?;
-    economy.service_holds.remove(&job.view.id);
+    world
+        .resource_mut::<Economy>()
+        .service_holds
+        .remove(&job.view.id);
     queue.jobs.remove(index);
     world.get_mut::<hardware::ShipInventory>(entity).unwrap().0 = inventory;
     world.entity_mut(entity).insert(queue);
-    world.insert_resource(economy);
     Ok(())
 }
 
@@ -519,60 +565,57 @@ pub(super) fn charge(
     if payment.charged {
         return Ok(());
     }
-    let mut economy = world.resource::<Economy>().clone();
-    ensure!(
-        economy.service_holds.remove(&job.view.id).as_ref() == Some(payment),
-        "payment reservation no longer funded"
-    );
-    if payment.amount > 0 && payment.payer != payment.operator {
-        let before = economy
-            .balances
-            .get(&payment.operator)
-            .cloned()
-            .unwrap_or_default();
-        let directory = &world.resource::<ownership::Directory>().0;
-        let restricted =
-            payment.currency == Currency::Lat && economy.restricted(directory, payment.operator);
-        let start = economy.entries.len();
-        economy.transfer(
-            Some(directory),
-            payment.payer,
-            payment.operator,
-            payment.currency,
-            payment.amount,
-            restricted,
-            osg_model::calendar::now_unix_ms(),
-        )?;
-        for entry in &mut economy.entries[start..] {
-            entry.reference = Some(job.view.id);
-            if entry.kind == osg_model::economy::EntryKind::Transfer {
-                entry.kind = osg_model::economy::EntryKind::Industry;
+    world.resource_scope(|world, mut economy: Mut<Economy>| {
+        economy.transaction(|economy| {
+            ensure!(
+                economy.release_service_hold(job.view.id).as_ref() == Some(payment),
+                "payment reservation no longer funded"
+            );
+            if payment.amount > 0 && payment.payer != payment.operator {
+                let before = economy
+                    .balances
+                    .get(&payment.operator)
+                    .cloned()
+                    .unwrap_or_default();
+                let directory = &world.resource::<ownership::Directory>().0;
+                let restricted = payment.currency == Currency::Lat
+                    && economy.restricted(directory, payment.operator);
+                let start = economy.entries.len();
+                economy.transfer(
+                    Some(directory),
+                    payment.payer,
+                    payment.operator,
+                    payment.currency,
+                    payment.amount,
+                    restricted,
+                    osg_model::calendar::now_unix_ms(),
+                )?;
+                economy.reference_payment(start, job.view.id);
+                let after = economy
+                    .balances
+                    .get(&payment.operator)
+                    .cloned()
+                    .unwrap_or_default();
+                let received_uec = after
+                    .uec
+                    .checked_sub(before.uec)
+                    .context("service receipt underflow")?;
+                let received_lat = after
+                    .lat
+                    .checked_sub(before.lat)
+                    .context("service receipt underflow")?;
+                let uec = revenue
+                    .uec
+                    .checked_add(received_uec)
+                    .context("service revenue overflow")?;
+                let lat = revenue
+                    .lat
+                    .checked_add(received_lat)
+                    .context("service revenue overflow")?;
+                *revenue = crate::sim::economy::Balance { uec, lat };
             }
-        }
-        let after = economy
-            .balances
-            .get(&payment.operator)
-            .cloned()
-            .unwrap_or_default();
-        let received_uec = after
-            .uec
-            .checked_sub(before.uec)
-            .context("service receipt underflow")?;
-        let received_lat = after
-            .lat
-            .checked_sub(before.lat)
-            .context("service receipt underflow")?;
-        let uec = revenue
-            .uec
-            .checked_add(received_uec)
-            .context("service revenue overflow")?;
-        let lat = revenue
-            .lat
-            .checked_add(received_lat)
-            .context("service revenue overflow")?;
-        *revenue = crate::sim::economy::Balance { uec, lat };
-    }
-    payment.charged = true;
-    world.insert_resource(economy);
-    Ok(())
+            payment.charged = true;
+            Ok(())
+        })
+    })
 }

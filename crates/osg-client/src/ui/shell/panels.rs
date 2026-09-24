@@ -5,6 +5,7 @@ use super::*;
 pub(super) fn draw(
     ctx: &egui::Context,
     shell: &mut Shell,
+    panes: &mut PaneStates,
     model: &FrameModel,
     selection: &Selection,
     results: &[CommandResult],
@@ -202,11 +203,10 @@ pub(super) fn draw(
                             &ship.travel,
                             model.time_ns / osg_model::TICK_NS,
                         );
-                        if let Some(arrival) = ship
-                            .travel
-                            .status
-                            .estimated_arrival_tick
-                            .filter(|_| matches!(ship.presence, travel::Presence::SlipTransit(_)))
+                        if let Some(arrival) =
+                            ship.travel.status.estimated_arrival_tick.filter(|_| {
+                                matches!(ship.presence, travel::Presence::SlipTransit(_))
+                            })
                         {
                             let seconds = (arrival as f64 * osg_model::TICK_SECONDS
                                 - model.time_ns as f64 * 1e-9)
@@ -378,23 +378,23 @@ pub(super) fn draw(
     shell.desktop.show(ctx, INVENTORY, |ui| {
         inventory::draw(
             ui,
-            &mut shell.inventory,
+            &mut panes.inventory,
             model,
-            &mut shell.transfers,
+            &mut panes.transfers,
             intents,
         )
     });
     shell.desktop.show(ctx, HANGAR, |ui| {
-        hangar::draw(ui, &mut shell.hangar, model, &mut shell.transfers, intents)
+        hangar::draw(ui, &mut panes.hangar, model, &mut panes.transfers, intents)
     });
     shell.desktop.show(ctx, CARGO, |ui| {
-        if let Some(inventory) = shell.cargo_inventory {
+        if let Some(inventory) = panes.cargo_inventory.0 {
             cargo::draw(
                 ui,
-                &mut shell.cargo,
+                &mut panes.cargo,
                 inventory,
                 model,
-                &mut shell.transfers,
+                &mut panes.transfers,
                 intents,
             );
         }
@@ -402,31 +402,31 @@ pub(super) fn draw(
     shell.desktop.show(ctx, INDUSTRY, |ui| {
         industry::draw(
             ui,
-            &mut shell.industry,
+            &mut panes.industry,
             model,
-            &mut shell.transfers,
+            &mut panes.transfers,
             intents,
         )
     });
     shell
         .desktop
-        .show(ctx, MAP, |ui| map::draw(ui, &mut shell.map, model, intents));
+        .show(ctx, MAP, |ui| map::draw(ui, &mut panes.map, model, intents));
     shell.desktop.show(ctx, SOCIETY, |ui| {
-        society::draw(ui, &mut shell.society, model, intents);
+        society::draw(ui, &mut panes.society, model, intents);
     });
     shell.desktop.show(ctx, CHAT, |ui| {
-        chat::draw(ui, &mut shell.chat, model, chat_log, intents);
+        chat::draw(ui, &mut panes.chat, model, chat_log, intents);
     });
     shell.desktop.show(ctx, WALLET, |ui| {
-        wallet::draw(ui, &mut shell.wallet, model, wallet, intents);
+        wallet::draw(ui, &mut panes.wallet, model, wallet, intents);
     });
     shell.desktop.show(ctx, MARKET, |ui| {
-        market::draw(ui, &mut shell.market, model, market, intents);
+        market::draw(ui, &mut panes.market, model, market, intents);
     });
     shell.desktop.show(ctx, ASSETS, |ui| {
-        assets::draw(ui, &mut shell.assets, model, assets, intents);
+        assets::draw(ui, &mut panes.assets, model, assets, intents);
     });
-    cargo::draw_dialog(ctx, &mut shell.transfers, model, intents);
+    cargo::draw_dialog(ctx, &mut panes.transfers, model, intents);
     let mut locked = shell.desktop.locked;
     let mut reset = false;
     shell.desktop.show(ctx, SETTINGS, |ui| {

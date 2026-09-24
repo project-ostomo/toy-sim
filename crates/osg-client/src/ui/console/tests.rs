@@ -105,6 +105,7 @@ pub(in crate::ui) fn details() -> ShipPresentation {
 fn console_headless_layout_and_manual_lockout() {
     let mut world = World::new();
     world.init_resource::<Console>();
+    world.init_resource::<CommandState>();
     world.init_resource::<EguiUserTextures>();
     world.init_resource::<RenderTime>();
     world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));

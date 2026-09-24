@@ -3,6 +3,15 @@ use std::ops::{Add, AddAssign, Sub, SubAssign};
 use glam::{DVec3, Vec3};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub const AU_M: f64 = 149_597_870_700.0;
+pub const SOLAR_MASS_KG: f64 = 1.988_47e30;
+
+/// Radius at which a body's gravity captures a ship travelling through slip.
+/// Spatial envelopes and precise capture calculations must use the same radius.
+pub fn exclusion_radius_m(mass_kg: f64) -> f64 {
+    0.08 * AU_M * (mass_kg.max(0.0) / SOLAR_MASS_KG).cbrt()
+}
+
 /// Absolute coordinates (or relative displacements) in integer micrometres.
 /// Subtract positions before converting to floating point to preserve local detail.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]

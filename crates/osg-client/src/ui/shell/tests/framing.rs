@@ -4,6 +4,7 @@ use super::*;
 #[derive(Default)]
 pub(in crate::ui::shell) struct Workspace {
     shell: Shell,
+    panes: TestPanes,
     foreground: Desktop,
     violations: Vec<String>,
 }
@@ -37,6 +38,7 @@ impl Workspace {
         panels::draw(
             ctx,
             &mut self.shell,
+            &mut self.panes.get(),
             model,
             &selection,
             &[],

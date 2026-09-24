@@ -1,4 +1,4 @@
-use super::{Requests, call};
+use super::{Mutations, call};
 use osg_model::{
     Id, diplomacy::DiplomacyCommand, economy::WalletCommand, industry::IndustryCommand,
     market::MarketCommand, ownership::SocietyCommand, rpc::Operation,
@@ -8,7 +8,7 @@ use osg_net::OsgNetClient;
 macro_rules! submit {
     ($name:ident, $command:ty, $perform:ident) => {
         pub(crate) fn $name(
-            requests: &mut Requests,
+            requests: &mut Mutations,
             client: &OsgNetClient,
             world: Id,
             generation: u64,

@@ -276,7 +276,7 @@ fn run_loop(
                 .world()
                 .resource::<sim::registry::UniverseRegistry>()
                 .universe
-                .fingerprint,
+                .fingerprint(),
             epoch_mjd_utc: 0.,
             sim_time_origin_ns: 0,
         };

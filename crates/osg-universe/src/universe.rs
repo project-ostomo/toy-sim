@@ -9,6 +9,7 @@ use anyhow::{Context, Result, ensure};
 use glam::{DQuat, DVec3};
 use hifitime::Epoch;
 use moka::sync::Cache;
+use osg_space::exclusion_radius_m;
 use osg_stars::{Star, StarCatalogue};
 use serde::{Deserialize, Serialize};
 use smol_str::SmolStr;
@@ -132,7 +133,7 @@ impl SystemDefinition {
                     .and_then(|name| solver.get_body(name));
             }
             extent = extent.max(reach);
-            let exclusion = 0.008 * 149_597_870_700.0 * (body.mass / 1.98847e30).cbrt();
+            let exclusion = exclusion_radius_m(body.mass);
             capture_bound = capture_bound.max(reach - body.radius + body.radius.max(exclusion));
         }
         let influence = extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt();
@@ -191,9 +192,9 @@ fn cached_definition(
 }
 
 pub struct Universe {
-    pub systems: Vec<SystemSummary>,
-    pub index: Arc<CatalogueIndex>,
-    pub fingerprint: [u8; 32],
+    systems: Vec<SystemSummary>,
+    index: Arc<CatalogueIndex>,
+    fingerprint: [u8; 32],
     maximum_capture_bound: f64,
     sources: Vec<DefinitionSource>,
     identities: HashMap<SystemId, usize>,
@@ -203,6 +204,18 @@ pub struct Universe {
 }
 
 impl Universe {
+    pub fn systems(&self) -> &[SystemSummary] {
+        &self.systems
+    }
+
+    pub fn index(&self) -> &CatalogueIndex {
+        &self.index
+    }
+
+    pub fn fingerprint(&self) -> [u8; 32] {
+        self.fingerprint
+    }
+
     pub fn init(config: OrreryCfg) -> Result<Self> {
         Self::from_configs(vec![config], crate::physics::GRAVITY_CUTOFF)
     }
@@ -559,7 +572,7 @@ fn catalogue_summary(id: SystemId, star: &Star, cutoff: f64) -> SystemSummary {
         name: format!("Gaia DR3 {}", star.id.value).into(),
         position: star.position,
         influence_bound: extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt(),
-        capture_bound: extent + 0.008 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
+        capture_bound: extent + exclusion_radius_m(mass),
         star_radius: properties.radius,
         stellar_mass: properties.mass,
         luminosity: star.luminosity,
@@ -594,7 +607,7 @@ fn procedural_summary(
             DVec3::from_array(star.position_ly) * crate::civilization::LIGHT_YEAR_M,
         ),
         influence_bound: extent + (crate::physics::GRAVITATIONAL_CONSTANT * mass / cutoff).sqrt(),
-        capture_bound: extent + 0.008 * 149_597_870_700.0 * (mass / 1.98847e30).cbrt(),
+        capture_bound: extent + exclusion_radius_m(mass),
         star_radius: properties.radius,
         stellar_mass: properties.mass,
         luminosity,
@@ -638,7 +651,7 @@ fn authored_summary(
         capture_bound: definition.capture_bound
             + extra_extent
             + if populate {
-                0.008 * 149_597_870_700.0 * (11_000.0_f64 * 5.9722e24 / 1.98847e30).cbrt()
+                exclusion_radius_m(11_000.0 * 5.9722e24)
             } else {
                 0.0
             },
@@ -660,6 +673,39 @@ fn authored_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_candidates_include_trajectories_through_stellar_exclusion() {
+        let mut config = crate::example_config();
+        config.bodies.truncate(1);
+        let universe = Universe::init(config).unwrap();
+        let definition = universe.resolve_index(0).unwrap();
+        let star = definition.solver.get_body(&definition.star_name).unwrap();
+        let radius = exclusion_radius_m(star.mass).max(star.radius);
+
+        // This path passes outside the former 0.008 AU envelope but inside
+        // the physical 0.08 AU capture sphere of a solar-mass star.
+        let start = definition.solver.anchor.offset_by(DVec3::new(
+            -osg_space::AU_M,
+            0.04 * osg_space::AU_M,
+            0.0,
+        ));
+        let delta = DVec3::new(2.0 * osg_space::AU_M, 0.0, 0.0);
+        assert!(
+            osg_spatial::segment_sphere_entry(
+                definition.solver.anchor.relative_to(start),
+                delta,
+                radius,
+            )
+            .is_some()
+        );
+        assert_eq!(
+            universe
+                .capture_candidates(start, delta, 0.0, &mut osg_spatial::QueryBudget::new(100))
+                .unwrap(),
+            vec![0]
+        );
+    }
 
     #[test]
     fn references_survive_display_renames_and_resolve_without_global_body_names() {
@@ -840,7 +886,7 @@ mod tests {
                         .solver
                         .solve_position(&body.name, Epoch::from_mjd_utc(days))
                         .unwrap();
-                    let exclusion = 0.008 * 149_597_870_700.0 * (body.mass / 1.98847e30).cbrt();
+                    let exclusion = exclusion_radius_m(body.mass);
                     assert!(
                         position.relative_to(summary.position).length()
                             + body.radius.max(exclusion)

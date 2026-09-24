@@ -46,7 +46,7 @@ pub fn publish_navigation(world: &mut World) {
                     );
                 let mut systems: Vec<_> = containing
                     .into_iter()
-                    .map(|index| Id(universe.systems[index].id))
+                    .map(|index| Id(universe.systems()[index].id))
                     .collect();
                 systems.sort_unstable();
                 systems.dedup();
@@ -196,7 +196,7 @@ pub fn navigation_snapshot(
             universe
                 .containing_segment(position, DVec3::ZERO)
                 .into_iter()
-                .map(|index| Id(universe.systems[index].id)),
+                .map(|index| Id(universe.systems()[index].id)),
         );
     }
     let mut targets = BTreeSet::new();
@@ -249,8 +249,8 @@ mod tests {
         let mut world = World::new();
         let universe =
             osg_universe::universe::Universe::init(osg_universe::example_config()).unwrap();
-        let origin = universe.systems[0].position;
-        let system = Id(universe.systems[0].id);
+        let origin = universe.systems()[0].position;
+        let system = Id(universe.systems()[0].id);
         world.insert_resource(registry::UniverseRegistry {
             universe: Arc::new(universe),
         });

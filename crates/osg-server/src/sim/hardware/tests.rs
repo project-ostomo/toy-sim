@@ -54,6 +54,49 @@ fn ship_with_catalogue(catalogue: Catalogue) -> (World, Entity, Arc<CompiledShip
 }
 
 #[test]
+fn device_readings_match_owned_snapshot_with_independent_part_and_weapon_indices() {
+    let (mut world, ship, design) = ship();
+    let entities = world.get::<PartDevices>(ship).unwrap().0.clone();
+    for (index, entity) in entities.into_iter().enumerate() {
+        let mut device = world.get_mut::<Device>(entity).unwrap();
+        device.0.actual = index as f64 + 1.0;
+        device.0.powered = index % 2 == 0;
+        if let Some(mut weapon) = world.get_mut::<Weapon>(entity) {
+            weapon.0.shots_fired = index as u64 + 3;
+            weapon.0.yaw_rad = index as f64 * 0.1;
+        }
+    }
+    world.get_mut::<SensorRange>(ship).unwrap().0 = 12345.0;
+    world.get_mut::<ShipInventory>(ship).unwrap().0.energy_j = 23456;
+
+    let expected = snapshot(&world, ship).unwrap().snapshot(&design);
+    let readings = device_readings(&world, ship).unwrap();
+    // The world adapter and persistence boundary must agree on device ordering.
+    assert_eq!(readings.len(), expected.len());
+    for (reading, expected) in readings.iter().zip(&expected) {
+        assert_eq!(reading.operational, expected.operational);
+        assert_eq!(reading.powered, expected.powered);
+        assert_eq!(reading.reading, expected.reading);
+    }
+}
+
+#[test]
+fn impacts_apply_without_ship_software() {
+    let (mut world, ship, design) = ship();
+    world
+        .entity_mut(ship)
+        .remove::<super::super::vessel::ShipSoftware>();
+    world.get_mut::<PendingDamage>(ship).unwrap().hull_energy_j = 1000.0;
+    let before = world.get::<ShipThermal>(ship).unwrap().0.hull_energy_j;
+
+    world.run_system_once(apply_impacts).unwrap();
+
+    assert!(world.get::<ShipThermal>(ship).unwrap().0.hull_energy_j > before);
+    assert_eq!(world.get::<PendingDamage>(ship).unwrap().hull_energy_j, 0.0);
+    assert!(world.get::<Hull>(ship).unwrap().0 <= design.hull);
+}
+
+#[test]
 fn generators_conserve_fuel_and_account_for_conversion_heat() {
     let (mut world, ship, design) = ship();
     let (index, power, fuel_rate, efficiency) = design

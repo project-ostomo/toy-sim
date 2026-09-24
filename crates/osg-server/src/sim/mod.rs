@@ -101,7 +101,6 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
         FixedLast,
         (
             identity::identify_celestials.before(sensors::publish),
-            identity::clean_indexes,
             sensors::publish,
             combat::flush_travel,
         )

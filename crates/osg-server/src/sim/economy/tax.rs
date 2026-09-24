@@ -20,7 +20,9 @@ impl Economy {
                 self.turnover_taxes.get(&id).map(|rate| (principal, *rate))
             })
     }
+}
 
+impl Transaction<'_> {
     /// Withhold turnover tax from the receipt. Tax remittance is bookkeeping,
     /// so it does not recursively levy another tax on the same charge.
     pub(super) fn levy_turnover(
@@ -87,7 +89,7 @@ impl Economy {
         now: i64,
     ) -> Result<u64> {
         let tax = (gross as u128 * rate as u128).div_ceil(10_000) as u64;
-        let treasury = self.balances.entry(collector).or_default();
+        let treasury = self.balance_mut(collector);
         let treasury_amount = match currency {
             Currency::Uec => &mut treasury.uec,
             Currency::Lat => &mut treasury.lat,
@@ -96,10 +98,7 @@ impl Economy {
             .checked_add(tax)
             .context("treasury overflow")?;
 
-        let payer = self
-            .balances
-            .get_mut(&recipient)
-            .context("taxpayer unavailable")?;
+        let payer = self.balance_mut(recipient);
         let balance = match currency {
             Currency::Uec => &mut payer.uec,
             Currency::Lat => &mut payer.lat,

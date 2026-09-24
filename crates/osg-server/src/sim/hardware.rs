@@ -1,7 +1,7 @@
 use super::{
     physics::{AccumulatedForce, AccumulatedTorque, MassProps},
     precision::PreciseTransform,
-    vessel::{ShipCatalogue, ShipDesign, ShipSoftware},
+    vessel::{PendingDamage, ShipCatalogue, ShipDesign},
 };
 use bevy::{ecs::query::QueryData, math::DVec3, prelude::*};
 use osg_ships::*;
@@ -115,14 +115,57 @@ pub enum HardwareSystems {
 #[derive(QueryData)]
 #[query_data(mutable)]
 pub struct HardwareWrite {
-    pub inventory: &'static mut ShipInventory,
-    pub hull: &'static mut Hull,
-    pub thermal: &'static mut ShipThermal,
-    pub avionics: &'static mut Avionics,
+    pub inventory: &'static ShipInventory,
+    pub hull: &'static Hull,
+    pub thermal: &'static ShipThermal,
+    pub avionics: &'static Avionics,
     pub settings: &'static mut DeviceSettings,
-    pub clock: &'static mut HardwareClock,
-    pub range: &'static mut SensorRange,
+    pub clock: &'static HardwareClock,
+    pub range: &'static SensorRange,
     pub parts: &'static PartDevices,
+}
+
+#[derive(QueryData)]
+#[query_data(mutable)]
+struct BeginHardware {
+    inventory: &'static ShipInventory,
+    hull: &'static Hull,
+    thermal: &'static mut ShipThermal,
+    avionics: &'static mut Avionics,
+    settings: &'static mut DeviceSettings,
+    range: &'static mut SensorRange,
+}
+
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(crate) struct AvionicsHardware {
+    inventory: &'static mut ShipInventory,
+    hull: &'static Hull,
+    thermal: &'static mut ShipThermal,
+    avionics: &'static mut Avionics,
+    settings: &'static mut DeviceSettings,
+    range: &'static mut SensorRange,
+    parts: &'static PartDevices,
+}
+
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(crate) struct GenerationHardware {
+    inventory: &'static mut ShipInventory,
+    hull: &'static Hull,
+    thermal: &'static mut ShipThermal,
+    settings: &'static DeviceSettings,
+    parts: &'static PartDevices,
+}
+
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(crate) struct ActuationHardware {
+    inventory: &'static mut ShipInventory,
+    hull: &'static Hull,
+    thermal: &'static mut ShipThermal,
+    avionics: &'static Avionics,
+    parts: &'static PartDevices,
 }
 
 pub fn bundle(d: &CompiledShipDesign, state: ShipState) -> impl Bundle + use<> {
@@ -153,7 +196,7 @@ pub fn install(app: &mut App) {
         (initialize, apply_impacts, advance_computer_clock)
             .chain()
             .in_set(HardwareSystems::Initialize)
-            .before(super::vessel::run),
+            .before(super::vessel::allocate_gas),
     )
     .add_systems(
         FixedUpdate,
@@ -165,7 +208,14 @@ pub fn install(app: &mut App) {
             device_systems(),
             utilities::run,
             utilities::service_docked,
-            super::industry::advance,
+            (
+                super::industry::schedule,
+                super::industry::settle,
+                super::industry::complete,
+                super::industry::advance_mines,
+                super::industry::refresh_publication,
+            )
+                .chain(),
             cooling::run,
             power_totals,
             publish_mass,
@@ -175,7 +225,7 @@ pub fn install(app: &mut App) {
         )
             .chain()
             .in_set(HardwareSystems::Run)
-            .after(super::vessel::run)
+            .after(super::vessel::settle_gas)
             .in_set(super::simulation::SimulationSystems::PrepareBodies),
     )
     .add_systems(
@@ -249,6 +299,35 @@ pub(crate) fn initialize(
             devices::install(&mut part, &d.0.parts[index].definition.equipment);
             if let Equipment::Utility { utility } = &d.0.parts[index].definition.equipment {
                 part.insert(utilities::Utility(utility.clone()));
+                use osg_ships::utilities::UtilityDef;
+                let module = match *utility {
+                    UtilityDef::Factory {
+                        capability,
+                        power_per_lane_w,
+                        lanes,
+                    } => Some(super::industry::IndustryModule {
+                        part: d.0.parts[index].placed.id,
+                        capability,
+                        power_w: power_per_lane_w,
+                        lanes,
+                        radius_m: f64::INFINITY,
+                    }),
+                    UtilityDef::Shipyard {
+                        power_per_lane_w,
+                        lanes,
+                        max_radius_m,
+                    } => Some(super::industry::IndustryModule {
+                        part: d.0.parts[index].placed.id,
+                        capability: osg_model::industry::IndustryCapability::Shipyard,
+                        power_w: power_per_lane_w,
+                        lanes,
+                        radius_m: max_radius_m,
+                    }),
+                    _ => None,
+                };
+                if let Some(module) = module {
+                    part.insert(module);
+                }
             }
             cooling::install(&mut part, &d.0.parts[index].definition.equipment);
             reactors::install(&mut part, &d.0.parts[index].definition.equipment);
@@ -281,9 +360,9 @@ pub(crate) fn initialize(
 
 impl HardwareWriteItem<'_, '_> {
     pub fn computer_running(&self, _d: &CompiledShipDesign) -> bool {
-        self.hull.0 > 0. && self.avionics.0.operational && self.avionics.0.powered
+        computer_running(self.hull.0, &self.avionics.0)
     }
-    pub fn reset_commands(&mut self, d: &CompiledShipDesign) {
+    pub fn reset_settings(&mut self, d: &CompiledShipDesign) {
         self.settings.0 = default_settings(d);
     }
     pub fn apply_commands(
@@ -291,32 +370,7 @@ impl HardwareWriteItem<'_, '_> {
         d: &CompiledShipDesign,
         commands: &[DeviceCommand],
     ) -> anyhow::Result<()> {
-        anyhow::ensure!(commands.len() <= MAX_DEVICES, "too many device commands");
-        for command in commands {
-            let descriptor = d
-                .device_catalogue
-                .get(command.device.0 as usize)
-                .ok_or_else(|| anyhow::anyhow!("unknown device handle"))?;
-            anyhow::ensure!(
-                command.setting.finite() && command.setting.supports(&descriptor.kind),
-                "invalid device setting"
-            );
-        }
-        for command in commands {
-            self.settings.0[command.device.0 as usize] = Some(command.setting.clone());
-        }
-        Ok(())
-    }
-    pub fn mass_properties(
-        &self,
-        d: &CompiledShipDesign,
-        cat: &Catalogue,
-    ) -> (f64, bevy::math::DMat3) {
-        let m = d.dry_mass
-            + self.inventory.0.mass(cat)
-            + self.thermal.0.shield_reserve_kg()
-            + self.thermal.0.shield_deployed_kg;
-        (m, d.inertia * (m / d.dry_mass))
+        apply_device_commands(d, &mut self.settings.0, commands)
     }
     pub fn resources(&self, d: &CompiledShipDesign) -> osg_ship_api::abi::ShipResources {
         resources(d, self.hull.0, &self.thermal.0, self.inventory.0.energy_j)
@@ -326,31 +380,32 @@ impl HardwareWriteItem<'_, '_> {
         d: &CompiledShipDesign,
         parts: &Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     ) -> Vec<DeviceStatus> {
-        let mut state = ShipState {
-            inventory: self.inventory.0.clone(),
-            weapons: vec![weapons::WeaponState::default(); d.weapon_parts.len()],
-            devices: vec![DeviceState::default(); d.parts.len()],
-            avionics: DeviceState::default(),
-            hull: 0.0,
-            thermal: thermal::ThermalState::default(),
-            settings: Vec::new(),
-            tick: 0,
-            sensor_range: 0.0,
-        };
-        state.inventory = self.inventory.0.clone();
-        state.hull = self.hull.0;
-        state.thermal = self.thermal.0;
-        state.avionics = self.avionics.0.clone();
-        state.sensor_range = self.range.0;
-        for entity in &self.parts.0 {
-            if let Ok((part, device, weapon)) = parts.get(*entity) {
-                state.devices[part.index] = device.0.clone();
-                if let Some(weapon) = weapon {
-                    state.weapons[d.part_weapons[part.index].unwrap()] = weapon.0.clone();
-                }
-            }
+        let default_device = DeviceState::default();
+        let default_weapon = weapons::WeaponState::default();
+        DeviceTelemetry {
+            inventory: &self.inventory.0,
+            thermal: &self.thermal.0,
+            avionics: &self.avionics.0,
+            sensor_range: self.range.0,
         }
-        state.snapshot(d)
+        .snapshot(
+            d,
+            |index| {
+                self.parts
+                    .0
+                    .get(index)
+                    .and_then(|entity| parts.get(*entity).ok())
+                    .map_or(&default_device, |(_, device, _)| &device.0)
+            },
+            |index| {
+                self.parts
+                    .0
+                    .get(d.weapon_parts[index])
+                    .and_then(|entity| parts.get(*entity).ok())
+                    .and_then(|(_, _, weapon)| weapon)
+                    .map_or(&default_weapon, |weapon| &weapon.0)
+            },
+        )
     }
 }
 
@@ -374,6 +429,37 @@ pub fn resources(
     }
 }
 
+/// Read telemetry directly from components without allocating an owned ship state.
+pub fn device_readings(world: &World, ship: Entity) -> Option<Vec<DeviceStatus>> {
+    let design = &world.get::<ShipDesign>(ship)?.0;
+    let parts = &world.get::<PartDevices>(ship)?.0;
+    let default_device = DeviceState::default();
+    let default_weapon = weapons::WeaponState::default();
+    Some(
+        DeviceTelemetry {
+            inventory: &world.get::<ShipInventory>(ship)?.0,
+            thermal: &world.get::<ShipThermal>(ship)?.0,
+            avionics: &world.get::<Avionics>(ship)?.0,
+            sensor_range: world.get::<SensorRange>(ship)?.0,
+        }
+        .snapshot(
+            design,
+            |index| {
+                parts
+                    .get(index)
+                    .and_then(|entity| world.get::<Device>(*entity))
+                    .map_or(&default_device, |device| &device.0)
+            },
+            |index| {
+                parts
+                    .get(design.weapon_parts[index])
+                    .and_then(|entity| world.get::<Weapon>(*entity))
+                    .map_or(&default_weapon, |weapon| &weapon.0)
+            },
+        ),
+    )
+}
+
 pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
     let d = &world.get::<ShipDesign>(ship)?.0;
     let mut state = ShipState {
@@ -387,7 +473,6 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
         tick: 0,
         sensor_range: 0.0,
     };
-    state.inventory = world.get::<ShipInventory>(ship)?.0.clone();
     state.hull = world.get::<Hull>(ship)?.0;
     state.thermal = world.get::<ShipThermal>(ship)?.0;
     state.avionics = world.get::<Avionics>(ship)?.0.clone();
@@ -404,7 +489,7 @@ pub fn snapshot(world: &World, ship: Entity) -> Option<ShipState> {
     Some(state)
 }
 
-fn apply_impacts(mut ships: Query<(&ShipDesign, &mut Hull, &mut ShipThermal, &mut ShipSoftware)>) {
+fn apply_impacts(mut ships: Query<(&ShipDesign, &mut Hull, &mut ShipThermal, &mut PendingDamage)>) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.apply_impacts");
     ships
         .par_iter_mut()
@@ -435,7 +520,7 @@ fn begin(
     mut ships: Query<
         (
             &ShipDesign,
-            HardwareWrite,
+            BeginHardware,
             &mut DormantThermalElapsed,
             &mut ElectricalTick,
         ),
@@ -451,8 +536,8 @@ fn begin(
             hardware.thermal.0.shield_powered = false;
             hardware.thermal.0.shield_enabled = false;
             dormant_elapsed.0 = 0.0;
-            if !hardware.computer_running(&design.0) {
-                hardware.reset_commands(&design.0);
+            if !computer_running(hardware.hull.0, &hardware.avionics.0) {
+                hardware.settings.0 = default_settings(&design.0);
             }
             if hardware.hull.0 <= 0.0 {
                 hardware.avionics.0.powered = false;
@@ -482,7 +567,7 @@ pub(crate) fn avionics(
     mut ships: Query<
         (
             &ShipDesign,
-            HardwareWrite,
+            AvionicsHardware,
             &mut DeviceOutputs,
             Has<super::travel::Dormant>,
         ),
@@ -520,7 +605,7 @@ pub(crate) fn avionics(
                 }
             }
             if !h.avionics.0.powered {
-                h.reset_commands(&d.0);
+                h.settings.0 = default_settings(&d.0);
                 return;
             }
             let fitted_sensor = d.0.parts.iter().any(|part| {
@@ -547,7 +632,7 @@ pub(crate) fn avionics(
 pub(crate) fn generators(
     time: Res<Time<Fixed>>,
     mut ships: Query<
-        (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
+        (&ShipDesign, GenerationHardware, &mut DeviceOutputs),
         Without<super::travel::SystemsSuspended>,
     >,
     parts: Query<(&Generator, &Device)>,
@@ -639,7 +724,7 @@ pub(crate) fn actuate(
     mut ships: Query<
         (
             &ShipDesign,
-            HardwareWrite,
+            ActuationHardware,
             &mut DeviceOutputs,
             &PreciseTransform,
             Option<&mut AccumulatedForce>,
@@ -662,7 +747,7 @@ pub(crate) fn actuate(
             let mut local_torque = DVec3::ZERO;
             let mut any_shield_enabled = false;
             let mut all_shields_powered = true;
-            let computer_running = hardware.computer_running(&design.0);
+            let computer_running = computer_running(hardware.hull.0, &hardware.avionics.0);
 
             for &index in &design.0.active_parts {
                 let Ok((demand, device, shield)) = parts.get(hardware.parts.0[index]) else {
@@ -809,22 +894,60 @@ fn publish_devices(
         });
 }
 
+pub(crate) type MassQuery = (
+    Entity,
+    &'static ShipDesign,
+    (&'static ShipInventory, &'static ShipThermal),
+    &'static mut MassProps,
+    Option<&'static mut super::travel::StoredMass>,
+    Option<&'static super::travel::PresenceState>,
+);
+
 pub(crate) fn publish_mass(
     cat: Res<ShipCatalogue>,
     identities: Option<Res<super::identity::IdentityIndex>>,
-    mut ships: Query<(
-        Entity,
-        &ShipDesign,
-        HardwareWrite,
-        &mut MassProps,
-        Option<&mut super::travel::StoredMass>,
-        Option<&super::travel::PresenceState>,
-    )>,
+    mut ships: Query<MassQuery>,
 ) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.publish_mass");
+    let affected: Vec<_> = ships.iter().map(|(entity, ..)| entity).collect();
+    update_masses(&cat.0, identities.as_deref(), &mut ships, affected);
+}
+
+/// Refresh cargo-dependent mass immediately after an external inventory change.
+pub fn synchronize_mass(world: &mut World, affected: &[Entity]) {
+    use bevy::ecs::system::RunSystemOnce;
+
+    world
+        .run_system_once_with(synchronize_selected_mass, affected.to_vec())
+        .expect("mass synchronization requires the ship catalogue");
+}
+
+fn synchronize_selected_mass(
+    In(affected): In<Vec<Entity>>,
+    cat: Res<ShipCatalogue>,
+    identities: Option<Res<super::identity::IdentityIndex>>,
+    mut ships: Query<MassQuery>,
+) {
+    update_masses(&cat.0, identities.as_deref(), &mut ships, affected);
+}
+
+fn update_masses(
+    catalogue: &Catalogue,
+    identities: Option<&super::identity::IdentityIndex>,
+    ships: &mut Query<MassQuery>,
+    affected: impl IntoIterator<Item = Entity>,
+) {
     let mut changes = Vec::new();
-    for (entity, design, hardware, mut mass, stored, _) in &mut ships {
-        let (own, inertia) = hardware.mass_properties(&design.0, &cat.0);
+    let mut visited_ships = std::collections::HashSet::new();
+    for entity in affected {
+        if !visited_ships.insert(entity) {
+            continue;
+        }
+        let Ok((_, design, (inventory, thermal), mut mass, stored, _)) = ships.get_mut(entity)
+        else {
+            continue;
+        };
+        let (own, inertia) = mass_properties(&design.0, catalogue, &inventory.0, &thermal.0);
         let updated = own + stored.map_or(0., |s| s.0);
         let delta = updated - mass.mass;
         mass.mass = updated;
@@ -840,7 +963,7 @@ pub(crate) fn publish_mass(
     for (entity, delta) in changes {
         let mut descendant = entity;
         let mut visited = Vec::new();
-        while visited.len() < identities.0.len() {
+        while visited.len() < identities.entries().len() {
             if visited.contains(&descendant) {
                 break;
             }
@@ -855,20 +978,16 @@ pub(crate) fn publish_mass(
                     _ => break,
                 }
             };
-            let Some(&host) = identities.0.get(&host_id) else {
+            let Some(&host) = identities.entries().get(&host_id) else {
                 break;
             };
-            let Ok((_, _, _, mut mass, Some(mut stored), _)) = ships.get_mut(host) else {
+            let Ok((_, design, _, mut mass, Some(mut stored), _)) = ships.get_mut(host) else {
                 break;
             };
-            let previous = mass.mass;
             stored.0 = (stored.0 + delta).max(0.);
             mass.mass = (mass.mass + delta).max(0.);
-            if previous > 0. {
-                let scale = mass.mass / previous;
-                mass.inertia *= scale;
-                mass.inertia_inv = mass.inertia.inverse();
-            }
+            mass.inertia = design.0.inertia * (mass.mass / design.0.dry_mass);
+            mass.inertia_inv = mass.inertia.inverse();
             descendant = host;
         }
     }
@@ -939,23 +1058,6 @@ fn spend(inventory: &mut Inventory, demand: [f64; 3]) -> f64 {
     inventory.consume(1, demand[1] * fraction);
     inventory.energy_j.withdraw(demand[2] * fraction);
     fraction
-}
-
-pub(crate) fn default_settings(d: &CompiledShipDesign) -> Vec<Option<DeviceSetting>> {
-    d.device_catalogue
-        .iter()
-        .map(|device| match device.kind {
-            DeviceKind::Engine { .. } => Some(DeviceSetting::Throttle(0.)),
-            DeviceKind::Torquer { .. } => Some(DeviceSetting::TorqueNm([0.; 3])),
-            DeviceKind::Rcs { .. } => Some(DeviceSetting::RcsThrust([0.; 3])),
-            DeviceKind::Generator { .. } => Some(DeviceSetting::GeneratorDemand(1.)),
-            DeviceKind::Shield { .. } => Some(DeviceSetting::ShieldEnabled(true)),
-            DeviceKind::Sensor { .. } => Some(DeviceSetting::SensorEnabled(
-                d.blueprint.avionics.sensor_enabled,
-            )),
-            _ => None,
-        })
-        .collect()
 }
 
 fn power_totals(

@@ -1,7 +1,7 @@
 use super::*;
 use industry_model::{CargoItem, CargoStack, FacilityView, IndustryCommand};
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct PaneState {
     search: String,
     selected: Option<(Storage, CargoItem)>,
@@ -27,7 +27,7 @@ struct Transfer {
     quantity: u64,
 }
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct Transfers {
     pending: Option<Transfer>,
     dragging: Option<Id>,

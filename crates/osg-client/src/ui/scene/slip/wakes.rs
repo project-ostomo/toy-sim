@@ -13,36 +13,6 @@ pub(super) struct Ribbon {
     pub color_end: Vec4,
 }
 
-pub(super) fn own_wake(
-    ship: &OwnedShip,
-    pose: &DisplayPose,
-    state: &SlipView,
-    view: u64,
-    now: u64,
-) -> Option<SlipWake> {
-    if !matches!(ship.0.presence, Presence::SlipTransit(_)) {
-        return None;
-    }
-    let speed = DVec3::from_array(pose.0.velocity).length().max(1.0);
-    let age = now.saturating_sub(state.departure_ns.unwrap_or(now)) as f64 * 1e-9;
-    let length = (speed * age).min(WAKE_VIEW_RANGE_M);
-    Some(SlipWake {
-        view,
-        id: ship.0.ship,
-        start: pose
-            .0
-            .position
-            .offset_by(-state.direction.as_dvec3() * length),
-        end: pose.0.position,
-        start_ns: now.saturating_sub((length / speed * 1e9) as u64),
-        end_ns: now,
-        drift_m_s: [0.0; 3],
-        radius_m: ship.0.radius_m,
-        seed: 451,
-        offset_m: 0.0,
-    })
-}
-
 /// Clip and project in double precision before uploading bounded pixel
 /// coordinates. No large world positions or ray/cylinder intersections reach
 /// the GPU. Radii follow perspective continuously, including subpixel widths.

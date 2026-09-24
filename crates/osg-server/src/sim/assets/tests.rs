@@ -30,7 +30,7 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
             }),
         ))
         .id();
-    identity::register(&mut world, entity, Id([3; 16]));
+    identity::register(&mut world, entity, Id([3; 16])).unwrap();
     world.insert_resource(vessel::ShipCatalogue(catalogue));
     let query = AssetsQuery {
         limit: 10,
@@ -92,7 +92,7 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
                 }),
             ))
             .id();
-        identity::register(&mut world, entity, id);
+        identity::register(&mut world, entity, id).unwrap();
         entities.push(entity);
         let mut economy = world.resource_mut::<Economy>();
         economy

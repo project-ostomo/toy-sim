@@ -9,6 +9,8 @@ use super::ownership::Directory;
 pub mod exchange;
 pub mod storage;
 mod tax;
+mod transaction;
+pub(crate) use transaction::Transaction;
 #[cfg(test)]
 mod tests;
 
@@ -248,13 +250,14 @@ impl Economy {
         restricted: bool,
         now: i64,
     ) -> Result<()> {
-        let mut staged = self.clone();
-        staged.transfer_inner(directory, from, to, currency, amount, restricted, now)?;
-        *self = staged;
-        Ok(())
+        self.transaction(|transaction| {
+            transaction.transfer(directory, from, to, currency, amount, restricted, now)
+        })
     }
+}
 
-    fn transfer_inner(
+impl Transaction<'_> {
+    pub(crate) fn transfer(
         &mut self,
         directory: Option<&osg_model::ownership::OwnershipDirectory>,
         from: Principal,

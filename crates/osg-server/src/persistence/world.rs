@@ -139,7 +139,7 @@ fn definition_fingerprint(world: &World) -> [u8; 32] {
         &world
             .resource::<registry::UniverseRegistry>()
             .universe
-            .fingerprint,
+            .fingerprint(),
     );
     *hash.finalize().as_bytes()
 }
@@ -182,7 +182,7 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut design_programs = std::collections::HashMap::<usize, [u8; 32]>::new();
     let mut identities = world
         .resource::<identity::IdentityIndex>()
-        .0
+        .entries()
         .iter()
         .collect::<Vec<_>>();
     identities.sort_unstable_by_key(|(id, _)| **id);
@@ -220,15 +220,20 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     program
                 })
             };
-            let software =
-                world
-                    .get::<vessel::ShipSoftware>(entity)
-                    .map(|software| SoftwareRecord {
-                        persistent_data: controller.as_ref().unwrap().persistent_data.clone(),
-                        request_id: software.request_id,
-                        hull_energy_j: software.hull_energy_j,
-                        shield_energy_j: software.shield_energy_j,
-                    });
+            let software = world
+                .get::<vessel::ShipSoftware>(entity)
+                .map(|_| SoftwareRecord {
+                    persistent_data: controller.as_ref().unwrap().persistent_data.clone(),
+                    request_id: world.get::<vessel::ShipMailbox>(entity).unwrap().request_id,
+                    hull_energy_j: world
+                        .get::<vessel::PendingDamage>(entity)
+                        .unwrap()
+                        .hull_energy_j,
+                    shield_energy_j: world
+                        .get::<vessel::PendingDamage>(entity)
+                        .unwrap()
+                        .shield_energy_j,
+                });
             let hardware = hardware::snapshot(world, entity)
                 .context("ship hardware unavailable during checkpoint")?;
             let facility = world.get::<industry::IndustryFacility>(entity).cloned();
@@ -772,7 +777,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             world.despawn(entity);
         }
     }
-    world.resource_mut::<identity::IdentityIndex>().0.clear();
     *world.resource_mut::<orrery::activity::ActiveSystems>() = default();
     world.remove_resource::<infrastructure::NavigationPublication>();
     world
@@ -816,7 +820,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 identity::OwnedShips::default(),
             ))
             .id();
-        identity::register(world, entity, account.id);
+        identity::register(world, entity, account.id)?;
     }
     for &account in &config.accounts {
         identity::add_account(world, account, config.debug_account == Some(account));
@@ -870,12 +874,7 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                 .instantiate(design.blueprint.controller_bytes())?
         };
         controller.configure_hardware(&design, &world.resource::<vessel::ShipCatalogue>().0);
-        let mut software = vessel::ShipSoftware::new(controller);
-        if let Some(saved) = &ship.software {
-            software.request_id = saved.request_id;
-            software.hull_energy_j = saved.hull_energy_j;
-            software.shield_energy_j = saved.shield_energy_j;
-        }
+        let software = vessel::ShipSoftware::new(controller);
         if ship.software.is_some() {
             ship.hardware.reset_commands(&design);
         }
@@ -921,15 +920,20 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
             ))
             .id();
         if let Some(control) = ship.control {
-            identity::attach_ship(world, entity, control.account)?;
-            let temporary = id(world, entity)?;
-            world
-                .resource_mut::<identity::IdentityIndex>()
-                .0
-                .remove(&temporary);
+            identity::attach_ship(world, entity, control.account, ship.id)?;
             world.get_mut::<identity::Control>(entity).unwrap().revision = control.revision;
+        } else {
+            identity::register(world, entity, ship.id)?;
         }
-        identity::register(world, entity, ship.id);
+        if let Some(saved) = &ship.software {
+            world
+                .get_mut::<vessel::ShipMailbox>(entity)
+                .unwrap()
+                .request_id = saved.request_id;
+            let mut damage = world.get_mut::<vessel::PendingDamage>(entity).unwrap();
+            damage.hull_energy_j = saved.hull_energy_j;
+            damage.shield_energy_j = saved.shield_energy_j;
+        }
         if ship.software.is_none() {
             world.entity_mut(entity).remove::<vessel::ShipSoftware>();
         }
@@ -1161,7 +1165,7 @@ mod tests {
     }
 
     #[test]
-    fn destroyed_ship_restore_preserves_physical_wreck_or_slip_loss() {
+    fn destroyed_ship_restore_preserves_recoverable_physics_from_space_and_slip() {
         let account = Id::new();
         let mut app = crate::sim::provision(&[account], None, None).unwrap();
         let world = app.world_mut();
@@ -1171,28 +1175,54 @@ mod tests {
             .unwrap();
         let ship_id = id(world, ship).unwrap();
 
-        travel::set_dormant(world, ship, Presence::Destroyed);
-        let bytes = capture(world).unwrap();
-        restore(world, &bytes).unwrap();
-        let ship = identity::lookup(world, ship_id).unwrap();
-        assert!(
-            world
-                .get::<travel::DormantMotion>(ship)
-                .unwrap()
-                .has_physical_body()
-        );
+        let velocity = DVec3::new(12.0, 34.0, 56.0);
+        let angular_velocity = DVec3::new(0.1, 0.2, 0.3);
+        for destroyed_in_slip in [false, true] {
+            let ship = identity::lookup(world, ship_id).unwrap();
+            world.entity_mut(ship).insert((
+                physics::Velocity(velocity),
+                physics::AngularVelocity(angular_velocity),
+            ));
+            if destroyed_in_slip {
+                travel::set_dormant(world, ship, Presence::SlipTransit(Id::new()));
+            }
+            travel::set_dormant(world, ship, Presence::Destroyed);
+            let bytes = capture(world).unwrap();
+            restore(world, &bytes).unwrap();
+            let ship = identity::lookup(world, ship_id).unwrap();
 
-        travel::set_dormant(world, ship, Presence::SlipTransit(Id::new()));
-        travel::set_dormant(world, ship, Presence::Destroyed);
-        let bytes = capture(world).unwrap();
-        restore(world, &bytes).unwrap();
-        let ship = identity::lookup(world, ship_id).unwrap();
-        assert!(
-            !world
-                .get::<travel::DormantMotion>(ship)
-                .unwrap()
-                .has_physical_body()
-        );
+            assert_eq!(
+                world.get::<travel::PresenceState>(ship).unwrap().0,
+                Presence::Destroyed
+            );
+            assert!(
+                world
+                    .get::<travel::DormantMotion>(ship)
+                    .unwrap()
+                    .has_physical_body()
+            );
+            assert!(world.get::<physics::RigidBody>(ship).is_none());
+            assert!(
+                world
+                    .get::<physics::collision::CollisionBody>(ship)
+                    .is_none()
+            );
+            assert!(world.get::<spatial::SpatialBody>(ship).is_none());
+
+            travel::debug_recover(world, ship).unwrap();
+            assert!(world.get::<physics::RigidBody>(ship).is_some());
+            assert!(
+                world
+                    .get::<physics::collision::CollisionBody>(ship)
+                    .is_some()
+            );
+            assert!(world.get::<spatial::SpatialBody>(ship).is_some());
+            assert_eq!(world.get::<physics::Velocity>(ship).unwrap().0, velocity);
+            assert_eq!(
+                world.get::<physics::AngularVelocity>(ship).unwrap().0,
+                angular_velocity
+            );
+        }
     }
 
     #[test]
@@ -1261,7 +1291,7 @@ mod tests {
         let ship = identity::lookup(world, ship_id).unwrap();
         let index = world.resource::<spatial::SpatialIndex>();
         let ship_index = index.object_index(ship).unwrap();
-        let origin = index.objects[ship_index].position;
+        let origin = index.objects()[ship_index].position;
         assert!(
             index
                 .visible(origin, 1e-9)
@@ -1312,7 +1342,10 @@ mod tests {
         let world = app.world_mut();
         let bytes = capture(world).unwrap();
         let epoch = world.resource::<identity::WorldEpoch>().0;
-        let identities = world.resource::<identity::IdentityIndex>().0.clone();
+        let identities = world
+            .resource::<identity::IdentityIndex>()
+            .entries()
+            .clone();
 
         let mut missing_host: WorldRecord = postcard::from_bytes(&bytes).unwrap();
         missing_host.ships[0].presence = Presence::Docked {
@@ -1370,7 +1403,10 @@ mod tests {
             let invalid = postcard::to_stdvec(&invalid).unwrap();
             assert!(restore(world, &invalid).is_err());
             assert_eq!(world.resource::<identity::WorldEpoch>().0, epoch);
-            assert_eq!(world.resource::<identity::IdentityIndex>().0, identities);
+            assert_eq!(
+                world.resource::<identity::IdentityIndex>().entries(),
+                &identities
+            );
             assert_eq!(
                 world
                     .resource::<gas::GasLedger>()
@@ -1539,6 +1575,14 @@ mod tests {
             .get_mut::<vessel::ShipSoftware>(ship)
             .unwrap()
             .controller = restored;
+        world
+            .get_mut::<vessel::ShipMailbox>(ship)
+            .unwrap()
+            .request_id = 42;
+        world.entity_mut(ship).insert(vessel::PendingDamage {
+            hull_energy_j: 17.0,
+            shield_energy_j: 23.0,
+        });
         let before_tick = world.resource::<simulation::SimulationCounters>().ticks;
         let bytes = capture(world).unwrap();
         let decoded: WorldRecord = postcard::from_bytes(&bytes).unwrap();
@@ -1552,6 +1596,13 @@ mod tests {
         let ship = identity::lookup(world, ship_id).unwrap();
         let station = identity::lookup(world, station_id).unwrap();
         let transit_ship = identity::lookup(world, transit_id).unwrap();
+        assert_eq!(
+            world.get::<vessel::ShipMailbox>(ship).unwrap().request_id,
+            42
+        );
+        let damage = world.get::<vessel::PendingDamage>(ship).unwrap();
+        assert_eq!(damage.hull_energy_j, 17.0);
+        assert_eq!(damage.shield_energy_j, 23.0);
         assert_eq!(
             world
                 .get::<hardware::ShipInventory>(ship)

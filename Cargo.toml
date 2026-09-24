@@ -11,7 +11,7 @@ edition = "2024"
 ahash = "0.8.12"
 criterion = "0.8.2"
 anyhow = "1.0.104"
-serde = { version = "1.0.229", features = ["derive"] }
+serde = { version = "1.0.229", features = ["derive", "rc"] }
 toml = "1.1.5"
 glam = { version = "0.32.1", features = ["serde"] }
 bevy = { version = "0.19.1", features = [

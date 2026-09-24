@@ -306,7 +306,7 @@ mod tests {
             active.object_systems.insert(
                 entity,
                 universe
-                    .index
+                    .index()
                     .containing_segment(pose.translation_um, DVec3::ZERO),
             );
         }
@@ -337,7 +337,7 @@ mod tests {
             toml::from_str(include_str!("../../../../tests/fixtures/remote.star.toml")).unwrap(),
         ];
         let universe = Universe::from_configs(configs, 1e-8).unwrap();
-        let remote = universe.systems[1].position;
+        let remote = universe.systems()[1].position;
         let local_state = celestial_state(&universe, "Helion");
         let remote_state = celestial_state(&universe, "Remote");
         let mut app = App::new();

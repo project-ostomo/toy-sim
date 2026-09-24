@@ -19,7 +19,7 @@ enum Tab {
     Prices,
 }
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     overview: bool,
     new_job: bool,

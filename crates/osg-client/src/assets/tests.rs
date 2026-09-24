@@ -1,12 +1,12 @@
 use super::*;
-use crate::state::{NavigationStatus, SessionInfo};
+use crate::state::{NavigationState, NavigationStatus};
 use bevy::asset::io::memory::{Dir, MemoryAssetReader};
 use std::time::{Duration, Instant};
 
 fn catalogue(index: usize) -> ([u8; 32], Vec<u8>) {
     let universe = crate::ui::celestials::shared_universe().unwrap();
     let catalogue = osg_model::InhabitedDirectory {
-        systems: vec![Id(universe.systems[index].id)],
+        systems: vec![Id(universe.systems()[index].id)],
         ..Default::default()
     };
     let bytes = osg_protocol::navigation::encode_directory(&catalogue).unwrap();
@@ -26,7 +26,8 @@ fn app() -> (App, Dir) {
         }),
     );
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
-        .init_resource::<SessionInfo>();
+        .init_resource::<NavigationState>()
+        .init_resource::<crate::state::SessionInfo>();
     install(&mut app);
     (app, directory)
 }
@@ -55,7 +56,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     let (first_hash, first_bytes) = catalogue(0);
     let (second_hash, second_bytes) = catalogue(1);
     app.world_mut()
-        .resource_mut::<SessionInfo>()
+        .resource_mut::<NavigationState>()
         .navigation_hash = Some(first_hash);
     app.update();
     let old_handle = app
@@ -65,12 +66,12 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
         .clone()
         .unwrap();
     app.world_mut()
-        .resource_mut::<SessionInfo>()
+        .resource_mut::<NavigationState>()
         .navigation_hash = Some(second_hash);
     app.update();
     assert!(
         app.world()
-            .resource::<SessionInfo>()
+            .resource::<NavigationState>()
             .inhabited
             .systems
             .is_empty()
@@ -85,40 +86,40 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     });
     assert!(
         app.world()
-            .resource::<SessionInfo>()
+            .resource::<NavigationState>()
             .inhabited
             .systems
             .is_empty()
     );
     deliver(&app, &directory, second_hash, second_bytes);
     wait(&mut app, |world| {
-        world.resource::<SessionInfo>().navigation_status == NavigationStatus::Ready
+        world.resource::<NavigationState>().navigation_status == NavigationStatus::Ready
     });
-    let installed = app.world().resource::<SessionInfo>().inhabited.clone();
+    let installed = app.world().resource::<NavigationState>().inhabited.clone();
     assert_eq!(
         installed.systems[0],
-        Id(crate::ui::celestials::shared_universe().unwrap().systems[1].id)
+        Id(crate::ui::celestials::shared_universe().unwrap().systems()[1].id)
     );
     app.update();
     assert!(std::sync::Arc::ptr_eq(
         &installed,
-        &app.world().resource::<SessionInfo>().inhabited
+        &app.world().resource::<NavigationState>().inhabited
     ));
 
-    *app.world_mut().resource_mut::<SessionInfo>() = SessionInfo {
-        generation: 1,
-        ..Default::default()
-    };
+    *app.world_mut().resource_mut::<NavigationState>() = NavigationState::default();
+    app.world_mut()
+        .resource_mut::<crate::state::SessionInfo>()
+        .generation = 1;
     app.update();
     assert!(
         app.world()
-            .resource::<SessionInfo>()
+            .resource::<NavigationState>()
             .inhabited
             .systems
             .is_empty()
     );
     assert_eq!(
-        app.world().resource::<SessionInfo>().navigation_status,
+        app.world().resource::<NavigationState>().navigation_status,
         NavigationStatus::Unavailable
     );
 }
@@ -129,28 +130,28 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
     let (hash, bytes) = catalogue(0);
     deliver(&app, &directory, hash, vec![0xff]);
     app.world_mut()
-        .resource_mut::<SessionInfo>()
+        .resource_mut::<NavigationState>()
         .navigation_hash = Some(hash);
     wait(&mut app, |world| {
         matches!(
-            world.resource::<SessionInfo>().navigation_status,
+            world.resource::<NavigationState>().navigation_status,
             NavigationStatus::Failed(_)
         )
     });
     assert!(
         app.world()
-            .resource::<SessionInfo>()
+            .resource::<NavigationState>()
             .inhabited
             .systems
             .is_empty()
     );
     deliver(&app, &directory, hash, bytes);
     wait(&mut app, |world| {
-        world.resource::<SessionInfo>().navigation_status == NavigationStatus::Ready
+        world.resource::<NavigationState>().navigation_status == NavigationStatus::Ready
     });
     assert_eq!(
-        app.world().resource::<SessionInfo>().inhabited.systems[0],
-        Id(crate::ui::celestials::shared_universe().unwrap().systems[0].id)
+        app.world().resource::<NavigationState>().inhabited.systems[0],
+        Id(crate::ui::celestials::shared_universe().unwrap().systems()[0].id)
     );
 }
 
@@ -158,7 +159,7 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
 fn ownership_only_directory_replacement_updates_and_clears_map_sovereignty() {
     let (mut app, storage) = app();
     let universe = crate::ui::celestials::shared_universe().unwrap();
-    let system = Id(universe.systems[0].id);
+    let system = Id(universe.systems()[0].id);
     let sovereignty = Id([77; 16]);
     let mut directory = osg_model::InhabitedDirectory {
         systems: vec![system],
@@ -181,10 +182,10 @@ fn ownership_only_directory_replacement_updates_and_clears_map_sovereignty() {
         let hash = *blake3::hash(&bytes).as_bytes();
         deliver(&app, &storage, hash, bytes);
         app.world_mut()
-            .resource_mut::<SessionInfo>()
+            .resource_mut::<NavigationState>()
             .navigation_hash = Some(hash);
         wait(&mut app, |world| {
-            let info = world.resource::<SessionInfo>();
+            let info = world.resource::<NavigationState>();
             info.navigation_status == NavigationStatus::Ready
                 && info.navigation.systems[0].sovereignty == expected
         });

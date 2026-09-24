@@ -178,7 +178,7 @@ fn update(
         skies.opening = Some(AsyncComputeTaskPool::get().spawn(async {
             let universe = crate::universe::shared_universe()?;
             let stars = universe
-                .systems
+                .systems()
                 .iter()
                 .map(|system| Star {
                     id: catalogue_star_id(osg_model::Id(system.id)),

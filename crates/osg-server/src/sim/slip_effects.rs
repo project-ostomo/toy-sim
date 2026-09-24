@@ -196,7 +196,7 @@ fn blocked(
     };
     let displacement = target.relative_to(origin);
     index.any_optical_blocker_on_segment(origin, displacement, |i| {
-        let object = index.objects[i];
+        let object = index.objects()[i];
         object.entity != observer
             && spatial::sphere_blocks(
                 displacement,

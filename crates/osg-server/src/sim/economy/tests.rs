@@ -94,6 +94,56 @@ fn transfers_are_atomic_and_conversion_preserves_lat_in_reserve() {
 }
 
 #[test]
+fn failed_service_conversion_restores_reservation_and_ledger() {
+    let mut economy = Economy::at(0);
+    economy
+        .issue(owner(1), Currency::Lat, MONEY_SCALE, 0)
+        .unwrap();
+    economy.issue(owner(2), Currency::Uec, u64::MAX, 0).unwrap();
+    let id = osg_model::Id::new();
+    economy.service_holds.insert(
+        id,
+        osg_model::industry::ServicePayment {
+            payer: owner(1),
+            operator: owner(2),
+            currency: Currency::Lat,
+            amount: MONEY_SCALE,
+            charged: false,
+        },
+    );
+    let before = postcard::to_stdvec(&economy).unwrap();
+    let result = economy.transaction(|transaction| {
+        transaction.release_service_hold(id).unwrap();
+        transaction.transfer(
+            None,
+            owner(1),
+            owner(2),
+            Currency::Lat,
+            MONEY_SCALE,
+            true,
+            0,
+        )
+    });
+    assert!(result.is_err());
+    assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
+}
+
+#[test]
+fn transaction_unwind_restores_successful_transfer() {
+    let mut economy = Economy::at(0);
+    economy.issue(owner(1), Currency::Uec, 100, 0).unwrap();
+    let before = postcard::to_stdvec(&economy).unwrap();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _: Result<()> = economy.transaction(|transaction| {
+            transaction.transfer(None, owner(1), owner(2), Currency::Uec, 100, false, 0)?;
+            panic!("interrupt settlement");
+        });
+    }));
+    assert!(result.is_err());
+    assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
+}
+
+#[test]
 fn recipient_overflow_does_not_debit_source() {
     let mut economy = Economy::at(0);
     economy.issue(owner(1), Currency::Uec, 1, 0).unwrap();

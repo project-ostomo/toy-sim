@@ -60,7 +60,7 @@ impl Fixture {
             "Industry acceptance fixture".into(),
         )
         .unwrap();
-        identity::attach_ship(world, entity, owner).unwrap();
+        identity::attach_ship(world, entity, owner, Id::new()).unwrap();
         world.run_system_once(hardware::initialize).unwrap();
         publication::refresh(world);
         entity
@@ -99,7 +99,7 @@ impl Fixture {
                 .insert_item(&stack.item, stack.quantity, capacity, &catalogue)
                 .unwrap();
         }
-        synchronize_mass(&mut self.world, &[entity]);
+        hardware::synchronize_mass(&mut self.world, &[entity]);
     }
 
     fn inventory(&self, entity: Entity) -> &Inventory {
@@ -447,7 +447,7 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
         .get::<IndustryFacility>(fixture.facility)
         .unwrap();
     assert_eq!(queue.jobs.len(), 1);
-    assert!(matches!(&queue.jobs[0].output, JobOutput::Ship(saved) if *saved == bytes));
+    assert!(matches!(&queue.jobs[0].output, JobOutput::Ship(saved) if saved.as_ref() == bytes));
     assert!(!fixture.inventory(fixture.facility).reservations.is_empty());
 }
 
@@ -1032,13 +1032,21 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
             .status,
         JobStatus::AwaitingBerth
     );
-    let identities_before = fixture.world.resource::<identity::IdentityIndex>().0.len();
+    let identities_before = fixture
+        .world
+        .resource::<identity::IdentityIndex>()
+        .entries()
+        .len();
     let entities_before = fixture.world.entities().len();
     let inventory_before = fixture.inventory_bytes(fixture.facility);
     for _ in 0..8 {
         advance(&mut fixture.world);
         assert_eq!(
-            fixture.world.resource::<identity::IdentityIndex>().0.len(),
+            fixture
+                .world
+                .resource::<identity::IdentityIndex>()
+                .entries()
+                .len(),
             identities_before
         );
         assert_eq!(fixture.world.entities().len(), entities_before);
@@ -1453,7 +1461,7 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
             .0
             .withdraw_cargo(&item, 1, &catalogue)
             .unwrap();
-        synchronize_mass(&mut fixture.world, &[full]);
+        hardware::synchronize_mass(&mut fixture.world, &[full]);
     }
     let delivered_a = fixture.quantity(first, &item) - partial_a;
     let delivered_b = fixture.quantity(second, &item) - partial_b;
@@ -1657,7 +1665,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         .get_mut::<hardware::ShipThermal>(guest)
         .unwrap()
         .0 = cold.thermal;
-    synchronize_mass(&mut fixture.world, &[guest]);
+    hardware::synchronize_mass(&mut fixture.world, &[guest]);
 
     let coolant = CargoItem::Resource("shield_coolant".into());
     let unit_mass = osg_ships::industry::item_mass_kg(&coolant, &catalogue).unwrap();

@@ -58,7 +58,7 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
         velocity,
         "Neris Anchorage".into(),
     )?;
-    identity::attach_ship(world, station, owner)?;
+    identity::attach_ship(world, station, owner, osg_model::Id::new())?;
     let system = world
         .resource::<registry::UniverseRegistry>()
         .universe
@@ -94,7 +94,7 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
             capacity,
             &catalogue,
         )?;
-    super::industry::synchronize_mass(world, &[player]);
+    super::hardware::synchronize_mass(world, &[player]);
 
     let account = world.get::<identity::Control>(player).unwrap().account;
     super::industry::seed_demo(world, station, account)?;
@@ -299,7 +299,7 @@ fn spawn_navigation_installations(world: &mut World) -> Result<()> {
                 },
             ))
             .id();
-        identity::attach_ship(world, entity, account)?;
+        identity::attach_ship(world, entity, account, osg_model::Id::new())?;
         world.entity_mut(entity).insert((
             ownership::AssetOwner(Principal::Organization(organization)),
             ownership::AssetAccess(AccessPolicy {
@@ -394,7 +394,7 @@ mod tests {
             ))
             .id();
         let id = Id::new();
-        identity::register(&mut world, beacon, id);
+        identity::register(&mut world, beacon, id).unwrap();
         assert!(!identity::public_directory_emitter(&world, beacon));
         assert!(authenticated_navigation_beacon(&world, ship, id));
 

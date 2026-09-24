@@ -103,7 +103,7 @@ fn slip_effects_only_render_in_the_view_that_observed_them() {
 }
 
 #[test]
-fn own_wake_geometry_survives_snapshot_replacement_and_galactic_translation() {
+fn transit_view_hides_wakes_across_snapshot_replacement_and_galactic_translation() {
     let mut app = App::new();
     app.init_resource::<RenderTime>()
         .init_resource::<SlipEffects>()
@@ -152,7 +152,7 @@ fn own_wake_geometry_survives_snapshot_replacement_and_galactic_translation() {
         settings.wakes[..settings.screen.w as usize].to_vec()
     };
     let before = snapshot(app.world_mut());
-    assert!(!before.is_empty());
+    assert!(before.is_empty());
     let moved =
         osg_model::GalacticPosition::ZERO.offset_by(bevy::math::DVec3::new(1e17, -2e17, 3e17));
     app.world_mut()

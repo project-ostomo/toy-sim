@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 
 mod browser;
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     browser: browser::State,
     search: String,

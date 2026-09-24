@@ -95,9 +95,7 @@ pub(super) fn setup_views(
         commands.entity(entity).insert((
             Camera3d::default(),
             Msaa::Off,
-            // TAA resolves the per-frame jitter of contact shadows; without it
-            // they flicker as one-frame false shadows across hulls.
-            bevy::anti_alias::taa::TemporalAntiAliasing::default(),
+            bevy::anti_alias::fxaa::Fxaa::default(),
             bevy::pbr::ContactShadows::default(),
             bevy::camera::Exposure::SUNLIGHT,
             Hdr,

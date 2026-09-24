@@ -194,7 +194,7 @@ mod tests {
                 AssetAccess(AccessPolicy::default()),
             ))
             .id();
-        crate::sim::identity::register(&mut world, ship, Id::new());
+        crate::sim::identity::register(&mut world, ship, Id::new()).unwrap();
 
         let first = get(&mut world, viewer);
         assert!(first.ships.is_empty());
@@ -216,6 +216,13 @@ mod tests {
         world.get_mut::<AssetAccess>(ship).unwrap().0.public.clear();
         assert!(get(&mut world, viewer).ships.is_empty());
         assert_eq!(get(&mut world, owner).ships.len(), 1);
+
+        let replacement = Id::new();
+        world.entity_mut(ship).insert(Identity(replacement));
+        assert_eq!(get(&mut world, owner).ships, [(replacement, ship, true)]);
+
+        world.entity_mut(ship).remove::<Identity>();
+        assert!(get(&mut world, owner).ships.is_empty());
 
         world.despawn(ship);
         assert!(get(&mut world, owner).ships.is_empty());

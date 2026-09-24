@@ -44,52 +44,24 @@ pub(super) fn name(world: &World, entity: Entity) -> String {
 }
 
 pub(super) fn capabilities(world: &World, entity: Entity) -> Vec<FacilityCapability> {
-    let Some(design) = world.get::<vessel::ShipDesign>(entity) else {
+    let Some(devices) = world.get::<hardware::PartDevices>(entity) else {
         return Vec::new();
     };
-    let devices = world.get::<hardware::PartDevices>(entity);
-    design
+    devices
         .0
-        .parts
         .iter()
-        .enumerate()
-        .filter_map(|(index, part)| {
-            let (capability, power_per_lane_w, lanes, max_radius_m) =
-                match part.definition.equipment {
-                    Equipment::Utility {
-                        utility:
-                            UtilityDef::Factory {
-                                capability,
-                                power_per_lane_w,
-                                lanes,
-                            },
-                    } => (capability, power_per_lane_w, lanes, None),
-                    Equipment::Utility {
-                        utility:
-                            UtilityDef::Shipyard {
-                                power_per_lane_w,
-                                lanes,
-                                max_radius_m,
-                            },
-                    } => (
-                        IndustryCapability::Shipyard,
-                        power_per_lane_w,
-                        lanes,
-                        Some(max_radius_m),
-                    ),
-                    _ => return None,
-                };
-            let operational = devices
-                .and_then(|devices| devices.0.get(index))
-                .and_then(|device| world.get::<hardware::Device>(*device))
+        .filter_map(|&device| {
+            let module = world.get::<IndustryModule>(device)?;
+            let operational = world
+                .get::<hardware::Device>(device)
                 .is_some_and(|device| device.0.operational)
                 && world.get::<travel::Dormant>(entity).is_none();
             Some(FacilityCapability {
-                part: part.placed.id,
-                capability,
-                lanes,
-                power_per_lane_w,
-                max_radius_m,
+                part: module.part,
+                capability: module.capability,
+                lanes: module.lanes,
+                power_per_lane_w: module.power_w,
+                max_radius_m: module.radius_m.is_finite().then_some(module.radius_m),
                 operational,
             })
         })

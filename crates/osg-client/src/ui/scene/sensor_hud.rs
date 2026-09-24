@@ -1,5 +1,5 @@
 use super::ViewCamera;
-use crate::state::{DisplayPose, Optical, OwnedShip, SessionInfo, ShipDetails, ViewObservation};
+use crate::state::{DisplayPose, Optical, OwnedShip, ShipDetails, SocietyState, ViewObservation};
 use crate::ui::{Selection, shell::Shell};
 use bevy::{prelude::*, window::PrimaryWindow};
 use osg_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -16,7 +16,7 @@ fn overlay(
     mut contexts: EguiContexts,
     mut selection: ResMut<Selection>,
     shell: Res<Shell>,
-    session: Res<SessionInfo>,
+    session: Res<SocietyState>,
     optical: Query<(&Optical, &DisplayPose)>,
     cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,
     owned: Query<(&OwnedShip, Option<&ShipDetails>)>,
@@ -90,7 +90,7 @@ fn overlay(
             );
         }
 
-        for object in &shell.hud {
+        for object in shell.hud() {
             let relative = object.position.relative_to(view_camera.origin);
             let Ok(projected) = camera.world_to_viewport(transform, relative.as_vec3()) else {
                 continue;

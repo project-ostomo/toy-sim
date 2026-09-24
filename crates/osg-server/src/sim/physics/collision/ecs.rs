@@ -174,7 +174,6 @@ fn prepare(
 ) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.prepare");
     state.started = Some(std::time::Instant::now());
-    spatial.collision_radii.clear();
     state.dt = time.delta_secs_f64();
     state.epoch = time.elapsed_secs_f64() - state.dt;
     state.bodies.clear();
@@ -258,9 +257,9 @@ fn prepare(
                 gravity: source.gravity.map_or(DVec3::ZERO, |gravity| gravity.0),
             },
         );
-        spatial.collision_radii.insert(body.entity, body.radius);
         state.bodies.push(body);
     }
+    spatial.set_collision_radii(state.bodies.iter().map(|body| (body.entity, body.radius)));
     state.preparation_time = state.started.unwrap().elapsed();
 }
 
@@ -272,7 +271,7 @@ fn begin_detection(mut state: ResMut<TickState>) {
 fn activate_shields(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<TickState>) {
     let _profile =
         crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.activate_shields");
-    activate(&mut state.bodies, &spatial.geometry);
+    activate(&mut state.bodies, spatial.geometry());
 }
 
 fn prepare_weapons(
@@ -329,14 +328,21 @@ fn launch(
 ) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("physics.collision.ecs.launch");
     let state = &mut *state;
-    tick::fire(
+    let projectiles = tick::fire(
         &mut state.bodies,
         state.dt,
-        &mut spatial.geometry,
         &mut workspace,
         &mut || commands.spawn_empty().id(),
         &mut state.report,
     );
+    // Beams and collision grouping must see every newly launched projectile.
+    for projectile in &projectiles {
+        spatial.insert_collision(projectile.entity, projectile.position, projectile.radius);
+    }
+    if !projectiles.is_empty() {
+        spatial.finish_collision_geometry();
+    }
+    state.bodies.extend(projectiles);
     for shot in &state.report.shots {
         let inertia = DMat3::IDENTITY * (0.4 * shot.mass_kg * shot.radius_m.powi(2));
         commands.entity(shot.projectile).insert((
@@ -366,7 +372,7 @@ fn beams(spatial: Res<crate::sim::spatial::SpatialIndex>, mut state: ResMut<Tick
         weapons::resolve_beam(
             beam,
             &mut state.bodies,
-            &spatial.geometry,
+            spatial.geometry(),
             0.0,
             &mut state.report,
         );
@@ -383,7 +389,7 @@ fn integrate(
     state.impacts = tick::integrate(
         &mut state.bodies,
         state.dt,
-        &spatial.geometry,
+        spatial.geometry(),
         &mut workspace,
         &mut state.report,
     );

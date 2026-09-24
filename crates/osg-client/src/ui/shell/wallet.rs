@@ -3,7 +3,7 @@ use economy::{Currency, WalletCommand, WalletQuery, WalletSnapshot, format_amoun
 use osg_ui::components;
 use ownership::Principal;
 
-#[derive(Default)]
+#[derive(Default, Resource)]
 pub(super) struct State {
     owner: Option<Principal>,
     before: Option<u64>,

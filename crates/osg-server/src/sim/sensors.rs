@@ -60,6 +60,7 @@ pub fn refresh_iff(world: &mut World, entity: Entity) {
         .map(|value| value.0.clone());
     if let Some(service) = world.get_resource::<SensorService>() {
         let mut scene = service.0.lock().unwrap();
+        scene.generation += 1;
         for (_, snapshot) in scene.cached.values_mut() {
             let snapshot = Arc::make_mut(snapshot);
             if let Some(handle) = snapshot.targets.get(&id).copied()
@@ -123,6 +124,7 @@ struct TargetState {
 #[derive(Default)]
 struct SensorScene {
     revision: u64,
+    generation: u64,
     tick: u64,
     cached: ahash::AHashMap<Entity, (u64, Arc<ObservationSnapshot>)>,
 }
@@ -134,6 +136,7 @@ pub struct SensorService(Arc<std::sync::Mutex<SensorScene>>);
 impl SensorService {
     pub(crate) fn invalidate(&self, entity: Entity, id: Option<Id>) {
         let mut scene = self.0.lock().unwrap();
+        scene.generation += 1;
         for (&observer, (_, snapshot)) in &mut scene.cached {
             let mut value = Observations(snapshot.clone());
             invalidate_observation(observer, &mut value, entity, id);
@@ -148,24 +151,28 @@ impl SensorService {
         observer: Option<ObserverState>,
         target: impl Fn(Entity) -> Option<TargetState>,
     ) -> Arc<ObservationSnapshot> {
-        let mut scene = self.0.lock().unwrap();
-        if observer.is_none() {
-            scene.cached.remove(&entity);
-            return Arc::default();
-        }
-        if let Some((revision, snapshot)) = scene.cached.get(&entity)
-            && *revision == scene.revision
-        {
-            return snapshot.clone();
-        }
-        let old = scene
-            .cached
-            .get(&entity)
-            .map(|(_, snapshot)| snapshot.clone())
-            .unwrap_or_default();
+        let (revision, generation, tick, old) = {
+            let mut scene = self.0.lock().unwrap();
+            if observer.is_none() {
+                scene.cached.remove(&entity);
+                scene.generation += 1;
+                return Arc::default();
+            }
+            if let Some((revision, snapshot)) = scene.cached.get(&entity)
+                && *revision == scene.revision
+            {
+                return snapshot.clone();
+            }
+            let old = scene
+                .cached
+                .get(&entity)
+                .map(|(_, snapshot)| snapshot.clone())
+                .unwrap_or_default();
+            (scene.revision, scene.generation, scene.tick, old)
+        };
         let _profile = super::diagnostics::ProfileScope::new("sensor_detection");
         let mut snapshot = ObservationSnapshot {
-            tick: scene.tick,
+            tick,
             ..Default::default()
         };
         if let Some(observer) = observer {
@@ -215,7 +222,17 @@ impl SensorService {
             }
         }
         let snapshot = Arc::new(snapshot);
-        let revision = scene.revision;
+        let mut scene = self.0.lock().unwrap();
+        // Another observation may have won publication, or invalidation may have
+        // changed the scene while detection ran. Never publish that stale work.
+        if let Some((cached_revision, cached)) = scene.cached.get(&entity)
+            && *cached_revision == scene.revision
+        {
+            return cached.clone();
+        }
+        if revision != scene.revision || generation != scene.generation {
+            return Arc::default();
+        }
         scene.cached.insert(entity, (revision, snapshot.clone()));
         snapshot
     }
@@ -408,7 +425,7 @@ pub fn detect(
 ) -> SensorContacts {
     let origin = index
         .object_index(observer)
-        .map_or(origin, |id| index.objects[id].position);
+        .map_or(origin, |id| index.objects()[id].position);
     if sensor.range_m <= 0. || !sensor.range_m.is_finite() {
         return SensorContacts::default();
     }
@@ -418,7 +435,7 @@ pub fn detect(
         index
             .occluders_in_range(origin, sensor.range_m)
             .into_iter()
-            .map(|id| index.objects[id])
+            .map(|id| index.objects()[id])
             .filter(|o| o.entity != observer)
             .map(|o| (o.entity, o.position.relative_to(origin), o.radius_m))
             .collect()
@@ -431,7 +448,7 @@ pub fn detect(
         ..default()
     };
     for id in candidates {
-        let target = index.objects[id];
+        let target = index.objects()[id];
         if target.entity == observer {
             continue;
         }
@@ -467,7 +484,7 @@ pub fn detect_nearest(
 ) -> SensorContacts {
     let origin = index
         .object_index(observer)
-        .map_or(origin, |id| index.objects[id].position);
+        .map_or(origin, |id| index.objects()[id].position);
     if n == 0 || sensor.range_m <= 0. || !sensor.range_m.is_finite() {
         return SensorContacts::default();
     }
@@ -486,7 +503,7 @@ pub fn detect_nearest(
         ..default()
     };
     for id in candidates {
-        let object = index.objects[id];
+        let object = index.objects()[id];
         if sensor.occlusion && index.occluded(observer, id, origin) {
             result.blocked += 1;
         } else {
@@ -504,6 +521,109 @@ mod tests {
     use super::*;
     use crate::sim::{precision::GalacticPosition, spatial::SpatialObject};
     use bevy::math::DVec3;
+
+    fn scan_fixture() -> (
+        SpatialIndex,
+        [Entity; 2],
+        Entity,
+        ObserverState,
+        TargetState,
+    ) {
+        let mut world = World::new();
+        let observers = [world.spawn_empty().id(), world.spawn_empty().id()];
+        let entity = world.spawn_empty().id();
+        let mut index = SpatialIndex::default();
+        index.insert(SpatialObject {
+            entity,
+            position: GalacticPosition::ZERO.offset_by(DVec3::X * 10.0),
+            radius_m: 1.0,
+            occludes: false,
+            optical_occludes: false,
+            optical_luminosity_w: 0.0,
+        });
+        index.finish_geometry();
+        let observer = ObserverState {
+            instance: Id::new(),
+            origin: GalacticPosition::ZERO,
+            sensor: Sensor {
+                range_m: 100.0,
+                occlusion: false,
+            },
+        };
+        let target = TargetState {
+            id: Id::new(),
+            instance: Id::new(),
+            pose: Default::default(),
+            radius_m: 1.0,
+            iff: None,
+        };
+        (index, observers, entity, observer, target)
+    }
+
+    #[test]
+    fn concurrent_scans_overlap_and_share_handles_when_observers_match() {
+        use std::{sync::mpsc, time::Duration};
+
+        for same_observer in [false, true] {
+            let (index, observers, _, observer, target) = scan_fixture();
+            let service = SensorService::default();
+            let snapshots = std::thread::scope(|scope| {
+                let (entered, entries) = mpsc::channel();
+                let mut releases = Vec::new();
+                let mut workers = Vec::new();
+                for entity in [observers[0], observers[usize::from(!same_observer)]] {
+                    let (release, resume) = mpsc::channel();
+                    releases.push(release);
+                    let entered = entered.clone();
+                    let service = &service;
+                    let index = &index;
+                    let observer = observer.clone();
+                    let target = target.clone();
+                    workers.push(scope.spawn(move || {
+                        service.observe(index, entity, Some(observer), |_| {
+                            entered.send(()).unwrap();
+                            resume.recv_timeout(Duration::from_secs(10)).unwrap();
+                            Some(target.clone())
+                        })
+                    }));
+                }
+                let both_entered = entries.recv_timeout(Duration::from_secs(5)).is_ok()
+                    && entries.recv_timeout(Duration::from_secs(5)).is_ok();
+                for release in releases {
+                    let _ = release.send(());
+                }
+                let snapshots: Vec<_> = workers
+                    .into_iter()
+                    .map(|worker| worker.join().unwrap())
+                    .collect();
+                assert!(both_entered, "detection for different calls must overlap");
+                snapshots
+            });
+            assert_eq!(snapshots[0].contacts.len(), 1);
+            assert_eq!(snapshots[1].contacts.len(), 1);
+            if same_observer {
+                assert!(Arc::ptr_eq(&snapshots[0], &snapshots[1]));
+            }
+        }
+    }
+
+    #[test]
+    fn invalidation_and_new_publication_reject_inflight_scans() {
+        for new_revision in [false, true] {
+            let (index, observers, entity, observer, target) = scan_fixture();
+            let service = SensorService::default();
+            let snapshot = service.observe(&index, observers[0], Some(observer), |_| {
+                if new_revision {
+                    service.0.lock().unwrap().revision += 1;
+                } else {
+                    service.invalidate(entity, Some(target.id));
+                }
+                Some(target.clone())
+            });
+            assert!(snapshot.contacts.is_empty());
+            assert!(service.cached(observers[0]).is_none());
+        }
+    }
 
     #[test]
     fn observations_are_exact_private_and_disappear_with_detection() {
@@ -788,12 +908,12 @@ mod tests {
             );
             let mut actual: Vec<_> = actual.visible.iter().map(|c| c.entity).collect();
             let mut expected: Vec<_> = index
-                .objects
+                .objects()
                 .iter()
                 .filter(|target| {
                     let d = target.position.relative_to(origin);
                     d.length() <= range_m
-                        && !index.objects.iter().any(|b| {
+                        && !index.objects().iter().any(|b| {
                             b.occludes
                                 && b.entity != target.entity
                                 && sphere_blocks(d, b.position.relative_to(origin), b.radius_m)

@@ -118,19 +118,19 @@ fn nearest_queries_match_exhaustive_selection_across_regions_and_ties() {
     index.finish_geometry();
     for n in [1, 16, 256] {
         let actual = index.nearest(observer, anchor, 1e8, n);
-        let mut expected: Vec<_> = (0..index.objects.len()).collect();
+        let mut expected: Vec<_> = (0..index.objects().len()).collect();
         expected.sort_by(|&a, &b| {
-            index.objects[a]
+            index.objects()[a]
                 .position
                 .relative_to(anchor)
                 .length_squared()
                 .total_cmp(
-                    &index.objects[b]
+                    &index.objects()[b]
                         .position
                         .relative_to(anchor)
                         .length_squared(),
                 )
-                .then_with(|| index.objects[a].entity.cmp(&index.objects[b].entity))
+                .then_with(|| index.objects()[a].entity.cmp(&index.objects()[b].entity))
         });
         expected.truncate(n);
         assert_eq!(actual, expected);

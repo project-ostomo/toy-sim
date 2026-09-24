@@ -55,7 +55,7 @@ impl Environment {
             .context("universe unavailable")?
             .registry
             .universe;
-        let system = &universe.systems[index];
+        let system = &universe.systems()[index];
         Ok(SystemTarget {
             id: Id(system.id),
             position: system.position,
@@ -86,11 +86,11 @@ impl RouteEnvironment for Environment {
             .registry
             .universe;
         Ok(universe
-            .index
+            .index()
             .containing_segment(position, DVec3::ZERO)
             .into_iter()
             .filter_map(|index| {
-                let system = &universe.systems[index];
+                let system = &universe.systems()[index];
                 let normalized = system.position.relative_to(position).length()
                     / system.influence_bound.max(1.0);
                 (normalized <= 1.0).then_some((normalized, Id(system.id)))
@@ -135,7 +135,7 @@ impl RouteEnvironment for Environment {
         for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
             indices.extend(
                 universe
-                    .index
+                    .index()
                     .nearest_many(origin.offset_by(displacement * fraction), limit / 5 + 1),
             );
         }
@@ -153,7 +153,7 @@ impl RouteEnvironment for Environment {
                 let universe = &source.registry.universe;
                 universe
                     .system_index(id.0)
-                    .map(|index| universe.systems[index].name.to_string())
+                    .map(|index| universe.systems()[index].name.to_string())
             }),
             Directive::DockAt(id) => self
                 .source

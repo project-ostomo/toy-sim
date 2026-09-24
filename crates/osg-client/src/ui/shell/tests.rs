@@ -1,5 +1,28 @@
 use super::*;
 
+struct TestPanes {
+    world: World,
+    state: bevy::ecs::system::SystemState<PaneStates<'static>>,
+}
+
+impl Default for TestPanes {
+    fn default() -> Self {
+        let mut app = App::new();
+        install_panes(&mut app);
+        let mut world = std::mem::take(app.world_mut());
+        let state = bevy::ecs::system::SystemState::new(&mut world);
+        Self { world, state }
+    }
+}
+
+impl TestPanes {
+    fn get(&mut self) -> PaneStates<'_> {
+        self.state
+            .get_mut(&mut self.world)
+            .expect("pane resources installed")
+    }
+}
+
 pub(super) fn entry(directive: travel::Directive, seconds: f64) -> travel::ItineraryEntry {
     travel::ItineraryEntry {
         label: directive.label(),
@@ -1435,6 +1458,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
     let ctx = egui::Context::default();
     osg_ui::theme::install(&ctx);
     let mut shell = Shell::default();
+    let mut panes = TestPanes::default();
     let selection = Selection {
         target: Some(SelectedTarget::Beacon(Id([9; 16]))),
         ..Default::default()
@@ -1482,6 +1506,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
                 panels::draw(
                     ui.ctx(),
                     &mut shell,
+                    &mut panes.get(),
                     &model,
                     &selection,
                     &[],
@@ -1830,8 +1855,9 @@ fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_picker
     let other = Id([3; 16]);
     let factory = Id([4; 16]);
     let mut shell = Shell::default();
+    let mut panes = TestPanes::default();
     shell.desktop.open(INVENTORY);
-    let inventory = inventory_subscription(&shell, Some(ship), None, true).unwrap();
+    let inventory = inventory_subscription(&shell, &panes.get(), Some(ship), None, true).unwrap();
     assert_eq!(inventory.inventories, vec![ship]);
     assert!(!inventory.directory);
     assert!(inventory.hangar.is_none());
@@ -1857,21 +1883,26 @@ fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_picker
     };
     shell.desktop.open(HANGAR);
     shell.desktop.open(CARGO);
-    shell.cargo_inventory = Some(other);
-    let local = inventory_subscription(&shell, Some(ship), Some(&hangar), true).unwrap();
+    panes.get().cargo_inventory.0 = Some(other);
+    let local =
+        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
     assert!(!local.directory);
     assert_eq!(local.hangar.as_ref().unwrap().ship, ship);
     assert_eq!(local.inventories, vec![ship, host, other]);
 
     shell.desktop.open(INDUSTRY);
-    shell.industry.facility = Some(factory);
-    let combined = inventory_subscription(&shell, Some(ship), Some(&hangar), true).unwrap();
+    panes.get().industry.facility = Some(factory);
+    let combined =
+        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
     assert!(combined.directory && combined.catalogue);
     assert!(combined.inventories.contains(&factory));
     assert!(combined.inventories.contains(&host));
     assert!(combined.inventories.contains(&other));
 
-    let refocused = inventory_subscription(&shell, Some(other), Some(&hangar), true).unwrap();
+    let refocused =
+        inventory_subscription(&shell, &panes.get(), Some(other), Some(&hangar), true).unwrap();
     assert!(!refocused.inventories.contains(&host));
-    assert!(inventory_subscription(&shell, Some(ship), Some(&hangar), false).is_none());
+    assert!(
+        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), false).is_none()
+    );
 }

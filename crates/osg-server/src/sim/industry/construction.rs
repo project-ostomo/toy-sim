@@ -77,7 +77,7 @@ pub(super) fn prepare(
             payment: None,
         },
         inputs: requirements.inputs,
-        output: JobOutput::Ship(blueprint_bytes.to_vec()),
+        output: JobOutput::Ship(blueprint_bytes.into()),
         energy_j: requirements.energy_j,
         stored_energy_j: 0,
         required_radius_m: design.radius,
@@ -127,7 +127,7 @@ pub(super) fn finish(world: &mut World, facility: Entity, job: &IndustryJob) -> 
         world
             .run_system_once(hardware::initialize)
             .map_err(|error| anyhow::anyhow!("hardware initialization failed: {error:?}"))?;
-        identity::attach_ship(world, ship, job.view.created_by)?;
+        identity::attach_ship(world, ship, job.view.created_by, Id::new())?;
         world
             .entity_mut(ship)
             .insert(ownership::AssetOwner(job.view.owner));
@@ -135,12 +135,6 @@ pub(super) fn finish(world: &mut World, facility: Entity, job: &IndustryJob) -> 
         Ok(())
     })();
     if let Err(error) = result {
-        if let Some(id) = world.get::<identity::Identity>(ship).map(|id| id.0) {
-            world
-                .resource_mut::<identity::IdentityIndex>()
-                .0
-                .remove(&id);
-        }
         world.despawn(ship);
         return Err(error);
     }

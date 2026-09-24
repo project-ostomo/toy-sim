@@ -1,4 +1,4 @@
-use crate::state::{Celestial, Contact, Outgoing, OwnedShip, SessionInfo, ViewObservation};
+use crate::state::{Celestial, Contact, IndustryState, Outgoing, OwnedShip, ViewObservation};
 use bevy::prelude::*;
 use osg_model::*;
 
@@ -40,7 +40,7 @@ impl Selection {
 }
 
 pub(super) fn synchronize(
-    session: Res<SessionInfo>,
+    industry: Res<IndustryState>,
     mut subscriptions: ResMut<Subscriptions>,
     mut selection: ResMut<Selection>,
     mut outgoing: ResMut<Outgoing>,
@@ -63,17 +63,12 @@ pub(super) fn synchronize(
     }
     if selection.ship.is_none_or(|selected| {
         !ships.iter().any(|ship| ship.0.ship == selected)
-            && !session
-                .industry
-                .snapshot
-                .hangar
-                .as_ref()
-                .is_some_and(|hangar| {
-                    hangar
-                        .ships
-                        .iter()
-                        .any(|entry| entry.inventory.entity == selected && entry.can_focus)
-                })
+            && !industry.snapshot.hangar.as_ref().is_some_and(|hangar| {
+                hangar
+                    .ships
+                    .iter()
+                    .any(|entry| entry.inventory.entity == selected && entry.can_focus)
+            })
     }) {
         selection.ship = ships
             .iter()

@@ -36,7 +36,7 @@ pub(crate) fn dock_heat_transfer(
             commands.entity(ship).remove::<DockedSink>();
             continue;
         };
-        let Some(&host) = identities.0.get(&host) else {
+        let Some(&host) = identities.entries().get(&host) else {
             continue;
         };
         let Ok(design) = designs.get(host) else {
@@ -118,12 +118,22 @@ fn convert(
     true
 }
 
+#[derive(QueryData)]
+#[query_data(mutable)]
+pub(crate) struct ReactorHardware {
+    inventory: &'static mut ShipInventory,
+    hull: &'static mut Hull,
+    thermal: &'static mut ShipThermal,
+    settings: &'static DeviceSettings,
+    parts: &'static PartDevices,
+}
+
 pub(crate) fn generate(
     time: Res<Time<Fixed>>,
     cat: Res<ShipCatalogue>,
     mut ships: Query<(
         &ShipDesign,
-        HardwareWrite,
+        ReactorHardware,
         &mut DeviceOutputs,
         Has<super::super::travel::SystemsSuspended>,
         Option<&DockedSink>,
@@ -250,19 +260,23 @@ pub(crate) fn process(
     time: Res<Time<Fixed>>,
     cat: Res<ShipCatalogue>,
     mut ships: Query<
-        (&ShipDesign, HardwareWrite, &mut DeviceOutputs),
+        (
+            &ShipDesign,
+            (&mut ShipInventory, &Hull, &mut ShipThermal, &PartDevices),
+            &mut DeviceOutputs,
+        ),
         Without<super::super::travel::SystemsSuspended>,
     >,
     processors: Query<(&FuelProcessor, &Device)>,
 ) {
     let _profile = crate::sim::diagnostics::ProfileScope::new("hardware.reactors.process");
     let dt = time.delta_secs_f64();
-    for (design, mut hardware, mut outputs) in &mut ships {
-        if hardware.hull.0 <= 0.0 {
+    for (design, (mut inventory, hull, mut thermal, parts), mut outputs) in &mut ships {
+        if hull.0 <= 0.0 {
             continue;
         }
         for &index in &design.0.active_parts {
-            let Ok((processor, device)) = processors.get(hardware.parts.0[index]) else {
+            let Ok((processor, device)) = processors.get(parts.0[index]) else {
                 continue;
             };
             if !device.0.operational {
@@ -289,8 +303,8 @@ pub(crate) fn process(
             let waste = resource(&cat.0, "spent_fuel");
             let requested = spec.throughput_kg_s * throttle * dt;
             let amount = requested
-                .min(hardware.inventory.0.available(source))
-                .min(hardware.inventory.0.energy_j as f64 / spec.power_w * spec.throughput_kg_s);
+                .min(inventory.0.available(source))
+                .min(inventory.0.energy_j as f64 / spec.power_w * spec.throughput_kg_s);
             if amount <= 0.0 {
                 continue;
             }
@@ -301,22 +315,22 @@ pub(crate) fn process(
             let discarded = units - recovered;
             let energy = units as f64 / spec.throughput_kg_s * spec.power_w;
             if units == 0
-                || units > hardware.inventory.0.quantities[source]
-                || recovered > hardware.inventory.0.tank_room(target, &cat.0)
-                || discarded > hardware.inventory.0.tank_room(waste, &cat.0)
-                || energy > hardware.inventory.0.energy_j as f64
+                || units > inventory.0.quantities[source]
+                || recovered > inventory.0.tank_room(target, &cat.0)
+                || discarded > inventory.0.tank_room(waste, &cat.0)
+                || energy > inventory.0.energy_j as f64
             {
                 continue;
             }
-            let mut next = hardware.inventory.0.clone();
+            let mut next = inventory.0.clone();
             next.quantities[source] -= units;
             next.insert_consumable(target, recovered, &cat.0)
                 .expect("reserved tank space");
             next.insert_consumable(waste, discarded, &cat.0)
                 .expect("reserved tank space");
             let paid = next.energy_j.withdraw(energy);
-            hardware.inventory.0 = next;
-            hardware.thermal.0.add_waste_heat(paid as f64, dt);
+            inventory.0 = next;
+            thermal.0.add_waste_heat(paid as f64, dt);
             let output = &mut outputs.0[index];
             output.actual = amount / dt;
             output.powered = true;
@@ -524,9 +538,10 @@ mod tests {
                 ShipThermal(thermal::ThermalState::default()),
             ))
             .id();
-        let mut index = IdentityIndex::default();
-        index.0.insert(host_id, host);
-        world.insert_resource(index);
+        world.init_resource::<IdentityIndex>();
+        world
+            .entity_mut(host)
+            .insert(super::super::super::identity::Identity(host_id));
         world.entity_mut(fixture.ship).insert((
             SystemsSuspended,
             PresenceState(osg_model::travel::Presence::Docked {

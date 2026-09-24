@@ -639,7 +639,7 @@ pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
     let mut administrators = std::collections::BTreeMap::new();
     let mut assets: Vec<_> = world
         .resource::<identity::IdentityIndex>()
-        .0
+        .entries()
         .iter()
         .filter_map(|(id, entity)| {
             let owner = world.get::<AssetOwner>(*entity)?.0;
@@ -728,7 +728,7 @@ mod tests {
             .spawn((AssetOwner(Principal::Player(other)), AssetAccess::default()))
             .id();
         let asset = Id::new();
-        identity::register(&mut world, entity, asset);
+        identity::register(&mut world, entity, asset).unwrap();
         let profile = AccessProfile {
             id: Id::new(),
             owner: Principal::Player(owner),
@@ -901,7 +901,7 @@ mod tests {
                 }),
             ))
             .id();
-        identity::register(&mut world, ship, Id([3; 16]));
+        identity::register(&mut world, ship, Id([3; 16])).unwrap();
         capture_control(&mut world, ship, new).unwrap();
         assert_eq!(
             world.get::<identity::Transponder>(ship).unwrap().0.owner,
@@ -974,7 +974,7 @@ mod tests {
                 },
             ))
             .id();
-        identity::register(&mut world, ship, asset);
+        identity::register(&mut world, ship, asset).unwrap();
         let policy = AccessPolicy {
             public: BTreeSet::new(),
             grants: vec![AccessGrant {
@@ -1063,7 +1063,7 @@ mod tests {
                 },
             ))
             .id();
-        identity::register(&mut world, ship, asset);
+        identity::register(&mut world, ship, asset).unwrap();
         apply(
             &mut world,
             account,
