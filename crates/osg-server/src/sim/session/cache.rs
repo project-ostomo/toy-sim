@@ -22,6 +22,10 @@ pub(super) struct AccountView {
 #[derive(Resource, Default)]
 struct Cache(HashMap<AccountId, Arc<AccountView>>);
 
+#[cfg(test)]
+#[derive(Resource, Default)]
+struct ScanCount(usize);
+
 fn invalidate(
     mut cache: ResMut<Cache>,
     directory: Option<Res<Directory>>,
@@ -36,6 +40,17 @@ fn invalidate(
             Changed<AssetAccess>,
         )>,
     >,
+) {
+    if directory.is_some_and(|value| value.is_changed())
+        || identities.is_some_and(|value| value.is_changed())
+        || !changed.is_empty()
+    {
+        cache.0.clear();
+    }
+}
+
+fn invalidate_removed(
+    mut cache: ResMut<Cache>,
     mut identities_removed: RemovedComponents<Identity>,
     mut controls_removed: RemovedComponents<Control>,
     mut vessels_removed: RemovedComponents<Vessel>,
@@ -48,11 +63,7 @@ fn invalidate(
         + vessels_removed.read().count()
         + owners_removed.read().count()
         + access_removed.read().count();
-    if removed != 0
-        || directory.is_some_and(|value| value.is_changed())
-        || identities.is_some_and(|value| value.is_changed())
-        || !changed.is_empty()
-    {
+    if removed != 0 {
         cache.0.clear();
     }
 }
@@ -66,30 +77,47 @@ fn prune_disconnected(mut cache: ResMut<Cache>, sessions: Query<&super::Session>
     cache.0.retain(|account, _| connected.contains(account));
 }
 
-// Run at the application update boundary, where Session components are attached.
-// Consume removals before Bevy expires them and retain only connected accounts.
+// Consume removals before Bevy expires them, even across updates without publication.
 pub(crate) fn maintain(world: &mut World) {
     if world.contains_resource::<Cache>() {
         world
-            .run_system_cached(invalidate)
+            .run_system_cached(invalidate_removed)
             .expect("invalidate publication cache");
-        world
-            .run_system_cached(prune_disconnected)
-            .expect("prune disconnected publication accounts");
     }
+}
+
+/// Prepare once before publishing a batch, while all Session components are attached.
+/// Call after `infrastructure::publish_navigation` and display updates; readings
+/// are shared only across the frames that follow this preparation.
+/// Relevant ownership and identity mutations must precede this boundary.
+pub fn prepare_publication(world: &mut World) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("session.prepare_publication");
+    world.init_resource::<Cache>();
+    world.insert_resource(crate::sim::presentation::DeviceReadings::default());
+    maintain(world);
+    #[cfg(test)]
+    {
+        world.init_resource::<ScanCount>();
+        world.resource_mut::<ScanCount>().0 += 1;
+        crate::sim::diagnostics::samples::count("account_cache.invalidation_scans", 1);
+    }
+    world
+        .run_system_cached(invalidate)
+        .expect("invalidate publication cache");
+    world
+        .run_system_cached(prune_disconnected)
+        .expect("prune disconnected publication accounts");
 }
 
 pub(super) fn get(world: &mut World, account: AccountId) -> Arc<AccountView> {
     let _profile = crate::sim::diagnostics::ProfileScope::new("session.account_cache");
-    world.init_resource::<Cache>();
-    // Session::frame temporarily takes its Session component out of the world.
-    // Invalidate here for freshness, but prune only at the update boundary.
-    world
-        .run_system_cached(invalidate)
-        .expect("invalidate publication cache");
     if let Some(view) = world.resource::<Cache>().0.get(&account) {
+        #[cfg(test)]
+        crate::sim::diagnostics::samples::count("account_cache.hits", 1);
         return view.clone();
     }
+    #[cfg(test)]
+    crate::sim::diagnostics::samples::count("account_cache.misses", 1);
 
     let ships = world
         .query_filtered::<(Entity, &Identity), With<Vessel>>()
@@ -127,16 +155,18 @@ mod tests {
             .iter()
             .map(|&account| super::super::connect(&mut world, account, Default::default()).unwrap())
             .collect();
+        prepare_publication(&mut world);
         let views: Vec<_> = accounts
             .iter()
             .map(|&account| get(&mut world, account))
             .collect();
 
-        for _ in 0..2 {
-            maintain(&mut world);
+        for batch in 2..=3 {
+            prepare_publication(&mut world);
             for (&account, expected) in accounts.iter().zip(&views) {
                 assert!(Arc::ptr_eq(expected, &get(&mut world, account)));
             }
+            assert_eq!(world.resource::<ScanCount>().0, batch);
         }
 
         // Match the temporary component removal performed by Session::frame.
@@ -158,20 +188,22 @@ mod tests {
         let first = super::super::connect(&mut world, account, Default::default()).unwrap();
         let second = super::super::connect(&mut world, account, Default::default()).unwrap();
         super::super::connect(&mut world, other, Default::default()).unwrap();
+        prepare_publication(&mut world);
         let view = get(&mut world, account);
         let other_view = get(&mut world, other);
 
         super::super::disconnect(&mut world, first);
-        maintain(&mut world);
+        prepare_publication(&mut world);
         assert!(Arc::ptr_eq(&view, &get(&mut world, account)));
 
         // Direct despawning must be handled as well as explicit disconnection.
         world.despawn(second);
-        maintain(&mut world);
+        prepare_publication(&mut world);
         assert!(!world.resource::<Cache>().0.contains_key(&account));
         assert!(Arc::ptr_eq(&other_view, &get(&mut world, other)));
 
         super::super::connect(&mut world, account, Default::default()).unwrap();
+        prepare_publication(&mut world);
         assert!(!Arc::ptr_eq(&view, &get(&mut world, account)));
     }
 
@@ -181,6 +213,9 @@ mod tests {
         let owner = Id::new();
         let viewer = Id::new();
         crate::sim::identity::initialize(&mut world, &[owner, viewer]);
+        world.init_resource::<super::super::Events>();
+        super::super::connect(&mut world, owner, Default::default()).unwrap();
+        super::super::connect(&mut world, viewer, Default::default()).unwrap();
         let ship = world
             .spawn((
                 Vessel {
@@ -196,6 +231,7 @@ mod tests {
             .id();
         crate::sim::identity::register(&mut world, ship, Id::new()).unwrap();
 
+        prepare_publication(&mut world);
         let first = get(&mut world, viewer);
         assert!(first.ships.is_empty());
         assert!(Arc::ptr_eq(&first, &get(&mut world, viewer)));
@@ -206,25 +242,85 @@ mod tests {
             .0
             .public
             .insert(Permission::View);
+        prepare_publication(&mut world);
         let visible = get(&mut world, viewer);
         assert_eq!(visible.ships.len(), 1);
         assert!(!visible.ships[0].2);
         assert!(Arc::ptr_eq(&visible, &get(&mut world, viewer)));
 
         world.get_mut::<Vessel>(ship).unwrap().vessel_name = "Renamed".into();
+        prepare_publication(&mut world);
         assert!(!Arc::ptr_eq(&visible, &get(&mut world, viewer)));
         world.get_mut::<AssetAccess>(ship).unwrap().0.public.clear();
+        prepare_publication(&mut world);
         assert!(get(&mut world, viewer).ships.is_empty());
         assert_eq!(get(&mut world, owner).ships.len(), 1);
 
+        world.get_mut::<AssetOwner>(ship).unwrap().0 = Principal::Player(viewer);
+        world.get_mut::<Control>(ship).unwrap().account = viewer;
+        prepare_publication(&mut world);
+        assert!(get(&mut world, owner).ships.is_empty());
+        let transferred = get(&mut world, viewer);
+        assert_eq!(transferred.ships.len(), 1);
+        assert!(transferred.ships[0].2);
+
+        world.resource_mut::<Directory>().set_changed();
+        prepare_publication(&mut world);
+        let refreshed = get(&mut world, viewer);
+        assert!(!Arc::ptr_eq(&transferred, &refreshed));
+        world.get_mut::<Control>(ship).unwrap().revision += 1;
+        prepare_publication(&mut world);
+        assert!(!Arc::ptr_eq(&refreshed, &get(&mut world, viewer)));
+
         let replacement = Id::new();
         world.entity_mut(ship).insert(Identity(replacement));
-        assert_eq!(get(&mut world, owner).ships, [(replacement, ship, true)]);
+        prepare_publication(&mut world);
+        assert_eq!(get(&mut world, viewer).ships, [(replacement, ship, true)]);
 
         world.entity_mut(ship).remove::<Identity>();
-        assert!(get(&mut world, owner).ships.is_empty());
+        prepare_publication(&mut world);
+        assert!(get(&mut world, viewer).ships.is_empty());
 
         world.despawn(ship);
+        prepare_publication(&mut world);
         assert!(get(&mut world, owner).ships.is_empty());
+        assert!(get(&mut world, viewer).ships.is_empty());
+    }
+
+    #[test]
+    fn removed_vessel_stays_invalidated_across_updates_without_publication() {
+        let mut app = App::new();
+        app.add_systems(Last, maintain);
+        let account = Id::new();
+        let world = app.world_mut();
+        crate::sim::identity::initialize(world, &[account]);
+        world.init_resource::<super::super::Events>();
+        super::super::connect(world, account, Default::default()).unwrap();
+        let ship = world
+            .spawn((
+                Vessel {
+                    vessel_name: "Ship".into(),
+                },
+                Control {
+                    account,
+                    revision: 1,
+                },
+                AssetOwner(Principal::Player(account)),
+            ))
+            .id();
+        crate::sim::identity::register(world, ship, Id::new()).unwrap();
+        prepare_publication(world);
+        assert_eq!(get(world, account).ships.len(), 1);
+
+        // Removing Vessel leaves IdentityIndex intact: only the removal stream
+        // can invalidate the previously cached ship after the component is gone.
+        world.entity_mut(ship).remove::<Vessel>();
+        for _ in 0..4 {
+            app.update();
+        }
+        let world = app.world_mut();
+        assert_eq!(world.resource::<ScanCount>().0, 1);
+        prepare_publication(world);
+        assert!(get(world, account).ships.is_empty());
     }
 }

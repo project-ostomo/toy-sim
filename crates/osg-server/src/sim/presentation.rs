@@ -6,6 +6,10 @@ use osg_model::{GalacticPosition, presentation::*};
 use osg_ship_api::abi;
 use osg_ship_wasm::spatial;
 use osg_ships::{DeviceKind, DeviceReading as Reading, DeviceSetting};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 use super::{
     hardware,
@@ -15,6 +19,27 @@ use super::{
     simulation::SimulationCounters,
     vessel::{ComputerBudget, ShipCatalogue, ShipDesign, ShipSoftware, SoftwareDiagnostics},
 };
+
+/// Account-independent readings, valid only within one publication batch.
+/// RPC callers use a fresh instance to observe mutations immediately.
+#[derive(Resource, Clone, Default)]
+pub struct DeviceReadings(Arc<Mutex<HashMap<Entity, Option<Arc<Vec<osg_ships::DeviceStatus>>>>>>);
+
+impl DeviceReadings {
+    fn get(&self, world: &World, entity: Entity) -> Option<Arc<Vec<osg_ships::DeviceStatus>>> {
+        if let Some(readings) = self.0.lock().unwrap().get(&entity) {
+            #[cfg(test)]
+            crate::sim::diagnostics::samples::count("publication.device_readings_hits", 1);
+            return readings.clone();
+        }
+        let _profile = crate::sim::diagnostics::ProfileScope::new("publication.device_readings");
+        #[cfg(test)]
+        crate::sim::diagnostics::samples::count("publication.device_readings_builds", 1);
+        let readings = hardware::device_readings(world, entity).map(Arc::new);
+        self.0.lock().unwrap().insert(entity, readings.clone());
+        readings
+    }
+}
 
 fn bounded(text: &str, limit: usize) -> String {
     let mut end = text.len().min(limit);
@@ -37,14 +62,19 @@ fn nanoseconds(seconds: f64) -> u64 {
     (seconds.max(0.0) * 1e9).round() as u64
 }
 
-pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<ShipPresentation> {
+pub fn ship(
+    world: &World,
+    entity: Entity,
+    include_instruments: bool,
+    cache: &DeviceReadings,
+) -> Option<ShipPresentation> {
     let id = world.get::<Identity>(entity)?.0;
     let design = &world.get::<ShipDesign>(entity)?.0;
     let cargo = &world.get::<hardware::ShipInventory>(entity)?.0;
     let hull = world.get::<hardware::Hull>(entity)?.0;
     let thermal = &world.get::<hardware::ShipThermal>(entity)?.0;
     let settings = &world.get::<hardware::DeviceSettings>(entity)?.0;
-    let readings = hardware::device_readings(world, entity)?;
+    let readings = cache.get(world, entity)?;
     let software = world.get::<ShipSoftware>(entity)?;
     let budget = world.get::<ComputerBudget>(entity)?;
     let diagnostics = world.get::<SoftwareDiagnostics>(entity)?;
@@ -210,7 +240,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         generation_capacity_w: design
             .device_catalogue
             .iter()
-            .zip(readings)
+            .zip(readings.iter())
             .filter_map(|(descriptor, status)| match descriptor.kind {
                 DeviceKind::Generator { power_w } if status.operational => {
                     let reactor = design
@@ -466,17 +496,14 @@ fn instruments(world: &World, ship: Entity, software: &ShipSoftware) -> Instrume
     }
 }
 
-pub fn visual(world: &World, entity: Entity) -> Option<ShipVisual> {
+pub fn visual(world: &World, entity: Entity, cache: &DeviceReadings) -> Option<ShipVisual> {
     let design = &world.get::<ShipDesign>(entity)?.0;
     let thermal = &world.get::<hardware::ShipThermal>(entity)?.0;
     let mut engines = Vec::new();
     let mut turrets = Vec::new();
-    for (descriptor, status) in design
-        .device_catalogue
-        .iter()
-        .zip(hardware::device_readings(world, entity)?)
-    {
-        match (descriptor.kind.clone(), status.reading) {
+    let readings = cache.get(world, entity)?;
+    for (descriptor, status) in design.device_catalogue.iter().zip(readings.iter()) {
+        match (descriptor.kind.clone(), status.reading.clone()) {
             (
                 DeviceKind::Engine {
                     thrust_n: maximum, ..
@@ -539,6 +566,42 @@ pub fn slip_readiness(world: &World, entity: Entity) -> f64 {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shared_readings_preserve_instruments_and_refresh_between_batches() {
+        let account = osg_model::Id::new();
+        let mut app = super::super::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let entity = world
+            .query_filtered::<Entity, With<super::super::vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        super::super::session::prepare_publication(world);
+        let cache = world.resource::<DeviceReadings>().clone();
+        let original = cache.get(world, entity).unwrap();
+        for instruments in [false, true] {
+            let shared = ship(world, entity, instruments, &cache).unwrap();
+            let fresh = ship(world, entity, instruments, &DeviceReadings::default()).unwrap();
+            assert_eq!(
+                postcard::to_stdvec(&shared).unwrap(),
+                postcard::to_stdvec(&fresh).unwrap()
+            );
+            assert_eq!(shared.instruments.is_some(), instruments);
+        }
+        let _ = visual(world, entity, &cache).unwrap();
+        assert!(Arc::ptr_eq(&original, &cache.get(world, entity).unwrap()));
+        world.get_mut::<hardware::SensorRange>(entity).unwrap().0 = 1234.0;
+        super::super::session::prepare_publication(world);
+        let refreshed = world
+            .resource::<DeviceReadings>()
+            .get(world, entity)
+            .unwrap();
+        assert!(!Arc::ptr_eq(&original, &refreshed));
+        assert_eq!(
+            format!("{refreshed:?}"),
+            format!("{:?}", hardware::device_readings(world, entity).unwrap())
+        );
+    }
+
+    #[test]
     fn manual_flight_keeps_device_telemetry_valid_after_sustained_power_use() {
         let account = osg_model::Id::new();
         let mut app = super::super::provision(&[account], None, None).unwrap();
@@ -585,6 +648,8 @@ mod tests {
                     });
             }
             app.update();
+            super::super::infrastructure::publish_navigation(app.world_mut());
+            super::super::session::prepare_publication(app.world_mut());
             let frame = super::super::session::frame(app.world_mut(), session).unwrap();
             assert_eq!(frame.presentation.ships.len(), 1);
             super::super::session::prune_events(app.world_mut());

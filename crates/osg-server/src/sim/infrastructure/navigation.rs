@@ -2,8 +2,8 @@ use crate::sim::{identity, ownership, physics, precision, registry, spatial, tra
 use bevy::{math::DVec3, prelude::*};
 use osg_model::*;
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::Arc,
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
+    sync::{Arc, Mutex},
 };
 
 #[derive(Resource)]
@@ -11,15 +11,63 @@ pub struct NavigationPublication {
     pub directory: Arc<InhabitedDirectory>,
     pub revision: u64,
     pub beacons: BTreeMap<Id, NavigationBeacon>,
+    by_system: BTreeMap<Id, Vec<Id>>,
     hash: [u8; 32],
     retained_assets: VecDeque<[u8; 32]>,
 }
 
+type SelectionKey = (Vec<Id>, Vec<Id>);
+
+#[derive(Resource, Default)]
+struct NavigationQueries {
+    membership: Mutex<HashMap<GalacticPosition, Arc<Vec<Id>>>>,
+    selections: Mutex<HashMap<SelectionKey, Arc<NavigationSnapshot>>>,
+}
+
+impl NavigationQueries {
+    fn systems_at(&self, world: &World, position: GalacticPosition) -> Arc<Vec<Id>> {
+        if let Some(systems) = self.membership.lock().unwrap().get(&position) {
+            #[cfg(test)]
+            crate::sim::diagnostics::samples::count("navigation.membership_hits", 1);
+            return systems.clone();
+        }
+        let _profile = crate::sim::diagnostics::ProfileScope::new("navigation.resolve_membership");
+        #[cfg(test)]
+        crate::sim::diagnostics::samples::count("navigation.membership_resolutions", 1);
+        let universe = &world.resource::<registry::UniverseRegistry>().universe;
+        let containing = world
+            .get_resource::<crate::sim::orrery::activity::ActiveSystems>()
+            .map_or_else(
+                || universe.containing_segment(position, DVec3::ZERO),
+                |active| active.systems_at(universe, position),
+            );
+        let mut systems: Vec<_> = containing
+            .into_iter()
+            .map(|index| Id(universe.systems()[index].id))
+            .collect();
+        systems.sort_unstable();
+        systems.dedup();
+        let systems = Arc::new(systems);
+        self.membership
+            .lock()
+            .unwrap()
+            .insert(position, systems.clone());
+        systems
+    }
+}
+
+/// Start a new navigation publication batch, including when simulation is paused.
+fn begin_publication(world: &mut World) {
+    world.init_resource::<NavigationQueries>();
+    let mut queries = world.resource_mut::<NavigationQueries>();
+    queries.membership.get_mut().unwrap().clear();
+    queries.selections.get_mut().unwrap().clear();
+}
+
+/// Begin a new publication batch and publish current beacon state. Call before
+/// display updates and session preparation, even when simulation is paused.
 pub fn publish_navigation(world: &mut World) {
-    let universe = world
-        .resource::<registry::UniverseRegistry>()
-        .universe
-        .clone();
+    begin_publication(world);
     let mut inhabited = BTreeSet::new();
     let mut votes: BTreeMap<Id, (usize, BTreeMap<Id, usize>)> = BTreeMap::new();
     let beacons: BTreeMap<_, _> = world
@@ -38,18 +86,11 @@ pub fn publish_navigation(world: &mut World) {
         .filter(|(_, iff, ..)| iff.0.enabled)
         .map(
             |(id, iff, pose, velocity, angular, body, docking, navigation, owner)| {
-                let containing = world
-                    .get_resource::<crate::sim::orrery::activity::ActiveSystems>()
-                    .map_or_else(
-                        || universe.containing_segment(pose.translation_um, DVec3::ZERO),
-                        |active| active.systems_at(&universe, pose.translation_um),
-                    );
-                let mut systems: Vec<_> = containing
-                    .into_iter()
-                    .map(|index| Id(universe.systems()[index].id))
-                    .collect();
-                systems.sort_unstable();
-                systems.dedup();
+                let systems = world
+                    .resource::<NavigationQueries>()
+                    .systems_at(world, pose.translation_um)
+                    .as_ref()
+                    .clone();
                 inhabited.extend(systems.iter().copied());
                 let directory = &world.resource::<ownership::Directory>().0;
                 let organization = owner.and_then(|owner| {
@@ -157,6 +198,7 @@ pub fn publish_navigation(world: &mut World) {
     let revision = previous.as_ref().map_or(1, |old| {
         old.revision + u64::from(topology_changed || membership_changed)
     });
+    let by_system = index_beacons(&beacons);
     world.insert_resource(NavigationPublication {
         directory: if membership_changed {
             Arc::new(directory)
@@ -165,9 +207,36 @@ pub fn publish_navigation(world: &mut World) {
         },
         revision,
         beacons,
+        by_system,
         hash,
         retained_assets,
     });
+}
+
+fn index_beacons(beacons: &BTreeMap<Id, NavigationBeacon>) -> BTreeMap<Id, Vec<Id>> {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("navigation.index_beacons");
+    let mut by_system: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
+    for (&id, beacon) in beacons {
+        for &system in &beacon.systems {
+            let ids = by_system.entry(system).or_default();
+            if ids.last() != Some(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    by_system
+}
+
+fn beacons_in_systems(
+    publication: &NavigationPublication,
+    systems: impl IntoIterator<Item = Id>,
+) -> BTreeSet<Id> {
+    systems
+        .into_iter()
+        .filter_map(|system| publication.by_system.get(&system))
+        .flatten()
+        .copied()
+        .collect()
 }
 
 pub fn navigation_snapshot(
@@ -181,23 +250,17 @@ pub fn navigation_snapshot(
         publish_navigation(world);
     }
     let publication = world.resource::<NavigationPublication>();
-    let universe = &world.resource::<registry::UniverseRegistry>().universe;
+    let queries = world.resource::<NavigationQueries>();
     let mut nearby_systems = BTreeSet::new();
-    for position in views
+    let positions: HashSet<_> = views
         .iter()
         .map(|view| view.origin)
         .chain(ships.iter().filter_map(|ship| {
-            world
-                .get::<precision::PreciseTransform>(*ship)
-                .map(|pose| pose.translation_um)
+            crate::sim::session::ship_pose(world, *ship).map(|pose| pose.position)
         }))
-    {
-        nearby_systems.extend(
-            universe
-                .containing_segment(position, DVec3::ZERO)
-                .into_iter()
-                .map(|index| Id(universe.systems()[index].id)),
-        );
+        .collect();
+    for position in positions {
+        nearby_systems.extend(queries.systems_at(world, position).iter().copied());
     }
     let mut targets = BTreeSet::new();
     for &ship in ships {
@@ -210,39 +273,399 @@ pub fn navigation_snapshot(
                     targets.insert(*id);
                 }
                 Directive::SlipToSystem(system) => {
-                    targets.extend(
-                        publication
-                            .beacons
-                            .values()
-                            .filter(|beacon| beacon.systems.contains(system))
-                            .map(|beacon| beacon.id),
-                    );
+                    targets.extend(beacons_in_systems(publication, [*system]));
                 }
             }
         }
     }
+    let _profile = crate::sim::diagnostics::ProfileScope::new("navigation.select_beacons");
+    let key = (
+        nearby_systems.iter().copied().collect(),
+        targets.iter().copied().collect(),
+    );
+    if let Some(snapshot) = queries.selections.lock().unwrap().get(&key) {
+        #[cfg(test)]
+        crate::sim::diagnostics::samples::count("navigation.selection_hits", 1);
+        return snapshot.clone();
+    }
+    #[cfg(test)]
+    crate::sim::diagnostics::samples::count("navigation.selection_builds", 1);
     let route_targets = targets.iter().filter_map(|id| publication.beacons.get(id));
-    let local = publication.beacons.values().filter(|beacon| {
-        !targets.contains(&beacon.id)
-            && beacon
-                .systems
-                .iter()
-                .any(|system| nearby_systems.contains(system))
-    });
+    let local_ids = beacons_in_systems(publication, nearby_systems);
+    let local = local_ids
+        .difference(&targets)
+        .filter_map(|id| publication.beacons.get(id));
     let beacons = route_targets
         .chain(local)
         .take(osg_protocol::navigation::MAX_LIVE_BEACONS)
         .cloned()
         .collect();
-    Arc::new(NavigationSnapshot {
+    let snapshot = Arc::new(NavigationSnapshot {
         directory: Some(publication.hash),
         beacons,
-    })
+    });
+    queries
+        .selections
+        .lock()
+        .unwrap()
+        .insert(key, snapshot.clone());
+    snapshot
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn world() -> World {
+        let mut world = World::new();
+        world.insert_resource(registry::UniverseRegistry {
+            universe: Arc::new(
+                osg_universe::universe::Universe::init(osg_universe::example_config()).unwrap(),
+            ),
+        });
+        world.init_resource::<identity::AppearanceAssets>();
+        world.init_resource::<ownership::Directory>();
+        publish_navigation(&mut world);
+        world
+    }
+
+    #[test]
+    fn indexed_selection_matches_scan_order_and_limit_and_shares_snapshots() {
+        let mut world = world();
+        let universe = &world.resource::<registry::UniverseRegistry>().universe;
+        let origin = universe.systems()[0].position;
+        let local_system = Id(universe.systems()[0].id);
+        let remote_system = Id::new();
+        let mut publication = world.resource_mut::<NavigationPublication>();
+        for i in 1..=1200_u128 {
+            let id = Id(i.to_be_bytes());
+            publication.beacons.insert(
+                id,
+                NavigationBeacon {
+                    id,
+                    systems: if i % 3 == 0 {
+                        vec![local_system, remote_system]
+                    } else {
+                        vec![local_system]
+                    },
+                    name: "Beacon".into(),
+                    pose: Pose::default(),
+                    radius_m: 1.0,
+                    docking: true,
+                    navigation: true,
+                },
+            );
+        }
+        publication.by_system = index_beacons(&publication.beacons);
+        let targets: BTreeSet<_> = publication
+            .beacons
+            .values()
+            .filter(|beacon| beacon.systems.contains(&remote_system))
+            .map(|beacon| beacon.id)
+            .chain([Id(1199_u128.to_be_bytes())])
+            .collect();
+        let expected: Vec<_> = targets
+            .iter()
+            .copied()
+            .chain(
+                publication
+                    .beacons
+                    .values()
+                    .filter(|beacon| {
+                        !targets.contains(&beacon.id) && beacon.systems.contains(&local_system)
+                    })
+                    .map(|beacon| beacon.id),
+            )
+            .take(osg_protocol::navigation::MAX_LIVE_BEACONS)
+            .collect();
+        let ship = world
+            .spawn((
+                precision::PreciseTransform {
+                    translation_um: origin,
+                    ..Default::default()
+                },
+                travel::Travel(osg_model::travel::AutopilotState {
+                    itinerary: [
+                        osg_model::travel::Directive::SlipToSystem(remote_system),
+                        osg_model::travel::Directive::DockAt(Id(1199_u128.to_be_bytes())),
+                    ]
+                    .into_iter()
+                    .map(|directive| osg_model::travel::ItineraryEntry {
+                        directive,
+                        label: String::new(),
+                        max_loss_ppm: 0.0,
+                        fuel_allowance_kg: 0.0,
+                        estimated_duration_ticks: None,
+                    })
+                    .collect(),
+                    ..Default::default()
+                }),
+            ))
+            .id();
+        let views = [
+            ViewState {
+                focused_ship: None,
+                origin,
+                id: 1,
+                revision: 0,
+            },
+            ViewState {
+                focused_ship: None,
+                origin,
+                id: 2,
+                revision: 0,
+            },
+        ];
+        let snapshot = navigation_snapshot(&mut world, &views, &[ship]);
+        assert_eq!(
+            snapshot
+                .beacons
+                .iter()
+                .map(|beacon| beacon.id)
+                .collect::<Vec<_>>(),
+            expected
+        );
+        let second = navigation_snapshot(&mut world, &views, &[ship]);
+        assert!(Arc::ptr_eq(&snapshot, &second));
+        assert_eq!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .len(),
+            1
+        );
+        begin_publication(&mut world);
+        assert!(!Arc::ptr_eq(
+            &snapshot,
+            &navigation_snapshot(&mut world, &views, &[ship])
+        ));
+    }
+
+    #[test]
+    fn membership_matches_exact_query_and_caches_empty_positions() {
+        let mut world = world();
+        let universe = world
+            .resource::<registry::UniverseRegistry>()
+            .universe
+            .clone();
+        let definition = universe.resolve_index(0).unwrap();
+        for scale in [0.0, 0.999999, 1.0, 1.000001, 1000.0] {
+            let position = definition
+                .solver
+                .anchor
+                .offset_by(DVec3::X * definition.influence * scale);
+            let mut expected: Vec<_> = universe
+                .containing_segment(position, DVec3::ZERO)
+                .into_iter()
+                .map(|index| Id(universe.systems()[index].id))
+                .collect();
+            expected.sort_unstable();
+            expected.dedup();
+            let queries = world.resource::<NavigationQueries>();
+            let actual = queries.systems_at(&world, position);
+            assert_eq!(*actual, expected);
+            assert!(Arc::ptr_eq(&actual, &queries.systems_at(&world, position)));
+        }
+        publish_navigation(&mut world);
+        assert!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn cached_regions_preserve_overlap_and_exact_boundaries_after_movement() {
+        use crate::sim::orrery::activity::{ActiveSystems, activate};
+        bevy::tasks::ComputeTaskPool::get_or_init(bevy::tasks::TaskPool::new);
+        let first = osg_universe::example_config();
+        let mut second = first.clone();
+        second.key = "overlapping-system".into();
+        second.name = "Overlapping system".into();
+        let universe = Arc::new(
+            osg_universe::universe::Universe::from_configs(vec![first, second], 1e-8).unwrap(),
+        );
+        let origin = universe.systems()[0].position;
+        let influence = universe.resolve_index(0).unwrap().influence;
+        let mut app = App::new();
+        app.insert_resource(crate::sim::orrery::Universe(universe.clone()))
+            .insert_resource(registry::UniverseRegistry {
+                universe: universe.clone(),
+            })
+            .init_resource::<Time<Fixed>>()
+            .init_resource::<ActiveSystems>()
+            .init_resource::<identity::AppearanceAssets>()
+            .init_resource::<ownership::Directory>()
+            .add_systems(Update, activate);
+        let entity = app
+            .world_mut()
+            .spawn((
+                precision::PreciseTransform {
+                    translation_um: origin,
+                    ..Default::default()
+                },
+                spatial::SpatialBody {
+                    radius_m: 1.0,
+                    occludes: false,
+                },
+            ))
+            .id();
+        for scale in [0.0, 0.999999, 1.000001, 1000.0, 0.0] {
+            let position = origin.offset_by(DVec3::X * influence * scale);
+            app.world_mut()
+                .get_mut::<precision::PreciseTransform>(entity)
+                .unwrap()
+                .translation_um = position;
+            app.update();
+            let world = app.world_mut();
+            publish_navigation(world);
+            let actual = world
+                .resource::<NavigationQueries>()
+                .systems_at(world, position);
+            let expected: BTreeSet<_> = universe
+                .containing_segment(position, DVec3::ZERO)
+                .into_iter()
+                .map(|index| Id(universe.systems()[index].id))
+                .collect();
+            assert_eq!(actual.iter().copied().collect::<BTreeSet<_>>(), expected);
+            if scale == 0.0 {
+                assert_eq!(actual.len(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn membership_uses_resolved_docked_and_transit_positions_between_batches() {
+        let mut world = world();
+        world.init_resource::<identity::IdentityIndex>();
+        let origin = world
+            .resource::<registry::UniverseRegistry>()
+            .universe
+            .systems()[0]
+            .position;
+        let stale = origin.offset_by(DVec3::X * 1e20);
+        let host_id = Id::new();
+        let host = world
+            .spawn((
+                identity::Identity(host_id),
+                precision::PreciseTransform {
+                    translation_um: origin,
+                    ..Default::default()
+                },
+                travel::DockingBays(vec![travel::Bay {
+                    centre_m: [0.0; 3],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    radius_m: 100.0,
+                    mass_capacity_kg: 1e12,
+                    public: true,
+                    allowed: BTreeSet::new(),
+                    reservation: None,
+                }]),
+            ))
+            .id();
+        let ship = world
+            .spawn((
+                precision::PreciseTransform {
+                    translation_um: stale,
+                    ..Default::default()
+                },
+                travel::PresenceState(osg_model::travel::Presence::Docked {
+                    host: host_id,
+                    bay: 0,
+                }),
+            ))
+            .id();
+        navigation_snapshot(&mut world, &[], &[ship]);
+        assert!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .contains_key(&origin)
+        );
+        assert!(
+            !world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .contains_key(&stale)
+        );
+
+        world.entity_mut(ship).remove::<travel::PresenceState>();
+        world.entity_mut(ship).insert(travel::Transit {
+            origin,
+            position: origin,
+            destination: stale,
+            departed: 0,
+            advanced_tick: 0,
+            direction: [1.0, 0.0, 0.0],
+            speed_ly_s: 1.0,
+            retained_velocity: [0.0; 3],
+            requested_delta_v: [0.0; 3],
+            departure_mass_kg: 1.0,
+            distance_ly: 0.0,
+            consumed_fuel_g: 0,
+            navigation_beacon: None,
+            beacon_lost: false,
+            nominal_direction: [1.0, 0.0, 0.0],
+            variance_m2: 0.0,
+        });
+        publish_navigation(&mut world);
+        navigation_snapshot(&mut world, &[], &[ship]);
+        assert!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .contains_key(&origin)
+        );
+        world.get_mut::<travel::Transit>(ship).unwrap().position = stale;
+        publish_navigation(&mut world);
+        navigation_snapshot(&mut world, &[], &[ship]);
+        assert!(
+            !world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .contains_key(&origin)
+        );
+        assert!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .contains_key(&stale)
+        );
+
+        world.entity_mut(ship).remove::<travel::Transit>();
+        world
+            .entity_mut(ship)
+            .insert(travel::PresenceState(osg_model::travel::Presence::Docked {
+                host: host_id,
+                bay: 0,
+            }));
+        world.despawn(host);
+        publish_navigation(&mut world);
+        navigation_snapshot(&mut world, &[], &[ship]);
+        assert!(
+            world
+                .resource::<NavigationQueries>()
+                .membership
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn membership_follows_equipment_broadcasts_and_actual_influence() {
