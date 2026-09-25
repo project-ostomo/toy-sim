@@ -29,32 +29,8 @@ fn samples(previous: Option<&Pose>, current: &Pose) -> (PoseSamples, DisplayPose
     )
 }
 
-pub(super) fn reset(
-    mut commands: Commands,
-    playback: Res<BufferedPlayback>,
-    mut replication: ResMut<Replication>,
-    mut clock: ResMut<RenderTime>,
-    mut session: ResMut<SessionInfo>,
-    members: Query<Entity, With<WorldMember>>,
-) {
-    if session.world == playback.0.world {
-        return;
-    }
-    for entity in &members {
-        commands.entity(entity).despawn();
-    }
-    *replication = Replication::default();
-    *clock = RenderTime::default();
-    *session = SessionInfo {
-        world: playback.0.world,
-        generation: session.generation + 1,
-        status: std::mem::take(&mut session.status),
-        ..default()
-    };
-    commands.trigger(SessionReset);
-}
-
-pub(super) fn apply(
+pub fn apply(
+    session: Res<GameSession>,
     mut commands: Commands,
     mut playback: ResMut<BufferedPlayback>,
     mut replication: ResMut<Replication>,
@@ -65,12 +41,20 @@ pub(super) fn apply(
     mut feedback: ResMut<CommandState>,
     mut chat: ResMut<ChatState>,
     mut slip: ResMut<SlipEffects>,
+    mut screens: ResMut<ScreenFrames>,
     old_samples: Query<(&SpatialInstance, &PoseSamples, Option<&VisualSamples>)>,
     old_optical: Query<&Optical>,
     old_owned: Query<&OwnedShip>,
 ) {
     let playback = &mut playback.0;
-    let advanced = playback.tick().is_some();
+    if playback.world != Some(session.key.world) {
+        return;
+    }
+    let advanced = if replication.applied != Some(session.key) {
+        playback.apply_first().is_some()
+    } else {
+        playback.tick().is_some()
+    };
     playback_state.target_frames = playback.target_frames;
     playback_state.underruns = playback.underruns;
     if !advanced {
@@ -78,7 +62,11 @@ pub(super) fn apply(
     }
     let sequence = playback.frame().unwrap().sequence;
     let publications = playback.take_publications(sequence);
+    for update in &publications.screens {
+        screens.0.insert((update.ship, update.slot), update.clone());
+    }
     let frame = playback.frame().unwrap();
+    replication.applied = Some(session.key);
     clock.previous_ns = if info.sequence == 0 {
         frame.sim_time_ns
     } else {
@@ -125,7 +113,8 @@ pub(super) fn apply(
                 .keys()
                 .copied()
                 .collect();
-            if let Ok(universe) = crate::ui::celestials::shared_universe() {
+            {
+                let universe = &session.universe;
                 let navigation = std::sync::Arc::make_mut(&mut navigation_state.navigation);
                 for id in owned {
                     if let Some(index) = universe.system_index(id.0) {
@@ -456,24 +445,29 @@ mod tests {
 
     fn app() -> App {
         let mut app = App::new();
-        app.add_plugins(MinimalPlugins)
+        app.add_plugins((MinimalPlugins, bevy::state::app::StatesPlugin))
             .insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO))
             .init_resource::<Replication>()
             .init_resource::<RenderTime>()
             .init_resource::<SlipEffects>()
             .init_resource::<SessionInfo>()
+            .init_resource::<Bootstrap>()
+            .init_resource::<SessionEvents>()
+            .init_resource::<Outgoing>()
             .init_resource::<NavigationState>()
             .init_resource::<PlaybackState>()
+            .init_resource::<ScreenFrames>()
+            .add_observer(reset_resource::<ScreenFrames>)
             .init_resource::<CommandState>()
             .init_resource::<ChatState>()
-            .add_observer(domains::reset_navigation)
+            .add_observer(reset_resource::<NavigationState>)
             .add_observer(reset_resource::<PlaybackState>)
             .add_observer(reset_resource::<CommandState>)
             .add_observer(reset_resource::<ChatState>)
             .insert_resource(BufferedPlayback(Playback::new(true)))
-            .add_systems(FixedUpdate, (reset, apply).chain())
-            .add_systems(Update, interpolate);
+            .add_systems(Update, interpolate.in_set(ClientSystems::Gameplay));
+        lifecycle::install(&mut app);
         app.update();
         app
     }
@@ -481,14 +475,82 @@ mod tests {
     fn step(app: &mut App, seconds: f64, frame: Option<Frame>) {
         let elapsed = app.world().resource::<Time<Real>>().elapsed();
         let delta = Duration::from_secs_f64(seconds) - elapsed;
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(delta));
         if let Some(frame) = frame {
+            if app
+                .world()
+                .resource::<Bootstrap>()
+                .key
+                .is_none_or(|key| key.world != frame.world)
+            {
+                app.world_mut()
+                    .resource_mut::<Bootstrap>()
+                    .prepared(frame.world);
+                app.world_mut()
+                    .resource_mut::<NextState<ClientPhase>>()
+                    .set(ClientPhase::Loading);
+                app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+                app.update();
+            }
             app.world_mut()
                 .resource_mut::<BufferedPlayback>()
                 .0
                 .receive(frame);
         }
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(delta));
         app.update();
+        // Activation follows replication at the next normal state transition.
+        app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
+        app.update();
+    }
+
+    #[test]
+    fn screen_publications_update_and_clear_with_the_session() {
+        let mut app = app();
+        let ship = Id([4; 16]);
+        let group = Id([2; 16]);
+        let mut frame = snapshot(1, group, 3, 0.);
+        frame.screens.push(ScreenUpdate {
+            ship,
+            slot: 0,
+            revision: 7,
+            tick: 1,
+            frame: Some(drawing::ScreenImage {
+                screen_id: 0,
+                background: [0; 3],
+                width: 512,
+                height: 256,
+                draws: Vec::new(),
+                buttons: Default::default(),
+            }),
+            error: None,
+        });
+        step(&mut app, 0.1, Some(frame));
+        assert!(
+            app.world().resource::<ScreenFrames>().0[&(ship, 0)]
+                .frame
+                .is_some()
+        );
+
+        let mut frame = snapshot(2, group, 3, 0.);
+        frame.screens.push(ScreenUpdate {
+            ship,
+            slot: 0,
+            revision: 8,
+            tick: 2,
+            frame: None,
+            error: Some("Display unavailable".into()),
+        });
+        step(&mut app, 0.2, Some(frame));
+        assert!(
+            app.world().resource::<ScreenFrames>().0[&(ship, 0)]
+                .frame
+                .is_none()
+        );
+
+        let mut frame = snapshot(1, group, 3, 0.);
+        frame.world = Id([9; 16]);
+        step(&mut app, 0.3, Some(frame));
+        assert!(app.world().resource::<ScreenFrames>().0.is_empty());
     }
 
     #[test]
@@ -546,40 +608,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["Message 2", "Message 3"]
         );
-    }
-
-    #[test]
-    fn industry_queries_ignore_stale_revisions_and_clear_on_close() {
-        let mut industry = IndustryState::default();
-        industry.subscribe(Some(industry::IndustryQuery {
-            directory: true,
-            catalogue: true,
-            ..Default::default()
-        }));
-        let revision = industry.interest.as_ref().unwrap().revision;
-        industry.apply(industry::IndustrySnapshot {
-            subscription_revision: revision,
-            catalogue: Some(industry::IndustryCatalogue {
-                revision: [7; 32],
-                recipes: Vec::new(),
-                blueprints: Vec::new(),
-            }),
-            ..Default::default()
-        });
-        assert!(industry.ready());
-        industry.apply(industry::IndustrySnapshot {
-            subscription_revision: revision + 1,
-            error: Some("Stale response".into()),
-            ..Default::default()
-        });
-        assert!(industry.snapshot.error.is_none());
-        assert_eq!(
-            industry.snapshot.catalogue.as_ref().unwrap().revision,
-            [7; 32]
-        );
-        industry.subscribe(None);
-        assert!(industry.interest.is_none());
-        assert_eq!(industry.snapshot, Default::default());
     }
 
     #[test]

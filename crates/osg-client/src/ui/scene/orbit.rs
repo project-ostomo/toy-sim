@@ -15,7 +15,7 @@ use osg_model::*;
 use osg_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 
 #[derive(Component)]
-pub(in crate::ui) struct ViewOptions {
+pub struct ViewOptions {
     pub enabled: bool,
     pub instruments: Instruments,
     horizon: f64,
@@ -39,19 +39,18 @@ impl Default for ViewOptions {
     }
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_systems(
         Update,
         refresh_views
             .in_set(PresentationSet::Views)
-            .after(super::camera::setup_views)
             .before(super::camera::update_views),
     )
     .add_systems(
         EguiPrimaryContextPass,
         (
             toggle.in_set(crate::ui::input::GameplayInput::Keyboard),
-            draw_coasts,
+            draw_coasts.in_set(crate::state::ClientSystems::Gameplay),
         )
             .chain(),
     );

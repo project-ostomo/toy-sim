@@ -18,7 +18,8 @@ impl Fixture {
         world.init_resource::<identity::IdentityIndex>();
         world.insert_resource(ownership::Directory(OwnershipDirectory::default()));
         world.insert_resource(vessel::ShipCatalogue(Catalogue::builtin()));
-        world.init_resource::<InventoryDirectory>();
+        identity::initialize(&mut world, &[id(1), id(2)]);
+        install(&mut world);
 
         let mut fixture = Self {
             world,
@@ -34,6 +35,9 @@ impl Fixture {
 
     fn spawn(&mut self, number: u128, owner: Id, permissions: &[Permission]) -> Entity {
         let inventory = Inventory::empty(&self.world.resource::<vessel::ShipCatalogue>().0);
+        let design = osg_ships::industry::starter_ship()
+            .compile(&self.world.resource::<vessel::ShipCatalogue>().0)
+            .unwrap();
         let entity = self
             .world
             .spawn((
@@ -50,6 +54,8 @@ impl Fixture {
                     grants: Vec::new(),
                 }),
                 hardware::Hull(100.),
+                vessel::ShipDesign(Arc::new(design)),
+                hardware::PartDevices(Vec::new()),
                 hardware::ShipInventory(inventory),
                 travel::PresenceState(Presence::Space),
             ))
@@ -69,22 +75,12 @@ impl Fixture {
         ));
     }
 
-    fn interest(&self) -> IndustryQuery {
-        IndustryQuery {
-            revision: 7,
-            directory: true,
-            hangar: Some(HangarQuery {
-                ship: self.world.get::<identity::Identity>(self.ship).unwrap().0,
-                after: None,
-            }),
-            ..Default::default()
-        }
+    fn focused(&self) -> Id {
+        self.world.get::<identity::Identity>(self.ship).unwrap().0
     }
 
-    fn publish(&mut self, interest: &IndustryQuery) -> IndustrySnapshot {
-        refresh(&mut self.world);
-        let snapshot = snapshot(&self.world, self.account, interest);
-        snapshot
+    fn hangar(&mut self, ship: Id, after: Option<Id>) -> Option<HangarView> {
+        read_hangar(&mut self.world, self.account, ship, after)
     }
 }
 
@@ -103,11 +99,11 @@ fn hangar_pages_local_authorized_hulls_beyond_global_directory_and_telemetry_lim
         fixture.dock(hull, fixture.host);
     }
 
-    let mut interest = fixture.interest();
-    let first = fixture.publish(&interest);
-    assert_eq!(first.directory.len(), MAX_DIRECTORY_ENTRIES);
-    assert!(first.directory.iter().all(|entry| entry.entity < id(1000)));
-    let hangar = first.hangar.unwrap();
+    let directory = read_directory(&mut fixture.world, fixture.account, None, 128).unwrap();
+    assert_eq!(directory.items.len(), 128);
+    assert!(directory.items.iter().all(|entry| entry.entity < id(1000)));
+    let focused = fixture.focused();
+    let hangar = fixture.hangar(focused, None).unwrap();
     assert_eq!(hangar.host, id(10));
     assert!(hangar.host_inventory.is_none());
     assert_eq!(hangar.ships.len(), MAX_DIRECTORY_ENTRIES);
@@ -121,10 +117,7 @@ fn hangar_pages_local_authorized_hulls_beyond_global_directory_and_telemetry_lim
     );
     assert_eq!(hangar.next, Some(id(1127)));
 
-    interest.hangar.as_mut().unwrap().after = hangar.next;
-    let next = fixture.publish(&interest);
-    assert_eq!(first.directory, next.directory);
-    let hangar = next.hangar.unwrap();
+    let hangar = fixture.hangar(focused, hangar.next).unwrap();
     assert_eq!(hangar.ships.len(), 8);
     assert_eq!(hangar.ships.first().unwrap().inventory.entity, id(1128));
     assert_eq!(hangar.ships.last().unwrap().inventory.entity, id(1135));
@@ -145,8 +138,8 @@ fn hangar_separates_cargo_access_from_focus_and_rechecks_revoked_permissions() {
     }
     let hidden = fixture.spawn(1005, id(2), &[]);
     fixture.dock(hidden, fixture.host);
-    let interest = fixture.interest();
-    let before = fixture.publish(&interest).hangar.unwrap();
+    let focused = fixture.focused();
+    let before = fixture.hangar(focused, None).unwrap();
     assert_eq!(before.ships.len(), 5);
     assert!(before.host_inventory.is_none());
     let facts: Vec<_> = before
@@ -185,7 +178,7 @@ fn hangar_separates_cargo_access_from_focus_and_rechecks_revoked_permissions() {
             public: BTreeSet::from([Permission::TransferCargo]),
             grants: Vec::new(),
         }));
-    let changed = fixture.publish(&interest).hangar.unwrap();
+    let changed = fixture.hangar(focused, None).unwrap();
     assert!(
         changed
             .ships
@@ -200,8 +193,7 @@ fn hangar_separates_cargo_access_from_focus_and_rechecks_revoked_permissions() {
         .insert(ownership::AssetAccess(AccessPolicy::default()));
     assert!(
         fixture
-            .publish(&interest)
-            .hangar
+            .hangar(focused, None)
             .unwrap()
             .host_inventory
             .is_none()
@@ -213,7 +205,7 @@ fn hangar_separates_cargo_access_from_focus_and_rechecks_revoked_permissions() {
             grants: Vec::new(),
         }),
     ));
-    assert!(fixture.publish(&interest).hangar.is_none());
+    assert!(fixture.hangar(focused, None).is_none());
 }
 
 #[test]
@@ -226,8 +218,8 @@ fn hangar_tracks_current_host_and_excludes_departed_destroyed_and_nested_tenants
     let dead = fixture.spawn(1003, fixture.account, &[]);
     fixture.dock(dead, fixture.host);
     fixture.world.get_mut::<hardware::Hull>(dead).unwrap().0 = 0.;
-    let interest = fixture.interest();
-    let first = fixture.publish(&interest).hangar.unwrap();
+    let focused = fixture.focused();
+    let first = fixture.hangar(focused, None).unwrap();
     assert_eq!(
         first
             .ships
@@ -239,7 +231,7 @@ fn hangar_tracks_current_host_and_excludes_departed_destroyed_and_nested_tenants
 
     let other_host = fixture.spawn(11, fixture.account, &[]);
     fixture.dock(fixture.ship, other_host);
-    let moved = fixture.publish(&interest).hangar.unwrap();
+    let moved = fixture.hangar(focused, None).unwrap();
     assert_eq!(moved.host, id(11));
     assert_eq!(moved.ships.len(), 1);
     assert_eq!(moved.ships[0].inventory.entity, id(1000));
@@ -253,7 +245,7 @@ fn hangar_tracks_current_host_and_excludes_departed_destroyed_and_nested_tenants
         .world
         .entity_mut(fixture.ship)
         .insert(travel::PresenceState(Presence::Space));
-    assert!(fixture.publish(&interest).hangar.is_none());
+    assert!(fixture.hangar(focused, None).is_none());
 
     fixture
         .world
@@ -263,9 +255,8 @@ fn hangar_tracks_current_host_and_excludes_departed_destroyed_and_nested_tenants
         .world
         .entity_mut(carrier)
         .insert(travel::PresenceState(Presence::Space));
-    let mut carrier_interest = interest;
-    carrier_interest.hangar.as_mut().unwrap().ship = id(1001);
-    let carried = fixture.publish(&carrier_interest).hangar.unwrap();
+
+    let carried = fixture.hangar(id(1001), None).unwrap();
     assert_eq!(carried.host, id(1001));
     assert_eq!(carried.ships.len(), 1);
     assert_eq!(carried.ships[0].inventory.entity, id(1002));
@@ -274,11 +265,11 @@ fn hangar_tracks_current_host_and_excludes_departed_destroyed_and_nested_tenants
         .world
         .entity_mut(carrier)
         .insert(travel::PresenceState(Presence::Destroyed));
-    assert!(fixture.publish(&carrier_interest).hangar.is_none());
+    assert!(fixture.hangar(id(1001), None).is_none());
 }
 
 #[test]
-fn empty_in_space_carrier_publishes_its_fitted_hangar_and_accessible_cargo() {
+fn empty_in_space_carrier_returns_its_fitted_hangar_and_accessible_cargo() {
     let mut fixture = Fixture::new();
     let carrier = fixture.spawn(12, fixture.account, &[]);
     fixture
@@ -294,10 +285,9 @@ fn empty_in_space_carrier_publishes_its_fitted_hangar_and_accessible_cargo() {
             reservation: None,
         }]));
     assert!(fixture.world.get::<travel::StoredShips>(carrier).is_none());
-    let mut interest = fixture.interest();
-    interest.hangar.as_mut().unwrap().ship = id(12);
+    let focused = id(12);
 
-    let hangar = fixture.publish(&interest).hangar.unwrap();
+    let hangar = fixture.hangar(focused, None).unwrap();
     assert_eq!(hangar.ship, id(12));
     assert_eq!(hangar.host, id(12));
     assert_eq!(hangar.host_inventory.unwrap().entity, id(12));
@@ -310,5 +300,5 @@ fn empty_in_space_carrier_publishes_its_fitted_hangar_and_accessible_cargo() {
         .unwrap()
         .0
         .clear();
-    assert!(fixture.publish(&interest).hangar.is_none());
+    assert!(fixture.hangar(focused, None).is_none());
 }

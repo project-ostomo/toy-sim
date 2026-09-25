@@ -2,6 +2,7 @@ use crate::{EntityId, GalacticPosition, Id};
 use serde::{Deserialize, Serialize};
 
 pub mod slip;
+pub const MAX_DIRECTIVES: usize = 256;
 pub const DOCKING_CLEARANCE_M: f64 = 100.0;
 pub const DOCKING_SPEED_M_S: f64 = 10.0;
 pub const MAX_PREDICTION_SECONDS: f64 = 365.25 * 86_400.0;
@@ -112,9 +113,6 @@ impl FuelBudget {
 pub struct ItineraryEntry {
     pub directive: Directive,
     pub label: String,
-    pub max_loss_ppm: f64,
-    pub fuel_allowance_kg: f64,
-    pub estimated_duration_ticks: Option<u64>,
 }
 
 impl Directive {
@@ -131,7 +129,10 @@ pub enum FirmwarePhase {
     #[default]
     Idle,
     Planning,
-    Waiting { until: Option<u64>, why: String },
+    Waiting {
+        until: Option<u64>,
+        why: String,
+    },
     Charging,
     Transit,
     Maneuvering,
@@ -159,20 +160,6 @@ pub struct FirmwareStatus {
     pub planned_exotic_fuel_kg: f64,
     pub spent_exotic_fuel_kg: f64,
     pub markers: Vec<PlanMarker>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PlanningStage {
-    LoadingCatalogue,
-    BuildingGraph,
-    SearchingRoutes,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlanningProgress {
-    pub stage: PlanningStage,
-    pub completed: u32,
-    pub total: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -312,5 +299,4 @@ mod tests {
             );
         }
     }
-
 }

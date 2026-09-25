@@ -30,6 +30,7 @@ pub struct ShipPresentation {
     pub health: Option<ShipHealth>,
     pub execution: Option<ExecutionMetrics>,
     pub mass_kg: f64,
+    pub navigation_access: Option<[u8; 32]>,
     pub inertia_kg_m2: [f64; 9],
     pub control_rotation: [f64; 4],
     pub hull_heat_capacity_j: f64,

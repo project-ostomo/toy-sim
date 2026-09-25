@@ -7,343 +7,223 @@ impl Executor {
         system: Id,
         station: Option<&Beacon>,
         entry: &ItineraryEntry,
-        available: f64,
-    ) -> Result<(Option<Plan>, bool), i32> {
-        let mut assistance = vec![None];
-        let mut after = None;
-        loop {
-            let ProgramReply::Beacons(page) = query(&ProgramQuery::Beacons { after, limit: 64 })?
-            else {
-                return Err(abi::ERR_ARGUMENT);
-            };
-            for beacon in &page {
-                if beacon.system == Some(system) {
-                    assistance.push(Some(beacon.entity));
-                }
-            }
-            if page.len() < 64 {
-                break;
-            }
-            after = page.last().map(|beacon| beacon.entity);
+        fuel_limit: f64,
+        max_loss_ppm: f64,
+    ) -> Result<Option<Plan>, i32> {
+        if self.assistance.is_empty() {
+            self.assistance.push(None);
         }
-        let space = self.navigation_environment(pose)?;
-        let fuel_limit =
-            available.min((entry.fuel_allowance_kg - self.status.spent_exotic_fuel_kg).max(0.));
-        let max_loss_ppm = RiskBudget {
-            max_log_loss: slip::log_loss_from_ppm(entry.max_loss_ppm),
-            spent_log_loss: slip::log_loss_from_ppm(self.status.spent_loss_ppm),
-        }
-        .remaining_ppm();
-        let mut best: Option<Plan> = None;
-        let mut has_capture = false;
-        let mut affordable_capture = false;
-        let windows = [
-            0.,
-            30.,
-            120.,
-            self.wait_horizon * 0.25,
-            self.wait_horizon * 0.5,
-            self.wait_horizon,
-        ];
-
-        for wait in windows {
-            let ProgramReply::Orrery(bodies) = query(&ProgramQuery::OrrerySystem {
-                system,
-                after_seconds: wait,
+        if !self.beacons_loaded {
+            let ProgramReply::Beacons(page) = query(&ProgramQuery::Beacons {
+                after: self.beacon_after,
+                limit: 64,
             })?
             else {
                 return Err(abi::ERR_ARGUMENT);
             };
-            for body in bodies {
-                let Target::Destination(Destination::Relative {
-                    reference: Reference::Celestial(reference),
-                    ..
-                }) = body.reference
-                else {
-                    continue;
-                };
-                let radius = body.slip_exclusion_m;
-                if radius <= body.radius_m + self.own_radius {
-                    continue;
-                }
-                has_capture = true;
-                let minimum_distance =
-                    (body.pose.position.relative_to(pose.position).length() - radius).max(0.);
-                affordable_capture |=
-                    slip::exotic_fuel_kg(self.mass, minimum_distance / slip::LY_M) <= fuel_limit;
-                let destination_ref = Destination::Relative {
-                    reference: Reference::Celestial(reference),
-                    offset: GalacticPosition::ZERO,
-                    axes: Axes::Galactic,
-                };
-                let direction = body.pose.position.relative_to(pose.position);
-                let toward = station.map_or(DVec3::ZERO, |station| {
-                    station.pose.position.relative_to(body.pose.position)
-                });
-                let offsets = planner::aim_offsets(direction, toward, radius);
-                let departure_position = crate::local_guidance::outside_exclusions(
-                    pose.position,
-                    direction,
-                    &space,
-                    self.own_radius,
-                );
-                // Evaluate coasting into a future window and an active escape.
-                let mut departures = vec![(None, wait)];
-                if let Some(position) = departure_position {
-                    if position.relative_to(pose.position).length() > 1. {
-                        let velocity = space
-                            .obstacles
-                            .iter()
-                            .filter(|obstacle| obstacle.slip_exclusion_m > 0.)
-                            .min_by(|a, b| {
-                                let gap = |obstacle: &LocalObstacle| {
-                                    (position.relative_to(obstacle.pose.position).length()
-                                        - obstacle.slip_exclusion_m)
-                                        .abs()
-                                };
-                                gap(a).total_cmp(&gap(b))
-                            })
-                            .map_or(pose.velocity, |obstacle| obstacle.pose.velocity);
-                        let maneuver = Pose {
-                            position,
-                            velocity,
-                            ..pose.clone()
-                        };
-                        let seconds = self.transfer_estimate(&contact(pose, &maneuver)).0;
-                        if seconds.is_finite() && seconds < MAX_PREDICTION_SECONDS * 0.5 {
-                            departures.push((Some(maneuver), wait.max(seconds)));
-                        }
-                    }
-                }
-                for (maneuver, clearing_s) in departures {
-                    for &navigation_beacon in &assistance {
-                        for offset in offsets {
-                            // Compare a coast arrival and a paid match. The
-                            // latter may be fuel or distance limited.
-                            {
-                                let mut departure_s = clearing_s;
-                                let mut duration_s = slip::flight_seconds(
-                                    direction.length(),
-                                    navigation_beacon.is_some(),
-                                );
-                                let mut candidate = None;
-                                for _ in 0..3 {
-                                    let arrival_s = departure_s + duration_s;
-                                    if arrival_s > MAX_PREDICTION_SECONDS {
-                                        break;
-                                    }
-                                    let future_body = resolve_at(&destination_ref, arrival_s)?;
-                                    let future_station = station
-                                        .map(|station| {
-                                            resolve_at(
-                                                &Destination::Beacon(station.entity),
-                                                arrival_s,
-                                            )
-                                        })
-                                        .transpose()?;
-                                    let origin = maneuver.as_ref().map_or_else(
-                                        || {
-                                            pose.position.offset_by(
-                                                DVec3::from_array(pose.velocity) * departure_s,
-                                            )
-                                        },
-                                        |maneuver| {
-                                            maneuver.position.offset_by(
-                                                DVec3::from_array(maneuver.velocity) * departure_s,
-                                            )
-                                        },
-                                    );
-                                    let offset =
-                                        future_station.as_ref().map_or(offset, |station| {
-                                            let ray = future_body
-                                                .position
-                                                .relative_to(origin)
-                                                .normalize_or_zero();
-                                            let toward =
-                                                station.position.relative_to(future_body.position);
-                                            let tangent = toward - ray * toward.dot(ray);
-                                            tangent
-                                                .try_normalize()
-                                                .map_or(offset, |side| side * offset.length())
-                                        });
-                                    let destination = future_body.position.offset_by(offset);
-                                    let distance = destination.relative_to(origin).length();
-                                    let loss = planner::loss_ppm(
-                                        radius,
-                                        offset.length(),
-                                        distance,
-                                        navigation_beacon.is_some(),
-                                    );
-                                    if loss > max_loss_ppm {
-                                        break;
-                                    }
-                                    let distance_ly = distance / slip::LY_M;
-                                    let departure_velocity = DVec3::from_array(
-                                        maneuver
-                                            .as_ref()
-                                            .map_or(pose.velocity, |maneuver| maneuver.velocity),
-                                    );
-                                    let desired = future_station.as_ref().unwrap_or(&future_body);
-                                    let desired_delta =
-                                        DVec3::from_array(desired.velocity) - departure_velocity;
-                                    let max_delta = slip::earned_delta_v_m_s(
-                                        desired_delta.length(),
-                                        ((distance - radius).max(0.)) / slip::LY_M,
-                                    );
-                                    let delta = affordable_delta(
-                                        self.mass,
-                                        distance_ly,
-                                        max_delta,
-                                        fuel_limit,
-                                    );
-                                    let arrival_velocity = (delta > 0.).then(|| {
-                                        (departure_velocity
-                                            + desired_delta.normalize_or_zero() * delta)
-                                            .to_array()
-                                    });
-                                    let fuel = slip::transit_fuel_kg(self.mass, distance_ly, delta);
-                                    if fuel > fuel_limit {
-                                        break;
-                                    }
-                                    let probe = SlipProbe {
-                                        origin,
-                                        destination,
-                                        departure_after_seconds: departure_s,
-                                        arrival_after_seconds: arrival_s,
-                                        navigation_beacon,
-                                        arrival_velocity,
-                                    };
-                                    let mut probes = vec![SlipProbe {
-                                        arrival_velocity: None,
-                                        ..probe.clone()
-                                    }];
-                                    if arrival_velocity.is_some() {
-                                        probes.push(probe);
-                                    }
-                                    // Compare both velocity choices in one service
-                                    // admission. Two probes fit the host's gas slice.
-                                    let ProgramReply::SlipEligibilityBatch(results) =
-                                        query(&ProgramQuery::SlipEligibilityBatch(probes.clone()))?
-                                    else {
-                                        return Err(abi::ERR_ARGUMENT);
-                                    };
-                                    let Some(result) = results.first() else {
-                                        return Err(abi::ERR_ARGUMENT);
-                                    };
-                                    if result.error.is_some() {
-                                        break;
-                                    }
-                                    let next_departure =
-                                        planner::departure_delay(result.preparation_s, clearing_s);
-                                    let converged = (next_departure - departure_s).abs() < 0.5
-                                        && (result.duration_s - duration_s).abs() < 0.5;
-                                    departure_s = next_departure;
-                                    duration_s = result.duration_s;
-                                    if !converged {
-                                        continue;
-                                    }
-                                    if !result.ready {
-                                        break;
-                                    }
-                                    let approach =
-                                        destination.relative_to(origin).normalize_or_zero();
-                                    let capture = destination.offset_by(
-                                        -approach
-                                            * (radius * radius - offset.length_squared())
-                                                .max(0.)
-                                                .sqrt(),
-                                    );
-                                    for (probe, result) in probes.iter().zip(&results) {
-                                        if !result.ready || result.error.is_some() {
-                                            continue;
-                                        }
-                                        let arrival_velocity = probe.arrival_velocity;
-                                        let delta = arrival_velocity.map_or(0., |velocity| {
-                                            (DVec3::from_array(velocity) - departure_velocity)
-                                                .length()
-                                        });
-                                        let fuel =
-                                            slip::transit_fuel_kg(self.mass, distance_ly, delta);
-                                        let arrival_pose = Pose {
-                                            position: capture,
-                                            velocity: arrival_velocity
-                                                .unwrap_or(departure_velocity.to_array()),
-                                            ..pose.clone()
-                                        };
-                                        let matching_s = (DVec3::from_array(arrival_pose.velocity)
-                                            - DVec3::from_array(future_body.velocity))
-                                        .length()
-                                            / self.acceleration;
-                                        let transfer =
-                                            future_station.as_ref().map_or(matching_s, |target| {
-                                                self.transfer_estimate(&contact(
-                                                    &arrival_pose,
-                                                    target,
-                                                ))
-                                                .0
-                                            });
-                                        let total_s = departure_s + duration_s + transfer;
-                                        let eta_s =
-                                            if matches!(entry.directive, Directive::DockAt(_)) {
-                                                total_s
-                                            } else {
-                                                departure_s + duration_s
-                                            };
-                                        // Equal arrival times favor lower exotic use.
-                                        let score = total_s + fuel * 0.001;
-                                        let option = Plan {
-                                            epoch: self.tick,
-                                            body: reference,
-                                            offset,
-                                            destination,
-                                            departure: self.tick.saturating_add(
-                                                (departure_s * TICK_RATE_HZ).ceil() as u64,
-                                            ),
-                                            arrival: self.tick.saturating_add(
-                                                (eta_s * TICK_RATE_HZ).ceil() as u64,
-                                            ),
-                                            beacon: navigation_beacon,
-                                            arrival_velocity,
-                                            delta_v: delta,
-                                            loss_ppm: loss,
-                                            fuel_kg: fuel,
-                                            maneuver: maneuver.clone(),
-                                            score,
-                                            mass: self.mass,
-                                            fuel_available: available,
-                                            capture_radius: radius,
-                                            max_loss_ppm,
-                                            fuel_limit,
-                                            station: station.map(|station| station.entity),
-                                        };
-                                        if candidate
-                                            .as_ref()
-                                            .is_none_or(|best: &Plan| option.score < best.score)
-                                        {
-                                            candidate = Some(option);
-                                        }
-                                    }
-                                    break;
-                                }
-                                if let Some(candidate) = candidate {
-                                    if best
-                                        .as_ref()
-                                        .is_none_or(|best| candidate.score < best.score)
-                                    {
-                                        best = Some(candidate);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            self.assistance.extend(
+                page.iter()
+                    .filter(|beacon| beacon.system == Some(system))
+                    .map(|beacon| Some(beacon.entity)),
+            );
+            self.beacon_after = page.last().map(|beacon| beacon.entity);
+            self.beacons_loaded = page.len() < 64;
+            if !self.beacons_loaded {
+                return Ok(None);
             }
         }
-        Ok((best, has_capture && !affordable_capture))
+
+        let ProgramReply::Orrery(mut bodies) = query(&ProgramQuery::OrrerySystem {
+            system,
+            after_seconds: 0.,
+        })?
+        else {
+            return Err(abi::ERR_ARGUMENT);
+        };
+        if bodies.is_empty() {
+            return Ok(None);
+        }
+        // Large capture spheres are most likely to satisfy the risk limit.
+        bodies.sort_by(|a, b| b.slip_exclusion_m.total_cmp(&a.slip_exclusion_m));
+        let cursor = self.search_cursor;
+        self.search_cursor = self.search_cursor.wrapping_add(1);
+        // Try direct departure and clearance together for each body before
+        // exploring displaced aim points and later departure windows.
+        let body = &bodies[(cursor / 2) % bodies.len()];
+        let Target::Destination(Destination::Relative {
+            reference: Reference::Celestial(reference),
+            ..
+        }) = &body.reference
+        else {
+            return Ok(None);
+        };
+        let radius = body.slip_exclusion_m;
+        if radius <= body.radius_m + self.own_radius {
+            return Ok(None);
+        }
+        let clearance = cursor % 2 == 1;
+        let variant = cursor / (2 * bodies.len());
+        let beacon = self.assistance[variant % self.assistance.len()];
+        let variant = variant / self.assistance.len();
+        let wait = [0., 30., 120., self.wait_horizon][(variant / 4) % 4];
+        if cursor > 0 && cursor % (bodies.len() * self.assistance.len() * 32) == 0 {
+            self.wait_horizon = (self.wait_horizon * 2.).min(MAX_PREDICTION_SECONDS * 0.5);
+            // Periodically refresh assistance so new installations become usable.
+            self.beacons_loaded = false;
+            self.beacon_after = None;
+            self.assistance.clear();
+        }
+        let direction = body.pose.position.relative_to(pose.position);
+        let space = self.navigation_environment(pose)?;
+        let maneuver = if clearance {
+            crate::local_guidance::outside_exclusions(
+                pose.position,
+                direction,
+                &space,
+                self.own_radius,
+            )
+            .filter(|target| target.position.relative_to(pose.position).length() > 1.)
+        } else {
+            None
+        };
+        let clearing = maneuver.as_ref().map_or(wait, |target| {
+            wait.max(self.transfer_estimate(&contact(pose, target)).0)
+        });
+        let mut departure = clearing;
+        let mut duration = slip::flight_seconds(direction.length(), beacon.is_some());
+        let destination_ref = Destination::Relative {
+            reference: Reference::Celestial(*reference),
+            offset: GalacticPosition::ZERO,
+            axes: Axes::Galactic,
+        };
+        // A single candidate, with a bounded correction for charging and the
+        // destination's orbital motion. Later updates refine other candidates.
+        for _ in 0..3 {
+            let arrival = departure + duration;
+            if arrival > MAX_PREDICTION_SECONDS {
+                return Ok(None);
+            }
+            let body_pose = resolve_at(&destination_ref, arrival)?;
+            let station_pose = station
+                .map(|station| resolve_at(&Destination::Beacon(station.entity), arrival))
+                .transpose()?;
+            let departure_pose = maneuver.as_ref().unwrap_or(pose);
+            let origin = departure_pose
+                .position
+                .offset_by(DVec3::from_array(departure_pose.velocity) * departure);
+            if space.departure_body(origin, departure) == Some(&body.reference) {
+                return Ok(None);
+            }
+            let toward = station_pose.as_ref().map_or(DVec3::ZERO, |station| {
+                station.position.relative_to(body_pose.position)
+            });
+            let offset =
+                planner::aim_offsets(body_pose.position.relative_to(origin), toward, radius)
+                    [variant % 4];
+            let destination = body_pose.position.offset_by(offset);
+            let distance = destination.relative_to(origin).length();
+            let loss = planner::loss_ppm(
+                radius - self.own_radius,
+                offset.length(),
+                distance,
+                beacon.is_some(),
+            );
+            if loss > max_loss_ppm {
+                return Ok(None);
+            }
+
+            let desired = station_pose.as_ref().unwrap_or(&body_pose);
+            let velocity = DVec3::from_array(departure_pose.velocity);
+            let matching = DVec3::from_array(desired.velocity) - velocity;
+            let delta = if (variant / 16) % 2 == 0 {
+                0.
+            } else {
+                affordable_delta(
+                    self.mass,
+                    distance / slip::LY_M,
+                    slip::earned_delta_v_m_s(
+                        matching.length(),
+                        (distance - radius).max(0.) / slip::LY_M,
+                    ),
+                    fuel_limit,
+                )
+            };
+            let arrival_velocity =
+                (delta > 0.).then(|| (velocity + matching.normalize_or_zero() * delta).to_array());
+            let fuel = slip::transit_fuel_kg(self.mass, distance / slip::LY_M, delta);
+            if fuel > fuel_limit {
+                return Ok(None);
+            }
+            let ProgramReply::SlipEligibilityBatch(results) =
+                query(&ProgramQuery::SlipEligibilityBatch(vec![SlipProbe {
+                    origin,
+                    destination,
+                    departure_after_seconds: departure,
+                    arrival_after_seconds: arrival,
+                    navigation_beacon: beacon,
+                    arrival_velocity,
+                }]))?
+            else {
+                return Err(abi::ERR_ARGUMENT);
+            };
+            let Some(result) = results.first() else {
+                return Ok(None);
+            };
+            if result.error.is_some() {
+                return Ok(None);
+            }
+            let next = planner::departure_delay(result.preparation_s, clearing);
+            if (next - departure).abs() >= 0.5 || (result.duration_s - duration).abs() >= 0.5 {
+                departure = next;
+                duration = result.duration_s;
+                continue;
+            }
+            if !result.ready {
+                return Ok(None);
+            }
+            let capture = destination.offset_by(
+                -destination.relative_to(origin).normalize_or_zero()
+                    * (radius * radius - offset.length_squared()).max(0.).sqrt(),
+            );
+            let arrival_pose = Pose {
+                position: capture,
+                velocity: arrival_velocity.unwrap_or(departure_pose.velocity),
+                ..pose.clone()
+            };
+            let transfer = station_pose.as_ref().map_or(0., |target| {
+                self.transfer_estimate(&contact(&arrival_pose, target)).0
+            });
+            let total = departure + duration + transfer;
+            let eta = if matches!(entry.directive, Directive::DockAt(_)) {
+                total
+            } else {
+                departure + duration
+            };
+            return Ok(Some(Plan {
+                epoch: self.tick,
+                body: *reference,
+                offset,
+                destination,
+                departure: self.tick + (departure * TICK_RATE_HZ).ceil() as u64,
+                arrival: self.tick + (eta * TICK_RATE_HZ).ceil() as u64,
+                beacon,
+                arrival_velocity,
+                delta_v: delta,
+                loss_ppm: loss,
+                fuel_kg: fuel,
+                maneuver,
+                score: total,
+                capture_radius: radius,
+                max_loss_ppm,
+                fuel_limit,
+                station: station.map(|station| station.entity),
+            }));
+        }
+        Ok(None)
     }
 
     pub(super) fn track(&mut self, pose: &Pose) -> Result<bool, i32> {
-        let Some(plan) = self.plan.as_ref() else {
+        let Some(mut plan) = self.plan.clone() else {
             return Ok(false);
         };
         if let Some(id) = plan.beacon {
@@ -351,7 +231,27 @@ impl Executor {
                 return Ok(false);
             }
         }
-        let remaining = plan.departure.saturating_sub(self.tick) as f64 * TICK_SECONDS;
+        let remaining = if plan.maneuver.is_some() {
+            let space = self.navigation_environment(pose)?;
+            let Some(target) = crate::local_guidance::outside_exclusions(
+                pose.position,
+                plan.destination.relative_to(pose.position),
+                &space,
+                self.own_radius,
+            ) else {
+                return Ok(false);
+            };
+            let elapsed = self.tick.saturating_sub(plan.epoch) as f64 * TICK_SECONDS;
+            plan.score = (plan.score - elapsed).max(0.);
+            plan.epoch = self.tick;
+            plan.maneuver =
+                (target.position.relative_to(pose.position).length() > 1.).then_some(target);
+            plan.maneuver.as_ref().map_or(0., |target| {
+                self.transfer_estimate(&contact(pose, target)).0
+            })
+        } else {
+            plan.departure.saturating_sub(self.tick) as f64 * TICK_SECONDS
+        };
         let origin = plan.maneuver.as_ref().map_or_else(
             || {
                 pose.position
@@ -368,6 +268,16 @@ impl Executor {
             plan.destination.relative_to(origin).length(),
             plan.beacon.is_some(),
         );
+        let space = self.navigation_environment(pose)?;
+        if space.departure_body(origin, remaining)
+            == Some(&Target::Destination(Destination::Relative {
+                reference: Reference::Celestial(plan.body),
+                offset: GalacticPosition::ZERO,
+                axes: Axes::Galactic,
+            }))
+        {
+            return Ok(false);
+        }
         let mut target = resolve_at(
             &Destination::Relative {
                 reference: Reference::Celestial(plan.body),
@@ -439,17 +349,16 @@ impl Executor {
         if !result.ready || result.error.is_some() {
             return Ok(false);
         }
-        let plan = self.plan.as_mut().unwrap();
         plan.destination = target.position;
         plan.offset = offset;
         plan.arrival_velocity = arrival_velocity;
         plan.delta_v = delta;
         plan.fuel_kg = fuel;
-        plan.departure = plan.departure.max(
-            self.tick
-                .saturating_add((result.preparation_s * TICK_RATE_HZ).ceil() as u64),
-        );
+        plan.departure = self
+            .tick
+            .saturating_add((remaining.max(result.preparation_s) * TICK_RATE_HZ).ceil() as u64);
         plan.loss_ppm = loss;
+        self.plan = Some(plan);
         Ok(true)
     }
 
@@ -494,10 +403,13 @@ impl Executor {
                 self.status
                     .summary
                     .push_str("; clearing departure while charging");
-                self.status.markers.push(PlanMarker {
-                    position: target.position,
-                    label: "Departure clearance".into(),
-                });
+                self.status.markers.insert(
+                    0,
+                    PlanMarker {
+                        position: target.position,
+                        label: "Departure clearance".into(),
+                    },
+                );
                 self.publish()?;
                 return self.steer(pose, &target, None).map(Some);
             }

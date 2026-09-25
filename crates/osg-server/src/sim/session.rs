@@ -252,7 +252,12 @@ impl Session {
                 );
                 let mut clock = world.resource_mut::<Clock>();
                 match command {
-                    DebugCommand::SetRate(rate) => clock.rate = rate,
+                    DebugCommand::SetRate(rate)
+                        if rate.is_finite() && rate > 0. && rate <= 100. =>
+                    {
+                        clock.rate = rate
+                    }
+                    DebugCommand::SetRate(_) => {}
                     DebugCommand::Reset => clock.reset_requested = true,
                     DebugCommand::Inspect(enabled) => clock.inspect = enabled,
                     command => {

@@ -3,7 +3,6 @@ mod cargo;
 mod chat;
 mod hangar;
 mod industry;
-mod instruments;
 mod inventory;
 mod layout;
 mod map;
@@ -15,6 +14,7 @@ mod society;
 mod wallet;
 
 use super::{SelectedTarget, Selection, scene};
+use crate::state::QueryState;
 use crate::state::*;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
@@ -41,15 +41,6 @@ const OVERVIEW: WindowSpec = WindowSpec {
     anchor: egui::Align2::RIGHT_TOP,
     offset: egui::vec2(0., 302.),
     open: true,
-};
-const NAVIGATION: WindowSpec = WindowSpec {
-    id: "navigation",
-    title: "NAVIGATION",
-    size: egui::vec2(330., 260.),
-    min_size: egui::vec2(280., 200.),
-    anchor: egui::Align2::LEFT_BOTTOM,
-    offset: egui::Vec2::ZERO,
-    open: false,
 };
 const INVENTORY: WindowSpec = WindowSpec {
     id: "inventory",
@@ -80,7 +71,7 @@ const CARGO: WindowSpec = WindowSpec {
 };
 const MAP: WindowSpec = WindowSpec {
     id: "map",
-    title: "GATE NETWORK",
+    title: "Navigation map",
     size: egui::vec2(1200., 800.),
     min_size: egui::vec2(480., 350.),
     anchor: egui::Align2::CENTER_CENTER,
@@ -171,7 +162,7 @@ enum Sort {
     Speed,
 }
 
-pub(super) struct HudObject {
+pub struct HudObject {
     pub target: SelectedTarget,
     pub contact: Option<ContactRef>,
     pub position: osg_model::GalacticPosition,
@@ -181,7 +172,7 @@ pub(super) struct HudObject {
 }
 
 #[derive(Resource)]
-pub(super) struct Shell {
+pub struct Shell {
     hud: Vec<HudObject>,
     desktop: Desktop,
     pending_intents: Vec<Intent>,
@@ -195,7 +186,7 @@ pub(super) struct Shell {
 }
 
 impl Shell {
-    pub(super) fn hud(&self) -> &[HudObject] {
+    pub fn hud(&self) -> &[HudObject] {
         &self.hud
     }
 }
@@ -242,6 +233,13 @@ fn install_panes(app: &mut App) {
     install::<wallet::State>(app);
     install::<market::State>(app);
     install::<assets::State>(app);
+    app.add_observer(initialize_panes);
+}
+
+fn initialize_panes(event: On<SessionInstalled>, mut panes: PaneStates) {
+    *panes.society = society::State::new(event.account);
+    *panes.wallet = wallet::State::new(event.account);
+    *panes.market = market::State::new(event.account);
 }
 
 impl Feedback {
@@ -283,6 +281,7 @@ impl Default for Shell {
 }
 
 enum Intent {
+    RetryQueries,
     Market(osg_model::market::MarketCommand),
     OpenStorage {
         owner: ownership::Principal,
@@ -309,35 +308,43 @@ enum Intent {
     Navigate(Vec<travel::Directive>, bool),
     PlanRoute(Vec<travel::Directive>, bool, travel::PlanningPreferences),
     RetryRoute,
-    CancelRoute(crate::state::requests::RouteCall),
+    CancelRoute,
     CommitRoute,
-    EditItinerary(Vec<travel::Directive>),
+    ToggleMfd,
     Command(ShipCommand, &'static str),
     Orbits(bool),
 }
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ShellDraw;
+pub struct ShellDraw;
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     install_panes(app);
     app.init_resource::<Shell>()
         .init_resource::<layout::Store>()
         .add_systems(Startup, layout::load)
         .add_systems(Last, layout::save)
         .add_observer(reset_session)
-        .add_systems(Update, industry::construction::update)
+        .add_systems(
+            Update,
+            industry::construction::update.in_set(ClientSystems::Gameplay),
+        )
         .add_systems(
             PostUpdate,
-            dispatch.after(osg_ui::bevy_egui::EguiPostUpdateSet::EndPass),
+            dispatch
+                .after(osg_ui::bevy_egui::EguiPostUpdateSet::EndPass)
+                .in_set(ClientSystems::Gameplay),
         )
         .add_systems(
             osg_ui::bevy_egui::EguiPrimaryContextPass,
-            draw.in_set(ShellDraw).after(super::console::ConsoleDraw),
+            draw.in_set(ShellDraw)
+                .after(super::console::ConsoleDraw)
+                .in_set(ClientSystems::Gameplay),
         );
 }
 
 fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
+    shell.hud.clear();
     shell.feedback = None;
     shell.pending_intents.clear();
     shell.pending_rows.clear();
@@ -345,6 +352,8 @@ fn reset_session(_: On<SessionReset>, mut shell: ResMut<Shell>) {
 
 #[derive(SystemParam)]
 struct DomainViews<'w> {
+    info: Res<'w, SessionInfo>,
+    mfd: Res<'w, crate::ui::mfd::Mfd>,
     navigation: Res<'w, NavigationState>,
     society: Res<'w, SocietyState>,
     wallet: Res<'w, WalletState>,
@@ -357,7 +366,8 @@ struct DomainViews<'w> {
 }
 
 #[derive(SystemParam)]
-struct DomainInterests<'w> {
+struct DomainQueries<'w> {
+    mfd: ResMut<'w, crate::ui::mfd::Mfd>,
     navigation: Res<'w, NavigationState>,
     society: ResMut<'w, SocietyState>,
     wallet: ResMut<'w, WalletState>,
@@ -374,7 +384,7 @@ fn draw(
     mut shell: ResMut<Shell>,
     mut panes: PaneStates,
     selection: Res<Selection>,
-    session: Res<SessionInfo>,
+    session: Res<GameSession>,
     domains: DomainViews,
     clock: Res<RenderTime>,
     calendar: Res<CalendarClock>,
@@ -456,7 +466,7 @@ fn draw(
                     .society
                     .society
                     .directory
-                    .contact_standing(domains.society.society.account, observation.iff.as_ref()),
+                    .contact_standing(session.account, observation.iff.as_ref()),
                 detail: "Sensor contact".into(),
             });
         }
@@ -548,7 +558,7 @@ fn draw(
                         .society
                         .society
                         .directory
-                        .contact_standing(domains.society.society.account, contact.0.iff.as_ref())
+                        .contact_standing(session.account, contact.0.iff.as_ref())
                 }),
             detail: "Subspace beacon".into(),
             own: false,
@@ -560,7 +570,7 @@ fn draw(
         declaration_history_key: domains.society.declaration_history_key,
         services: &domains.services.services,
         industry: &domains.industry.snapshot,
-        industry_ready: domains.industry.ready(),
+
         navigation: &domains.navigation.navigation,
         inhabited: domains.navigation.inhabited.clone(),
         navigation_status: &domains.navigation.navigation_status,
@@ -571,8 +581,8 @@ fn draw(
         details,
         system: system_name,
         vicinity,
-        connected: session.world.is_some() && session.status.is_empty(),
-        status: &session.status,
+        connected: true,
+        status: &domains.info.status,
         time_ns: clock.display_ns,
         calendar_unix_ms: calendar.now(real_time.elapsed()),
         diagnostics: *diagnostics,
@@ -581,11 +591,11 @@ fn draw(
     let mut intents = Vec::new();
     panes.chat.receive(&domains.commands.results);
     let loading = crate::state::requests::Loading {
-        society: domains.society.load.loading(),
+        society: domains.society.load.loading() || domains.society.directory.loading(),
         wallet: domains.wallet.load.loading(),
         market: domains.market.load.loading(),
         assets: domains.assets.load.loading(),
-        industry: domains.industry.load.loading(),
+        industry: domains.industry.loading(),
         services: domains.services.load.loading(),
     };
     let navigation_loading = matches!(
@@ -602,22 +612,22 @@ fn draw(
         (HANGAR, loading.industry),
         (CARGO, loading.industry),
         (MAP, navigation_loading),
-        (NAVIGATION, navigation_loading),
         (CHAT, domains.chat.loading()),
     ] {
         shell.desktop.set_loading(window, active);
     }
     panels::draw(
         ctx,
+        domains.mfd.is_open(),
         &mut shell,
         &mut panes,
         &model,
         &selection,
         &domains.commands.results,
         &domains.chat,
-        domains.wallet.wallet.as_ref(),
-        domains.market.market.as_ref(),
-        domains.assets.assets.as_ref(),
+        &domains.wallet.wallet,
+        &domains.market.market,
+        &domains.assets.assets,
         &mut intents,
     );
     shell.hud = model
@@ -643,13 +653,13 @@ fn dispatch(
     mut shell: ResMut<Shell>,
     mut panes: PaneStates,
     mut selection: ResMut<Selection>,
-    session: Res<SessionInfo>,
-    mut domains: DomainInterests,
+    session: Res<GameSession>,
+    mut domains: DomainQueries,
     mut outgoing: ResMut<Outgoing>,
     mut requests: ResMut<crate::state::requests::Mutations>,
-    mut routes: ResMut<crate::state::requests::Routes>,
     client: Res<crate::state::requests::NetworkClient>,
-    real_time: Res<Time<Real>>,
+    access_assets: Res<Assets<crate::assets::NavigationAccess>>,
+    details: Query<&ShipDetails>,
     asset_server: Res<AssetServer>,
     ships: Query<&OwnedShip>,
     mut views: Query<(
@@ -663,10 +673,10 @@ fn dispatch(
         connected: bool,
         rows: Vec<Row>,
         ships: Vec<&'a ShipTelemetry>,
-        industry: &'a industry_model::IndustrySnapshot,
+        industry: &'a IndustryView,
     }
     let model = DispatchModel {
-        connected: session.world.is_some() && session.status.is_empty(),
+        connected: true,
         rows: std::mem::take(&mut shell.pending_rows),
         ships: ships.iter().map(|ship| &ship.0).collect(),
         industry: &domains.industry.snapshot,
@@ -675,11 +685,21 @@ fn dispatch(
         .iter()
         .find(|ship| Some(ship.0.ship) == selection.ship)
         .map(|ship| &ship.0);
+    let presentation = details
+        .iter()
+        .find(|details| Some(details.0.ship) == selection.ship)
+        .map(|details| &details.0);
+    if !shell.desktop.is_open(MAP) {
+        panes.map.route.cancel();
+    }
     panes.map.route.update(
         telemetry.filter(|_| model.connected),
+        presentation,
+        &domains.navigation,
+        &session,
+        &access_assets,
+        &asset_server,
         &domains.commands.results,
-        &mut routes,
-        real_time.elapsed(),
     );
     for intent in std::mem::take(&mut shell.pending_intents) {
         match intent {
@@ -696,8 +716,7 @@ fn dispatch(
                     let id = crate::state::requests::mutations::market(
                         &mut requests,
                         &client.0,
-                        session.world.unwrap(),
-                        session.generation,
+                        session.key,
                         command,
                     );
                     shell.feedback = Some(Feedback {
@@ -716,8 +735,7 @@ fn dispatch(
                     let id = crate::state::requests::mutations::wallet(
                         &mut requests,
                         &client.0,
-                        session.world.unwrap(),
-                        session.generation,
+                        session.key,
                         command,
                     );
                     shell.feedback = Some(Feedback {
@@ -763,20 +781,14 @@ fn dispatch(
             Intent::OpenHangar => shell.desktop.open(HANGAR),
             Intent::OpenAssets => shell.desktop.open(ASSETS),
             Intent::BuildShip(request) => {
-                if let Some(world) = session.world.filter(|_| model.connected) {
-                    panes
-                        .industry
-                        .construction
-                        .queue(request, (world, session.generation));
-                }
+                panes.industry.construction.queue(request, session.key);
             }
             Intent::Industry(command, label) => {
                 if model.connected {
                     let id = crate::state::requests::mutations::industry(
                         &mut requests,
                         &client.0,
-                        session.world.unwrap(),
-                        session.generation,
+                        session.key,
                         command,
                     );
                     shell.feedback = Some(Feedback {
@@ -790,11 +802,11 @@ fn dispatch(
                 if model.connected {
                     let id = Id::new();
                     let operation = osg_model::rpc::Operation {
-                        world: session.world.unwrap(),
+                        world: session.key.world,
                         id,
                     };
                     let net = client.0.clone();
-                    requests.submit(operation.world, session.generation, id, async move {
+                    requests.submit(session.key, id, async move {
                         industry::service::submit(net, operation, action).await
                     });
                     shell.feedback = Some(Feedback {
@@ -818,8 +830,7 @@ fn dispatch(
                     let id = crate::state::requests::mutations::society(
                         &mut requests,
                         &client.0,
-                        session.world.unwrap(),
-                        session.generation,
+                        session.key,
                         command,
                     );
                     if let Some(feedback) = shell
@@ -837,38 +848,31 @@ fn dispatch(
                     }
                 }
             }
-            Intent::EditItinerary(orders) => {
+            Intent::ToggleMfd => domains.mfd.toggle(),
+            Intent::PlanRoute(orders, append, preferences) => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
-                    outgoing.ship(
+                    panes.map.route.begin(
                         ship,
-                        ShipCommand::SetItinerary {
-                            preferences: ship.travel.preferences,
-                            engage: false,
-                            expected_revision: ship.travel.directive_revision,
-                            itinerary: orders,
-                        },
+                        orders,
+                        append,
+                        preferences,
+                        presentation,
+                        &asset_server,
                     );
                 }
             }
-            Intent::PlanRoute(orders, append, preferences) => {
-                if let Some(ship) = telemetry.filter(|_| model.connected) {
-                    panes
-                        .map
-                        .route
-                        .begin(ship, orders, append, preferences, &mut routes);
-                }
-            }
+            Intent::RetryQueries => requests.retry_queries(),
             Intent::RetryRoute => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
-                    panes.map.route.retry(ship, &mut routes);
+                    panes.map.route.retry(ship, presentation, &asset_server);
                 }
             }
-            Intent::CancelRoute(action) => {
-                routes.route(action);
-            }
+            Intent::CancelRoute => panes.map.route.cancel(),
             Intent::CommitRoute => {
                 if let Some(ship) = telemetry.filter(|_| model.connected) {
-                    if let Some(command) = panes.map.route.commit(ship) {
+                    if let Some(command) =
+                        presentation.and_then(|details| panes.map.route.commit(ship, details))
+                    {
                         let id = outgoing.ship(ship, command);
                         panes.map.route.sent_commit(id);
                         shell.feedback = Some(Feedback {
@@ -962,7 +966,7 @@ fn dispatch(
             }
         }
     }
-    let wanted = inventory_subscription(
+    let wanted = industry_query(
         &shell,
         &panes,
         selection.ship,
@@ -971,24 +975,25 @@ fn dispatch(
     );
     drop(model);
     let society_open = shell.desktop.is_open(SOCIETY);
-    domains.society.interest = panes.society.request(society_open, &domains.society);
-    let wallet_open =
-        shell.desktop.is_open(WALLET) && session.world.is_some() && session.status.is_empty();
-    let account = domains.society.society.account;
-    domains.services.interest = panes
+    domains.society.query = panes.society.request(society_open, &domains.society);
+    let wallet_open = shell.desktop.is_open(WALLET);
+    let account = session.account;
+    domains.services.query = panes
         .industry
         .service
         .query(shell.desktop.is_open(INDUSTRY), account);
-    domains.wallet.interest = panes.wallet.query(wallet_open, account);
-    let market_open =
-        shell.desktop.is_open(MARKET) && session.world.is_some() && session.status.is_empty();
-    domains.market.interest = panes.market.query(market_open, account);
-    let assets_open =
-        shell.desktop.is_open(ASSETS) && session.world.is_some() && session.status.is_empty();
-    domains.assets.interest = panes.assets.query(assets_open);
-    domains.industry.subscribe(wanted);
+    domains.wallet.query = panes.wallet.query(wallet_open, account);
+    let market_open = shell.desktop.is_open(MARKET);
+    domains.market.query = panes.market.query(market_open, account);
+    let assets_open = shell.desktop.is_open(ASSETS);
+    domains.assets.query = panes.assets.query(assets_open);
+    domains.society.query.profiles |= assets_open;
+    domains.society.query.gas |= wallet_open || assets_open;
+    domains.industry.set_query(wanted);
 
-    let focus = (shell.desktop.is_open(CHAT) && session.status.is_empty())
+    let focus = shell
+        .desktop
+        .is_open(CHAT)
         .then(|| {
             views.iter().find_map(|(view, _, _, _)| {
                 let ship = selection.ship?;
@@ -1005,45 +1010,44 @@ fn dispatch(
     domains.chat.subscribe(focus, &mut outgoing);
 }
 
-fn inventory_subscription(
+fn industry_query(
     shell: &Shell,
     panes: &PaneStates,
     focused: Option<Id>,
     hangar: Option<&industry_model::HangarView>,
     connected: bool,
-) -> Option<industry_model::IndustryQuery> {
-    let mut interest = industry_model::IndustryQuery::default();
+) -> Option<IndustryQuery> {
+    let mut query = IndustryQuery::default();
     if shell.desktop.is_open(MARKET) {
-        interest.directory = true;
-        interest.catalogue = true;
+        query.directory = true;
+        query.catalogue = true;
     }
     if shell.desktop.is_open(INDUSTRY) {
-        interest.directory = true;
-        interest.catalogue = true;
-        interest.directory_after = panes.industry.directory_after;
-        interest.inventories.extend(panes.industry.facility);
+        query.directory = true;
+        query.catalogue = true;
+        query.directory_after = panes.industry.directory_after;
+        query.inventories.extend(panes.industry.facility);
     }
     if shell.desktop.is_open(INVENTORY) {
-        interest.inventories.extend(focused);
+        query.inventories.extend(focused);
     }
     if shell.desktop.is_open(HANGAR) {
-        interest.hangar = focused.map(|ship| industry_model::HangarQuery {
+        query.hangar = focused.map(|ship| HangarQuery {
             ship,
             after: panes.hangar.after,
         });
         if let Some(hangar) = hangar.filter(|view| Some(view.ship) == focused) {
-            interest
+            query
                 .inventories
                 .extend(hangar.host_inventory.as_ref().map(|host| host.entity));
         }
     }
     if shell.desktop.is_open(CARGO) {
-        interest.inventories.extend(panes.cargo_inventory.0);
+        query.inventories.extend(panes.cargo_inventory.0);
     }
-    interest.inventories.extend(panes.transfers.inventories());
-    let wanted =
-        interest.directory || interest.hangar.is_some() || !interest.inventories.is_empty();
-    (connected && wanted).then_some(interest)
+    query.inventories.extend(panes.transfers.inventories());
+    let wanted = query.directory || query.hangar.is_some() || !query.inventories.is_empty();
+    (connected && wanted).then_some(query)
 }
 
 fn commands_for(

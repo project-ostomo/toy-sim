@@ -72,7 +72,7 @@ const EDGE_WEIGHT: f32 = 0.25;
 
 /// Manual exposure compensation in stops, applied after metering.
 #[derive(Component, Default)]
-pub(super) struct ExposureSettings {
+pub struct ExposureSettings {
     stops: f32,
 }
 
@@ -95,7 +95,7 @@ struct MeterUniform {
     edge_weight: f32,
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     bevy::asset::embedded_asset!(app, "exposure.wgsl");
     app.add_plugins((
         ExtractComponentPlugin::<MeterBuffer>::default(),
@@ -103,13 +103,16 @@ pub(super) fn install(app: &mut App) {
         UniformComponentPlugin::<MeterUniform>::default(),
     ))
     .add_observer(receive)
+    .add_systems(Last, attach.in_set(crate::state::ClientSystems::Gameplay))
     .add_systems(
         osg_ui::bevy_egui::EguiPrimaryContextPass,
         shortcuts.in_set(crate::ui::input::GameplayInput::Keyboard),
     )
     .add_systems(
         PostUpdate,
-        (attach, adapt).chain().after(CameraUpdateSystems),
+        adapt
+            .after(CameraUpdateSystems)
+            .in_set(crate::state::ClientSystems::Gameplay),
     );
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app.add_systems(RenderStartup, pipeline).add_systems(

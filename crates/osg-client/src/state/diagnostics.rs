@@ -2,7 +2,7 @@ use super::*;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 
 #[derive(Resource, Default, Clone, Copy)]
-pub(crate) struct ClientDiagnostics {
+pub struct ClientDiagnostics {
     pub buffered_ms: f64,
     pub queued_frames: usize,
     pub catching_up: bool,
@@ -12,7 +12,7 @@ pub(crate) struct ClientDiagnostics {
 }
 
 #[derive(Default)]
-pub(super) struct LogState {
+pub struct LogState {
     summary_at: f64,
     stall_at: f64,
     underrun_at: f64,
@@ -21,7 +21,7 @@ pub(super) struct LogState {
     max_frame_ms: f64,
 }
 
-pub(super) fn update(
+pub fn update(
     time: Res<Time<Real>>,
     store: Option<Res<DiagnosticsStore>>,
     playback: Res<BufferedPlayback>,

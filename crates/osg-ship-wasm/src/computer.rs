@@ -6,6 +6,7 @@ use osg_ships::{DeviceCommand, DeviceStatus};
 
 #[derive(Clone, Debug)]
 pub enum Command {
+    Message(abi::ComputerMessage),
     SetGuidance(Option<osg_model::travel::Guidance>),
     SetThrottle(f64),
     Manual {
@@ -35,6 +36,7 @@ impl Command {
         use abi::Record;
 
         match *self {
+            Self::Message(message) => (abi::REQUEST_COMPUTER_MESSAGE, message.bytes().to_vec()),
             Self::SetGuidance(ref guidance) => (
                 abi::REQUEST_SET_GUIDANCE,
                 osg_model::wasm_world::guidance_record(guidance)
@@ -155,6 +157,7 @@ pub enum CallbackKind {
 
 #[derive(Clone, Debug, Default)]
 pub struct Output {
+    pub computer_messages: Vec<abi::ComputerMessage>,
     pub world_actions: Vec<osg_model::ProgramAction>,
     pub devices: Vec<DeviceCommand>,
     pub replies: Vec<RequestReply>,
@@ -482,6 +485,64 @@ impl crate::Controller {
 mod tests {
     use super::*;
 
+    #[test]
+    fn display_messages_preserve_opaque_bytes_and_enforce_direction_and_size() {
+        let bytes = wat::parse_str(format!(
+            r#"(module
+                (import "ship" "computer_send" (func $send (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "\ff\00\a5")
+                (func (export "game_version") (result i32) i32.const {version})
+                (func (export "ship_tick")
+                    i32.const 0 i32.const 3 call $send
+                    i32.const {unsupported} i32.ne if unreachable end)
+                (func (export "ship_display")
+                    i32.const 0 i32.const 3 call $send
+                    if unreachable end
+                    i32.const 0 i32.const 257 call $send
+                    i32.const {limit} i32.ne if unreachable end))"#,
+            version = osg_ship_api::GAME_VERSION,
+            unsupported = abi::ERR_UNSUPPORTED,
+            limit = abi::ERR_LIMIT,
+        ))
+        .unwrap();
+        let mut runtime = crate::ControllerRuntime::new().unwrap();
+        for display in [false, true] {
+            let mut controller = if display {
+                runtime.instantiate_display(&bytes).unwrap()
+            } else {
+                runtime.instantiate(&bytes).unwrap()
+            };
+            let mut completed = false;
+            for tick in 0..100 {
+                let slice = controller
+                    .run_slice(
+                        Input {
+                            tick,
+                            ..Default::default()
+                        },
+                        None,
+                        crate::FUEL_PER_TICK,
+                        crate::FUEL_PER_TICK,
+                    )
+                    .unwrap();
+                if slice.callback_completed {
+                    if display {
+                        assert_eq!(slice.output.computer_messages.len(), 1);
+                        let message = &slice.output.computer_messages[0];
+                        assert_eq!(message.len, 3);
+                        assert_eq!(&message.bytes[..3], &[255, 0, 165]);
+                    } else {
+                        assert!(slice.output.computer_messages.is_empty());
+                    }
+                    completed = true;
+                    break;
+                }
+            }
+            assert!(completed);
+        }
+    }
+
     fn computer() -> crate::Controller {
         let bytes = wat::parse_str(format!(
             r#"(module
@@ -608,8 +669,6 @@ pub fn query_work(query: &osg_model::ProgramQuery) -> u64 {
         ProgramQuery::Orrery { .. } | ProgramQuery::OrrerySystem { .. } => {
             osg_model::local_space::QUERY_GAS
         }
-        ProgramQuery::RouteRequest(_) => osg_model::routing::REQUEST_GAS,
-        ProgramQuery::RoutePoll { .. } => osg_model::routing::POLL_GAS,
         ProgramQuery::SlipEligibility { .. } => 131_072,
         ProgramQuery::SlipEligibilityBatch(probes) => {
             131_072_u64.saturating_mul(probes.len() as u64)

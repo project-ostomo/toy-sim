@@ -79,14 +79,16 @@ fn allocated_lights(views: &[ViewLighting], budget: usize) -> Vec<(usize, Starli
         .collect()
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_systems(
         PostUpdate,
-        update.before(bevy::transform::TransformSystems::Propagate),
+        update
+            .in_set(crate::state::ClientSystems::Gameplay)
+            .before(bevy::transform::TransformSystems::Propagate),
     );
 }
 
-pub(super) fn install_regression(app: &mut App) {
+pub fn install_regression(app: &mut App) {
     install(app);
     if std::env::var_os("OSG_CAPTURE_NO_SHADOWS").is_some() {
         app.add_systems(PostUpdate, disable_regression_shadows.after(update));
@@ -309,6 +311,9 @@ mod tests {
         }
         world
             .run_system_once(super::super::camera::setup_views)
+            .unwrap();
+        world
+            .run_system_once(super::super::camera::update_views)
             .unwrap();
         *world.get_mut::<Transform>(camera).unwrap() = Transform::from_xyz(-1., 0., 0.);
         world.run_system_once(update).unwrap();

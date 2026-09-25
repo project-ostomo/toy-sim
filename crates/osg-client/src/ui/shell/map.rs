@@ -253,14 +253,13 @@ pub(super) fn draw(
                     selected_system(ui, state, model, origin, preference, intents);
                     ui.separator();
                     planner::draw(ui, &state.route, model, intents);
-                    if state.route.plan().is_none() {
-                        instruments::fuel_budget(ui, model);
-                    }
                 });
         });
     egui::Panel::bottom(ui.id().with("map_legend"))
         .frame(egui::Frame::NONE)
-        .show(ui, |ui| canvas::legend(ui, state.color_by));
+        .show(ui, |ui| {
+            canvas::legend(ui, state.color_by, state.route.search_progress().is_some())
+        });
     ui.horizontal_wrapped(|ui| {
         ui.small("Colour by");
         ui.selectable_value(&mut state.color_by, ColorBy::Bloc, "Bloc");
@@ -290,44 +289,27 @@ fn preferences(
         });
     });
     ui.add(egui::Slider::new(&mut percentage, 1. ..=100.).show_value(false))
-        .on_hover_text("Maximum estimated fuel use for the complete route, as a percentage of each remaining propulsion resource.");
+        .on_hover_text("Maximum estimated fuel use for the complete route, as a percentage of remaining exotic fuel.");
     preference.fuel_fraction = percentage / 100.;
+    ui.label("Maximum ship-destruction risk")
+        .on_hover_text("Maximum estimated slip loss across the entire itinerary. Beacon-assisted estimates assume guidance remains available.");
     ui.horizontal_wrapped(|ui| {
-        ui.label("Maximum ship-destruction risk");
-        ui.add(
-            egui::DragValue::new(&mut preference.max_loss_ppm)
-                .range(0. ..=1_000_000.)
-                .speed(0.1)
-                .max_decimals(6)
-                .suffix(" ppm"),
-        );
-        ui.weak(risk_equivalent(preference.max_loss_ppm));
+        for denominator in [10_000, 1_000, 100, 10, 2] {
+            ui.selectable_value(
+                &mut preference.max_loss_ppm,
+                1_000_000. / denominator as f64,
+                format!("1 in {denominator}"),
+            );
+        }
     });
-    ui.add(
-        egui::Slider::new(&mut preference.max_loss_ppm, 0. ..=1_000_000.)
-            .logarithmic(true)
-            .smallest_positive(0.001)
-            .show_value(false),
-    )
-    .on_hover_text("Maximum estimated slip loss across the entire itinerary. Slowing cannot remove the dispersion floor. Beacon-assisted estimates assume guidance remains available.");
     ui.checkbox(&mut preference.allow_slipdrive, "Allow slipdrive");
     if preference != previous {
         state.preference = Some(preference);
-        if let Some(action) = state.route.cancel_action() {
-            intents.push(Intent::CancelRoute(action));
+        if let Some(orders) = state.route.orders() {
+            intents.push(Intent::PlanRoute(orders, false, preference));
         }
     }
     preference
-}
-
-fn risk_equivalent(ppm: f64) -> String {
-    if ppm <= 0. {
-        "No modelled loss allowed".into()
-    } else if ppm >= 1_000_000. {
-        "No probability limit".into()
-    } else {
-        format!("1 in {:.0}", 1_000_000. / ppm)
-    }
 }
 
 fn search(

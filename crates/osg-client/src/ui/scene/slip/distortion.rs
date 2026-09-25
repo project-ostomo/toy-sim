@@ -17,28 +17,28 @@ use bevy::{
     },
 };
 
-pub(super) const STREAK_COUNT: usize = 192;
+pub const STREAK_COUNT: usize = 192;
 
 #[derive(Clone, Copy, Default, ShaderType)]
-pub(super) struct Streak {
-    pub(super) start: Vec4,
-    pub(super) end: Vec4,
-    pub(super) color: Vec4,
+pub struct Streak {
+    pub start: Vec4,
+    pub end: Vec4,
+    pub color: Vec4,
 }
 
 #[derive(Component, Clone, Copy, ExtractComponent, ShaderType)]
-pub(super) struct Distortion {
+pub struct Distortion {
     centers: [Vec4; 4],
     shapes: [Vec4; 4],
-    pub(super) viewport: Vec4,
-    pub(super) time: Vec4,
-    pub(super) eye: Vec4,
-    pub(super) right: Vec4,
-    pub(super) up: Vec4,
-    pub(super) forward: Vec4,
-    pub(super) screen: Vec4,
-    pub(super) streaks: [Streak; STREAK_COUNT],
-    pub(super) wakes: [super::wakes::Ribbon; super::wakes::WAKE_COUNT],
+    pub viewport: Vec4,
+    pub time: Vec4,
+    pub eye: Vec4,
+    pub right: Vec4,
+    pub up: Vec4,
+    pub forward: Vec4,
+    pub screen: Vec4,
+    pub streaks: [Streak; STREAK_COUNT],
+    pub wakes: [super::wakes::Ribbon; super::wakes::WAKE_COUNT],
 }
 
 impl Default for Distortion {
@@ -60,7 +60,7 @@ impl Default for Distortion {
 }
 
 /// Exercises the production postprocess shaders without a server connection.
-pub(super) fn regression(
+pub fn regression(
     mut commands: Commands,
     phase: Res<super::super::render_regressions::RegressionPhase>,
     cameras: Query<(Entity, &Transform, &Projection, &Exposure, &Camera), With<ViewCamera>>,
@@ -100,7 +100,7 @@ pub(super) fn regression(
     }
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     embedded_asset!(app, "distortion.wgsl");
     bevy::shader::load_shader_library!(app, "settings.wgsl");
     embedded_asset!(app, "streaks.wgsl");
@@ -109,7 +109,10 @@ pub(super) fn install(app: &mut App) {
         ExtractComponentPlugin::<Distortion>::default(),
         UniformComponentPlugin::<Distortion>::default(),
     ))
-    .add_systems(PostUpdate, prepare);
+    .add_systems(
+        PostUpdate,
+        prepare.in_set(crate::state::ClientSystems::Gameplay),
+    );
     if let Some(render_app) = app.get_sub_app_mut(RenderApp) {
         render_app
             .add_systems(RenderStartup, pipeline)
@@ -117,7 +120,7 @@ pub(super) fn install(app: &mut App) {
     }
 }
 
-pub(super) fn prepare(
+pub fn prepare(
     mut commands: Commands,
     clock: Res<RenderTime>,
     history: Res<SlipEffects>,

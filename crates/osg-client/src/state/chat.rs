@@ -2,17 +2,17 @@ use super::Outgoing;
 use osg_model::{Action, Id, chat::*};
 use std::collections::VecDeque;
 
-pub(super) const RETAINED_MESSAGES: usize = 2_000;
+pub const RETAINED_MESSAGES: usize = 2_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ChatFocus {
+pub struct ChatFocus {
     pub view: u64,
     pub view_revision: u64,
     pub ship: Id,
 }
 
 #[derive(bevy::prelude::Resource, Default)]
-pub(crate) struct ChatState {
+pub struct ChatState {
     pub messages: VecDeque<ChatMessage>,
     pub generation: u64,
     pub missed: u64,
@@ -62,7 +62,7 @@ impl ChatState {
         }
     }
 
-    pub(super) fn apply(&mut self, update: ChatUpdate) {
+    pub fn apply(&mut self, update: ChatUpdate) {
         let Some(focus) = self.subscription else {
             return;
         };

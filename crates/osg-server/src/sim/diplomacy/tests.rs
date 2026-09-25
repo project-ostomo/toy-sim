@@ -422,8 +422,8 @@ fn declarations_use_revisions_and_trust_preserves_provenance() {
     assert_eq!(resolved.source, source);
     assert_eq!(resolved.revision, 1);
     assert_eq!(directory.standing(observer, target), Standing::Hostile);
-    let private = super::super::ownership::snapshot(&world, Id([9; 16]));
-    assert!(private.directory.diplomacy.trust.is_empty());
+    let private = crate::rpc::diplomacy(&world, Id([9; 16]), observer).unwrap();
+    assert!(private.trust.is_empty());
 }
 
 #[test]

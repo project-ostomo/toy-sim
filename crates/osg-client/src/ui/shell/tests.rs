@@ -23,25 +23,280 @@ impl TestPanes {
     }
 }
 
-pub(super) fn entry(directive: travel::Directive, seconds: f64) -> travel::ItineraryEntry {
+pub fn entry(directive: travel::Directive, _seconds: f64) -> travel::ItineraryEntry {
     travel::ItineraryEntry {
         label: directive.label(),
         directive,
-        max_loss_ppm: 100.0,
-        fuel_allowance_kg: 1.0,
-        estimated_duration_ticks: Some((seconds / osg_model::TICK_SECONDS) as u64),
     }
 }
-pub(super) mod framing;
-pub(super) mod software;
+pub mod framing;
+pub mod software;
 mod workspace;
+
+fn collect_labels(shape: &egui::Shape, labels: &mut Vec<String>) {
+    match shape {
+        egui::Shape::Text(text) => labels.push(text.galley.job.text.clone()),
+        egui::Shape::Vec(shapes) => {
+            for shape in shapes {
+                collect_labels(shape, labels);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn loading_failure_and_first_directory_frame_render_headlessly() {
+    let output_dir = std::path::Path::new("/tmp/osg-session-captures");
+    std::fs::create_dir_all(output_dir).unwrap();
+    let size = [1024, 768];
+    for (name, phase, expected) in [
+        ("loading", ClientPhase::Loading, "Loading session"),
+        ("failed", ClientPhase::Failed, "Identity request failed"),
+    ] {
+        let ctx = egui::Context::default();
+        osg_ui::theme::install(&ctx);
+        let mut renderer = software::Renderer::default();
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(size[0] as f32, size[1] as f32),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                render_session_status(
+                    ui.ctx(),
+                    &phase,
+                    Some(&crate::state::SessionFailure {
+                        message: "Identity request failed".into(),
+                        retryable: true,
+                    }),
+                );
+            },
+        );
+        let mut labels = Vec::new();
+        for shape in &output.shapes {
+            collect_labels(&shape.shape, &mut labels);
+        }
+        assert!(labels.iter().any(|label| label.contains(expected)));
+        renderer.update(&output);
+        renderer.save(&ctx, &output, size, &output_dir.join(format!("{name}.png")));
+        output.textures_delta.clear();
+    }
+
+    let account = Id([42; 16]);
+    let mut panes = TestPanes::default();
+    panes.world.trigger(SessionInstalled { account });
+    let mut society = SocietyData {
+        account,
+        ..Default::default()
+    };
+    society.directory.players.insert(
+        account,
+        ownership::PlayerAffiliation {
+            account,
+            name: "Authenticated pilot".into(),
+            organization: None,
+        },
+    );
+    let navigation = NavigationCatalogue::default();
+    let model = FrameModel {
+        services: empty_services(),
+        declaration_history: &[],
+        declaration_history_next: None,
+        declaration_history_key: None,
+        industry: empty_industry(),
+        navigation_status: &NavigationStatus::Unavailable,
+        navigation_hash: None,
+        navigation: &navigation,
+        inhabited: Default::default(),
+        society: &society,
+        rows: Vec::new(),
+        ship: None,
+        details: None,
+        system: String::new(),
+        vicinity: String::new(),
+        connected: true,
+        status: "",
+        time_ns: 0,
+        calendar_unix_ms: 1234,
+        diagnostics: Default::default(),
+        orbits: false,
+    };
+    let ctx = egui::Context::default();
+    osg_ui::theme::install(&ctx);
+    let mut renderer = software::Renderer::default();
+    let mut output = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size[0] as f32, size[1] as f32),
+            )),
+            ..Default::default()
+        },
+        |ui| {
+            let mut states = panes.get();
+            assert_eq!(
+                states
+                    .society
+                    .request(true, &SocietyState::default())
+                    .selected,
+                Some(ownership::Principal::Player(account))
+            );
+            assert_eq!(
+                states.wallet.query(true, account).unwrap().owner,
+                ownership::Principal::Player(account)
+            );
+            assert_eq!(
+                states.market.query(true, account).unwrap().owner,
+                ownership::Principal::Player(account)
+            );
+            society::draw(ui, &mut states.society, &model, &mut Vec::new());
+        },
+    );
+    let mut labels = Vec::new();
+    for shape in &output.shapes {
+        collect_labels(&shape.shape, &mut labels);
+    }
+    assert!(
+        labels
+            .iter()
+            .any(|label| label.contains("Authenticated pilot"))
+    );
+    renderer.update(&output);
+    renderer.save(&ctx, &output, size, &output_dir.join("directory.png"));
+    output.textures_delta.clear();
+}
+
+#[test]
+fn firmware_mfd_launcher_is_discoverable_without_native_autopilot_status() {
+    let ctx = egui::Context::default();
+    osg_ui::theme::install(&ctx);
+    let mut shell = Shell::default();
+    let mut panes = TestPanes::default();
+    let mut ship = super::super::tests::ship(Id([9; 16])).0;
+    ship.travel.enabled = true;
+    ship.travel.itinerary = vec![entry(travel::Directive::SlipToSystem(Id([8; 16])), 60.)];
+    ship.travel.itinerary[0].label = "Firmware itinerary sentinel".into();
+    ship.travel.status.phase = travel::FirmwarePhase::Waiting {
+        until: Some(600),
+        why: "Firmware waiting sentinel".into(),
+    };
+    ship.travel.status.summary = "Firmware plan summary sentinel".into();
+    let navigation = NavigationCatalogue::default();
+    let model = FrameModel {
+        services: empty_services(),
+        declaration_history: &[],
+        declaration_history_next: None,
+        declaration_history_key: None,
+        industry: empty_industry(),
+
+        navigation_status: &NavigationStatus::Ready,
+        navigation_hash: None,
+        navigation: &navigation,
+        inhabited: Default::default(),
+        society: &SocietyData::default(),
+        rows: Vec::new(),
+        ship: Some(&ship),
+        details: None,
+        system: "Helion".into(),
+        vicinity: "Neris".into(),
+        connected: true,
+        status: "",
+        time_ns: 0,
+        calendar_unix_ms: 0,
+        diagnostics: Default::default(),
+        orbits: true,
+    };
+    let mut launcher = None;
+    let mut labels = Vec::new();
+    let mut intents = Vec::new();
+    for frame in 0..9 {
+        let mut events = Vec::new();
+        if let Some(pos) = launcher {
+            // Repeating PointerMoved resets egui's tooltip idle timer, even
+            // when the position is unchanged. Let the pointer rest here.
+            if frame == 3 {
+                events.push(egui::Event::PointerMoved(pos));
+            }
+            if frame == 7 || frame == 8 {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: frame == 7,
+                    modifiers: Default::default(),
+                });
+            }
+        }
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600., 1000.),
+                )),
+                time: Some(if frame == 8 { 7.1 } else { frame as f64 }),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                panels::draw(
+                    ui.ctx(),
+                    false,
+                    &mut shell,
+                    &mut panes.get(),
+                    &model,
+                    &Selection::default(),
+                    &[],
+                    &ChatState::default(),
+                    &QueryState::Loading,
+                    &QueryState::Loading,
+                    &QueryState::Loading,
+                    &mut intents,
+                );
+            },
+        );
+        output.textures_delta.clear();
+        for shape in output.shapes {
+            collect_labels(&shape.shape, &mut labels);
+            if let egui::Shape::Text(text) = shape.shape {
+                if text.galley.job.text == Icon::Navigation.glyph() && text.pos.x < RAIL_WIDTH {
+                    launcher = Some(text.galley.rect.translate(text.pos.to_vec2()).center());
+                }
+            }
+        }
+    }
+    assert!(launcher.is_some(), "MFD launcher must be visible");
+    assert!(
+        labels.iter().any(|label| label == "Firmware MFD"),
+        "MFD launcher must identify itself on hover: {labels:?}"
+    );
+    assert!(
+        intents
+            .iter()
+            .any(|intent| matches!(intent, Intent::ToggleMfd))
+    );
+    for forbidden in [
+        "Firmware waiting sentinel",
+        "Firmware plan summary sentinel",
+        "Firmware itinerary sentinel",
+        "AP ON",
+        "Autopilot itinerary",
+    ] {
+        assert!(
+            !labels.iter().any(|label| label.contains(forbidden)),
+            "firmware presentation leaked into native shell: {forbidden}"
+        );
+    }
+}
 
 #[test]
 fn industry_gallery_covers_operator_and_customer_screens() {
     use industry_model::{
         CargoItem, CustomerMatch, CustomerTier, FacilityCapability, FacilitySummary, FacilityView,
-        IndustryCapability, IndustryCatalogue, IndustrySnapshot, ItemStack, PublicFacility, Recipe,
-        ServicePolicy, ServiceQuote, ServiceRate, ServiceWork,
+        IndustryCapability, IndustryCatalogue, ItemStack, PublicFacility, Recipe, ServicePolicy,
+        ServiceQuote, ServiceRate, ServiceWork,
     };
     use ownership::{PlayerAffiliation, Principal};
 
@@ -199,10 +454,14 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         service: policy.clone(),
         can_configure_service: true,
     };
-    let mut industry = IndustrySnapshot {
-        directory: vec![summary.clone()],
-        facilities: vec![facility],
-        catalogue: Some(IndustryCatalogue {
+    let mut industry = IndustryView {
+        directory: QueryState::Ready(osg_model::rpc::Page {
+            items: vec![summary.clone()],
+            next: None,
+            total: None,
+        }),
+        facilities: [(facility.entity, QueryState::Ready(facility))].into(),
+        catalogue: QueryState::Ready(IndustryCatalogue {
             revision: [0; 32],
             recipes: vec![recipe.clone()],
             blueprints: vec![industry_model::BlueprintView {
@@ -219,7 +478,14 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         (Id([31; 16]), "Lalande Fab Annex"),
         (Id([32; 16]), "Ross 128 Smelter"),
     ] {
-        let mut other = industry.facilities[0].clone();
+        let mut other = industry
+            .facilities
+            .values()
+            .next()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .clone();
         other.entity = entity;
         other.metrics.system = Some(entity);
         other.name = name.into();
@@ -234,13 +500,15 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         other.metrics.power_consumed_w = Some(0.);
         other.metrics.power_generated_w = Some(5_000_000.);
         let metrics = other.metrics.clone();
-        industry.facilities.push(other);
+        industry
+            .facilities
+            .insert(other.entity, QueryState::Ready(other));
         let mut entry = summary.clone();
         entry.entity = entity;
         entry.name = name.into();
         entry.capabilities = vec![IndustryCapability::Refinery];
         entry.metrics = metrics;
-        industry.directory.push(entry);
+        industry.directory.as_mut().unwrap().items.push(entry);
     }
     let work = ServiceWork::Recipe {
         recipe: recipe.id,
@@ -279,7 +547,7 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         available: 12_000 * economy::MONEY_SCALE,
         ..Default::default()
     };
-    for summary in industry.directory.iter().skip(1) {
+    for summary in industry.summaries().skip(1) {
         let mut public = services.facilities[0].clone();
         public.summary = summary.clone();
         public.queued_jobs = 0;
@@ -291,7 +559,7 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         quote.total = quote.energy_charge + quote.time_charge;
         services.quotes.insert(summary.entity, Ok(quote));
     }
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account,
         ..Default::default()
     };
@@ -325,8 +593,8 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         declaration_history: &[],
         declaration_history_next: None,
         declaration_history_key: None,
-        services: &services,
-        industry_ready: true,
+        services: &QueryState::Ready(services.clone()),
+
         industry: &industry,
         society: &society,
         navigation: &navigation,
@@ -341,7 +609,7 @@ fn industry_gallery_covers_operator_and_customer_screens() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -420,7 +688,9 @@ fn society_gallery_covers_directory_and_diplomacy() {
     let account = Id([1; 16]);
     let use_id = Id([3; 16]);
     let lfs_id = Id([4; 16]);
-    let organization = Id([5; 16]);
+    let organization = Id(osg_universe::organizations::organization_id(
+        "Helion Flight Cooperative",
+    ));
     let use_principal = Principal::Sovereignty(use_id);
     let lfs_principal = Principal::Sovereignty(lfs_id);
     let declaration = Declaration {
@@ -437,7 +707,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
         note: "Initial contact.".into(),
         ..declaration.clone()
     };
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account,
         ..Default::default()
     };
@@ -463,7 +733,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
         organization,
         Organization {
             id: organization,
-            name: "Neris Shipwrights".into(),
+            name: "Helion Flight Cooperative".into(),
             sovereignty: use_id,
             open_membership: true,
             officers: BTreeSet::from([account]),
@@ -663,7 +933,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
             lfs_principal,
         )),
         services: empty_services(),
-        industry_ready: true,
+
         industry: empty_industry(),
         society: &society,
         navigation: &navigation,
@@ -678,7 +948,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -767,6 +1037,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
             let mut state = society::State::default();
             let mut workspace = framing::Workspace::new(&ctx);
             workspace.set_loading(SOCIETY, variant == "polity");
+            state.gallery_loaded(&society);
             state.gallery_variant(
                 variant,
                 if variant == "polity" {
@@ -846,12 +1117,12 @@ fn society_gallery_covers_directory_and_diplomacy() {
 
 #[test]
 fn market_gallery_settles_at_desktop_and_compact_sizes() {
-    use osg_model::market::{MarketSnapshot, Order, Side, Trade};
+    use osg_model::market::{Order, Side, Trade};
     use ownership::{PlayerAffiliation, Principal};
 
     let account = Id([1; 16]);
     let owner = Principal::Player(account);
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account,
         ..Default::default()
     };
@@ -870,7 +1141,7 @@ fn market_gallery_settles_at_desktop_and_compact_sizes() {
         declaration_history_next: None,
         declaration_history_key: None,
         industry: empty_industry(),
-        industry_ready: true,
+
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
@@ -884,12 +1155,12 @@ fn market_gallery_settles_at_desktop_and_compact_sizes() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
-    let mut market_industry = industry_model::IndustrySnapshot {
-        catalogue: Some(industry_model::IndustryCatalogue {
+    let mut market_industry = IndustryView {
+        catalogue: QueryState::Ready(industry_model::IndustryCatalogue {
             revision: [1; 32],
             recipes: vec![industry_model::Recipe {
                 id: "refine".into(),
@@ -942,7 +1213,7 @@ fn market_gallery_settles_at_desktop_and_compact_sizes() {
         closed_ms: None,
         time_ms: 0,
     };
-    let snapshot = MarketSnapshot {
+    let snapshot = MarketView {
         owner: Some(owner),
         available_uec: 70_000_000_000,
         available_lat: 10_000_000,
@@ -1100,7 +1371,7 @@ fn market_gallery_settles_at_desktop_and_compact_sizes() {
                     |ui| {
                         let mut intents = Vec::new();
                         workspace.show(ui, MARKET, &model, |ui| {
-                            market::draw(ui, &mut state, &model, Some(&snapshot), &mut intents);
+                            market::draw(ui, &mut state, &model, &snapshot, &mut intents);
                         });
                         assert!(intents.is_empty());
                     },
@@ -1189,12 +1460,12 @@ fn font_gallery() {
 
 #[test]
 fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
-    use economy::{Currency, EntryKind, LedgerEntry, MONEY_SCALE, WalletBalance, WalletSnapshot};
+    use economy::{Currency, EntryKind, LedgerEntry, MONEY_SCALE, WalletBalance};
     use ownership::{PlayerAffiliation, Principal};
 
     let account = Id([1; 16]);
     let owner = Principal::Player(account);
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account,
         ..Default::default()
     };
@@ -1236,7 +1507,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
         declaration_history_next: None,
         declaration_history_key: None,
         industry: empty_industry(),
-        industry_ready: true,
+
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
@@ -1250,7 +1521,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -1261,7 +1532,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
             let mut renderer = software::Renderer::default();
             let mut state = wallet::State::default();
             let mut workspace = framing::Workspace::new(&ctx);
-            let mut snapshot = WalletSnapshot {
+            let mut snapshot = WalletView {
                 owner: Some(owner),
                 market_uec_per_lat: Some(3_350_000),
                 next_charge_ms: economy::DAY_MS,
@@ -1394,7 +1665,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
                     |ui| {
                         let mut intents = Vec::new();
                         workspace.show(ui, WALLET, &model, |ui| {
-                            wallet::draw(ui, &mut state, &model, Some(&snapshot), &mut intents);
+                            wallet::draw(ui, &mut state, &model, &snapshot, &mut intents);
                             rect = ui.min_rect();
                         });
                         assert!(intents.is_empty());
@@ -1470,12 +1741,12 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
         declaration_history_next: None,
         declaration_history_key: None,
         industry: empty_industry(),
-        industry_ready: true,
+
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
         inhabited: Default::default(),
-        society: &ownership::SocietySnapshot::default(),
+        society: &SocietyData::default(),
         rows: vec![Row {
             target: SelectedTarget::Beacon(Id([9; 16])),
             name: "Sol navigation beacon".into(),
@@ -1489,7 +1760,7 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: None,
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -1505,15 +1776,16 @@ fn default_desktop_stays_stable_without_overlapping_the_selected_item() {
             |ui| {
                 panels::draw(
                     ui.ctx(),
+                    false,
                     &mut shell,
                     &mut panes.get(),
                     &model,
                     &selection,
                     &[],
                     &ChatState::default(),
-                    None,
-                    None,
-                    None,
+                    &QueryState::Loading,
+                    &QueryState::Loading,
+                    &QueryState::Loading,
                     &mut Vec::new(),
                 );
             },
@@ -1626,230 +1898,7 @@ fn command_feedback_waits_for_every_reply_and_retains_errors() {
 }
 
 #[test]
-fn itinerary_draws_producer_labels_without_a_navigation_catalogue() {
-    let ctx = egui::Context::default();
-    osg_ui::theme::install(&ctx);
-    let entry = Id([3; 16]);
-    let exit = Id([4; 16]);
-    let mut state = travel::AutopilotState {
-        enabled: true,
-        status: travel::FirmwareStatus {
-            phase: travel::FirmwarePhase::Maneuvering,
-            estimated_arrival_tick: Some(600),
-            ..Default::default()
-        },
-        itinerary: vec![
-            travel::Directive::DockAt(exit),
-            travel::Directive::SlipToSystem(entry),
-            travel::Directive::SlipToSystem(exit),
-            travel::Directive::DockAt(exit),
-        ]
-        .into_iter()
-        .map(|directive| self::entry(directive, 60.))
-        .collect(),
-        ..Default::default()
-    };
-    state
-        .itinerary
-        .extend((0..8).map(|_| self::entry(travel::Directive::DockAt(exit), 60.)));
-    for (index, order) in state.itinerary.iter_mut().enumerate() {
-        order.label = match index {
-            0 => "Dock · Sol navigation beacon",
-            1 => "Transfer · Sol",
-            2 => "Slip · Terminus",
-            _ => "Transfer · Terminus",
-        }
-        .into();
-    }
-    let mut text = Vec::new();
-    fn collect(shape: &egui::Shape, text: &mut Vec<String>) {
-        match shape {
-            egui::Shape::Text(shape) => text.push(shape.galley.job.text.clone()),
-            egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, text)),
-            _ => {}
-        }
-    }
-    for frame in 0..4 {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(600., 1000.),
-                )),
-                time: Some(frame as f64 / 60.),
-                ..Default::default()
-            },
-            |ui| instruments::itinerary(ui, &state, 0),
-        );
-        output.textures_delta.clear();
-        text.clear();
-        for shape in &output.shapes {
-            collect(&shape.shape, &mut text);
-            if let egui::Shape::Text(label) = &shape.shape {
-                if label.galley.job.text == "12  Transfer · Terminus" {
-                    let bounds = label.galley.rect.translate(label.pos.to_vec2());
-                    assert!(
-                        bounds.min.y > 220.,
-                        "route should extend below the former scroll limit"
-                    );
-                    assert!(
-                        shape.clip_rect.contains_rect(bounds),
-                        "last stage must remain visible"
-                    );
-                }
-            }
-        }
-    }
-    for expected in [
-        "1  Dock · Sol navigation beacon",
-        "2  Transfer · Sol",
-        "3  Slip · Terminus",
-        "4  Transfer · Terminus",
-        "12  Transfer · Terminus",
-        "ETA ~01:00",
-        "ETA ~12:00",
-    ] {
-        assert!(
-            text.iter().any(|label| label == expected),
-            "missing {expected}: {text:?}"
-        );
-    }
-}
-
-#[test]
-fn planner_warns_when_one_required_tank_is_short_even_with_other_fuel_aboard() {
-    let ctx = egui::Context::default();
-    osg_ui::theme::install(&ctx);
-    let mut ship = super::super::tests::ship(Id([9; 16])).0;
-    ship.travel.itinerary = vec![entry(travel::Directive::DockAt(Id([4; 16])), 10.)];
-    ship.travel.fuel_budget = Some(travel::FuelBudget {
-        resources: vec![
-            travel::FuelRequirement {
-                resource: "water".into(),
-                required_kg: 10.,
-                available_kg: 9.,
-            },
-            travel::FuelRequirement {
-                resource: "hydrogen".into(),
-                required_kg: 10.,
-                available_kg: 1000.,
-            },
-        ],
-        complete: false,
-    });
-    let navigation = NavigationCatalogue::default();
-    let model = FrameModel {
-        services: empty_services(),
-        declaration_history: &[],
-        declaration_history_next: None,
-        declaration_history_key: None,
-        industry: empty_industry(),
-        industry_ready: true,
-        navigation_status: &NavigationStatus::Ready,
-        navigation_hash: None,
-        navigation: &navigation,
-        inhabited: Default::default(),
-        society: &ownership::SocietySnapshot::default(),
-        rows: vec![],
-        ship: Some(&ship),
-        details: None,
-        system: "Helion".into(),
-        vicinity: String::new(),
-        connected: true,
-        status: "",
-        time_ns: 0,
-        calendar_unix_ms: None,
-        diagnostics: Default::default(),
-        orbits: true,
-    };
-    let mut text = String::new();
-    for _ in 0..3 {
-        let mut output = ctx.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800., 600.),
-                )),
-                ..Default::default()
-            },
-            |ui| instruments::fuel_budget(ui, &model),
-        );
-        output.textures_delta.clear();
-        text.clear();
-        for shape in output.shapes {
-            if let egui::Shape::Text(shape) = shape.shape {
-                text.push_str(&shape.galley.job.text);
-                text.push('\n');
-            }
-        }
-    }
-    assert!(
-        text.contains("FUEL EXHAUSTION · water · estimated shortfall 1.0 kg"),
-        "{text}"
-    );
-    assert!(text.contains("Partial estimate"));
-    assert!(!text.contains("FUEL EXHAUSTION · hydrogen"));
-}
-
-#[test]
-fn planning_progress_reports_strategic_search_phases() {
-    let context = egui::Context::default();
-    osg_ui::theme::install(&context);
-    let mut progress = None;
-    fn labels(context: &egui::Context, progress: Option<&travel::PlanningProgress>) -> Vec<String> {
-        let mut output = context.run_ui(
-            egui::RawInput {
-                screen_rect: Some(egui::Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(500., 200.),
-                )),
-                ..Default::default()
-            },
-            |ui| instruments::planning_progress(ui, progress),
-        );
-        output.textures_delta.clear();
-        fn collect(shape: &egui::Shape, labels: &mut Vec<String>) {
-            match shape {
-                egui::Shape::Text(text) => labels.push(text.galley.job.text.clone()),
-                egui::Shape::Vec(shapes) => shapes.iter().for_each(|shape| collect(shape, labels)),
-                _ => {}
-            }
-        }
-        let mut labels = Vec::new();
-        for shape in output.shapes {
-            collect(&shape.shape, &mut labels);
-        }
-        labels
-    }
-    assert!(
-        labels(&context, progress.as_ref())
-            .iter()
-            .any(|label| label == "Starting route planner…")
-    );
-    progress = Some(travel::PlanningProgress {
-        stage: travel::PlanningStage::LoadingCatalogue,
-        completed: 5000,
-        total: None,
-    });
-    assert!(
-        labels(&context, progress.as_ref())
-            .iter()
-            .any(|label| label == "Loading navigation catalogue · 5000")
-    );
-    progress = Some(travel::PlanningProgress {
-        stage: travel::PlanningStage::SearchingRoutes,
-        completed: 300,
-        total: Some(1000),
-    });
-    assert!(
-        labels(&context, progress.as_ref())
-            .iter()
-            .any(|label| label == "Comparing routes · 300 / 1000")
-    );
-}
-
-#[test]
-fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_pickers() {
+fn ship_inventory_and_hangar_query_places_without_global_inventory_pickers() {
     let ship = Id([1; 16]);
     let host = Id([2; 16]);
     let other = Id([3; 16]);
@@ -1857,7 +1906,7 @@ fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_picker
     let mut shell = Shell::default();
     let mut panes = TestPanes::default();
     shell.desktop.open(INVENTORY);
-    let inventory = inventory_subscription(&shell, &panes.get(), Some(ship), None, true).unwrap();
+    let inventory = industry_query(&shell, &panes.get(), Some(ship), None, true).unwrap();
     assert_eq!(inventory.inventories, vec![ship]);
     assert!(!inventory.directory);
     assert!(inventory.hangar.is_none());
@@ -1884,25 +1933,20 @@ fn ship_inventory_and_hangar_subscribe_to_places_without_global_inventory_picker
     shell.desktop.open(HANGAR);
     shell.desktop.open(CARGO);
     panes.get().cargo_inventory.0 = Some(other);
-    let local =
-        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
+    let local = industry_query(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
     assert!(!local.directory);
     assert_eq!(local.hangar.as_ref().unwrap().ship, ship);
     assert_eq!(local.inventories, vec![ship, host, other]);
 
     shell.desktop.open(INDUSTRY);
     panes.get().industry.facility = Some(factory);
-    let combined =
-        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
+    let combined = industry_query(&shell, &panes.get(), Some(ship), Some(&hangar), true).unwrap();
     assert!(combined.directory && combined.catalogue);
     assert!(combined.inventories.contains(&factory));
     assert!(combined.inventories.contains(&host));
     assert!(combined.inventories.contains(&other));
 
-    let refocused =
-        inventory_subscription(&shell, &panes.get(), Some(other), Some(&hangar), true).unwrap();
+    let refocused = industry_query(&shell, &panes.get(), Some(other), Some(&hangar), true).unwrap();
     assert!(!refocused.inventories.contains(&host));
-    assert!(
-        inventory_subscription(&shell, &panes.get(), Some(ship), Some(&hangar), false).is_none()
-    );
+    assert!(industry_query(&shell, &panes.get(), Some(ship), Some(&hangar), false).is_none());
 }

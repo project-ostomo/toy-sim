@@ -400,6 +400,43 @@ impl<K: Copy + Eq + Hash> GalacticIndex<K> {
         self.records.iter()
     }
 
+    /// Visit every centre in the radius, stopping when the caller cancels.
+    pub fn visit_centers_within_radius(
+        &self,
+        position: GalacticPosition,
+        radius_m: f64,
+        mut proceed: impl FnMut() -> bool,
+        mut visit: impl FnMut(K),
+    ) -> bool {
+        if let Some(tree) = self.tree() {
+            return tree
+                .try_visit(coords(position), |bounds, _, leaf| {
+                    if !proceed() {
+                        return Err(());
+                    }
+                    if bounds.distance_squared(coords(position)) > radius_m.next_up().powi(2) {
+                        return Ok(false);
+                    }
+                    if let Some(&(id, record)) = leaf {
+                        if record.position.relative_to(position).length() <= radius_m.next_up() {
+                            visit(id);
+                        }
+                    }
+                    Ok(true)
+                })
+                .is_ok();
+        }
+        for (&id, record) in &self.records {
+            if !proceed() {
+                return false;
+            }
+            if record.position.relative_to(position).length() <= radius_m.next_up() {
+                visit(id);
+            }
+        }
+        true
+    }
+
     /// Centre or sphere overlap candidates, filtered using exact positions.
     pub fn within_radius(
         &self,
@@ -808,6 +845,39 @@ pub fn segment_sphere_entry(centre: DVec3, displacement: DVec3, radius: f64) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellable_radius_visit_matches_exhaustive_centres() {
+        let mut index = GalacticIndex::dynamic_bvh();
+        index
+            .replace((0..1000).map(|id| {
+                (
+                    id,
+                    SpatialRecord {
+                        position: GalacticPosition::ZERO.offset_by(DVec3::X * id as f64),
+                        radius_m: 100.,
+                        luminosity: 0.,
+                    },
+                )
+            }))
+            .unwrap();
+        index.rebuild();
+        let mut found = Vec::new();
+        assert!(index.visit_centers_within_radius(
+            GalacticPosition::ZERO,
+            499.,
+            || true,
+            |id| found.push(id)
+        ));
+        found.sort_unstable();
+        assert_eq!(found, (0..500).collect::<Vec<_>>());
+        assert!(!index.visit_centers_within_radius(
+            GalacticPosition::ZERO,
+            1000.,
+            || false,
+            |_| panic!("visited after cancellation")
+        ));
+    }
 
     #[test]
     fn dynamic_publication_removal_and_clone_are_independent() {

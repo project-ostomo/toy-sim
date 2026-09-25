@@ -1,5 +1,5 @@
 use super::super::{ViewCamera, ViewMember};
-use crate::state::SessionInfo;
+use crate::state::GameSession;
 use crate::state::{
     CombatPublication, Optical, OwnedShip, RenderTime, SpatialInstance, ViewObservation,
 };
@@ -59,15 +59,15 @@ struct ViewTracers {
 #[derive(Resource, Default)]
 struct TracerAssets(Option<Handle<TracerMaterial>>);
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_plugins(TracerPlugin)
         .init_resource::<TracerAssets>()
+        .add_systems(Last, prepare.in_set(crate::state::ClientSystems::Gameplay))
         .add_systems(
             PostUpdate,
-            (prepare, render)
-                .chain()
-                .before(bevy::transform::TransformSystems::Propagate)
-                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+            render
+                .in_set(crate::state::ClientSystems::Gameplay)
+                .before(bevy::transform::TransformSystems::Propagate),
         );
 }
 
@@ -82,7 +82,7 @@ fn render(
     clock: Res<RenderTime>,
     time: Res<Time<Real>>,
     fixed: Res<Time<Fixed>>,
-    session: Res<SessionInfo>,
+    session: Res<GameSession>,
     publications: Query<&CombatPublication>,
     contacts: Query<(&Optical, Option<&SpatialInstance>)>,
     owned: Query<(&OwnedShip, Option<&SpatialInstance>)>,
@@ -130,8 +130,8 @@ fn render(
                 })
         });
         let key = HistoryKey {
-            world: session.world,
-            generation: session.generation,
+            world: Some(session.key.world),
+            generation: session.key.generation,
             focus: view.followed,
             spatial_instance,
         };

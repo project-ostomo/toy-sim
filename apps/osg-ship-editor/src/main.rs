@@ -368,22 +368,20 @@ fn main() -> anyhow::Result<()> {
             (
                 osg_ship_view::prepare_visuals,
                 viewport::setup,
-                previews::setup,
-            )
-                .chain(),
+                previews::setup.after(osg_ship_view::prepare_visuals),
+            ),
         )
         .add_systems(EguiPrimaryContextPass, ui::editor)
+        .add_systems(Last, osg_ship_view::add_weapon_visuals)
         .add_systems(
             PostUpdate,
             (
                 viewport::camera,
                 viewport::visuals,
                 viewport::ghost,
-                osg_ship_view::add_weapon_visuals,
                 previews::activity,
                 previews::fit_and_isolate,
             )
-                .chain()
                 .after(osg_ui::bevy_egui::EguiPostUpdateSet::EndPass)
                 .before(TransformSystems::Propagate),
         )

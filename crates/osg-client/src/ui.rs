@@ -1,7 +1,8 @@
 mod capture;
-pub(crate) mod celestials;
+pub mod celestials;
 mod console;
 mod input;
+mod mfd;
 mod scene;
 mod selection;
 mod shell;
@@ -70,14 +71,18 @@ pub fn run(endpoint: OsgNetClient, local: bool) {
         input::install,
         scene::install,
         console::install,
+        mfd::install,
         shell::install,
     ))
     .add_systems(Startup, osg_ship_view::prepare_visuals)
-    .add_systems(Update, osg_ship_view::add_weapon_visuals)
+    .add_systems(
+        Update,
+        osg_ship_view::add_weapon_visuals.in_set(state::ClientSystems::Gameplay),
+    )
     .add_systems(
         Update,
         selection::synchronize
-            .after(state::PresentationSet::Interpolate)
+            .in_set(state::ClientSystems::Gameplay)
             .after(celestials::CelestialSystems::Evaluate)
             .before(state::PresentationSet::Views),
     )
@@ -97,7 +102,7 @@ mod tests {
     use bevy::ecs::system::RunSystemOnce;
     use osg_model::*;
 
-    pub(super) fn ship(id: Id) -> OwnedShip {
+    pub fn ship(id: Id) -> OwnedShip {
         OwnedShip(ShipTelemetry {
             location: Default::default(),
             can_control: true,
@@ -131,7 +136,6 @@ mod tests {
         world.init_resource::<Outgoing>();
         world.init_resource::<state::IndustryState>();
         world.insert_resource(SessionInfo {
-            world: Some(Id([3; 16])),
             ..Default::default()
         });
         let second = Id([2; 16]);
@@ -207,30 +211,31 @@ mod tests {
             host: Id([4; 16]),
             bay: 0,
         };
-        world.resource_mut::<state::IndustryState>().snapshot.hangar = Some(industry::HangarView {
-            berths_used: Some(1),
-            berths_total: Some(4),
-            ship: first,
-            host: Id([4; 16]),
-            host_name: "Test hangar".into(),
-            host_inventory: None,
-            ships: vec![industry::HangarEntry {
-                inventory: industry::FacilitySummary {
-                    metrics: Default::default(),
-                    entity: built,
-                    owner: ownership::Principal::Player(Id([1; 16])),
-                    name: "Built ship outside telemetry page".into(),
-                    location: Some(Id([4; 16])),
-                    capabilities: Vec::new(),
-                    can_manage: false,
-                    can_transfer: true,
-                },
-                can_focus: true,
-                can_control: true,
-                can_open_inventory: true,
-            }],
-            next: None,
-        });
+        world.resource_mut::<state::IndustryState>().snapshot.hangar =
+            state::QueryState::Ready(industry::HangarView {
+                berths_used: Some(1),
+                berths_total: Some(4),
+                ship: first,
+                host: Id([4; 16]),
+                host_name: "Test hangar".into(),
+                host_inventory: None,
+                ships: vec![industry::HangarEntry {
+                    inventory: industry::FacilitySummary {
+                        metrics: Default::default(),
+                        entity: built,
+                        owner: ownership::Principal::Player(Id([1; 16])),
+                        name: "Built ship outside telemetry page".into(),
+                        location: Some(Id([4; 16])),
+                        capabilities: Vec::new(),
+                        can_manage: false,
+                        can_transfer: true,
+                    },
+                    can_focus: true,
+                    can_control: true,
+                    can_open_inventory: true,
+                }],
+                next: None,
+            });
 
         world.spawn(state::ViewObservation(ViewState {
             focused_ship: Some(first),
@@ -245,7 +250,7 @@ mod tests {
 
         assert_eq!(world.resource::<Selection>().ship, Some(built));
         world.spawn(hull);
-        world.resource_mut::<state::IndustryState>().snapshot.hangar = None;
+        world.resource_mut::<state::IndustryState>().snapshot.hangar = state::QueryState::Loading;
         world.run_system_once(selection::synchronize).unwrap();
         assert_eq!(world.resource::<Selection>().ship, Some(built));
 
@@ -286,7 +291,6 @@ mod tests {
         world.init_resource::<Outgoing>();
         world.init_resource::<state::IndustryState>();
         world.insert_resource(SessionInfo {
-            world: Some(Id([5; 16])),
             ..Default::default()
         });
         world.trigger(state::SessionReset);

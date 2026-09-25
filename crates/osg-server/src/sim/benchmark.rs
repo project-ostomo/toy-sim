@@ -65,9 +65,6 @@ fn fresh_world_slip_load() {
             state.itinerary = vec![osg_model::travel::ItineraryEntry {
                 directive: osg_model::travel::Directive::SlipToSystem(target),
                 label: "Performance probe".into(),
-                max_loss_ppm: 100.0,
-                fuel_allowance_kg: 1000.0,
-                estimated_duration_ticks: None,
             }];
         }
         diagnostics::samples::take();

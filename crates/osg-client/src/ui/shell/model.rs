@@ -1,20 +1,19 @@
 use super::*;
 
 #[cfg(test)]
-pub(super) fn empty_services() -> &'static crate::state::requests::services::View {
-    static EMPTY: std::sync::OnceLock<crate::state::requests::services::View> =
+pub fn empty_services() -> &'static QueryState<crate::state::requests::services::View> {
+    static EMPTY: std::sync::OnceLock<QueryState<crate::state::requests::services::View>> =
         std::sync::OnceLock::new();
     EMPTY.get_or_init(Default::default)
 }
 
 #[cfg(test)]
-pub(super) fn empty_industry() -> &'static industry_model::IndustrySnapshot {
-    static EMPTY: std::sync::OnceLock<industry_model::IndustrySnapshot> =
-        std::sync::OnceLock::new();
+pub fn empty_industry() -> &'static IndustryView {
+    static EMPTY: std::sync::OnceLock<IndustryView> = std::sync::OnceLock::new();
     EMPTY.get_or_init(Default::default)
 }
 
-pub(super) struct Row {
+pub struct Row {
     pub celestial: Option<travel::CelestialRef>,
     pub target: SelectedTarget,
     pub contact: Option<ContactRef>,
@@ -49,7 +48,7 @@ impl Row {
     }
 }
 
-pub(super) struct FrameModel<'a> {
+pub struct FrameModel<'a> {
     pub declaration_history: &'a [osg_model::diplomacy::Declaration],
     pub declaration_history_next: Option<u64>,
     pub declaration_history_key: Option<(
@@ -57,10 +56,10 @@ pub(super) struct FrameModel<'a> {
         osg_model::diplomacy::DeclarationCategory,
         ownership::Principal,
     )>,
-    pub services: &'a crate::state::requests::services::View,
-    pub industry_ready: bool,
-    pub industry: &'a industry_model::IndustrySnapshot,
-    pub society: &'a ownership::SocietySnapshot,
+    pub services: &'a QueryState<crate::state::requests::services::View>,
+
+    pub industry: &'a IndustryView,
+    pub society: &'a SocietyData,
     pub navigation: &'a NavigationCatalogue,
     pub inhabited: std::sync::Arc<osg_model::InhabitedDirectory>,
     pub navigation_status: &'a NavigationStatus,
@@ -73,12 +72,12 @@ pub(super) struct FrameModel<'a> {
     pub connected: bool,
     pub status: &'a str,
     pub time_ns: u64,
-    pub calendar_unix_ms: Option<i64>,
+    pub calendar_unix_ms: i64,
     pub diagnostics: ClientDiagnostics,
     pub orbits: bool,
 }
 
-pub(super) fn ship_name(ship: &ShipTelemetry) -> String {
+pub fn ship_name(ship: &ShipTelemetry) -> String {
     ship.iff
         .labels
         .iter()
@@ -87,11 +86,11 @@ pub(super) fn ship_name(ship: &ShipTelemetry) -> String {
         .unwrap_or_else(|| "Your ship".into())
 }
 
-pub(super) fn short_id(id: Id) -> String {
+pub fn short_id(id: Id) -> String {
     id.to_string().chars().take(8).collect()
 }
 
-pub(super) fn row_visible(row: &Row, state: &Shell, selected: Option<SelectedTarget>) -> bool {
+pub fn row_visible(row: &Row, state: &Shell, selected: Option<SelectedTarget>) -> bool {
     if selected == Some(row.target) {
         return true;
     }
@@ -108,7 +107,7 @@ pub(super) fn row_visible(row: &Row, state: &Shell, selected: Option<SelectedTar
             || row.kind.to_lowercase().contains(&search))
 }
 
-pub(super) fn sorted_rows<'a>(
+pub fn sorted_rows<'a>(
     rows: &'a [Row],
     state: &Shell,
     selected: Option<SelectedTarget>,
@@ -134,26 +133,7 @@ pub(super) fn sorted_rows<'a>(
     rows
 }
 
-pub(super) fn travel_status(state: &travel::AutopilotState) -> String {
-    if let Some(reason) = &state.failure {
-        return format!("Autopilot stopped: {reason}");
-    }
-    if !state.enabled && !state.itinerary.is_empty() {
-        return "Autopilot disengaged".into();
-    }
-    match &state.status.phase {
-        travel::FirmwarePhase::Idle => "No route".into(),
-        travel::FirmwarePhase::Planning => "Planning maneuvers".into(),
-        travel::FirmwarePhase::Waiting { why, .. } => format!("Waiting: {why}"),
-        travel::FirmwarePhase::Charging => "Charging slipdrive".into(),
-        travel::FirmwarePhase::Transit => "Slip transit".into(),
-        travel::FirmwarePhase::Maneuvering => "Maneuvering".into(),
-        travel::FirmwarePhase::Docking => "Docking".into(),
-        travel::FirmwarePhase::Completed => "Route complete".into(),
-    }
-}
-
-pub(super) fn computer_status(status: &ComputerStatus) -> String {
+pub fn computer_status(status: &ComputerStatus) -> String {
     match status {
         ComputerStatus::Unpowered => "Unpowered".into(),
         ComputerStatus::Booting { progress, .. } => format!("Booting · {:.0}%", progress * 100.),

@@ -35,10 +35,11 @@ fn slip_destination(
     Some((transit.destination, remaining, eta, transit.failure_ppm))
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_systems(
         EguiPrimaryContextPass,
-        draw.after(crate::ui::shell::ShellDraw),
+        draw.after(crate::ui::shell::ShellDraw)
+            .in_set(crate::state::ClientSystems::Gameplay),
     );
 }
 

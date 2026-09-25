@@ -5,10 +5,12 @@ use bevy::{prelude::*, window::PrimaryWindow};
 use osg_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
 use osg_ui::units::distance;
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_systems(
         EguiPrimaryContextPass,
-        overlay.after(crate::ui::shell::ShellDraw),
+        overlay
+            .after(crate::ui::shell::ShellDraw)
+            .in_set(crate::state::ClientSystems::Gameplay),
     );
 }
 

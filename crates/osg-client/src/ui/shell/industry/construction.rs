@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::oneshot;
 
 #[derive(Clone)]
-pub(in crate::ui::shell) struct Request {
+pub struct Request {
     pub facility: Id,
     pub facility_name: String,
     pub owner: ownership::Principal,
@@ -11,7 +11,6 @@ pub(in crate::ui::shell) struct Request {
     pub bytes: Arc<[u8]>,
 }
 
-type Session = (Id, u64);
 type UploadResult = Result<[u8; 32], String>;
 
 #[derive(Default)]
@@ -27,9 +26,9 @@ enum Status {
 }
 
 #[derive(Default)]
-pub(in crate::ui::shell) struct State {
+pub struct State {
     request: Option<Request>,
-    session: Option<Session>,
+    session: Option<SessionKey>,
     status: Status,
 }
 
@@ -41,7 +40,7 @@ impl State {
         )
     }
 
-    pub fn queue(&mut self, request: Request, session: Session) {
+    pub fn queue(&mut self, request: Request, session: SessionKey) {
         if self.busy() {
             return;
         }
@@ -51,7 +50,7 @@ impl State {
         self.status = Status::Queued;
     }
 
-    fn start(&mut self, request: Request, session: Session, client: crate::OsgNetClient) {
+    fn start(&mut self, request: Request, session: SessionKey, client: crate::OsgNetClient) {
         let bytes = request.bytes.clone();
         let (send, receive) = oneshot::channel();
         self.begin(request, session, receive);
@@ -69,7 +68,7 @@ impl State {
     fn begin(
         &mut self,
         request: Request,
-        session: Session,
+        session: SessionKey,
         receive: oneshot::Receiver<UploadResult>,
     ) {
         self.request = Some(request);
@@ -79,7 +78,7 @@ impl State {
 
     fn update(
         &mut self,
-        session: Option<Session>,
+        session: Option<SessionKey>,
         results: &[CommandResult],
     ) -> Option<(Id, IndustryCommand)> {
         if self.session != session {
@@ -166,22 +165,20 @@ impl State {
     }
 }
 
-pub(in crate::ui::shell) fn update(
+pub fn update(
     mut shell: ResMut<Shell>,
     mut industry: ResMut<industry::State>,
-    session: Res<SessionInfo>,
+    session: Res<GameSession>,
     commands: Res<CommandState>,
     mut requests: ResMut<crate::state::requests::Mutations>,
     client: Res<crate::ui::BlueprintAssets>,
 ) {
-    let key = session
-        .world
-        .filter(|_| session.status.is_empty())
-        .map(|world| (world, session.generation));
+    let key = Some(session.key);
     if let Some((command, build)) = industry.construction.update(key, &commands.results) {
-        let (world, generation) = key.unwrap();
+        let key = session.key;
+        let world = key.world;
         let net = client.0.clone();
-        requests.submit(world, generation, command, async move {
+        requests.submit(key, command, async move {
             crate::state::requests::mutations::industry_call(
                 &net,
                 osg_model::rpc::Operation { world, id: command },
@@ -222,7 +219,10 @@ mod tests {
 
     #[test]
     fn blueprint_upload_ack_submits_frozen_context_exactly_once_and_waits_for_build_result() {
-        let key = Some((Id([1; 16]), 4));
+        let key = Some(SessionKey {
+            world: Id([1; 16]),
+            generation: 4,
+        });
         let (send, receive) = oneshot::channel();
         let mut state = State::default();
         state.begin(request(), key.unwrap(), receive);
@@ -262,7 +262,10 @@ mod tests {
 
     #[test]
     fn blueprint_upload_failure_and_session_reset_never_submit_a_build() {
-        let key = Some((Id([1; 16]), 4));
+        let key = Some(SessionKey {
+            world: Id([1; 16]),
+            generation: 4,
+        });
         let mut state = State::default();
         let (send, receive) = oneshot::channel();
         state.begin(request(), key.unwrap(), receive);
@@ -273,7 +276,17 @@ mod tests {
         let (send, receive) = oneshot::channel();
         state.begin(request(), key.unwrap(), receive);
         send.send(Ok([9; 32])).unwrap();
-        assert!(state.update(Some((Id([1; 16]), 5)), &[]).is_none());
+        assert!(
+            state
+                .update(
+                    Some(SessionKey {
+                        world: Id([1; 16]),
+                        generation: 5
+                    }),
+                    &[]
+                )
+                .is_none()
+        );
         assert!(!state.busy());
         assert!(state.request.is_none());
     }

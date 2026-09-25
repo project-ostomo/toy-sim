@@ -70,10 +70,6 @@ record!(Directive {
 record!(ItineraryEntry {
     label: Text<256>,
     directive: Directive,
-    max_loss_ppm: f64,
-    fuel_allowance_kg: f64,
-    duration_present: u64,
-    duration_ticks: u64,
 });
 record!(Preferences {
     fuel_fraction: f64,
@@ -91,7 +87,8 @@ record!(LocalObstacle {
     reference: Target,
     pose: Pose,
     radius_m: f64,
-    slip_exclusion_m: f64
+    slip_exclusion_m: f64,
+    hill_radius_m: f64
 });
 record!(OrreryReply { count: u64 });
 record!(ContactReply {
@@ -144,29 +141,20 @@ record!(TravelReply {
     primary: CelestialRef, hierarchy_count: u64, sample_tick: u64, tick: u64,
     exotic_fuel_kg: f64,
 });
-record!(RouteRequest {
-    id: u64,
-    preferences: Preferences
-});
-record!(RoutePoll { id: u64 });
-record!(FuelRequirement { resource: Text<64>, required_kg: f64, available_kg: f64 });
-record!(RouteReply {
-    id: u64, status: u64, stage: u64, completed: u64, total_present: u64, total: u64,
-    planned_tick: u64, directive_revision: u64, topology_revision: u64,
-    itinerary_count: u64, fuel_count: u64, fuel_complete: u64, reason: Text<256>,
-    estimated_loss_ppm: f64, exotic_fuel_kg: f64,
-});
-record!(UseRoute {
-    id: u64,
-    directive_revision: u64,
-    engage: u64
-});
 record!(Fail { directive_revision: u64, reason: Text<256> });
+record!(FuelRequirement { resource: Text<64>, required_kg: f64, available_kg: f64 });
 record!(PublishStatus {
     directive_revision: u64,
     status: FirmwareStatus
 });
 record!(Complete {
+    directive_revision: u64
+});
+record!(SetAutopilot {
+    directive_revision: u64,
+    enabled: u64
+});
+record!(ClearItinerary {
     directive_revision: u64
 });
 record!(Slip {
@@ -226,28 +214,11 @@ pub mod raw {
             hierarchy_capacity: u32,
         ) -> i32;
         pub fn destination_resolve(query: *const ResolveQuery, reply: *mut Pose) -> i32;
-        pub fn route_request(
-            query: *const RouteRequest,
-            directives: *const Directive,
-            count: u32,
-            reply: *mut RouteReply,
-            output: *mut ItineraryEntry,
-            capacity: u32,
-            fuels: *mut FuelRequirement,
-            fuel_capacity: u32,
-        ) -> i32;
-        pub fn route_poll(
-            id: u64,
-            reply: *mut RouteReply,
-            output: *mut ItineraryEntry,
-            capacity: u32,
-            fuels: *mut FuelRequirement,
-            fuel_capacity: u32,
-        ) -> i32;
-        pub fn travel_use_route(action: *const UseRoute) -> i32;
         pub fn travel_fail(action: *const Fail) -> i32;
         pub fn travel_publish_status(action: *const PublishStatus) -> i32;
         pub fn travel_complete(action: *const Complete) -> i32;
+        pub fn travel_set_autopilot(action: *const SetAutopilot) -> i32;
+        pub fn travel_clear_itinerary(action: *const ClearItinerary) -> i32;
         pub fn travel_slip(action: *const Slip) -> i32;
         pub fn travel_cancel_slip() -> i32;
         pub fn travel_reserve_bay(action: *const ReserveBay) -> i32;

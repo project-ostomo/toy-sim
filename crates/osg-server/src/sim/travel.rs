@@ -262,70 +262,6 @@ pub fn dock(world: &mut World, ship: Entity, host: Entity, bay: u32) -> Result<(
     Ok(())
 }
 
-pub(crate) fn construction_bay(
-    world: &World,
-    host: Entity,
-    owner: osg_model::ownership::Principal,
-    radius: f64,
-    mass: f64,
-) -> Result<u32> {
-    ensure!(active(world, host), "shipyard unavailable");
-    ensure!(
-        world
-            .get::<super::hardware::Hull>(host)
-            .is_some_and(|hull| hull.0 > 0.),
-        "shipyard destroyed"
-    );
-    ensure!(
-        containment_depth(world, host)? < 8,
-        "containment limit exceeded"
-    );
-    let bays = world
-        .get::<DockingBays>(host)
-        .ok_or_else(|| anyhow::anyhow!("shipyard has no docking aperture"))?;
-    let bay = bays
-        .0
-        .iter()
-        .position(|bay| {
-            radius <= bay.radius_m
-                && mass <= bay.mass_capacity_kg
-                && super::ownership::port_access(
-                    world,
-                    owner,
-                    host,
-                    osg_model::ownership::Permission::Dock,
-                    bay.public,
-                    &bay.allowed,
-                )
-        })
-        .ok_or_else(|| anyhow::anyhow!("no available authorized docking aperture"))?;
-    Ok(bay as u32)
-}
-
-pub(crate) fn store_constructed(
-    world: &mut World,
-    ship: Entity,
-    host: Entity,
-    bay: u32,
-) -> Result<()> {
-    ensure!(ship != host, "cannot contain self");
-    let mass = world
-        .get::<MassProps>(ship)
-        .ok_or_else(|| anyhow::anyhow!("constructed mass unavailable"))?
-        .mass;
-    let selected = construction_bay(world, host, owner(world, ship)?, radius(world, ship)?, mass)?;
-    ensure!(
-        selected == bay,
-        "docking aperture changed during construction"
-    );
-    let host_id = id(world, host)?;
-    set_dormant(world, ship, Presence::Docked { host: host_id, bay });
-    world.entity_mut(ship).insert(DockedIn(host));
-    add_stored_mass(world, host, mass);
-    emit(world, ship, "constructed", None);
-    Ok(())
-}
-
 fn add_stored_mass(world: &mut World, host: Entity, delta: f64) {
     let stored = world.get::<StoredMass>(host).map_or(0., |m| m.0);
     world
@@ -507,70 +443,6 @@ pub fn slip_admissible(
     clear_at(world, ship, None, position, radius) && celestial_conditions(world, position, radius).1
 }
 
-pub fn apply_plan(
-    world: &mut World,
-    ship: Entity,
-    expected_revision: u64,
-    plan: osg_model::routing::Plan,
-    preferences: PlanningPreferences,
-    engage: bool,
-) -> Result<()> {
-    ensure!(preferences.valid(), "invalid planning preference");
-    ensure!(
-        plan.directive_revision == expected_revision,
-        "stale route plan"
-    );
-    ensure!(
-        plan.itinerary.len() <= osg_model::routing::MAX_DIRECTIVES,
-        "invalid itinerary length"
-    );
-    ensure!(plan.fuel_budget.valid(), "invalid fuel budget");
-    ensure!(
-        world
-            .get::<Travel>(ship)
-            .is_some_and(|travel| travel.0.directive_revision == expected_revision),
-        "stale directive revision"
-    );
-    ensure!(
-        world.get::<Transit>(ship).is_none(),
-        "wait for slip arrival before replacing itinerary"
-    );
-    for entry in &plan.itinerary {
-        ensure!(
-            entry.max_loss_ppm.is_finite() && (0.0..=1_000_000.0).contains(&entry.max_loss_ppm),
-            "invalid risk allowance"
-        );
-        ensure!(
-            entry.fuel_allowance_kg.is_finite() && entry.fuel_allowance_kg >= 0.0,
-            "invalid fuel allowance"
-        );
-    }
-    cancel_pending(world, ship);
-    let enabled = engage && !plan.itinerary.is_empty();
-    world.get_mut::<Travel>(ship).unwrap().0 = AutopilotState {
-        enabled,
-        directive_revision: expected_revision.wrapping_add(1),
-        itinerary: plan.itinerary,
-        preferences,
-        risk_budget: RiskBudget::new(preferences.max_loss_ppm),
-        fuel_budget: Some(plan.fuel_budget),
-        status: FirmwareStatus {
-            phase: if enabled {
-                FirmwarePhase::Planning
-            } else {
-                FirmwarePhase::Idle
-            },
-            ..Default::default()
-        },
-        failure: None,
-    };
-    validate_active_directive(world, ship);
-    if let Some(mut software) = world.get_mut::<super::vessel::ShipSoftware>(ship) {
-        software.schedule.wake();
-    }
-    Ok(())
-}
-
 fn active_directive(world: &World, ship: Entity, revision: u64) -> Result<()> {
     let state = &world
         .get::<Travel>(ship)
@@ -724,18 +596,37 @@ fn set_active(world: &mut World, ship: Entity) {
 pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramAction) -> Result<()> {
     use osg_model::ProgramAction;
     match action {
-        ProgramAction::UseRoute {
-            id,
-            directive_revision,
-            engage,
-        } => {
+        ProgramAction::SetAutopilot {
+            directive_revision, ..
+        }
+        | ProgramAction::ClearItinerary { directive_revision } => {
+            let state = world
+                .get::<Travel>(ship)
+                .ok_or_else(|| anyhow::anyhow!("Missing autopilot state"))?;
             ensure!(
-                world
-                    .get::<Travel>(ship)
-                    .is_some_and(|state| state.0.directive_revision == directive_revision),
+                state.0.directive_revision == directive_revision,
                 StaleDirective
             );
-            super::commands::use_route(world, ship, id, directive_revision, engage)
+            let command = match action {
+                ProgramAction::SetAutopilot { enabled, .. } => {
+                    osg_model::ShipCommand::SetAutopilot(enabled)
+                }
+                _ => osg_model::ShipCommand::SetItinerary {
+                    preferences: state.0.preferences,
+                    engage: false,
+                    expected_revision: directive_revision,
+                    itinerary: Vec::new(),
+                },
+            };
+            let id = world
+                .get::<super::identity::Identity>(ship)
+                .ok_or_else(|| anyhow::anyhow!("Missing ship identity"))?
+                .0;
+            let control = world
+                .get::<super::identity::Control>(ship)
+                .ok_or_else(|| anyhow::anyhow!("Missing ship controller"))?;
+            let (account, authority_revision) = (control.account, control.revision);
+            super::commands::execute(world, account, id, authority_revision, command)
         }
         ProgramAction::Complete { directive_revision } => {
             active_directive(world, ship, directive_revision)?;
@@ -784,7 +675,10 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
                         .is_none_or(|offset| offset.into_iter().all(f64::is_finite)),
                 "invalid firmware status"
             );
-            world.get_mut::<Travel>(ship).unwrap().0.status = status;
+            let mut travel = world.get_mut::<Travel>(ship).unwrap();
+            travel.0.risk_budget.spent_log_loss =
+                osg_model::travel::slip::log_loss_from_ppm(status.spent_loss_ppm);
+            travel.0.status = status;
             Ok(())
         }
         ProgramAction::Slip {
@@ -817,7 +711,6 @@ pub fn dispatch(world: &mut World, ship: Entity, action: osg_model::ProgramActio
 }
 
 fn complete_directive(state: &mut AutopilotState) {
-    state.risk_budget.spend(state.status.spent_loss_ppm);
     state.itinerary.remove(0);
     state.directive_revision = state.directive_revision.wrapping_add(1);
     state.status = FirmwareStatus {
@@ -826,6 +719,8 @@ fn complete_directive(state: &mut AutopilotState) {
         } else {
             FirmwarePhase::Planning
         },
+        spent_loss_ppm: state.status.spent_loss_ppm,
+        spent_exotic_fuel_kg: state.status.spent_exotic_fuel_kg,
         ..Default::default()
     };
     if state.itinerary.is_empty() {

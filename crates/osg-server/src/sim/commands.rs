@@ -70,8 +70,7 @@ pub(crate) fn permission(command: &ShipCommand) -> ownership::Permission {
         ShipCommand::SetTransponderEnabled(_)
         | ShipCommand::SetIff(_)
         | ShipCommand::SetDockServices { .. } => ownership::Permission::Configure,
-        ShipCommand::UseRoute { .. }
-        | ShipCommand::Flight(_)
+        ShipCommand::Flight(_)
         | ShipCommand::MarkTarget { .. }
         | ShipCommand::StopFiring
         | ShipCommand::UnmarkTarget
@@ -143,8 +142,7 @@ pub fn execute(
     )?;
     let wake = matches!(
         command,
-        ShipCommand::UseRoute { .. }
-            | ShipCommand::SetItinerary { .. }
+        ShipCommand::SetItinerary { .. }
             | ShipCommand::SetGuidance(_)
             | ShipCommand::SetAutopilot(_)
             | ShipCommand::Dock { .. }
@@ -174,13 +172,6 @@ pub fn execute(
             );
             world.entity_mut(entity).insert(Transponder(iff));
             super::sensors::refresh_iff(world, entity);
-        }
-        ShipCommand::UseRoute {
-            id,
-            expected_revision,
-            engage,
-        } => {
-            use_route(world, entity, id, expected_revision, engage)?;
         }
         ShipCommand::SetItinerary {
             preferences,
@@ -219,11 +210,7 @@ pub fn execute(
                 )?;
                 enqueue(world, entity, Command::HoldAttitude)?;
             }
-            let count = itinerary.len().max(1) as f64;
-            let loss = travel::slip::ppm_from_log_loss(
-                travel::slip::log_loss_from_ppm(preferences.max_loss_ppm) / count,
-            );
-            let fuel = exotic_fuel_kg(world, entity) * preferences.fuel_fraction / count;
+            let fuel = exotic_fuel_kg(world, entity);
             let mut state = world.get_mut::<super::travel::Travel>(entity).unwrap();
             let enabled = engage && !itinerary.is_empty();
             state.0 = travel::AutopilotState {
@@ -231,14 +218,19 @@ pub fn execute(
                 preferences,
                 directive_revision: state.0.directive_revision.wrapping_add(1),
                 risk_budget: travel::RiskBudget::new(preferences.max_loss_ppm),
+                fuel_budget: Some(travel::FuelBudget {
+                    resources: vec![travel::FuelRequirement {
+                        resource: travel::slip::EXOTIC_RESOURCE.into(),
+                        required_kg: 0.,
+                        available_kg: fuel,
+                    }],
+                    complete: false,
+                }),
                 itinerary: itinerary
                     .into_iter()
                     .map(|directive| travel::ItineraryEntry {
                         label: directive.label(),
                         directive,
-                        max_loss_ppm: loss,
-                        fuel_allowance_kg: fuel,
-                        estimated_duration_ticks: None,
                     })
                     .collect(),
                 status: travel::FirmwareStatus {
@@ -385,43 +377,6 @@ pub fn execute(
     if cancel_haul {}
     if wake && let Some(mut software) = world.get_mut::<ShipSoftware>(entity) {
         software.schedule.wake();
-    }
-    Ok(())
-}
-
-pub(crate) fn use_route(
-    world: &mut World,
-    ship: Entity,
-    request: u64,
-    revision: u64,
-    engage: bool,
-) -> Result<()> {
-    let route = super::route_service::ready(world, ship, request, revision)?;
-    let enabled = engage
-        || world
-            .get::<super::travel::Travel>(ship)
-            .is_some_and(|travel| travel.0.enabled);
-    if enabled {
-        queue_capacity(world, ship, 2)?;
-    }
-    super::travel::apply_plan(
-        world,
-        ship,
-        revision,
-        route.plan,
-        route.preferences,
-        enabled,
-    )?;
-    if enabled {
-        enqueue(
-            world,
-            ship,
-            Command::Manual {
-                throttle: 0.,
-                steering: [0.; 3],
-            },
-        )?;
-        enqueue(world, ship, Command::HoldAttitude)?;
     }
     Ok(())
 }

@@ -1,18 +1,18 @@
-use super::instruments::navigation;
 use super::overview::{overview_header, overview_row, selected_item};
 use super::*;
 
-pub(super) fn draw(
+pub fn draw(
     ctx: &egui::Context,
+    mfd_open: bool,
     shell: &mut Shell,
     panes: &mut PaneStates,
     model: &FrameModel,
     selection: &Selection,
     results: &[CommandResult],
     chat_log: &ChatState,
-    wallet: Option<&economy::WalletSnapshot>,
-    market: Option<&osg_model::market::MarketSnapshot>,
-    assets: Option<&osg_model::assets::AssetsSnapshot>,
+    wallet: &QueryState<WalletView>,
+    market: &QueryState<MarketView>,
+    assets: &QueryState<AssetsView>,
     intents: &mut Vec<Intent>,
 ) {
     let screen = ctx.content_rect();
@@ -46,7 +46,6 @@ pub(super) fn draw(
                     (HANGAR, Icon::Ship, "Hangar"),
                     (INDUSTRY, Icon::Industry, "Industry"),
                     (CHAT, Icon::Broadcast, "Local chat"),
-                    (NAVIGATION, Icon::Navigation, "Navigation"),
                     (MAP, Icon::Planet, "Navigation map"),
                     (SOCIETY, Icon::Shield, "Society and ownership"),
                     (WALLET, Icon::Cargo, "Wallet"),
@@ -56,6 +55,9 @@ pub(super) fn draw(
                     if icon_button(ui, icon, label, shell.desktop.is_open(spec)).clicked() {
                         shell.desktop.toggle(spec);
                     }
+                }
+                if icon_button(ui, Icon::Navigation, "Firmware MFD", mfd_open).clicked() {
+                    intents.push(Intent::ToggleMfd);
                 }
                 ui.separator();
                 if icon_button(ui, Icon::Planet, "Show orbital paths (O)", model.orbits).clicked() {
@@ -71,10 +73,7 @@ pub(super) fn draw(
     status_bar(ctx, |ui| {
         let seconds = model.time_ns / 1_000_000_000;
         ui.label(Icon::Clock.text(16.).color(ACCENT));
-        let timestamp = model.calendar_unix_ms.map_or_else(
-            || "Synchronizing calendar…".into(),
-            osg_model::calendar::format_utc,
-        );
+        let timestamp = osg_model::calendar::format_utc(model.calendar_unix_ms);
         ui.label(egui::RichText::new(timestamp).monospace().size(12.))
             .on_hover_text(format!(
                 "Simulation T+{:02}:{:02}:{:02}.{}\nThe calendar follows real UTC + 400 years, independently of simulation speed.",
@@ -154,73 +153,10 @@ pub(super) fn draw(
                     });
                     ui.label(egui::RichText::new(&model.vicinity).size(12.).color(MUTED));
                     if let Some(ship) = model.ship {
-                        let ap = ship.travel.enabled;
-                        if ui
-                            .add_enabled(
-                                model.connected && ship.presence == travel::Presence::Space,
-                                egui::Button::new(
-                                    egui::RichText::new(if ap { "AP ON" } else { "AP OFF" })
-                                        .strong()
-                                        .monospace(),
-                                )
-                                .selected(ap)
-                                .min_size(egui::vec2(96., 30.)),
-                            )
-                            .clicked()
-                        {
-                            intents
-                                .push(Intent::Command(ShipCommand::SetAutopilot(!ap), "Autopilot"));
-                        }
                         ui.horizontal(|ui| {
                             ui.label(Icon::Ship.text(14.).color(ACCENT));
                             ui.label(egui::RichText::new(ship_name(ship)).size(12.).color(TEXT));
-                            if !ship.travel.itinerary.is_empty() || ship.travel.failure.is_some() {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "· {}",
-                                        travel_status(&ship.travel)
-                                    ))
-                                    .size(11.)
-                                    .color(ACCENT),
-                                );
-                            }
                         });
-                        if ship.travel.enabled
-                            && ship.travel.status.phase == travel::FirmwarePhase::Planning
-                        {
-                            ui.spinner();
-                        }
-                        if ship
-                            .travel
-                            .fuel_budget
-                            .as_ref()
-                            .is_some_and(|budget| budget.exhausted())
-                        {
-                            ui.colored_label(THREAT, "FUEL EXHAUSTION RISK · replan in Navigation");
-                        }
-                        instruments::itinerary(
-                            ui,
-                            &ship.travel,
-                            model.time_ns / osg_model::TICK_NS,
-                        );
-                        if let Some(arrival) =
-                            ship.travel.status.estimated_arrival_tick.filter(|_| {
-                                matches!(ship.presence, travel::Presence::SlipTransit(_))
-                            })
-                        {
-                            let seconds = (arrival as f64 * osg_model::TICK_SECONDS
-                                - model.time_ns as f64 * 1e-9)
-                                .max(0.);
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "SLIP TRANSIT   ETA {:02}:{:02}",
-                                    seconds as u64 / 60,
-                                    seconds as u64 % 60
-                                ))
-                                .size(18.)
-                                .color(ACCENT),
-                            );
-                        }
                         if matches!(ship.presence, travel::Presence::Docked { .. }) {
                             ui.label(egui::RichText::new("DOCKED · Hangar").color(ACCENT));
                             if ui.button("Open hangar").clicked() {
@@ -372,9 +308,6 @@ pub(super) fn draw(
     shell.descending = descending;
     shell.search = search;
 
-    shell
-        .desktop
-        .show(ctx, NAVIGATION, |ui| navigation(ui, model, intents));
     shell.desktop.show(ctx, INVENTORY, |ui| {
         inventory::draw(
             ui,
@@ -418,13 +351,25 @@ pub(super) fn draw(
         chat::draw(ui, &mut panes.chat, model, chat_log, intents);
     });
     shell.desktop.show(ctx, WALLET, |ui| {
-        wallet::draw(ui, &mut panes.wallet, model, wallet, intents);
+        if render_query(ui, wallet, |ui, wallet| {
+            wallet::draw(ui, &mut panes.wallet, model, wallet, intents)
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
     });
     shell.desktop.show(ctx, MARKET, |ui| {
-        market::draw(ui, &mut panes.market, model, market, intents);
+        if render_query(ui, market, |ui, market| {
+            market::draw(ui, &mut panes.market, model, market, intents)
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
     });
     shell.desktop.show(ctx, ASSETS, |ui| {
-        assets::draw(ui, &mut panes.assets, model, assets, intents);
+        if render_query(ui, assets, |ui, assets| {
+            assets::draw(ui, &mut panes.assets, model, assets, intents)
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
     });
     cargo::draw_dialog(ctx, &mut panes.transfers, model, intents);
     let mut locked = shell.desktop.locked;

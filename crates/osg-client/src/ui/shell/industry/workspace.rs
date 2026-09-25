@@ -1,7 +1,7 @@
 use super::*;
 use osg_ui::desktop::{BORDER, POSITIVE, SURFACE_RAISED, WARNING};
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
@@ -62,7 +62,12 @@ fn sidebar(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
         .id_salt("industry_sidebar")
         .show(ui, |ui| {
             if state.service.public {
-                for facility in &model.services.facilities {
+                for facility in model
+                    .services
+                    .as_ref()
+                    .into_iter()
+                    .flat_map(|view| &view.facilities)
+                {
                     if !facility.summary.name.to_lowercase().contains(&search) {
                         continue;
                     }
@@ -89,7 +94,7 @@ fn sidebar(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
                 }
                 return;
             }
-            let mut facilities: Vec<_> = model.industry.directory.iter().collect();
+            let mut facilities: Vec<_> = model.industry.summaries().collect();
             facilities.sort_by_key(|f| (f.metrics.system, f.name.as_str()));
             let mut previous_system = None;
             for facility in facilities {
@@ -163,12 +168,12 @@ fn sidebar(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
                 }
                 if ui
                     .add_enabled(
-                        model.industry.directory_next.is_some(),
+                        model.industry.directory_next().is_some(),
                         egui::Button::new("Next"),
                     )
                     .clicked()
                 {
-                    state.directory_after = model.industry.directory_next;
+                    state.directory_after = model.industry.directory_next();
                 }
             });
         });
@@ -191,16 +196,20 @@ fn metric(ui: &mut egui::Ui, title: &str, value: String, note: &str, color: egui
         });
 }
 
-pub(super) fn overview(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
+pub fn overview(ui: &mut egui::Ui, state: &mut State, model: &FrameModel) {
     let summaries: Vec<_> = model
         .industry
-        .directory
-        .iter()
+        .summaries()
         .filter(|facility| !facility.capabilities.is_empty())
         .collect();
     ui.heading("All facilities");
     ui.weak(format!("{} facilities you manage", summaries.len()));
-    let facilities = &model.industry.facilities;
+    let facilities: Vec<_> = model
+        .industry
+        .facilities
+        .values()
+        .filter_map(QueryState::as_ref)
+        .collect();
     let lanes: u32 = summaries.iter().map(|f| f.metrics.total_lanes).sum();
     let stalled: u32 = summaries.iter().map(|f| f.metrics.stalled_jobs).sum();
     let used: f64 = summaries
@@ -434,7 +443,7 @@ fn dashboard(
     }
 }
 
-pub(super) fn console(
+pub fn console(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
@@ -473,7 +482,7 @@ fn sheet(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
         });
 }
 
-pub(super) fn build(
+pub fn build(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,

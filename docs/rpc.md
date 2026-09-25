@@ -24,7 +24,8 @@ and a server dispatcher for picomux streams.
 Calls describe individual functions: wallet balances and history, money and gas
 transfers, order books, orders and trades, asset searches and goods totals,
 inventory and hangar access, industry jobs, identity records, permissions,
-diplomacy, and route planning. Clients compose the data needed by each screen.
+and diplomacy. Clients compose the data needed by each screen. Navigation route
+search runs in the client.
 Shared records and `Page<T, Cursor>` supply result data. Screen query state and
 internal domain command enums are not RPC request envelopes.
 
@@ -35,7 +36,7 @@ mutation's client signature returns `Result<Result<(), GameError>, RpcError>`.
 
 ## Wire format
 
-Protocol version 55 uses one picomux stream per call:
+RPC uses one picomux stream per call:
 
 1. Open a stream with UTF-8 metadata `rpc:<method_name>`.
 2. Serialize the argument tuple with Postcard, including a one-element tuple for
@@ -99,10 +100,58 @@ session generation, filters, or page drops pending work and discards stale data.
 Permission failures replace previously displayed privileged data with an error.
 
 The main frame carries continuous simulation observations, chat, and input
-acknowledgements. Society, Assets, Wallet, Market, Industry, and route queries use
+acknowledgements. Society, Assets, Wallet, Market, and Industry queries use
 RPC. Input acknowledgements contain a command ID and optional error text.
 
+## Directory and scoped lists
+
+The directory loads complete lists through `list_blocs(world)`,
+`list_polities(world)`, `list_organizations(world, polity)`, and
+`list_players(world, organization)`. For players, `None` selects unaffiliated
+players. These methods have no cursor or page limit. An unknown parent produces
+an error; an existing parent with no children returns an empty vector.
+
+`search_identities(world, search)` searches all identity names case-insensitively
+and returns matching principals plus their ancestor records. Search results and
+targeted `resolve_identities` replies do not establish complete membership.
+The client caches complete lists by parent, loads branches as they open, and
+keeps expansion independent of selection. Search uses separate expansion state.
+
+`list_wallets`, `gas_balances`, `list_access_profiles`, and
+`storage_stock(owner, station)` also return complete authorized vectors.
+Pagination is used for potentially large flat collections, including ships,
+facilities, orders, stock locations, and histories. Authorization is rechecked
+for each query.
+
+## Inventory queries
+
+`list_facilities`, `facility`, `hangar`, and `industry_catalogue` read their
+domain records directly. The client tracks catalogue, directory, hangar, and
+each requested inventory independently; multiple panes share an inventory
+request. A failed inventory request clears that inventory's private data and
+does not discard successful results for other inventories.
+
+Query parameters and composed screen views live in the client. Request context
+(world, session generation, and query) rejects superseded replies. Inventory
+queries have no subscription revision, publication budget, or omitted-inventory
+list. Hangar paging compares the requested cursor with the loaded query.
+
 ## Public industry
+
+Industry RPCs enqueue typed requests with oneshot replies. Each simulation tick
+processes FIFO queues in this order: service policy changes, cancellations,
+cargo changes, then new work. Ordering is guaranteed within a queue; phase
+ordering takes precedence across queues. Each consumer validates and applies a
+whole request before replying. Repeated operation IDs replay their stored
+result, and conflicting arguments or stale world IDs are rejected.
+
+`IndustrialFacility` owns its modules, lane assignments, jobs, service policy,
+revenue, and mine state. Scheduled systems advance production after dock
+servicing, deliver completed output, and load mined cargo. Inventory, device
+condition, electrical storage, and heat remain shared vessel state. Industry
+queries run after the tick's observations and derive their DTOs from current
+components. Saves contain durable facility records; restoration rebuilds
+modules and compiled construction designs.
 
 `list_public_facilities` lists published operators and rates. A customer uses
 `quote_industry_job` for a recipe or blueprint, then passes the returned quote to
@@ -138,8 +187,7 @@ authenticated client actions. Tariffs apply to transfer receipts after turnover
 tax; when multiple applicable agreements specify tariffs, the highest rate
 applies once. Tax remittance does not recursively trigger another tax.
 
-Protocol and database version 55 includes these records and pending bloc
-withdrawals. Commodity offer comparisons use a bounded query across station
+The protocol includes these records and pending bloc withdrawals. Commodity offer comparisons use a bounded query across station
 books. Rebuild all bundled
 firmware and test fixtures with `bash tools/build_ship_firmware.sh` after changing
 the game version.

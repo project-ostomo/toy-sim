@@ -11,7 +11,6 @@ pub mod market;
 pub mod optical;
 pub mod ownership;
 pub mod presentation;
-pub mod routing;
 pub mod serial;
 pub mod slip_visual;
 pub mod transfer;
@@ -220,11 +219,6 @@ pub enum Action {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ShipCommand {
-    UseRoute {
-        id: u64,
-        expected_revision: u64,
-        engage: bool,
-    },
     Flight(FlightCommand),
     SetTransponderEnabled(bool),
     MarkTarget {
@@ -284,10 +278,6 @@ pub enum ProgramQuery {
         after_seconds: f64,
     },
     SlipEligibilityBatch(Vec<SlipProbe>),
-    RouteRequest(routing::Request),
-    RoutePoll {
-        id: u64,
-    },
     SlipEligibility {
         origin: GalacticPosition,
         destination: GalacticPosition,
@@ -340,10 +330,6 @@ pub struct Beacon {
 pub enum ProgramReply {
     Orrery(Vec<LocalObstacle>),
     SlipEligibilityBatch(Vec<SlipProbeResult>),
-    Route {
-        id: u64,
-        status: routing::Status,
-    },
     Contact {
         pose: Pose,
         handle: u64,
@@ -370,10 +356,12 @@ pub enum ProgramReply {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ProgramAction {
-    UseRoute {
-        id: u64,
+    SetAutopilot {
         directive_revision: u64,
-        engage: bool,
+        enabled: bool,
+    },
+    ClearItinerary {
+        directive_revision: u64,
     },
     Fail {
         directive_revision: u64,

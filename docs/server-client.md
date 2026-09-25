@@ -740,11 +740,11 @@ The thrust fill uses server-reported actuator force projected onto the ship cont
 
 Computer telemetry publishes per-tick computer gas usage and its configured positive tick limit. CPU percentage is the gas spent on guest execution and host services divided by that limit; usage cannot exceed the limit. A running computer reports `Ready`, `Suspended` or `WaitingForGas`. The console labels a suspended continuation `SUSPENDED` and an insufficient owner-account balance `NO GAS`; a positive balance can still be too small for the next indivisible operation. Booting, unpowered, paused and faulted computers remain distinct states. Gas suspension preserves the running callback and does not initiate a reboot.
 
-`SocietySnapshot.gas_accounts` carries integer available, reserved and spent amounts, each keyed by its owning `Principal`. Only the caller's player account and organizations or sovereignties the caller administers are included. Ordinary membership does not disclose a group's balance. The Society window displays those authorized accounts; individual computer telemetry does not duplicate the shared balance. Billing follows actual asset ownership, independently of IFF or delegated control.
+The `gas_balances(world)` RPC returns complete account records with integer available, reserved and spent amounts, each keyed by its owning `Principal`. Only the caller's player account and organizations or sovereignties the caller administers are included. Ordinary membership does not disclose a group's balance. The Society window displays those authorized accounts; individual computer telemetry does not duplicate the shared balance. Billing follows actual asset ownership, independently of IFF or delegated control.
 
 A computer reset clears pending requests, instruments, marks, firing state and forecasts. The server disables autopilot, retains its itinerary and records a failure, clears published planning status, staged world actions, slip preparation and docking reservations, and advances the directive generation. Successful reboot requires explicit autopilot re-engagement. Commands explicitly submitted after the reset may be queued during startup. Fault messages remain visible until boot succeeds. The countdown pauses without computer power and follows simulation time on the client.
 
-The society snapshot describes ownership and permissions. Sovereignties,
+Scoped identity, diplomacy, and asset-access RPCs describe ownership and permissions. Sovereignties,
 organizations, player affiliations, private personal standings, and authorized
 asset permissions use stable UUIDs. The Society window exposes the hierarchy,
 organization membership and officer management, standing overrides, asset grants,

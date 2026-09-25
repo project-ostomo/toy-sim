@@ -14,17 +14,48 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod local_volumes;
-pub(crate) mod route_environment;
 
 #[derive(Resource, Default)]
 pub struct PublishedWorld {
     tick: u64,
-    navigation_revision: u64,
     beacons: Arc<BTreeMap<EntityId, PublishedBeacon>>,
     apertures: Arc<ApertureIndex>,
     public_apertures: Arc<ApertureIndex>,
     universe: Option<Arc<UniverseApertures>>,
     directory: Arc<ownership::OwnershipDirectory>,
+    navigation_access: std::sync::Mutex<BTreeMap<ownership::Principal, [u8; 32]>>,
+}
+
+pub(crate) fn navigation_access(world: &World, ship: Entity) -> Option<[u8; 32]> {
+    let owner = world.get::<super::ownership::AssetOwner>(ship)?.0;
+    let publication = world.get_resource::<PublishedWorld>()?;
+    let mut cache = publication.navigation_access.lock().unwrap();
+    if let Some(hash) = cache.get(&owner) {
+        return Some(*hash);
+    }
+    let systems: BTreeSet<_> = publication
+        .beacons
+        .values()
+        .filter(|beacon| {
+            beacon.navigation
+                && super::ownership::permits_principal(
+                    &publication.directory,
+                    beacon.owner,
+                    Some(&beacon.access),
+                    owner,
+                    ownership::Permission::Navigate,
+                )
+        })
+        .flat_map(|beacon| beacon.systems.iter().copied())
+        .collect();
+    let bytes =
+        osg_protocol::navigation::encode_access(&systems.into_iter().collect::<Vec<_>>()).ok()?;
+    let hash = *blake3::hash(&bytes).as_bytes();
+    world
+        .get_resource::<super::identity::AppearanceAssets>()?
+        .insert(hash, bytes);
+    cache.insert(owner, hash);
+    Some(hash)
 }
 
 #[derive(Clone)]
@@ -52,10 +83,6 @@ enum ScanSensors<'a> {
 #[derive(Clone)]
 pub(crate) struct ShipScan<'a> {
     sensors: Option<ScanSensors<'a>>,
-    routing: Option<(
-        super::route_service::RouteService,
-        super::route_service::Caller,
-    )>,
     universe: Option<Arc<UniverseApertures>>,
     epoch: hifitime::Epoch,
     publication_tick: u64,
@@ -217,27 +244,6 @@ impl osg_ship_wasm::ScanSource for ShipScan<'_> {
                         })
                         .collect(),
                 )
-            }
-            ProgramQuery::RouteRequest(request) => {
-                osg_protocol::routing::validate_request(&request)?;
-                let (service, caller) = self
-                    .routing
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("route service unavailable"))?;
-                let id = request.id;
-                let status = service.submit(*caller, request, reply_capacity)?;
-                ProgramReply::Route { id, status }
-            }
-            ProgramQuery::RoutePoll { id } => {
-                ensure!(id != 0, "invalid route request id");
-                let (service, caller) = self
-                    .routing
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("route service unavailable"))?;
-                ProgramReply::Route {
-                    id,
-                    status: service.poll(*caller, id),
-                }
             }
             ProgramQuery::SlipEligibility {
                 origin,
@@ -418,13 +424,6 @@ struct Aperture {
 }
 
 impl ShipScan<'_> {
-    fn without_sensors(&self) -> ShipScan<'static> {
-        ShipScan {
-            sensors: None,
-            ..self.clone()
-        }
-    }
-
     fn observations(&self) -> Arc<ObservationSnapshot> {
         self.sensors.as_ref().map_or_else(
             || self.snapshot.clone(),
@@ -589,6 +588,7 @@ impl ShipScan<'_> {
         }
         if let Some(universe) = &self.universe {
             let registry = &universe.registry.universe;
+            let departure_body = crate::sim::location::departure_body(registry, origin, departure)?;
             for index in registry.containing_segment(origin, DVec3::ZERO) {
                 let definition = registry.resolve_index(index)?;
                 for body in definition.solver.iter() {
@@ -602,7 +602,22 @@ impl ShipScan<'_> {
                     let Some(end) = definition.solver.solve_position(&body.name, arrival) else {
                         return Ok(false);
                     };
-                    let radius = slip::exclusion_radius_m(body.mass).max(body.radius) + self.radius;
+                    let exclusion = slip::exclusion_radius_m(body.mass);
+                    let ignored = definition
+                        .body_id(&body.name)
+                        .map(crate::sim::registry::model_reference)
+                        .is_some_and(|reference| Some(reference) == departure_body);
+                    // Passing through an ignored exclusion is legal, including
+                    // capture by another body inside it. Physical impact is not.
+                    if ignored && destination.relative_to(end).length() <= body.radius + self.radius
+                    {
+                        return Ok(false);
+                    }
+                    let radius = if ignored {
+                        body.radius
+                    } else {
+                        exclusion.max(body.radius)
+                    } + self.radius;
                     if intercepts_departure(origin, destination, start, end, radius) {
                         return Ok(false);
                     }
@@ -695,12 +710,12 @@ pub struct BeaconData {
 }
 
 pub fn publish_indexes(
+    navigation: Option<Res<super::infrastructure::NavigationPublication>>,
     clock: Res<SimulationCounters>,
     scene: Res<super::spatial::SpatialIndex>,
     directory: Res<super::ownership::Directory>,
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
-    navigation: Option<Res<super::infrastructure::NavigationPublication>>,
     locations: Query<&super::location::SpatialLocation>,
     bodies: Query<
         (
@@ -760,7 +775,11 @@ pub fn publish_indexes(
         publication.apertures = Arc::new(ApertureIndex::new(apertures, age_seconds));
         publication.public_apertures = Arc::new(ApertureIndex::new(public_apertures, age_seconds));
     }
-    publication.directory = Arc::new(directory.0.clone());
+    if *publication.directory != directory.0 {
+        publication.navigation_access.get_mut().unwrap().clear();
+        publication.directory = Arc::new(directory.0.clone());
+    }
+    let previous_beacons = publication.beacons.clone();
     publication.beacons = Arc::new(
         beacons
             .iter()
@@ -816,16 +835,21 @@ pub fn publish_indexes(
             })
             .collect(),
     );
-    publication.navigation_revision = navigation
-        .as_ref()
-        .map_or(0, |navigation| navigation.revision);
+    if previous_beacons.len() != publication.beacons.len()
+        || publication.beacons.iter().any(|(id, beacon)| {
+            previous_beacons.get(id).is_none_or(|old| {
+                old.navigation != beacon.navigation
+                    || old.systems != beacon.systems
+                    || old.owner != beacon.owner
+                    || old.access != beacon.access
+            })
+        })
+    {
+        publication.navigation_access.get_mut().unwrap().clear();
+    }
 }
 
 struct SourceContext {
-    routing: Option<(
-        super::route_service::RouteService,
-        super::route_service::Caller,
-    )>,
     entity: Entity,
     id: EntityId,
     owner: ownership::Principal,
@@ -855,17 +879,8 @@ struct SourceState<'a> {
 }
 
 impl SourceState<'_> {
-    fn resolve(
-        self,
-        pose: Pose,
-        catalogue: &osg_ships::Catalogue,
-        routing: Option<(
-            super::route_service::RouteService,
-            super::route_service::Caller,
-        )>,
-    ) -> SourceContext {
+    fn resolve(self, pose: Pose, catalogue: &osg_ships::Catalogue) -> SourceContext {
         SourceContext {
-            routing,
             entity: self.entity,
             id: self.id.0,
             owner: self.owner.0,
@@ -916,7 +931,6 @@ fn ship_source(
     let slip = context.slip.as_ref();
     Arc::new(ShipScan {
         sensors: None,
-        routing: context.routing,
         universe: publication.universe.clone(),
         epoch: hifitime::Epoch::from_mjd_utc(osg_universe::SIMULATION_EPOCH_MJD_UTC)
             + hifitime::Duration::from_seconds(tick as f64 * osg_model::TICK_SECONDS),
@@ -950,14 +964,6 @@ pub(crate) fn current_source(world: &World, ship: Entity) -> Option<ShipScan<'_>
 }
 
 fn current_ship_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
-    let routing = world
-        .get_resource::<super::route_service::RouteService>()
-        .cloned()
-        .and_then(|service| {
-            super::route_service::caller(world, ship)
-                .ok()
-                .map(|caller| (service, caller))
-        });
     let context = SourceState {
         entity: ship,
         id: world.get::<Identity>(ship)?,
@@ -974,7 +980,6 @@ fn current_ship_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
     .resolve(
         super::session::ship_pose(world, ship)?,
         &world.resource::<super::vessel::ShipCatalogue>().0,
-        routing,
     );
     let source = ship_source(
         world.get_resource::<PublishedWorld>()?,
@@ -997,8 +1002,6 @@ fn current_ship_source(world: &World, ship: Entity) -> Option<ShipScan<'_>> {
 pub fn prepare_sources(
     publication: Res<PublishedWorld>,
     clock: Res<SimulationCounters>,
-    world_epoch: Res<super::identity::WorldEpoch>,
-    routing: Option<Res<super::route_service::RouteService>>,
     locations: Query<&super::location::SpatialLocation>,
     catalogue: Res<super::vessel::ShipCatalogue>,
     identities: Res<super::identity::IdentityIndex>,
@@ -1008,7 +1011,7 @@ pub fn prepare_sources(
             Entity,
             &Identity,
             &super::ownership::AssetOwner,
-            Option<&super::identity::Control>,
+            &super::vessel::ShipSoftware,
             Has<super::travel::Dormant>,
             &super::vessel::ShipDesign,
             &super::physics::MassProps,
@@ -1029,7 +1032,7 @@ pub fn prepare_sources(
         entity,
         id,
         owner,
-        authority,
+        _firmware,
         dormant,
         design,
         mass,
@@ -1069,24 +1072,7 @@ pub fn prepare_sources(
                 slip,
                 dormant,
             }
-            .resolve(
-                pose,
-                &catalogue.0,
-                routing.as_ref().zip(authority).map(|(service, authority)| {
-                    (
-                        (**service).clone(),
-                        super::route_service::Caller {
-                            world: world_epoch.0,
-                            ship: id.0,
-                            owner: owner.0,
-                            authority_revision: authority.revision,
-                            directive_revision: travel
-                                .map_or(0, |state| state.0.directive_revision),
-                            topology_revision: publication.navigation_revision,
-                        },
-                    )
-                }),
-            ),
+            .resolve(pose, &catalogue.0),
         ));
     }
 }
@@ -1293,6 +1279,58 @@ mod tests {
     use osg_ship_wasm::ScanSource;
 
     #[test]
+    fn assistance_assets_cover_remote_beacons_and_respect_each_ship_owner() {
+        let owner = ownership::Principal::Player(Id::new());
+        let visitor = ownership::Principal::Player(Id::new());
+        let mut publication = PublishedWorld::default();
+        for number in 0..2048_u128 {
+            let id = Id(number.to_be_bytes());
+            let mut access = ownership::AccessPolicy::default();
+            if number == 0 {
+                access.public.insert(ownership::Permission::Navigate);
+            }
+            Arc::make_mut(&mut publication.beacons).insert(
+                id,
+                PublishedBeacon {
+                    systems: vec![id],
+                    navigation: true,
+                    beacon: Beacon {
+                        system: None,
+                        entity: id,
+                        radius_m: 1.,
+                        pose: Pose::default(),
+                        iff: IffIdentity {
+                            owner: Id::new(),
+                            faction: None,
+                            labels: Default::default(),
+                            enabled: true,
+                        },
+                        bays: Default::default(),
+                    },
+                    owner,
+                    access,
+                    bays: Vec::new(),
+                },
+            );
+        }
+        let mut world = World::new();
+        world.insert_resource(publication);
+        world.init_resource::<super::super::identity::AppearanceAssets>();
+        let own_ship = world.spawn(super::super::ownership::AssetOwner(owner)).id();
+        let other_ship = world
+            .spawn(super::super::ownership::AssetOwner(visitor))
+            .id();
+        let owned_hash = navigation_access(&world, own_ship).unwrap();
+        let public_hash = navigation_access(&world, other_ship).unwrap();
+        let assets = world.resource::<super::super::identity::AppearanceAssets>();
+        let decode =
+            |hash| osg_protocol::navigation::decode_access(&assets.get(&hash).unwrap()).unwrap();
+        assert_eq!(decode(owned_hash).len(), 2048);
+        assert_eq!(decode(public_hash), vec![Id(0_u128.to_be_bytes())]);
+        assert_eq!(navigation_access(&world, own_ship), Some(owned_hash));
+    }
+
+    #[test]
     fn prepared_sources_follow_docking_hosts_and_match_immediate_transit_queries() {
         use super::super::travel::{Bay, DockingBays, PresenceState, SlipDrive, Transit};
 
@@ -1361,6 +1399,7 @@ mod tests {
         }
 
         let transit = Transit {
+            ignored_capture_body: None,
             origin: GalacticPosition::ZERO,
             position: GalacticPosition::from_meters(DVec3::Z * 1e12),
             destination: GalacticPosition::from_meters(DVec3::Z * 2e12),
@@ -1450,9 +1489,6 @@ mod tests {
             itinerary: vec![ItineraryEntry {
                 directive: Directive::SlipToSystem(Id::new()),
                 label: "Destination".into(),
-                max_loss_ppm: 100.0,
-                fuel_allowance_kg: 1.0,
-                estimated_duration_ticks: None,
             }],
             ..Default::default()
         };
@@ -1507,7 +1543,6 @@ mod tests {
     pub(super) fn source() -> ShipScan<'static> {
         ShipScan {
             sensors: None,
-            routing: None,
             universe: None,
             epoch: hifitime::Epoch::from_mjd_utc(0.0),
             publication_tick: 0,
@@ -1897,6 +1932,51 @@ mod tests {
         );
         let pose = registry.pose(id, source.epoch).unwrap();
         assert!(!source.admissible(pose.position));
+    }
+
+    #[test]
+    fn departure_hill_exclusion_blocks_initiation_but_not_outgoing_line() {
+        let mut source = source();
+        let universe =
+            osg_universe::universe::Universe::init(osg_universe::orrery_cfg::OrreryCfg {
+                key: "hill-test".into(),
+                name: "Hill test".into(),
+                position_um: GalacticPosition::ZERO,
+                bodies: vec![osg_universe::orrery_cfg::Body {
+                    key: "star".into(),
+                    name: "Star".into(),
+                    mass: slip::SOLAR_MASS_KG,
+                    radius: 696_000_000.,
+                    class_params: super::super::orrery::BodyClass::Star { lumens: 3.8e26 },
+                    ..Default::default()
+                }],
+            })
+            .unwrap();
+        source.universe = Some(Arc::new(UniverseApertures::new(
+            super::super::registry::UniverseRegistry {
+                universe: Arc::new(universe),
+            },
+        )));
+        let radius = slip::exclusion_radius_m(slip::SOLAR_MASS_KG);
+        let origin = GalacticPosition::from_meters(DVec3::new(-2. * radius, radius * 0.5, 0.));
+        let destination = GalacticPosition::from_meters(DVec3::new(2. * radius, radius * 0.5, 0.));
+        assert!(source.admissible(origin));
+        assert!(!source.admissible(GalacticPosition::from_meters(DVec3::X * radius * 0.5)));
+        let clear = |from, to| {
+            source
+                .departure_line_clear(from, to, source.epoch, source.epoch)
+                .unwrap()
+        };
+        assert!(clear(origin, destination));
+        assert!(clear(
+            origin,
+            GalacticPosition::from_meters(DVec3::Y * radius * 0.5)
+        ));
+        assert!(!clear(origin, GalacticPosition::ZERO));
+        assert!(!clear(
+            GalacticPosition::from_meters(-DVec3::X * 2. * radius),
+            GalacticPosition::from_meters(DVec3::X * 2. * radius)
+        ));
     }
 
     #[test]

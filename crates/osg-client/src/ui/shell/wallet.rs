@@ -1,10 +1,10 @@
 use super::*;
-use economy::{Currency, WalletCommand, WalletQuery, WalletSnapshot, format_amount, parse_amount};
+use economy::{Currency, WalletCommand, format_amount, parse_amount};
 use osg_ui::components;
 use ownership::Principal;
 
 #[derive(Default, Resource)]
-pub(super) struct State {
+pub struct State {
     owner: Option<Principal>,
     before: Option<u64>,
     currency: Option<Currency>,
@@ -21,6 +21,13 @@ pub(super) struct State {
 }
 
 impl State {
+    pub fn new(account: AccountId) -> Self {
+        Self {
+            owner: Some(Principal::Player(account)),
+            ..Default::default()
+        }
+    }
+
     pub fn query(&self, open: bool, account: Id) -> Option<WalletQuery> {
         open.then(|| WalletQuery {
             owner: self.owner.unwrap_or(Principal::Player(account)),
@@ -30,11 +37,11 @@ impl State {
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    snapshot: Option<&WalletSnapshot>,
+    wallet: &WalletView,
     intents: &mut Vec<Intent>,
 ) {
     ui.painter()
@@ -66,18 +73,6 @@ pub(super) fn draw(
             }
         },
     );
-    let Some(wallet) = snapshot else {
-        components::empty_state(
-            ui,
-            "Loading wallet",
-            "Waiting for account balances and ledger history.",
-        );
-        return;
-    };
-    if let Some(error) = &wallet.error {
-        ui.colored_label(THREAT, error);
-        return;
-    }
     let owner = state
         .owner
         .unwrap_or(Principal::Player(model.society.account));
@@ -492,7 +487,7 @@ fn transfer_form(
     state: &mut State,
     from: Principal,
     model: &FrameModel,
-    wallet: &WalletSnapshot,
+    wallet: &WalletView,
     intents: &mut Vec<Intent>,
 ) {
     egui::Frame::group(ui.style()).show(ui, |ui| {

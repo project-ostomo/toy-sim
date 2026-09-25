@@ -333,7 +333,7 @@ fn later_fill_failure_restores_completed_fills_and_full_history() {
 }
 
 #[test]
-fn demurrage_cancels_unfunded_bids_and_snapshot_is_bounded() {
+fn demurrage_cancels_unfunded_bids_and_queries_require_authority() {
     let mut economy = Economy::at(0);
     economy
         .issue(owner(1), Currency::Uec, 100_000 * MONEY_SCALE, 0)
@@ -362,20 +362,16 @@ fn demurrage_cancels_unfunded_bids_and_snapshot_is_bounded() {
     assert!(economy.balances[&owner(1)].uec < 100_000 * MONEY_SCALE);
 
     let world = world();
-    let denied = snapshot(
-        &world,
-        Id([2; 16]),
-        &MarketQuery {
-            order_status: Some(OrderStatus::Open),
-            offers_after: None,
-            orders_after: None,
-            stations_after: None,
-            instrument: Instrument::Fx,
-            owner: owner(1),
-            before: None,
-            limit: 100,
-        },
+    assert!(
+        crate::rpc::list_orders(
+            &world,
+            Id([2; 16]),
+            owner(1),
+            Some(Instrument::Fx),
+            Some(OrderStatus::Open),
+            None,
+            100,
+        )
+        .is_err()
     );
-    assert!(denied.error.is_some());
-    assert!(denied.orders.is_empty());
 }

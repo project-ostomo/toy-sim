@@ -4,7 +4,7 @@ use bevy::asset::io::memory::{Dir, MemoryAssetReader};
 use std::time::{Duration, Instant};
 
 fn catalogue(index: usize) -> ([u8; 32], Vec<u8>) {
-    let universe = crate::ui::celestials::shared_universe().unwrap();
+    let universe = crate::universe::shared_universe().unwrap();
     let catalogue = osg_model::InhabitedDirectory {
         systems: vec![Id(universe.systems()[index].id)],
         ..Default::default()
@@ -27,8 +27,25 @@ fn app() -> (App, Dir) {
     );
     app.add_plugins((MinimalPlugins, AssetPlugin::default()))
         .init_resource::<NavigationState>()
-        .init_resource::<crate::state::SessionInfo>();
+        .insert_resource(crate::state::GameSession::test(Id([1; 16]), 0));
     install(&mut app);
+    let session = app.world().resource::<crate::state::GameSession>();
+    let navigation = osg_model::NavigationCatalogue {
+        topology_revision: 1,
+        systems: session
+            .universe
+            .systems()
+            .iter()
+            .map(|system| osg_model::NavigationSystem {
+                id: Id(system.id),
+                name: system.name.to_string(),
+                position: system.position,
+                sovereignty: None,
+            })
+            .collect(),
+        beacons: Vec::new(),
+    };
+    app.world_mut().resource_mut::<NavigationState>().navigation = std::sync::Arc::new(navigation);
     (app, directory)
 }
 
@@ -98,7 +115,7 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
     let installed = app.world().resource::<NavigationState>().inhabited.clone();
     assert_eq!(
         installed.systems[0],
-        Id(crate::ui::celestials::shared_universe().unwrap().systems()[1].id)
+        Id(crate::universe::shared_universe().unwrap().systems()[1].id)
     );
     app.update();
     assert!(std::sync::Arc::ptr_eq(
@@ -108,7 +125,8 @@ fn catalogue_replacement_discards_stale_completion_and_world_reset_clears_loaded
 
     *app.world_mut().resource_mut::<NavigationState>() = NavigationState::default();
     app.world_mut()
-        .resource_mut::<crate::state::SessionInfo>()
+        .resource_mut::<crate::state::GameSession>()
+        .key
         .generation = 1;
     app.update();
     assert!(
@@ -151,14 +169,14 @@ fn corrupt_catalogue_reports_failure_and_can_be_reloaded() {
     });
     assert_eq!(
         app.world().resource::<NavigationState>().inhabited.systems[0],
-        Id(crate::ui::celestials::shared_universe().unwrap().systems()[0].id)
+        Id(crate::universe::shared_universe().unwrap().systems()[0].id)
     );
 }
 
 #[test]
 fn ownership_only_directory_replacement_updates_and_clears_map_sovereignty() {
     let (mut app, storage) = app();
-    let universe = crate::ui::celestials::shared_universe().unwrap();
+    let universe = crate::universe::shared_universe().unwrap();
     let system = Id(universe.systems()[0].id);
     let sovereignty = Id([77; 16]);
     let mut directory = osg_model::InhabitedDirectory {

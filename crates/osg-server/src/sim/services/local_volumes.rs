@@ -42,6 +42,8 @@ impl ShipScan<'_> {
                 },
                 radius_m: body.radius,
                 slip_exclusion_m: slip::exclusion_radius_m(body.mass),
+                hill_radius_m: crate::sim::location::HillSphere::radius_for_body(&definition, body)
+                    .unwrap_or(0.),
             });
         }
         ensure!(
@@ -89,6 +91,11 @@ impl ShipScan<'_> {
                     },
                     radius_m: body.radius,
                     slip_exclusion_m: osg_model::travel::slip::exclusion_radius_m(body.mass),
+                    hill_radius_m: crate::sim::location::HillSphere::radius_for_body(
+                        &definition,
+                        body,
+                    )
+                    .unwrap_or(0.),
                 });
             }
         }

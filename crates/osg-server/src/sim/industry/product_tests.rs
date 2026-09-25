@@ -31,8 +31,15 @@ impl Fixture {
             .single(world)
             .unwrap();
         let station = world
-            .query_filtered::<Entity, With<IndustryFacility>>()
-            .single(world)
+            .query_filtered::<Entity, With<IndustrialFacility>>()
+            .iter(world)
+            .find(|entity| {
+                world
+                    .get::<IndustrialFacility>(*entity)
+                    .unwrap()
+                    .mine
+                    .is_some()
+            })
             .unwrap();
         assert_eq!(
             world.get::<vessel::ShipDesign>(ship).unwrap().0.capacity_m3,
@@ -50,7 +57,38 @@ impl Fixture {
             "scenario supplies must respect an absent cargo hold"
         );
 
-        world.entity_mut(station).remove::<MineSource>();
+        world.get_mut::<IndustrialFacility>(station).unwrap().mine = None;
+        // Keep the full simulation schedule while isolating the factory's
+        // electrical bill from other station loads and generation.
+        let design = world.get::<vessel::ShipDesign>(station).unwrap().0.clone();
+        let parts = world
+            .get::<hardware::PartDevices>(station)
+            .unwrap()
+            .0
+            .clone();
+        for (index, entity) in parts.into_iter().enumerate() {
+            let industrial = matches!(
+                design.parts[index].definition.equipment,
+                Equipment::Utility {
+                    utility: UtilityDef::Factory { .. } | UtilityDef::Shipyard { .. }
+                }
+            );
+            world
+                .get_mut::<hardware::Device>(entity)
+                .unwrap()
+                .0
+                .operational = industrial;
+        }
+        world
+            .get_mut::<hardware::Avionics>(station)
+            .unwrap()
+            .0
+            .operational = false;
+        world
+            .get_mut::<hardware::Avionics>(ship)
+            .unwrap()
+            .0
+            .operational = false;
         let mut inventory = world.get_mut::<hardware::ShipInventory>(station).unwrap();
         inventory.0.cargo.fill(0);
         inventory.0.packaged_parts.clear();
@@ -133,6 +171,11 @@ impl Fixture {
 
         world.run_system_once(hardware::reactors::generate).unwrap();
         world
+            .get_mut::<hardware::Device>(reactor)
+            .unwrap()
+            .0
+            .operational = false;
+        world
             .get_mut::<hardware::ShipInventory>(station)
             .unwrap()
             .0
@@ -168,7 +211,7 @@ impl Fixture {
     }
 
     fn unload(&mut self, account: Id, resource: &str, quantity: u64) -> Result<()> {
-        execute(
+        enqueue_command(
             self.app.world_mut(),
             account,
             IndustryCommand::UnloadProduct {
@@ -187,7 +230,7 @@ impl Fixture {
         world
             .resource_mut::<Time<Fixed>>()
             .advance_by(osg_model::TICK_DURATION);
-        advance(world);
+        tick(world);
     }
 
     fn restart(&mut self) {
@@ -221,17 +264,10 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     let station = fixture.entity(fixture.station);
     let ship_mass = fixture.app.world().get::<MassProps>(ship).unwrap().mass;
     let host_mass = fixture.app.world().get::<MassProps>(station).unwrap().mass;
-    let view = snapshot(
-        fixture.app.world(),
-        fixture.account,
-        &IndustryQuery {
-            inventories: vec![fixture.ship],
-            ..Default::default()
-        },
-    );
-    assert_eq!(view.facilities[0].cargo_capacity_m3, 0.);
-    assert!(view.facilities[0].items.is_empty());
-    assert!(view.facilities[0].products.iter().any(|stack| {
+    let view = read_facility(fixture.app.world_mut(), fixture.account, fixture.ship).unwrap();
+    assert_eq!(view.cargo_capacity_m3, 0.);
+    assert!(view.items.is_empty());
+    assert!(view.products.iter().any(|stack| {
         stack.item == CargoItem::Resource("spent_fuel".into()) && stack.quantity == 10
     }));
 
@@ -243,7 +279,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     );
     assert!((fixture.app.world().get::<MassProps>(station).unwrap().mass - host_mass).abs() < 1e-6);
 
-    execute(
+    enqueue_command(
         fixture.app.world_mut(),
         fixture.account,
         IndustryCommand::StartRecipe {
@@ -258,14 +294,14 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     let job = &fixture
         .app
         .world()
-        .get::<IndustryFacility>(station)
+        .get::<IndustrialFacility>(station)
         .unwrap()
         .jobs[0];
-    assert_eq!(job.view.status, JobStatus::AwaitingPower);
-    assert_eq!(job.view.progress_ticks, 0);
-    let energy = job.energy_j;
-    let duration = job.view.duration_ticks;
-    let job_id = job.view.id;
+    assert_eq!(job.status, JobStatus::AwaitingPower);
+    assert_eq!(job.progress_ticks, 0);
+    let energy = job.work.energy_j;
+    let duration = job.work.duration_ticks;
+    let job_id = job.id;
     assert!(energy > 0 && duration > 1);
     assert_eq!(
         fixture.inventory(fixture.station).reservations[&CargoItem::Resource("spent_fuel".into())],
@@ -287,12 +323,12 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     let queue = &fixture
         .app
         .world()
-        .get::<IndustryFacility>(station)
+        .get::<IndustrialFacility>(station)
         .unwrap()
         .jobs;
     assert_eq!(queue.len(), 1);
-    assert_eq!(queue[0].view.id, job_id);
-    assert_eq!(queue[0].view.progress_ticks, 1);
+    assert_eq!(queue[0].id, job_id);
+    assert_eq!(queue[0].progress_ticks, 1);
     assert_eq!(fixture.inventory(fixture.ship).quantities[spent], 0);
     assert_eq!(fixture.cargo(fixture.station, "spent_fuel"), 10);
     assert_eq!(fixture.inventory(fixture.station).energy_j, energy - paid);
@@ -303,7 +339,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
         fixture
             .app
             .world()
-            .get::<IndustryFacility>(station)
+            .get::<IndustrialFacility>(station)
             .unwrap()
             .jobs
             .is_empty()
@@ -314,7 +350,7 @@ fn reactor_products_without_a_cargo_hold_can_be_refined_and_refilled_across_rest
     assert_eq!(fixture.cargo(fixture.station, "reactor_fuel"), 2);
     assert_eq!(fixture.cargo(fixture.station, "radioactive_waste"), 8);
 
-    execute(
+    enqueue_command(
         fixture.app.world_mut(),
         fixture.account,
         IndustryCommand::Refill {

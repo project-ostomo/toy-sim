@@ -25,6 +25,8 @@ const ATTRIBUTE_FLUX: MeshVertexAttribute =
     MeshVertexAttribute::new("StarFlux", 2_418_663_009, VertexFormat::Float32x4);
 const ATTRIBUTE_CORNER: MeshVertexAttribute =
     MeshVertexAttribute::new("StarCorner", 2_418_663_010, VertexFormat::Float32x2);
+const ATTRIBUTE_RADIUS: MeshVertexAttribute =
+    MeshVertexAttribute::new("StarRadius", 2_418_663_011, VertexFormat::Float32);
 const CORNERS: [[f32; 2]; 4] = [[-1., -1.], [1., -1.], [1., 1.], [-1., 1.]];
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
@@ -66,6 +68,7 @@ impl Material for StarMaterial {
             Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
             ATTRIBUTE_FLUX.at_shader_location(1),
             ATTRIBUTE_CORNER.at_shader_location(2),
+            ATTRIBUTE_RADIUS.at_shader_location(3),
         ])?];
         Ok(())
     }
@@ -90,6 +93,7 @@ pub(super) fn star_mesh(stars: &[snapshot::Sprite]) -> Option<Mesh> {
     let mut positions = Vec::with_capacity(stars.len() * 4);
     let mut fluxes = Vec::with_capacity(stars.len() * 4);
     let mut corners = Vec::with_capacity(stars.len() * 4);
+    let mut radii = Vec::with_capacity(stars.len() * 4);
     let mut indices = Vec::with_capacity(stars.len() * 6);
     for (index, star) in stars.iter().enumerate() {
         let position = (star.offset / UNIT_M).as_vec3().to_array();
@@ -99,6 +103,7 @@ pub(super) fn star_mesh(stars: &[snapshot::Sprite]) -> Option<Mesh> {
             positions.push(position);
             fluxes.push([r, g, b, flux as f32]);
             corners.push(corner);
+            radii.push((star.radius_m / UNIT_M) as f32);
         }
         let base = index as u32 * 4;
         indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -111,6 +116,7 @@ pub(super) fn star_mesh(stars: &[snapshot::Sprite]) -> Option<Mesh> {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(ATTRIBUTE_FLUX, fluxes)
         .with_inserted_attribute(ATTRIBUTE_CORNER, corners)
+        .with_inserted_attribute(ATTRIBUTE_RADIUS, radii)
         .with_inserted_indices(Indices::U32(indices)),
     )
 }
@@ -195,6 +201,7 @@ mod tests {
     fn sprite(offset: bevy::math::DVec3) -> snapshot::Sprite {
         snapshot::Sprite {
             offset,
+            radius_m: 6.96e8,
             luminosity: osg_stars::SOLAR_LUMENS,
             colour: [1.0, 0.5, 0.25],
         }

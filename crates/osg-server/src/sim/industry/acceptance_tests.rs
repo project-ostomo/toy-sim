@@ -34,11 +34,12 @@ impl Fixture {
         let facility = Self::spawn(&mut world, account, blueprint, DVec3::ZERO);
         world
             .entity_mut(facility)
-            .insert(IndustryFacility::default());
+            .insert(IndustrialFacility::default());
         for bay in &mut world.get_mut::<travel::DockingBays>(facility).unwrap().0 {
             bay.public = true;
         }
-        initialize(&mut world).unwrap();
+        install(&mut world);
+        world.run_schedule(FixedPreUpdate);
         Self {
             world,
             facility,
@@ -62,7 +63,6 @@ impl Fixture {
         .unwrap();
         identity::attach_ship(world, entity, owner, Id::new()).unwrap();
         world.run_system_once(hardware::initialize).unwrap();
-        publication::refresh(world);
         entity
     }
 
@@ -118,7 +118,7 @@ impl Fixture {
 
     fn recipe(&self, capability: IndustryCapability) -> Recipe {
         self.world
-            .resource::<CatalogueCache>()
+            .resource::<ManufacturingCatalogue>()
             .0
             .recipes
             .iter()
@@ -129,7 +129,7 @@ impl Fixture {
 
     fn start(&mut self, recipe: &Recipe) -> Id {
         let facility = self.id(self.facility);
-        execute(
+        enqueue_command(
             &mut self.world,
             self.account,
             IndustryCommand::StartRecipe {
@@ -141,12 +141,11 @@ impl Fixture {
         )
         .unwrap();
         self.world
-            .get::<IndustryFacility>(self.facility)
+            .get::<IndustrialFacility>(self.facility)
             .unwrap()
             .jobs
             .last()
             .unwrap()
-            .view
             .id
     }
 
@@ -162,6 +161,168 @@ impl Fixture {
                 }],
             }));
     }
+}
+
+#[test]
+fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
+    use osg_model::rpc::Operation;
+    use requests::*;
+
+    let mut fixture = Fixture::new();
+    let recipe = fixture.recipe(IndustryCapability::Fabricator);
+    fixture.put(fixture.facility, &recipe.inputs);
+    let facility = fixture.id(fixture.facility);
+    let epoch = fixture.world.resource::<identity::WorldEpoch>().0;
+    let operation = Operation {
+        world: epoch,
+        id: Id::new(),
+    };
+    let mut enqueue = |operation, fingerprint| {
+        let (reply, receive) = tokio::sync::oneshot::channel();
+        fixture
+            .world
+            .resource_mut::<WorkQueue>()
+            .0
+            .push_back(WorkItem {
+                request: Mutation {
+                    account: fixture.account,
+                    operation,
+                    fingerprint,
+                    arguments: StartWork::Recipe {
+                        facility,
+                        recipe: recipe.id.clone(),
+                        batches: 1,
+                    },
+                    reply,
+                },
+                uploads: Default::default(),
+            });
+        receive
+    };
+    let mut first = enqueue(operation, [1; 32]);
+    let mut retry = enqueue(operation, [1; 32]);
+    let mut conflicting = enqueue(operation, [2; 32]);
+    let mut second = enqueue(
+        Operation {
+            world: epoch,
+            id: Id::new(),
+        },
+        [1; 32],
+    );
+    let mut stale = enqueue(
+        Operation {
+            world: Id::new(),
+            id: Id::new(),
+        },
+        [1; 32],
+    );
+    let abandoned = enqueue(
+        Operation {
+            world: epoch,
+            id: Id::new(),
+        },
+        [1; 32],
+    );
+    drop(abandoned);
+
+    fixture.world.run_schedule(FixedPreUpdate);
+    assert!(first.try_recv().unwrap().is_ok());
+    assert!(retry.try_recv().unwrap().is_ok());
+    assert!(
+        conflicting
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .0
+            .contains("different arguments")
+    );
+    assert!(second.try_recv().unwrap().is_err());
+    assert!(
+        stale
+            .try_recv()
+            .unwrap()
+            .unwrap_err()
+            .0
+            .contains("World changed")
+    );
+    assert_eq!(
+        fixture
+            .world
+            .get::<IndustrialFacility>(fixture.facility)
+            .unwrap()
+            .jobs
+            .len(),
+        1
+    );
+    assert_eq!(
+        fixture.inventory(fixture.facility).reservations,
+        osg_ships::aggregate_stacks(
+            &recipe.inputs,
+            &fixture.world.resource::<vessel::ShipCatalogue>().0
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn cancellation_phase_releases_materials_before_new_work_is_admitted() {
+    use osg_model::rpc::Operation;
+    use requests::*;
+
+    let mut fixture = Fixture::new();
+    let recipe = fixture.recipe(IndustryCapability::Fabricator);
+    fixture.put(fixture.facility, &recipe.inputs);
+    let job = fixture.start(&recipe);
+    let facility = fixture.id(fixture.facility);
+    let epoch = fixture.world.resource::<identity::WorldEpoch>().0;
+    let (reply, mut start) = tokio::sync::oneshot::channel();
+    fixture
+        .world
+        .resource_mut::<WorkQueue>()
+        .0
+        .push_back(WorkItem {
+            request: Mutation {
+                account: fixture.account,
+                operation: Operation {
+                    world: epoch,
+                    id: Id::new(),
+                },
+                fingerprint: [1; 32],
+                arguments: StartWork::Recipe {
+                    facility,
+                    recipe: recipe.id,
+                    batches: 1,
+                },
+                reply,
+            },
+            uploads: Default::default(),
+        });
+    let (reply, mut cancel) = tokio::sync::oneshot::channel();
+    fixture
+        .world
+        .resource_mut::<CancellationQueue>()
+        .0
+        .push_back(Mutation {
+            account: fixture.account,
+            operation: Operation {
+                world: epoch,
+                id: Id::new(),
+            },
+            fingerprint: [2; 32],
+            arguments: CancelWork { facility, job },
+            reply,
+        });
+
+    fixture.world.run_schedule(FixedPreUpdate);
+    assert!(cancel.try_recv().unwrap().is_ok());
+    assert!(start.try_recv().unwrap().is_ok());
+    let jobs = &fixture
+        .world
+        .get::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .jobs;
+    assert_eq!(jobs.len(), 1);
+    assert_ne!(jobs[0].id, job);
 }
 
 #[test]
@@ -212,7 +373,7 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
         time_per_hour: MONEY_SCALE,
         public_lanes: 1,
     };
-    service::publish(
+    service_client::publish(
         &mut fixture.world,
         fixture.account,
         facility,
@@ -233,9 +394,10 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
         recipe: recipe.id,
         batches: 1,
     };
-    let public = service::list(&fixture.world, customer, String::new(), None, 32).unwrap();
+    let public =
+        service_client::list(&mut fixture.world, customer, String::new(), None, 32).unwrap();
     assert_eq!(public.items.len(), 1);
-    let quote = service::quote(
+    let quote = service_client::quote(
         &mut fixture.world,
         customer,
         facility,
@@ -248,13 +410,13 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
     assert!(quote.total > 0);
     let mut stale = quote.clone();
     stale.policy_revision += 1;
-    assert!(service::order(&mut fixture.world, customer, stale, &uploads).is_err());
+    assert!(service_client::order(&mut fixture.world, customer, stale, &uploads).is_err());
     let before = fixture
         .world
         .resource::<Economy>()
         .available(payer, Currency::Uec);
-    service::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
-    let first = service::jobs(&fixture.world, customer, facility).unwrap()[0].id;
+    service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
+    let first = service_client::jobs(&mut fixture.world, customer, facility).unwrap()[0].id;
     assert_eq!(
         fixture
             .world
@@ -262,8 +424,8 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
             .available(payer, Currency::Uec),
         before - quote.total
     );
-    assert!(service::order(&mut fixture.world, customer, quote.clone(), &uploads).is_err());
-    assert!(service::cancel(&mut fixture.world, fixture.account, facility, first).is_ok());
+    assert!(service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).is_err());
+    assert!(service_client::cancel(&mut fixture.world, fixture.account, facility, first).is_ok());
     assert_eq!(
         fixture
             .world
@@ -277,8 +439,8 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
             input.quantity
         );
     }
-    service::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
-    let second = service::jobs(&fixture.world, customer, facility).unwrap()[0].id;
+    service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
+    let second = service_client::jobs(&mut fixture.world, customer, facility).unwrap()[0].id;
     let before_operator = fixture
         .world
         .resource::<Economy>()
@@ -286,13 +448,13 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
         .get(&operator)
         .cloned()
         .unwrap_or_default();
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     let job = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0];
-    assert!(job.view.payment.as_ref().unwrap().charged);
+    assert!(job.payment.as_ref().unwrap().charged);
     assert!(
         !fixture
             .world
@@ -306,33 +468,33 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .outside_revenue
             .uec,
         received_uec
     );
-    assert!(service::cancel(&mut fixture.world, customer, facility, second).is_err());
+    assert!(service_client::cancel(&mut fixture.world, customer, facility, second).is_err());
 
     for _ in 1..quote.duration_ticks {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs
             .is_empty()
     );
     let completed = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap();
     assert_eq!(completed.outside_revenue.uec, received_uec);
     assert_eq!(completed.outside_revenue.lat, 0);
-    let saved = postcard::to_allocvec(completed).unwrap();
-    let restored: IndustryFacility = postcard::from_bytes(&saved).unwrap();
+    let saved = postcard::to_allocvec(&completed.to_record()).unwrap();
+    let restored: IndustrialFacilityRecord = postcard::from_bytes(&saved).unwrap();
     assert_eq!(restored.outside_revenue.uec, received_uec);
     for output in &quote.outputs {
         assert_eq!(
@@ -386,12 +548,14 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
     };
     let before = fixture.inventory_bytes(fixture.facility);
     for source in [None, Some(&other_uploads)] {
-        assert!(execute(&mut fixture.world, fixture.account, command.clone(), source).is_err());
+        assert!(
+            enqueue_command(&mut fixture.world, fixture.account, command.clone(), source).is_err()
+        );
         assert_eq!(fixture.inventory_bytes(fixture.facility), before);
         assert!(
             fixture
                 .world
-                .get::<IndustryFacility>(fixture.facility)
+                .get::<IndustrialFacility>(fixture.facility)
                 .unwrap()
                 .jobs
                 .is_empty()
@@ -401,7 +565,7 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
     let stranger = Id::new();
     identity::add_account(&mut fixture.world, stranger, false);
     assert!(
-        execute(
+        enqueue_command(
             &mut fixture.world,
             stranger,
             command.clone(),
@@ -418,7 +582,7 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
     }] {
         let hash = stage_blueprint(&uploads, &invalid).await;
         assert!(
-            execute(
+            enqueue_command(
                 &mut fixture.world,
                 fixture.account,
                 IndustryCommand::BuildShip {
@@ -434,20 +598,22 @@ async fn uploaded_construction_rechecks_private_scope_authority_and_firmware_bef
         assert!(
             fixture
                 .world
-                .get::<IndustryFacility>(fixture.facility)
+                .get::<IndustrialFacility>(fixture.facility)
                 .unwrap()
                 .jobs
                 .is_empty()
         );
     }
 
-    execute(&mut fixture.world, fixture.account, command, Some(&uploads)).unwrap();
+    enqueue_command(&mut fixture.world, fixture.account, command, Some(&uploads)).unwrap();
     let queue = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap();
     assert_eq!(queue.jobs.len(), 1);
-    assert!(matches!(&queue.jobs[0].output, JobOutput::Ship(saved) if saved.as_ref() == bytes));
+    assert!(
+        matches!(&queue.jobs[0].work.output, WorkOutput::Ship(saved) if saved.as_ref() == bytes)
+    );
     assert!(!fixture.inventory(fixture.facility).reservations.is_empty());
 }
 
@@ -497,7 +663,7 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
     fixture.put(fixture.facility, &stock);
     let facility = fixture.id(fixture.facility);
     for _ in 0..count {
-        build_ship(
+        enqueue_blueprint(
             &mut fixture.world,
             fixture.account,
             facility,
@@ -507,7 +673,7 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
         .unwrap();
     }
     let before = fixture.inventory_bytes(fixture.facility);
-    let error = build_ship(
+    let error = enqueue_blueprint(
         &mut fixture.world,
         fixture.account,
         facility,
@@ -520,7 +686,7 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs
             .len(),
@@ -529,12 +695,12 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
 
     let mut invalid = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .clone();
     invalid.jobs.push(invalid.jobs[0].clone());
     let error = validate_saved(
-        Some(&invalid),
+        Some(&invalid.to_record()),
         None,
         &fixture
             .world
@@ -550,19 +716,18 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
 
     let job = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0]
-        .view
         .id;
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::CancelJob { facility, job },
         None,
     )
     .unwrap();
-    build_ship(
+    enqueue_blueprint(
         &mut fixture.world,
         fixture.account,
         facility,
@@ -573,7 +738,7 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs
             .len(),
@@ -597,7 +762,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
     let recipe = fixture.recipe(IndustryCapability::Fabricator);
     fixture.put(fixture.facility, &recipe.inputs);
     let facility_id = fixture.id(fixture.facility);
-    execute(
+    enqueue_command(
         &mut fixture.world,
         operator,
         IndustryCommand::StartRecipe {
@@ -610,14 +775,13 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
     .unwrap();
     let job = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0]
-        .view
         .id;
     let before = fixture.inventory_bytes(fixture.facility);
     assert!(
-        execute(
+        enqueue_command(
             &mut fixture.world,
             outsider,
             IndustryCommand::CancelJob {
@@ -629,17 +793,16 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
         .is_err()
     );
     assert_eq!(fixture.inventory_bytes(fixture.facility), before);
-    let subscription = IndustryQuery {
-        directory: true,
-        inventories: vec![facility_id],
-        ..Default::default()
-    };
-    let hidden = snapshot(&fixture.world, outsider, &subscription);
-    assert!(hidden.facilities.is_empty() && hidden.directory.is_empty());
-    let visible = snapshot(&fixture.world, operator, &subscription);
-    assert_eq!(visible.facilities.len(), 1);
-    assert!(visible.facilities[0].can_manage && !visible.facilities[0].can_transfer);
-    execute(
+    assert!(read_facility(&mut fixture.world, outsider, facility_id).is_err());
+    assert!(
+        read_directory(&mut fixture.world, outsider, None, 128)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+    let visible = read_facility(&mut fixture.world, operator, facility_id).unwrap();
+    assert!(visible.can_manage && !visible.can_transfer);
+    enqueue_command(
         &mut fixture.world,
         operator,
         IndustryCommand::CancelJob {
@@ -662,7 +825,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
         quantity: 1,
     };
     let before = fixture.inventory_bytes(fixture.facility);
-    assert!(execute(&mut fixture.world, operator, command, None,).is_err());
+    assert!(enqueue_command(&mut fixture.world, operator, command, None,).is_err());
     assert_eq!(fixture.inventory_bytes(fixture.facility), before);
     fixture
         .world
@@ -670,7 +833,7 @@ fn remote_management_does_not_grant_material_transfer_or_private_inventory_acces
         .unwrap()
         .translation_um = osg_model::GalacticPosition::from_meters(DVec3::X * 200.0);
     travel::dock(&mut fixture.world, remote, fixture.facility, 0).unwrap();
-    execute(
+    enqueue_command(
         &mut fixture.world,
         operator,
         IndustryCommand::Transfer {
@@ -711,7 +874,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
     let before = fixture.inventory_bytes(fixture.facility);
     for owner in [Principal::Player(operator), Principal::Player(stranger)] {
         assert!(
-            build_ship(
+            enqueue_blueprint(
                 &mut fixture.world,
                 operator,
                 facility,
@@ -722,7 +885,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
         );
         assert_eq!(fixture.inventory_bytes(fixture.facility), before);
     }
-    build_ship(
+    enqueue_blueprint(
         &mut fixture.world,
         operator,
         facility,
@@ -732,12 +895,13 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
     .unwrap();
     let job = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0];
-    assert_eq!(job.view.owner, facility_owner);
-    let job_id = job.view.id;
+    assert_eq!(job.owner, facility_owner);
+    let job_id = job.id;
     let kit = job
+        .work
         .inputs
         .iter()
         .find(|stack| matches!(stack.item, CargoItem::Part(_)))
@@ -772,7 +936,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
                 .capacity_m3
     );
     assert!(
-        execute(
+        enqueue_command(
             &mut fixture.world,
             fixture.account,
             IndustryCommand::Transfer {
@@ -785,7 +949,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
         )
         .is_err()
     );
-    execute(
+    enqueue_command(
         &mut fixture.world,
         operator,
         IndustryCommand::CancelJob {
@@ -801,7 +965,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
         &[Permission::Industry, Permission::TransferCargo],
     );
     assert!(
-        build_ship(
+        enqueue_blueprint(
             &mut fixture.world,
             operator,
             facility,
@@ -810,7 +974,7 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
         )
         .is_err()
     );
-    build_ship(
+    enqueue_blueprint(
         &mut fixture.world,
         operator,
         facility,
@@ -821,10 +985,9 @@ fn industry_grant_cannot_convert_an_organizations_materials_into_personal_ships(
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs[0]
-            .view
             .owner,
         Principal::Player(operator)
     );
@@ -836,7 +999,7 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
     let catalogue = fixture.world.resource::<vessel::ShipCatalogue>().0.clone();
     let recipe = fixture
         .world
-        .resource::<CatalogueCache>()
+        .resource::<ManufacturingCatalogue>()
         .0
         .recipes
         .iter()
@@ -877,9 +1040,10 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
         .0 = Arc::new(cramped);
     let total_energy = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0]
+        .work
         .energy_j;
     fixture
         .world
@@ -888,23 +1052,23 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
         .0
         .energy_j = total_energy;
     for _ in 0..recipe.duration_ticks {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     let queue = fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap();
     assert_eq!(queue.jobs.len(), 1);
-    assert_eq!(queue.jobs[0].view.progress_ticks, recipe.duration_ticks);
-    assert_eq!(queue.jobs[0].view.status, JobStatus::AwaitingCargoSpace);
+    assert_eq!(queue.jobs[0].progress_ticks, recipe.duration_ticks);
+    assert_eq!(queue.jobs[0].status, JobStatus::AwaitingCargoSpace);
     assert_eq!(fixture.inventory(fixture.facility).energy_j, 0);
     let blocked = fixture.inventory_bytes(fixture.facility);
     for _ in 0..10 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
         assert_eq!(fixture.inventory_bytes(fixture.facility), blocked);
     }
     let facility = fixture.id(fixture.facility);
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::CancelJob { facility, job },
@@ -931,12 +1095,12 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
         .0
         .energy_j = total_energy;
     for _ in 0..recipe.duration_ticks {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs
             .is_empty()
@@ -949,7 +1113,7 @@ fn a_full_hold_can_cancel_reserved_work_and_completion_retries_without_duplicati
     }
     let completed = fixture.inventory_bytes(fixture.facility);
     for _ in 0..10 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert_eq!(fixture.inventory_bytes(fixture.facility), completed);
 }
@@ -987,7 +1151,7 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
         .unwrap()
         .mass;
     let facility = fixture.id(fixture.facility);
-    build_ship(
+    enqueue_blueprint(
         &mut fixture.world,
         fixture.account,
         facility,
@@ -1020,15 +1184,14 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
         .0
         .energy_j = requirements.energy_j;
     for _ in 0..requirements.duration_ticks {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs[0]
-            .view
             .status,
         JobStatus::AwaitingBerth
     );
@@ -1040,7 +1203,7 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
     let entities_before = fixture.world.entities().len();
     let inventory_before = fixture.inventory_bytes(fixture.facility);
     for _ in 0..8 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
         assert_eq!(
             fixture
                 .world
@@ -1063,7 +1226,7 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
         assert_eq!(bay.reservation, inbound_reservation);
         bay.radius_m = radius;
     }
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     assert!(
         fixture
             .world
@@ -1076,7 +1239,7 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
     assert!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs
             .is_empty()
@@ -1089,6 +1252,20 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
         .collect();
     assert_eq!(contained.len(), 1);
     let built = contained[0];
+    assert!(
+        fixture
+            .world
+            .get::<hardware::PendingHardwareReset>(built)
+            .is_some()
+    );
+    assert!(
+        fixture
+            .world
+            .get::<hardware::PartDevices>(built)
+            .unwrap()
+            .0
+            .is_empty()
+    );
     assert_eq!(
         fixture.world.get::<ownership::AssetOwner>(built).unwrap().0,
         Principal::Player(fixture.account)
@@ -1128,8 +1305,26 @@ fn blocked_ship_construction_retries_atomically_and_spawns_a_cold_mass_paid_hull
             < 1e-6
     );
     let after = fixture.inventory_bytes(fixture.facility);
+    tick(&mut fixture.world);
+    assert!(
+        fixture
+            .world
+            .get::<hardware::PendingHardwareReset>(built)
+            .is_none()
+    );
+    assert_eq!(
+        fixture
+            .world
+            .get::<hardware::PartDevices>(built)
+            .unwrap()
+            .0
+            .len(),
+        design.parts.len()
+    );
+    assert_eq!(fixture.inventory_bytes(fixture.facility), after);
+    assert_eq!(fixture.inventory(built).energy_j, 0);
     for _ in 0..8 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert_eq!(fixture.inventory_bytes(fixture.facility), after);
     assert_eq!(
@@ -1156,14 +1351,14 @@ fn failed_power_and_damaged_modules_cannot_make_free_progress_or_spend_reserved_
         .0
         .energy_j = 0;
     let materials = fixture.inventory(fixture.facility).cargo.clone();
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     let job = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0];
-    assert_eq!(job.view.status, JobStatus::AwaitingPower);
-    assert_eq!(job.view.progress_ticks, 0);
+    assert_eq!(job.status, JobStatus::AwaitingPower);
+    assert_eq!(job.progress_ticks, 0);
     assert_eq!(fixture.inventory(fixture.facility).cargo, materials);
     let devices: Vec<_> = lanes(&fixture.world, fixture.facility)
         .into_iter()
@@ -1186,15 +1381,15 @@ fn failed_power_and_damaged_modules_cannot_make_free_progress_or_spend_reserved_
         .0
         .energy_j = recipe.energy_j;
     for _ in 0..4 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     let job = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0];
-    assert_eq!(job.view.status, JobStatus::ModuleUnavailable);
-    assert_eq!(job.view.progress_ticks, 0);
+    assert_eq!(job.status, JobStatus::ModuleUnavailable);
+    assert_eq!(job.progress_ticks, 0);
     assert_eq!(
         fixture.inventory(fixture.facility).energy_j,
         recipe.energy_j
@@ -1207,13 +1402,13 @@ fn failed_power_and_damaged_modules_cannot_make_free_progress_or_spend_reserved_
             .0
             .operational = true;
     }
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     let job = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs[0];
-    assert_eq!(job.view.progress_ticks, 1);
+    assert_eq!(job.progress_ticks, 1);
     assert_eq!(
         fixture.inventory(fixture.facility).energy_j,
         recipe.energy_j - cumulative_energy(recipe.energy_j, 1, recipe.duration_ticks)
@@ -1224,15 +1419,14 @@ fn failed_power_and_damaged_modules_cannot_make_free_progress_or_spend_reserved_
         .unwrap()
         .0 = 0.0;
     let before = fixture.inventory_bytes(fixture.facility);
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     assert_eq!(fixture.inventory_bytes(fixture.facility), before);
     assert_eq!(
         fixture
             .world
-            .get::<IndustryFacility>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
             .unwrap()
             .jobs[0]
-            .view
             .progress_ticks,
         1
     );
@@ -1268,7 +1462,7 @@ fn physical_transfers_update_docked_mass_immediately_and_undocking_conserves_the
     .unwrap();
     let host = fixture.id(fixture.facility);
     let target = fixture.id(guest);
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::Transfer {
@@ -1343,15 +1537,16 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
     }
     fixture
         .world
-        .entity_mut(fixture.facility)
-        .insert(MineSource {
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .set_mine(MineSource {
             output: item.clone(),
             units_per_second: 13,
             remainder: 0,
             last_recipient: None,
         });
     for _ in 0..100 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     let a = fixture.quantity(first, &item);
     let b = fixture.quantity(second, &item);
@@ -1364,7 +1559,10 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
     assert_eq!(
         fixture
             .world
-            .get::<MineSource>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
+            .unwrap()
+            .mine
+            .as_ref()
             .unwrap()
             .remainder,
         0
@@ -1382,11 +1580,14 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
     fixture.world.get_mut::<vessel::ShipDesign>(full).unwrap().0 = Arc::new(no_room);
     fixture
         .world
-        .get_mut::<MineSource>(fixture.facility)
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .mine
+        .as_mut()
         .unwrap()
         .units_per_second = 30;
     for _ in 0..100 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     let odd_a = fixture.quantity(first, &item) - a;
     let odd_b = fixture.quantity(second, &item) - b;
@@ -1400,7 +1601,10 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
     let b = fixture.quantity(second, &item);
     fixture
         .world
-        .get_mut::<MineSource>(fixture.facility)
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .mine
+        .as_mut()
         .unwrap()
         .units_per_second = 13;
     for ship in [first, second] {
@@ -1410,12 +1614,15 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
             .remove::<hardware::utilities::DockServiceRequest>();
     }
     for _ in 0..1000 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
     }
     assert!(
         fixture
             .world
-            .get::<MineSource>(fixture.facility)
+            .get::<IndustrialFacility>(fixture.facility)
+            .unwrap()
+            .mine
+            .as_ref()
             .unwrap()
             .remainder
             < 10
@@ -1427,7 +1634,7 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
             cargo: true,
             power: false,
         });
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     assert_eq!(fixture.quantity(first, &item) - a, 1);
     assert_eq!(fixture.quantity(second, &item), b);
 
@@ -1446,13 +1653,16 @@ fn mine_loading_is_fractional_fair_authorized_and_never_accumulates_a_blocked_bu
         });
     fixture
         .world
-        .get_mut::<MineSource>(fixture.facility)
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .mine
+        .as_mut()
         .unwrap()
         .units_per_second = 140;
     let partial_a = fixture.quantity(first, &item);
     let partial_b = fixture.quantity(second, &item);
     for _ in 0..60 {
-        advance(&mut fixture.world);
+        tick(&mut fixture.world);
         assert_eq!(fixture.quantity(full, &item), 1);
         fixture
             .world
@@ -1524,7 +1734,7 @@ fn transferring_inside_a_docked_carrier_preserves_all_ancestor_masses() {
     .unwrap();
     let source = fixture.id(carrier);
     let target = fixture.id(child);
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::Transfer {
@@ -1603,20 +1813,17 @@ fn concurrent_factory_lanes_share_the_last_joule_without_partial_tick_progress()
         .unwrap()
         .0
         .energy_j = first_tick_energy;
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     let queue = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs;
-    assert_eq!(
-        queue.iter().map(|job| job.view.progress_ticks).sum::<u64>(),
-        1
-    );
+    assert_eq!(queue.iter().map(|job| job.progress_ticks).sum::<u64>(), 1);
     assert_eq!(
         queue
             .iter()
-            .filter(|job| job.view.status == JobStatus::AwaitingPower)
+            .filter(|job| job.status == JobStatus::AwaitingPower)
             .count(),
         1
     );
@@ -1627,16 +1834,13 @@ fn concurrent_factory_lanes_share_the_last_joule_without_partial_tick_progress()
         .unwrap()
         .0
         .energy_j = first_tick_energy - 1;
-    advance(&mut fixture.world);
+    tick(&mut fixture.world);
     let queue = &fixture
         .world
-        .get::<IndustryFacility>(fixture.facility)
+        .get::<IndustrialFacility>(fixture.facility)
         .unwrap()
         .jobs;
-    assert_eq!(
-        queue.iter().map(|job| job.view.progress_ticks).sum::<u64>(),
-        1
-    );
+    assert_eq!(queue.iter().map(|job| job.progress_ticks).sum::<u64>(), 1);
     assert_eq!(
         fixture.inventory(fixture.facility).energy_j,
         first_tick_energy - 1
@@ -1692,7 +1896,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         resource: "shield_coolant".into(),
         quantity: capacity + 1,
     };
-    assert!(execute(&mut fixture.world, fixture.account, overfill, None,).is_err());
+    assert!(enqueue_command(&mut fixture.world, fixture.account, overfill, None,).is_err());
     assert_eq!(fixture.inventory_bytes(fixture.facility), host_inventory);
     assert_eq!(
         fixture
@@ -1717,7 +1921,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         .unwrap();
     let reserved_inventory = fixture.inventory_bytes(fixture.facility);
     assert!(
-        execute(
+        enqueue_command(
             &mut fixture.world,
             fixture.account,
             IndustryCommand::Refill {
@@ -1744,7 +1948,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         0
     );
 
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::Refill {
@@ -1790,7 +1994,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
         .0
         .release_cargo(&reserved, &catalogue)
         .unwrap();
-    execute(
+    enqueue_command(
         &mut fixture.world,
         fixture.account,
         IndustryCommand::Refill {
@@ -1824,7 +2028,7 @@ fn cold_shield_reserves_accept_only_paid_unreserved_coolant_with_exact_mass() {
     );
     let full_inventory = fixture.inventory_bytes(fixture.facility);
     assert!(
-        execute(
+        enqueue_command(
             &mut fixture.world,
             fixture.account,
             IndustryCommand::Refill {

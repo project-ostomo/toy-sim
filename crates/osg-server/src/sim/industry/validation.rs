@@ -16,7 +16,7 @@ fn stack_totals(stacks: &[ItemStack], catalogue: &Catalogue) -> Result<BTreeMap<
 
 fn installed_lane(
     design: &CompiledShipDesign,
-    job: &IndustryJob,
+    job: &ProductionJob,
     selected_part: Option<u64>,
 ) -> bool {
     design.parts.iter().any(|part| {
@@ -48,14 +48,15 @@ fn installed_lane(
             _ => return false,
         };
         count > 0
-            && capability == job.view.capability
-            && radius >= job.required_radius_m
-            && u128::from(power) >= u128::from(job.energy_j.div_ceil(job.view.duration_ticks)) * 10
+            && capability == job.work.capability
+            && radius >= job.work.required_radius_m
+            && u128::from(power)
+                >= u128::from(job.work.energy_j.div_ceil(job.work.duration_ticks)) * 10
     })
 }
 
 pub fn validate_saved(
-    facility: Option<&IndustryFacility>,
+    facility: Option<&IndustrialFacilityRecord>,
     mine: Option<&MineSource>,
     design: &CompiledShipDesign,
     inventory: &Inventory,
@@ -74,92 +75,103 @@ pub fn validate_saved(
     let mut reservations = BTreeMap::<CargoItem, u64>::new();
     let mut identities = BTreeSet::new();
     if let Some(facility) = facility {
-        ensure!(facility.service.valid(), "invalid saved service prices");
-        validate_blueprint_budget(&facility.jobs, 0)?;
+        ensure!(facility.policy.valid(), "invalid saved service prices");
+        let bytes: usize = facility
+            .jobs
+            .iter()
+            .map(|job| match &job.work.output {
+                WorkOutput::Cargo(_) => 0,
+                WorkOutput::Ship(bytes) => bytes.len(),
+            })
+            .sum();
+        ensure!(
+            bytes <= MAX_QUEUED_BLUEPRINT_BYTES,
+            "saved blueprints exceed the 64 MiB facility limit"
+        );
         ensure!(
             facility.jobs.len() <= MAX_JOBS,
             "saved industry queue exceeds limit"
         );
         for job in &facility.jobs {
-            if let Some(payment) = &job.view.payment {
+            if let Some(payment) = &job.payment {
                 ensure!(
                     directory.contains(payment.payer)
                         && directory.contains(payment.operator)
-                        && job.view.owner == payment.payer
-                        && (payment.charged || job.view.progress_ticks == 0),
+                        && job.owner == payment.payer
+                        && (payment.charged || job.progress_ticks == 0),
                     "invalid saved service payment"
                 );
             }
             ensure!(
-                identities.insert(job.view.id)
-                    && !job.view.name.trim().is_empty()
-                    && job.view.name.len() <= 128
-                    && !job.view.name.chars().any(char::is_control)
-                    && directory.contains(job.view.owner)
-                    && directory.players.contains_key(&job.view.created_by),
+                identities.insert(job.id)
+                    && !job.work.name.trim().is_empty()
+                    && job.work.name.len() <= 128
+                    && !job.work.name.chars().any(char::is_control)
+                    && directory.contains(job.owner)
+                    && directory.players.contains_key(&job.created_by),
                 "invalid saved industry job identity or owner"
             );
             ensure!(
-                job.view.duration_ticks > 0
-                    && job.view.progress_ticks <= job.view.duration_ticks
-                    && job.energy_j > 0
-                    && job.stored_energy_j <= job.energy_j
-                    && job.required_radius_m.is_finite()
-                    && job.required_radius_m >= 0.
-                    && job.view.supplied_power_w <= job.view.requested_power_w,
+                job.work.duration_ticks > 0
+                    && job.progress_ticks <= job.work.duration_ticks
+                    && job.work.energy_j > 0
+                    && job.work.stored_energy_j <= job.work.energy_j
+                    && job.work.required_radius_m.is_finite()
+                    && job.work.required_radius_m >= 0.
+                    && job.supplied_power_w <= job.requested_power_w,
                 "invalid saved industry progress, power or dimensions"
             );
             ensure!(
-                installed_lane(design, job, job.view.module_part),
+                installed_lane(design, job, job.module_part),
                 "saved industry job requires unavailable installed capability"
             );
             ensure!(
-                u128::from(job.view.requested_power_w)
-                    <= u128::from(job.energy_j.div_ceil(job.view.duration_ticks)) * 10
+                u128::from(job.requested_power_w)
+                    <= u128::from(job.work.energy_j.div_ceil(job.work.duration_ticks)) * 10
                     && (!matches!(
-                        job.view.status,
+                        job.status,
                         JobStatus::AwaitingCargoSpace | JobStatus::AwaitingBerth
-                    ) || job.view.progress_ticks == job.view.duration_ticks),
+                    ) || job.progress_ticks == job.work.duration_ticks),
                 "saved industry status differs from its progress or energy"
             );
-            let inputs = stack_totals(&job.inputs, catalogue)?;
-            match &job.output {
-                JobOutput::Cargo(outputs) => {
+            let inputs = stack_totals(&job.work.inputs, catalogue)?;
+            match &job.work.output {
+                WorkOutput::Cargo(outputs) => {
                     stack_totals(outputs, catalogue)?;
                     ensure!(
-                        job.required_radius_m == 0. && job.view.status != JobStatus::AwaitingBerth,
+                        job.work.required_radius_m == 0. && job.status != JobStatus::AwaitingBerth,
                         "cargo job has ship dimensions or berth state"
                     );
                     manufacturing::validate_recipe(
                         &Recipe {
                             id: "saved-job".into(),
-                            name: job.view.name.clone(),
-                            capability: job.view.capability,
-                            inputs: job.inputs.clone(),
+                            name: job.work.name.clone(),
+                            capability: job.work.capability,
+                            inputs: job.work.inputs.clone(),
                             outputs: outputs.clone(),
-                            duration_ticks: job.view.duration_ticks,
-                            energy_j: job.energy_j,
-                            stored_energy_j: job.stored_energy_j,
+                            duration_ticks: job.work.duration_ticks,
+                            energy_j: job.work.energy_j,
+                            stored_energy_j: job.work.stored_energy_j,
                         },
                         catalogue,
                     )?;
                 }
-                JobOutput::Ship(bytes) => {
+                WorkOutput::Ship(bytes) => {
                     ensure!(
                         bytes.len() <= osg_ships::MAX_FILE
-                            && job.view.status != JobStatus::AwaitingCargoSpace,
+                            && job.status != JobStatus::AwaitingCargoSpace,
                         "invalid saved construction payload or cargo state"
                     );
                     let blueprint = ShipBlueprint::from_bytes(bytes)?;
                     let hull = blueprint.compile(catalogue)?;
                     let requirements = manufacturing::construction_requirements(&hull, catalogue)?;
                     ensure!(
-                        job.view.capability == IndustryCapability::Shipyard
+                        job.work.capability == IndustryCapability::Shipyard
                             && inputs == stack_totals(&requirements.inputs, catalogue)?
-                            && job.view.duration_ticks == requirements.duration_ticks
-                            && job.energy_j == requirements.energy_j
-                            && job.stored_energy_j == 0
-                            && (job.required_radius_m - hull.radius).abs()
+                            && job.work.duration_ticks == requirements.duration_ticks
+                            && job.work.energy_j == requirements.energy_j
+                            && job.work.stored_energy_j == 0
+                            && (job.work.required_radius_m - hull.radius).abs()
                                 <= hull.radius.max(1.) * 1e-9,
                         "saved construction job differs from its blueprint requirements"
                     );

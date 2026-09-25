@@ -444,15 +444,6 @@ impl AccessPolicy {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SocietySnapshot {
-    pub standing_report: Option<StandingReport>,
-    pub account: AccountId,
-    pub directory: OwnershipDirectory,
-    pub assets: Vec<AssetAffiliation>,
-    pub gas_accounts: Vec<GasAccountSnapshot>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GasAccountSnapshot {
     pub owner: Principal,
@@ -477,34 +468,6 @@ pub struct AssetAffiliation {
     pub owner: Principal,
     pub access: AccessPolicy,
     pub can_manage: bool,
-}
-
-impl SocietySnapshot {
-    pub fn valid(&self) -> bool {
-        let mut assets = BTreeSet::new();
-        let mut gas_accounts = BTreeSet::new();
-        self.directory.valid()
-            && self.gas_accounts.len() <= 1 + 16384 + 4096
-            && self.gas_accounts.iter().all(|balance| {
-                gas_accounts.insert(balance.owner)
-                    && self.directory.contains(balance.owner)
-                    && self.directory.administers(self.account, balance.owner)
-                    && balance.valid()
-            })
-            && self.assets.len() <= 4096
-            && self.assets.iter().all(|asset| {
-                assets.insert(asset.entity)
-                    && !asset.name.is_empty()
-                    && asset.name.len() <= 256
-                    && self.directory.contains(asset.owner)
-                    && asset.access.valid()
-                    && asset
-                        .access
-                        .grants
-                        .iter()
-                        .all(|grant| self.directory.contains(grant.principal))
-            })
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -665,64 +628,20 @@ mod tests {
     }
 
     #[test]
-    fn gas_balances_require_ownership_or_administration_and_valid_totals() {
-        let account = Id([3; 16]);
-        let own = GasAccountSnapshot {
-            owner: Principal::Player(account),
+    fn gas_balances_reject_overflow() {
+        let balance = GasAccountSnapshot {
+            owner: Principal::Player(Id([3; 16])),
             available: 900,
             reserved: 50,
             spent: 50,
         };
-        let mut snapshot = SocietySnapshot {
-            account,
-            directory: directory(),
-            assets: Vec::new(),
-            gas_accounts: vec![own],
-            standing_report: None,
-        };
-        assert!(snapshot.valid());
-
-        snapshot.gas_accounts.push(GasAccountSnapshot {
-            owner: Principal::Player(Id([6; 16])),
-            ..own
-        });
-        assert!(!snapshot.valid());
-
-        snapshot.gas_accounts[1].owner = Principal::Organization(Id([2; 16]));
+        assert!(balance.valid());
         assert!(
-            !snapshot.valid(),
-            "membership alone cannot read the account"
+            !GasAccountSnapshot {
+                available: u64::MAX,
+                ..balance
+            }
+            .valid()
         );
-        snapshot
-            .directory
-            .organizations
-            .get_mut(&Id([2; 16]))
-            .unwrap()
-            .officers
-            .insert(account);
-        assert!(snapshot.valid());
-
-        snapshot.gas_accounts.push(own);
-        assert!(!snapshot.valid(), "duplicate billing principals");
-        snapshot.gas_accounts.pop();
-        snapshot.gas_accounts[0].available = u64::MAX;
-        assert!(
-            !snapshot.valid(),
-            "available plus reserved and spent overflow"
-        );
-        snapshot.gas_accounts[0] = own;
-
-        snapshot.gas_accounts[1].owner = Principal::Sovereignty(Id([1; 16]));
-        assert!(!snapshot.valid());
-        snapshot
-            .directory
-            .sovereignties
-            .get_mut(&Id([1; 16]))
-            .unwrap()
-            .officers
-            .insert(account);
-        assert!(snapshot.valid());
-        snapshot.gas_accounts[1].owner = Principal::Organization(Id([9; 16]));
-        assert!(!snapshot.valid(), "unknown billing principal");
     }
 }

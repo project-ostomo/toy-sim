@@ -203,50 +203,6 @@ async fn authenticated_main_stream_and_rpc_share_authority_and_asset_transfers()
     )
     .await;
     assert!(denied.results.iter().any(|result| result.error.is_some()));
-    assert!(
-        a.client
-            .route_status(world, other.ship, other.authority_revision, 42)
-            .await
-            .unwrap()
-            .is_err()
-    );
-    let route = a
-        .client
-        .route_request(
-            operation(world),
-            ship.ship,
-            ship.authority_revision,
-            routing::Request {
-                id: 42,
-                directives: vec![],
-                preferences: Default::default(),
-            },
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(!matches!(route, routing::Status::Unknown));
-    assert!(!matches!(
-        a.client
-            .route_status(world, ship.ship, ship.authority_revision, 42)
-            .await
-            .unwrap()
-            .unwrap(),
-        routing::Status::Unknown
-    ));
-    a.client
-        .route_cancel(operation(world), ship.ship, ship.authority_revision, 42)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        a.client
-            .route_status(world, ship.ship, ship.authority_revision, 42)
-            .await
-            .unwrap()
-            .unwrap(),
-        routing::Status::Unknown
-    ));
     drop(a);
     drop(b);
     server.shutdown().await;
@@ -361,12 +317,12 @@ async fn rpc_operation_results_and_ownership_survive_process_restart() {
     );
     let entries = client
         .client
-        .list_identities(world, "RPC persistence test".into(), None, 128)
+        .search_identities(world, "RPC persistence test".into())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(entries.items.len(), 1);
-    let owner = entries.items[0].principal();
+    assert_eq!(entries.matches.len(), 1);
+    let owner = entries.matches[0];
     assert!(matches!(owner, Principal::Organization(_)));
     let transfer = operation(world);
     client
@@ -412,11 +368,11 @@ async fn rpc_operation_results_and_ownership_survive_process_restart() {
     assert_eq!(
         client
             .client
-            .list_identities(world, "RPC persistence test".into(), None, 128)
+            .search_identities(world, "RPC persistence test".into())
             .await
             .unwrap()
             .unwrap()
-            .items
+            .matches
             .len(),
         1
     );

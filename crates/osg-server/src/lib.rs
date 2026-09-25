@@ -19,6 +19,7 @@ use blueprint_uploads::{BlueprintUploadBudget, BlueprintUploads};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use osg_model::*;
 use osg_protocol::Message;
+pub use rpc::OperationHistory;
 pub use sim::identity::AppearanceAssets;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -201,7 +202,19 @@ fn run_loop(
                     let Ok(request) = connection.rpc.try_recv() else {
                         break;
                     };
-                    request(app.world_mut(), connection.account, &connection.uploads);
+                    match request {
+                        rpc::Request::Direct(request) => {
+                            request(app.world_mut(), connection.account, &connection.uploads)
+                        }
+                        rpc::Request::Industry(request) => {
+                            rpc::enqueue_industry(
+                                app.world_mut(),
+                                connection.account,
+                                &connection.uploads,
+                                request,
+                            );
+                        }
+                    }
                 }
                 app.world_mut().entity_mut(entity).insert(connection);
             } else {

@@ -1,8 +1,31 @@
 use super::*;
 use osg_model::{
-    assets::*, diplomacy::*, economy::*, industry::*, market::*, ownership::*, routing, rpc::*,
+    assets::*, diplomacy::*, economy::*, industry::*, market::*, ownership::*, rpc::*,
+};
+use sim::industry::{
+    CancelWork, CargoAction, ConfigureService, Incoming, IndustryQueryRequest, ReadRequest,
+    StartWork,
 };
 use std::collections::BTreeSet;
+
+macro_rules! industry_query {
+    ($name:ident($($argument:ident: $ty:ty),*) -> $result:ty, $variant:ident, $args:expr) => {
+        async fn $name(&self, epoch: Id, $($argument: $ty),*) -> Result<$result, GameError> {
+            self.enqueue_industry(|reply| Incoming::Query(IndustryQueryRequest::$variant(ReadRequest {
+                world: epoch, arguments: $args, reply,
+            }))).await
+        }
+    };
+}
+
+macro_rules! industry_mutation {
+    ($name:ident($($argument:ident: $ty:ty),*) => $args:expr, $variant:ident) => {
+        async fn $name(&self, operation: Operation, $($argument: $ty),*) -> Result<(), GameError> {
+            let wire = ($($argument.clone(),)*);
+            self.queue_mutation(operation, stringify!($name), wire, $args, Incoming::$variant).await
+        }
+    };
+}
 
 macro_rules! query {
     ($name:ident($($argument:ident: $ty:ty),*) -> $result:ty) => {
@@ -24,10 +47,14 @@ macro_rules! mutation {
 
 impl osg_net::GameRpc for Handler {
     query!(my_affiliation() -> PlayerAffiliation);
-    query!(list_identities(search: String, after: Option<Principal>, limit: u16) -> Page<IdentityRecord, Principal>);
+    query!(list_blocs() -> Vec<PoliticalBloc>);
+    query!(list_polities() -> Vec<Sovereignty>);
+    query!(list_organizations(polity: Id) -> Vec<Organization>);
+    query!(list_players(organization: Option<Id>) -> Vec<PlayerAffiliation>);
+    query!(search_identities(search: String) -> IdentitySearch);
     query!(resolve_identities(principals: Vec<Principal>) -> Vec<IdentityRecord>);
     query!(asset_access(asset: Id) -> AssetAccessDetails);
-    query!(list_access_profiles(after: Option<Id>, limit: u16) -> Page<AccessProfile, Id>);
+    query!(list_access_profiles() -> Vec<AccessProfile>);
     query!(diplomacy(principal: Principal) -> Diplomacy);
     query!(resolve_standing(target: Principal) -> StandingReport);
     query!(declaration_history(source: Principal, category: DeclarationCategory, target: Principal, before: Option<u64>, limit: u16) -> Page<Declaration, u64>);
@@ -35,20 +62,20 @@ impl osg_net::GameRpc for Handler {
     query!(list_assets(search: String, owner: Option<Principal>, after: Option<Id>, limit: u16) -> Page<AssetSummary, Id>);
     query!(goods_totals(search: String, owner: Option<Principal>, after: Option<CargoItem>, limit: u16) -> Page<GoodsSummary, CargoItem>);
     query!(stock_locations(item: CargoItem, owner: Option<Principal>, after: Option<StockKey>, limit: u16) -> Page<StockLocation, StockKey>);
-    query!(list_wallets(after: Option<Principal>, limit: u16) -> Page<WalletBalance, Principal>);
+    query!(list_wallets() -> Vec<WalletBalance>);
     query!(wallet_balance(owner: Principal) -> WalletAccount);
     query!(wallet_history(owner: Principal, before: Option<u64>, limit: u16) -> Page<LedgerEntry, u64>);
-    query!(gas_balances(after: Option<Principal>, limit: u16) -> Page<GasAccountSnapshot, Principal>);
+    query!(gas_balances() -> Vec<GasAccountSnapshot>);
     query!(order_book(instrument: Instrument, limit: u16) -> OrderBook);
     query!(list_orders(owner: Principal, instrument: Option<Instrument>, status: Option<OrderStatus>, after: Option<Id>, limit: u16) -> Page<Order, Id>);
     query!(trade_history(instrument: Instrument, before: Option<u64>, limit: u16) -> Page<Trade, u64>);
     query!(list_market_stations(after: Option<Id>, limit: u16) -> Page<MarketStation, Id>);
     query!(compare_commodity_offers(item: CargoItem, after: Option<CommodityOfferCursor>, limit: u16) -> Page<CommodityOffer, CommodityOfferCursor>);
-    query!(storage_stock(owner: Principal, station: Id, after: Option<CargoItem>, limit: u16) -> Page<StoredStock, CargoItem>);
-    query!(list_facilities(after: Option<Id>, limit: u16) -> Page<FacilitySummary, Id>);
-    query!(facility(facility: Id) -> FacilityView);
-    query!(hangar(ship: Id, after: Option<Id>) -> HangarView);
-    query!(industry_catalogue() -> IndustryCatalogue);
+    query!(storage_stock(owner: Principal, station: Id) -> Vec<StoredStock>);
+    industry_query!(list_facilities(after: Option<Id>, limit: u16) -> Page<FacilitySummary, Id>, Directory, (after, limit));
+    industry_query!(facility(facility: Id) -> FacilityView, Facility, facility);
+    industry_query!(hangar(ship: Id, after: Option<Id>) -> HangarView, Hangar, (ship, after));
+    industry_query!(industry_catalogue() -> IndustryCatalogue, Catalogue, ());
 
     async fn list_public_facilities(
         &self,
@@ -57,15 +84,23 @@ impl osg_net::GameRpc for Handler {
         after: Option<Id>,
         limit: u16,
     ) -> Result<Page<PublicFacility, Id>, GameError> {
-        self.call(epoch, move |world, account, _| {
-            sim::industry::service::list(world, account, search, after, limit)
+        self.enqueue_industry(|reply| {
+            Incoming::Query(IndustryQueryRequest::PublicFacilities(ReadRequest {
+                world: epoch,
+                arguments: (search, after, limit),
+                reply,
+            }))
         })
         .await
     }
 
     async fn service_jobs(&self, epoch: Id, facility: Id) -> Result<Vec<JobView>, GameError> {
-        self.call(epoch, move |world, account, _| {
-            sim::industry::service::jobs(world, account, facility)
+        self.enqueue_industry(|reply| {
+            Incoming::Query(IndustryQueryRequest::Jobs(ReadRequest {
+                world: epoch,
+                arguments: facility,
+                reply,
+            }))
         })
         .await
     }
@@ -77,8 +112,12 @@ impl osg_net::GameRpc for Handler {
         payer: Principal,
         work: ServiceWork,
     ) -> Result<ServiceQuote, GameError> {
-        self.call(epoch, move |world, account, uploads| {
-            sim::industry::service::quote(world, account, facility, payer, work, uploads)
+        self.enqueue_industry(|reply| {
+            Incoming::Query(IndustryQueryRequest::Quote(ReadRequest {
+                world: epoch,
+                arguments: (facility, payer, work),
+                reply,
+            }))
         })
         .await
     }
@@ -89,13 +128,12 @@ impl osg_net::GameRpc for Handler {
         facility: Id,
         policy: ServicePolicy,
     ) -> Result<(), GameError> {
-        self.mutate(
+        self.queue_mutation(
             operation,
             "publish_service_prices",
-            (facility, policy),
-            |world, account, _, (facility, policy)| {
-                sim::industry::service::publish(world, account, facility, policy)
-            },
+            (facility, policy.clone()),
+            ConfigureService { facility, policy },
+            Incoming::Configure,
         )
         .await
     }
@@ -105,13 +143,12 @@ impl osg_net::GameRpc for Handler {
         operation: Operation,
         quote: ServiceQuote,
     ) -> Result<(), GameError> {
-        self.mutate(
+        self.queue_mutation(
             operation,
             "order_industry_job",
-            quote,
-            move |world, account, uploads, quote| {
-                sim::industry::service::order(world, account, quote, uploads)
-            },
+            quote.clone(),
+            StartWork::Public(quote),
+            Incoming::Work,
         )
         .await
     }
@@ -122,13 +159,12 @@ impl osg_net::GameRpc for Handler {
         facility: Id,
         job: Id,
     ) -> Result<(), GameError> {
-        self.mutate(
+        self.queue_mutation(
             operation,
             "cancel_service_job",
             (facility, job),
-            |world, account, _, (facility, job)| {
-                sim::industry::service::cancel(world, account, facility, job)
-            },
+            CancelWork { facility, job },
+            Incoming::Cancel,
         )
         .await
     }
@@ -148,17 +184,17 @@ impl osg_net::GameRpc for Handler {
         => MarketCommand::MoveStorage { owner, station, ship, item, quantity, deposit: true }, market);
     mutation!(withdraw_storage(owner: Principal, station: Id, ship: Id, item: CargoItem, quantity: u64)
         => MarketCommand::MoveStorage { owner, station, ship, item, quantity, deposit: false }, market);
-    mutation!(transfer_cargo(source: Id, target: Id, item: CargoItem, quantity: u64)
-        => IndustryCommand::Transfer { source, target, item, quantity }, industry);
-    mutation!(unload_product(source: Id, target: Id, resource: String, quantity: u64)
-        => IndustryCommand::UnloadProduct { source, target, resource, quantity }, industry);
-    mutation!(refill_ship(source: Id, ship: Id, resource: String, quantity: u64)
-        => IndustryCommand::Refill { source, ship, resource, quantity }, industry);
-    mutation!(start_recipe(facility: Id, recipe: String, batches: u32)
-        => IndustryCommand::StartRecipe { facility, recipe, batches }, industry);
-    mutation!(build_ship(facility: Id, owner: Principal, blueprint_hash: [u8; 32])
-        => IndustryCommand::BuildShip { facility, owner, blueprint_hash }, industry);
-    mutation!(cancel_industry_job(facility: Id, job: Id) => IndustryCommand::CancelJob { facility, job }, industry);
+    industry_mutation!(transfer_cargo(source: Id, target: Id, item: CargoItem, quantity: u64)
+        => CargoAction::Transfer { source, target, item, quantity }, Cargo);
+    industry_mutation!(unload_product(source: Id, target: Id, resource: String, quantity: u64)
+        => CargoAction::UnloadProduct { source, target, resource, quantity }, Cargo);
+    industry_mutation!(refill_ship(source: Id, ship: Id, resource: String, quantity: u64)
+        => CargoAction::Refill { source, target: ship, resource, quantity }, Cargo);
+    industry_mutation!(start_recipe(facility: Id, recipe: String, batches: u32)
+        => StartWork::Recipe { facility, recipe, batches }, Work);
+    industry_mutation!(build_ship(facility: Id, owner: Principal, blueprint_hash: [u8; 32])
+        => StartWork::Ship { facility, owner, blueprint_hash }, Work);
+    industry_mutation!(cancel_industry_job(facility: Id, job: Id) => CancelWork { facility, job }, Cancel);
     mutation!(create_organization(name: String) => SocietyCommand::CreateOrganization { name }, society);
     mutation!(set_organization_officer(organization: Id, account: AccountId, officer: bool)
         => SocietyCommand::SetOfficer { organization, account, officer }, society);
@@ -189,79 +225,6 @@ impl osg_net::GameRpc for Handler {
     mutation!(set_bloc_officer(bloc: Id, account: AccountId, officer: bool) => DiplomacyCommand::SetBlocOfficer { bloc, account, officer }, diplomacy);
     mutation!(set_political_posture(polity: Id, target: Id, standing: Standing) => DiplomacyCommand::SetPosture { polity, target, standing }, diplomacy);
     mutation!(set_bloc_posture(bloc: Id, target: Id, standing: Standing) => DiplomacyCommand::SetBlocPosture { bloc, target, standing }, diplomacy);
-
-    async fn route_request(
-        &self,
-        operation: Operation,
-        ship: Id,
-        authority_revision: u64,
-        request: routing::Request,
-    ) -> Result<routing::Status, GameError> {
-        self.mutate(
-            operation,
-            "route_request",
-            (ship, authority_revision, request),
-            |world, account, _, (ship, revision, request)| {
-                osg_protocol::routing::validate_request(&request)?;
-                let entity = sim::commands::authorize(
-                    world,
-                    account,
-                    ship,
-                    Some(revision),
-                    Permission::Control,
-                )?;
-                sim::route_service::submit(world, entity, request)
-            },
-        )
-        .await
-    }
-
-    async fn route_status(
-        &self,
-        epoch: Id,
-        ship: Id,
-        authority_revision: u64,
-        id: u64,
-    ) -> Result<routing::Status, GameError> {
-        self.call(epoch, move |world, account, _| {
-            anyhow::ensure!(id != 0, "invalid route request ID");
-            let entity = sim::commands::authorize(
-                world,
-                account,
-                ship,
-                Some(authority_revision),
-                Permission::Control,
-            )?;
-            sim::route_service::poll(world, entity, id)
-        })
-        .await
-    }
-
-    async fn route_cancel(
-        &self,
-        operation: Operation,
-        ship: Id,
-        authority_revision: u64,
-        id: u64,
-    ) -> Result<(), GameError> {
-        self.mutate(
-            operation,
-            "route_cancel",
-            (ship, authority_revision, id),
-            |world, account, _, (ship, revision, id)| {
-                anyhow::ensure!(id != 0, "invalid route request ID");
-                let entity = sim::commands::authorize(
-                    world,
-                    account,
-                    ship,
-                    Some(revision),
-                    Permission::Control,
-                )?;
-                sim::route_service::cancel(world, entity, id)
-            },
-        )
-        .await
-    }
 }
 
 fn wallet(
@@ -293,17 +256,6 @@ fn market(
     command: MarketCommand,
 ) -> anyhow::Result<()> {
     sim::economy::exchange::apply(world, account, id, command)
-}
-
-fn industry(
-    world: &mut World,
-    account: AccountId,
-    uploads: &BlueprintUploads,
-    _: Id,
-    command: IndustryCommand,
-) -> anyhow::Result<()> {
-    osg_protocol::industry::validate_command(&command)?;
-    sim::industry::execute(world, account, command, Some(uploads))
 }
 
 fn society(

@@ -184,49 +184,82 @@ pub fn outside_exclusions(
     preferred_direction: DVec3,
     space: &LocalSpace,
     own_radius: f64,
-) -> Option<GalacticPosition> {
+) -> Option<Pose> {
     if space.truncated {
         return None;
     }
     let mut candidate = position;
+    let mut velocity = [0.; 3];
+    let margin = (own_radius * 0.1).max(10.);
     let destination = position.offset_by(preferred_direction);
-    for _ in 0..space.obstacles.len().saturating_mul(4).max(1) {
+    for _ in 0..space.obstacles.len().saturating_mul(6).max(1) {
         let Some(obstacle) = space.obstacles.iter().find(|obstacle| {
             obstacle.slip_exclusion_m > 0.
                 && candidate.relative_to(obstacle.pose.position).length()
-                    <= obstacle.slip_exclusion_m + own_radius + 10.
+                    <= obstacle.slip_exclusion_m + own_radius
         }) else {
             // Clear the outgoing segment as well as the departure position. The
             // intended target's sphere is allowed at the end of that segment.
             let direction = destination.relative_to(candidate).try_normalize()?;
+            let departure_body = space.departure_body(candidate, 0.);
             let blocker = space.obstacles.iter().find(|obstacle| {
-                let radius = obstacle.slip_exclusion_m + own_radius + 10.;
+                let ignored = departure_body == Some(&obstacle.reference);
+                let radius = if ignored {
+                    obstacle.radius_m
+                } else {
+                    obstacle.slip_exclusion_m.max(obstacle.radius_m)
+                } + own_radius;
                 obstacle.slip_exclusion_m > 0.
                     && destination.relative_to(obstacle.pose.position).length() > radius
                     && intersection(candidate, destination, obstacle.pose.position, radius)
                         .is_some()
             });
             let Some(blocker) = blocker else {
-                return Some(candidate);
+                return Some(Pose {
+                    position: candidate,
+                    velocity,
+                    ..Default::default()
+                });
             };
+            velocity = blocker.pose.velocity;
             let relative = candidate.relative_to(blocker.pose.position);
-            let lateral = relative - direction * relative.dot(direction);
+            // Project onto the nearest tangent from the destination to the
+            // exclusion sphere. Preserve the axial position of distant jumps;
+            // relocating to the body's centre plane creates enormous detours.
+            let to_destination = destination.relative_to(blocker.pose.position);
+            let distance = to_destination.length();
+            let axis = to_destination / distance;
+            let along = relative.dot(axis);
+            let lateral = relative - axis * along;
             let side = lateral
                 .try_normalize()
                 .unwrap_or_else(|| direction.any_orthonormal_vector());
-            let clearance =
-                blocker.slip_exclusion_m + own_radius + (blocker.slip_exclusion_m * 0.1).max(100.);
-            candidate = blocker.pose.position.offset_by(side * clearance);
+            let ignored = departure_body == Some(&blocker.reference);
+            let radius = if ignored {
+                blocker.radius_m
+            } else {
+                blocker.slip_exclusion_m.max(blocker.radius_m)
+            } + own_radius
+                + margin;
+            if distance <= radius {
+                return None;
+            }
+            let ratio = radius / distance;
+            let cosine = (1. - ratio * ratio).sqrt();
+            let slope = ratio / cosine;
+            let required = radius * (1. - along / distance) / cosine;
+            let step = (required - lateral.length()).max(0.) / (1. + slope * slope);
+            candidate = candidate.offset_by((side + axis * slope) * step);
             continue;
         };
 
+        velocity = obstacle.pose.velocity;
         let direction = candidate
             .relative_to(obstacle.pose.position)
             .try_normalize()
             .or_else(|| preferred_direction.try_normalize())
             .unwrap_or(DVec3::Z);
-        let radius =
-            obstacle.slip_exclusion_m + own_radius + (obstacle.slip_exclusion_m * 1e-4).max(100.);
+        let radius = obstacle.slip_exclusion_m + own_radius + margin;
         candidate = obstacle.pose.position.offset_by(direction * radius);
     }
     None
@@ -252,7 +285,29 @@ mod tests {
             pose: pose(DVec3::ZERO),
             radius_m: 350.,
             slip_exclusion_m: 10_000_000.,
+            hill_radius_m: 0.,
         }
+    }
+
+    #[test]
+    fn departure_hill_sphere_allows_crossing_exclusion_but_requires_clear_origin() {
+        let mut body = station();
+        body.hill_radius_m = 1e10;
+        let radius = body.slip_exclusion_m;
+        let space = LocalSpace {
+            obstacles: vec![body],
+            truncated: false,
+        };
+        let origin = GalacticPosition::from_meters(DVec3::new(-2. * radius, radius * 0.5, 0.));
+        let result = outside_exclusions(origin, DVec3::X * 1e15, &space, 10.).unwrap();
+        assert_eq!(result.position, origin);
+        let inside = GalacticPosition::from_meters(DVec3::X * radius * 0.9);
+        let result = outside_exclusions(inside, DVec3::X * 1e15, &space, 10.).unwrap();
+        assert!(result.position.relative_to(GalacticPosition::ZERO).length() > radius + 10.);
+        let collision = GalacticPosition::from_meters(-DVec3::X * radius * 2.);
+        let result = outside_exclusions(collision, DVec3::X * 1e15, &space, 10.).unwrap();
+        assert!(result.position.relative_to(collision).length() > 350.);
+        assert!(result.position.relative_to(collision).length() < 1000.);
     }
 
     #[test]
@@ -370,10 +425,11 @@ mod tests {
         let end = outside_exclusions(GalacticPosition::ZERO, DVec3::NEG_X, &space, 10.).unwrap();
         for obstacle in &space.obstacles {
             assert!(
-                end.relative_to(obstacle.pose.position).length() > obstacle.slip_exclusion_m + 10.
+                end.position.relative_to(obstacle.pose.position).length()
+                    > obstacle.slip_exclusion_m + 10.
             );
         }
-        assert!(end.relative_to(GalacticPosition::ZERO).x < 0.);
+        assert!(end.position.relative_to(GalacticPosition::ZERO).x < 0.);
     }
 
     #[test]
@@ -388,9 +444,58 @@ mod tests {
         let destination = GalacticPosition::from_meters(DVec3::X * radius * 100.);
         let departure =
             outside_exclusions(start, destination.relative_to(start), &space, 10.).unwrap();
-        assert!(departure.relative_to(start).length() > radius);
+        assert!(departure.position.relative_to(start).length() > radius);
         assert!(
-            intersection(departure, destination, GalacticPosition::ZERO, radius + 10.).is_none()
+            intersection(
+                departure.position,
+                destination,
+                GalacticPosition::ZERO,
+                radius + 10.
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn stellar_surface_departure_needs_only_hull_clearance() {
+        let mut star = station();
+        star.slip_exclusion_m = 30e9;
+        star.pose.velocity = [30_000., -2_000., 0.];
+        let space = LocalSpace {
+            obstacles: vec![star],
+            truncated: false,
+        };
+        let start = GalacticPosition::from_meters(DVec3::X * (30e9 - 1.));
+        let target = outside_exclusions(start, DVec3::X * 1e18, &space, 10.).unwrap();
+        let travel = target.position.relative_to(start).length();
+        assert!(
+            (20. ..30.).contains(&travel),
+            "unnecessary surface departure: {travel} m"
+        );
+        assert_eq!(target.velocity, space.obstacles[0].pose.velocity);
+    }
+
+    #[test]
+    fn grazing_stellar_shadow_uses_nearest_clear_line() {
+        let mut star = station();
+        star.slip_exclusion_m = 10e9;
+        let space = LocalSpace {
+            obstacles: vec![star],
+            truncated: false,
+        };
+        let start = GalacticPosition::from_meters(DVec3::new(-4e9, 10e9 - 1e6, 0.));
+        let destination = GalacticPosition::from_meters(DVec3::X * 1e18);
+        let target =
+            outside_exclusions(start, destination.relative_to(start), &space, 10.).unwrap();
+        assert!(target.position.relative_to(start).length() < 1.01e6);
+        assert!(
+            intersection(
+                target.position,
+                destination,
+                GalacticPosition::ZERO,
+                10e9 + 10.
+            )
+            .is_none()
         );
     }
 }

@@ -24,20 +24,7 @@ pub struct HillSphere {
 impl HillSphere {
     pub(crate) fn for_body(system: &SystemDefinition, body: &Body) -> Option<Self> {
         let reference = super::registry::model_reference(system.body_id(&body.name)?);
-        let radius_m = if body.name == system.root_name {
-            system.influence
-        } else {
-            let parent = system.solver.get_body(body.parent.as_deref()?)?;
-            hill_radius(
-                body.orbit.semi_major,
-                body.orbit.eccentricity,
-                body.mass,
-                parent.mass,
-            )
-        };
-        if !radius_m.is_finite() || radius_m <= 0.0 {
-            return None;
-        }
+        let radius_m = Self::radius_for_body(system, body)?;
         let mut hierarchy = vec![reference];
         let mut ancestor = body.parent.as_deref();
         while let Some(name) = ancestor {
@@ -52,6 +39,24 @@ impl HillSphere {
             hierarchy,
         })
     }
+
+    pub(crate) fn radius_for_body(system: &SystemDefinition, body: &Body) -> Option<f64> {
+        let radius_m = if body.name == system.root_name {
+            system.influence
+        } else {
+            let parent = system.solver.get_body(body.parent.as_deref()?)?;
+            hill_radius(
+                body.orbit.semi_major,
+                body.orbit.eccentricity,
+                body.mass,
+                parent.mass,
+            )
+        };
+        if !radius_m.is_finite() || radius_m <= 0.0 {
+            return None;
+        }
+        Some(radius_m)
+    }
 }
 
 #[derive(Component, Clone, Debug, Default)]
@@ -59,6 +64,34 @@ pub struct SpatialLocation(pub LocationContext);
 
 fn hill_radius(semi_major: f64, eccentricity: f64, mass: f64, parent_mass: f64) -> f64 {
     semi_major * (1.0 - eccentricity) * (mass / (3.0 * parent_mass)).cbrt()
+}
+
+pub(crate) fn departure_body(
+    universe: &osg_universe::universe::Universe,
+    origin: osg_model::GalacticPosition,
+    epoch: hifitime::Epoch,
+) -> anyhow::Result<Option<CelestialRef>> {
+    use anyhow::Context;
+    let mut bodies = Vec::new();
+    for index in universe.containing_segment(origin, bevy::math::DVec3::ZERO) {
+        let system = universe.resolve_index(index)?;
+        for body in system.solver.iter() {
+            let Some(radius) = HillSphere::radius_for_body(&system, body) else {
+                continue;
+            };
+            let center = system
+                .solver
+                .solve_position(&body.name, epoch)
+                .context("departure Hill geometry unavailable")?;
+            let reference = super::registry::model_reference(
+                system
+                    .body_id(&body.name)
+                    .context("departure body identity unavailable")?,
+            );
+            bodies.push((reference, center, radius));
+        }
+    }
+    Ok(osg_model::local_space::innermost_hill(origin, bodies))
 }
 
 /// The same pipeline serves scheduled updates, initial provisioning, and restore.

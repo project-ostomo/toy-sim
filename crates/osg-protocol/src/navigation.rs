@@ -4,6 +4,19 @@ use osg_model::InhabitedDirectory;
 pub const MAX_DIRECTORY_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_LIVE_BEACONS: usize = 1024;
 
+pub fn encode_access(systems: &[osg_model::Id]) -> Result<Vec<u8>> {
+    Ok(postcard::to_allocvec(systems)?)
+}
+
+pub fn decode_access(bytes: &[u8]) -> Result<Vec<osg_model::Id>> {
+    let systems: Vec<osg_model::Id> = postcard::from_bytes(bytes)?;
+    anyhow::ensure!(
+        systems.windows(2).all(|pair| pair[0] < pair[1]),
+        "Invalid navigation access ordering"
+    );
+    Ok(systems)
+}
+
 pub fn encode_directory(directory: &InhabitedDirectory) -> Result<Vec<u8>> {
     Ok(postcard::to_allocvec(directory)?)
 }

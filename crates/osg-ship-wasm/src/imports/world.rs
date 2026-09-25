@@ -126,7 +126,7 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
                 },
                 0,
                 size_of::<a::TravelReply>()
-                    + (capacity as usize).min(osg_model::routing::MAX_DIRECTIVES)
+                    + (capacity as usize).min(osg_model::travel::MAX_DIRECTIVES)
                         * size_of::<a::ItineraryEntry>()
                     + (fuel_capacity as usize).min(256) * size_of::<a::FuelRequirement>()
                     + (hierarchy_capacity as usize)
@@ -329,94 +329,6 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         }
     )?;
 
-    metered!(
-        linker,
-        "route_request",
-        |mut caller: Caller<'_, Host>,
-         pointer: u32,
-         orders: u32,
-         count: u32,
-         header: u32,
-         output: u32,
-         capacity: u32,
-         fuels: u32,
-         fuel_capacity: u32| {
-            if count as usize > osg_model::routing::MAX_DIRECTIVES {
-                return Err(w::ERR_LIMIT.into());
-            }
-            let record: a::RouteRequest = read(&caller, pointer)?;
-            validate_array::<a::Directive>(&caller, orders, count)?;
-            let actions: Result<Vec<_>, _> = (0..count)
-                .map(|index| {
-                    let record: a::Directive =
-                        read(&caller, orders + index * size_of::<a::Directive>() as u32)?;
-                    osg_model::travel::Directive::try_from(&record)
-                        .map_err(|_| CallError::from(w::ERR_ARGUMENT))
-                })
-                .collect();
-            let request = osg_model::routing::Request {
-                id: record.id,
-                preferences: (&record.preferences)
-                    .try_into()
-                    .map_err(|_| w::ERR_ARGUMENT)?,
-                directives: actions?,
-            };
-            route_plan(
-                &caller,
-                ProgramQuery::RouteRequest(request),
-                header,
-                output,
-                capacity,
-                fuels,
-                fuel_capacity,
-                size_of::<a::RouteRequest>() + count as usize * size_of::<a::Directive>(),
-            )
-        },
-        {
-            status(write_route(
-                &mut caller,
-                header,
-                output,
-                capacity,
-                fuels,
-                fuel_capacity,
-            ))
-        }
-    )?;
-
-    metered!(
-        linker,
-        "route_poll",
-        |mut caller: Caller<'_, Host>,
-         id: u64,
-         header: u32,
-         output: u32,
-         capacity: u32,
-         fuels: u32,
-         fuel_capacity: u32| {
-            route_plan(
-                &caller,
-                ProgramQuery::RoutePoll { id },
-                header,
-                output,
-                capacity,
-                fuels,
-                fuel_capacity,
-                0,
-            )
-        },
-        {
-            status(write_route(
-                &mut caller,
-                header,
-                output,
-                capacity,
-                fuels,
-                fuel_capacity,
-            ))
-        }
-    )?;
-
     macro_rules! action {
         ($name:literal, $record:ty) => {
             metered!(
@@ -443,10 +355,11 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
             )?;
         };
     }
-    action!("travel_use_route", a::UseRoute);
     action!("travel_fail", a::Fail);
     action!("travel_publish_status", a::PublishStatus);
     action!("travel_complete", a::Complete);
+    action!("travel_set_autopilot", a::SetAutopilot);
+    action!("travel_clear_itinerary", a::ClearItinerary);
     action!("travel_slip", a::Slip);
     action!("travel_reserve_bay", a::ReserveBay);
     action!("travel_dock", a::Dock);
@@ -475,63 +388,4 @@ pub(super) fn register(linker: &mut Linker<Host>) -> Result<()> {
         }
     )?;
     Ok(())
-}
-
-fn route_plan(
-    caller: &Caller<'_, Host>,
-    query: ProgramQuery,
-    header: u32,
-    orders: u32,
-    capacity: u32,
-    fuels: u32,
-    fuel_capacity: u32,
-    input_bytes: usize,
-) -> CallResult<CallPlan> {
-    validate_array::<a::RouteReply>(caller, header, 1)?;
-    validate_array::<a::ItineraryEntry>(caller, orders, capacity)?;
-    validate_array::<a::FuelRequirement>(caller, fuels, fuel_capacity)?;
-    let order_limit = (capacity as usize).min(osg_model::routing::MAX_DIRECTIVES);
-    let fuel_limit = (fuel_capacity as usize).min(256);
-    prepare(
-        caller,
-        query,
-        ReplyCapacity {
-            records: capacity as usize,
-            auxiliary: fuel_capacity as usize,
-            bytes: 0,
-        },
-        input_bytes,
-        size_of::<a::RouteReply>()
-            + order_limit * size_of::<a::ItineraryEntry>()
-            + fuel_limit * size_of::<a::FuelRequirement>(),
-    )
-}
-
-fn write_route(
-    caller: &mut Caller<'_, Host>,
-    header: u32,
-    orders: u32,
-    capacity: u32,
-    fuels: u32,
-    fuel_capacity: u32,
-) -> CallResult {
-    let reply = execute(caller)?;
-    let ProgramReply::Route { id, status } = &reply else {
-        return Err(w::ERR_ARGUMENT.into());
-    };
-    let (value, actions, resources) = osg_model::wasm_world::route_records(*id, status);
-    if let ProgramReply::Route {
-        status: osg_model::routing::Status::Ready { plan },
-        ..
-    } = &reply
-    {
-        if plan.itinerary.len() > capacity as usize
-            || plan.fuel_budget.resources.len() > fuel_capacity as usize
-        {
-            return Err(w::ERR_BUFFER.into());
-        }
-        emit_array(caller, orders, &actions)?;
-        emit_array(caller, fuels, &resources)?;
-    }
-    emit_record(caller, header, &value)
 }

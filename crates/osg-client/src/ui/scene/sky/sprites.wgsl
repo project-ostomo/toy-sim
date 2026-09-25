@@ -25,6 +25,7 @@ struct Vertex {
     // Divided by the squared distance in sprite units this is lux.
     @location(1) flux: vec4<f32>,
     @location(2) corner: vec2<f32>,
+    @location(3) radius: f32,
 }
 
 struct Output {
@@ -66,6 +67,12 @@ fn vertex(in: Vertex) -> Output {
     var out: Output;
     let relative = in.position - field.camera.xyz;
     let distance2 = max(dot(relative, relative), 1e-30);
+    // Match snapshot::HANDOVER and MESH_RANGE_M, in sprite units (1e12 m).
+    let distance = sqrt(distance2);
+    if in.radius > 0.0 && distance < 900.0 && in.radius >= distance * sin(1.0 / 2048.0) {
+        out.position = vec4(0.0, 0.0, 0.0, 1.0);
+        return out;
+    }
     let illuminance = in.flux.a / distance2;
     // Same soft cutoff the baked sky used: fully visible half a magnitude in.
     let fade = saturate(5.0 * LOG10_2 * log2(illuminance / field.camera.w));

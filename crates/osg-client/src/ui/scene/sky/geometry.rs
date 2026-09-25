@@ -1,7 +1,7 @@
 //! Emissive galactic-coordinate spheres for stars too resolvable to draw as points.
 //!
-//! `snapshot::Snapshot` diverts stars above the handover angular size into its
-//! geometry set; this module renders that set as real meshes so the stars get
+//! Each frame, stars above the handover angular size in the cached candidate
+//! set become real meshes so the stars get
 //! true per-frame parallax and participate in bloom as HDR point sources.
 use super::{ViewSky, snapshot};
 use crate::state::{Celestial, DisplayPose};
@@ -39,7 +39,7 @@ fn star_transform(entry: &Desired) -> Transform {
 
 pub(super) fn sync(
     mut commands: Commands,
-    cameras: Query<(Entity, &ViewCamera, &ViewSky)>,
+    cameras: Query<(Entity, &ViewCamera, &Transform, &ViewSky)>,
     bodies: Query<(&Celestial, &DisplayPose)>,
     mut stars: Query<
         (
@@ -61,10 +61,11 @@ pub(super) fn sync(
         .map(|(Celestial(body), pose)| (body.entity, pose.0.position))
         .collect();
     let mut desired: Vec<Desired> = Vec::new();
-    for (view, camera, sky) in &cameras {
+    for (view, camera, transform, sky) in &cameras {
         let Some(snapshot) = &sky.snapshot else {
             continue;
         };
+        let observer = camera.origin.offset_by(transform.translation.as_dvec3());
         for star in &snapshot.geometry {
             let position = match star.key {
                 snapshot::GeometryKey::Celestial(id) => {
@@ -77,6 +78,12 @@ pub(super) fn sync(
                 }
                 snapshot::GeometryKey::Catalogue(_) => star.position,
             };
+            let distance = position.relative_to(observer).length();
+            if distance >= snapshot::MESH_RANGE_M
+                || star.radius_m < distance * snapshot::HANDOVER.sin()
+            {
+                continue;
+            }
             desired.push(Desired {
                 view,
                 origin: camera.origin,
@@ -288,6 +295,15 @@ mod tests {
         assert_eq!(material.emissive_exposure_weight, 1.0);
         assert_eq!(material.emissive.green, expected[1]);
         assert_eq!(material.emissive.blue, expected[2]);
+
+        // Moving the camera changes handover without replacing the snapshot.
+        world.get_mut::<Transform>(camera).unwrap().translation = Vec3::Y * 1.0e13;
+        world.run_system_once(sync).unwrap();
+        assert_eq!(world.query::<&StarMesh>().iter(&world).count(), 0);
+
+        world.get_mut::<Transform>(camera).unwrap().translation = Vec3::ZERO;
+        world.run_system_once(sync).unwrap();
+        assert_eq!(world.query::<&StarMesh>().iter(&world).count(), 2);
 
         // Live pose moves are reflected every frame: the sphere has real
         // parallax instead of waiting for a new snapshot.

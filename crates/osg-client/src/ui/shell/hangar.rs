@@ -8,18 +8,17 @@ enum Tab {
 }
 
 #[derive(Default, Resource)]
-pub(super) struct State {
+pub struct State {
     location: Option<(Id, Id)>,
     pub after: Option<Id>,
     previous: Vec<Option<Id>>,
-    awaiting_revision: Option<u64>,
     tab: Tab,
     cargo: cargo::PaneState,
 }
 
 impl State {
     #[cfg(test)]
-    pub(super) fn show_ships(&mut self) {
+    pub fn show_ships(&mut self) {
         self.tab = Tab::Ships;
     }
 
@@ -35,20 +34,12 @@ impl State {
             self.location = location;
             self.after = None;
             self.previous.clear();
-            self.awaiting_revision = None;
             self.cargo = cargo::PaneState::default();
-        }
-        if model.industry_ready
-            && self
-                .awaiting_revision
-                .is_some_and(|revision| revision != model.industry.subscription_revision)
-        {
-            self.awaiting_revision = None;
         }
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
@@ -56,19 +47,28 @@ pub(super) fn draw(
     intents: &mut Vec<Intent>,
 ) {
     state.sync(model);
-    let Some(hangar) = model
-        .industry
-        .hangar
-        .as_ref()
-        .filter(|hangar| state.location == Some((hangar.ship, hangar.host)))
-    else {
-        ui.weak(if model.industry_ready {
-            "Dock at a station or focus a carrier to use its hangar."
-        } else {
-            "Loading hangar…"
-        });
+    if model.ship.is_none() {
+        ui.weak("Select a ship to use its hangar.");
         return;
-    };
+    }
+    if render_query(ui, &model.industry.hangar, |ui, hangar| {
+        draw_hangar(ui, state, hangar, model, transfers, intents);
+    }) {
+        intents.push(Intent::RetryQueries);
+    }
+}
+
+fn draw_hangar(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    hangar: &industry_model::HangarView,
+    model: &FrameModel,
+    transfers: &mut cargo::Transfers,
+    intents: &mut Vec<Intent>,
+) {
+    if state.location != Some((hangar.ship, hangar.host)) {
+        return;
+    }
     ui.strong(&hangar.host_name);
     ui.horizontal(|ui| {
         ui.selectable_value(&mut state.tab, Tab::Storage, "Station storage");
@@ -84,8 +84,11 @@ pub(super) fn draw(
             }
         }
         Tab::Ships => {
-            let ready =
-                model.connected && model.industry_ready && state.awaiting_revision.is_none();
+            let ready = model.connected
+                && model.industry.hangar_query.as_ref().is_some_and(|query| {
+                    Some(query.ship) == model.ship.map(|ship| ship.ship)
+                        && query.after == state.after
+                });
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(
@@ -95,7 +98,6 @@ pub(super) fn draw(
                     .clicked()
                 {
                     state.after = state.previous.pop().flatten();
-                    state.awaiting_revision = Some(model.industry.subscription_revision);
                 }
                 ui.label(format!("Page {}", state.previous.len() + 1));
                 if ui
@@ -104,7 +106,6 @@ pub(super) fn draw(
                 {
                     state.previous.push(state.after);
                     state.after = hangar.next;
-                    state.awaiting_revision = Some(model.industry.subscription_revision);
                 }
                 if !ready {
                     ui.spinner();

@@ -277,8 +277,20 @@ pub fn window_title(ui: &mut egui::Ui, title: &str, loading: bool) -> bool {
         ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.), egui::Sense::hover());
     ui.painter()
         .rect_filled(rect, 0., egui::Color32::from_rgb(25, 37, 49));
+    let loading_id = ui.id().with("window_loading_since");
     if loading {
-        loading_border(ui, rect);
+        const LOADING_DELAY_SECONDS: f64 = 3.;
+        let now = ui.input(|input| input.time);
+        let since = ui.data_mut(|data| *data.get_temp_mut_or_insert_with(loading_id, || now));
+        let remaining = LOADING_DELAY_SECONDS - (now - since);
+        if remaining <= 0. {
+            loading_border(ui, rect);
+        } else {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(remaining));
+        }
+    } else {
+        ui.data_mut(|data| data.remove::<f64>(loading_id));
     }
     ui.painter().text(
         rect.left_center() + egui::vec2(8., 0.),
@@ -324,7 +336,8 @@ fn loading_border(ui: &egui::Ui, title: egui::Rect) {
         egui::pos2(left, track.top()),
         egui::vec2(length, track.height()),
     );
-    ui.painter().rect_filled(track, 0., ACCENT.gamma_multiply(0.12));
+    ui.painter()
+        .rect_filled(track, 0., ACCENT.gamma_multiply(0.12));
     ui.painter()
         .rect_filled(segment.intersect(track), 0., ACCENT.gamma_multiply(0.65));
     ui.ctx().request_repaint();
@@ -541,27 +554,33 @@ mod tests {
             (layout, output.shapes)
         };
         let (idle, _) = draw(false, 0.);
-        let (loading, first) = draw(true, 0.4);
-        let (later, second) = draw(true, 0.8);
+        let (loading, initial) = draw(true, 0.4);
+        let (_, waiting) = draw(true, 3.3);
+        let (_, first) = draw(true, 3.5);
+        let (later, second) = draw(true, 3.9);
         assert_eq!(idle, loading);
         assert_eq!(loading, later);
 
         let segment = |shapes: Vec<egui::epaint::ClippedShape>| {
-            shapes
-                .into_iter()
-                .find_map(|shape| match shape.shape {
-                    egui::Shape::Rect(rect) if rect.fill == ACCENT.gamma_multiply(0.65) => {
-                        Some(rect.rect)
-                    }
-                    _ => None,
-                })
-                .unwrap()
+            shapes.into_iter().find_map(|shape| match shape.shape {
+                egui::Shape::Rect(rect) if rect.fill == ACCENT.gamma_multiply(0.65) => {
+                    Some(rect.rect)
+                }
+                _ => None,
+            })
         };
-        let first = segment(first);
-        let second = segment(second);
+        assert!(segment(initial).is_none());
+        assert!(segment(waiting).is_none());
+        let first = segment(first).unwrap();
+        let second = segment(second).unwrap();
         assert!(second.left() > first.left());
         assert_eq!(first.height(), 2.);
         assert_eq!(first.bottom(), idle.bottom());
+
+        assert!(segment(draw(false, 4.).1).is_none());
+        assert!(segment(draw(true, 4.1).1).is_none());
+        assert!(segment(draw(true, 7.).1).is_none());
+        assert!(segment(draw(true, 7.2).1).is_some());
     }
 
     #[test]

@@ -10,6 +10,35 @@ Remove obsolete interfaces instead of retaining them behind an adapter.
 
 # Code style
 
+`pub(crate)` and `pub(super)` are banned. Use either `pub` or private visibility.
+When a submodule's types need to be shared with the wider crate, its parent
+module must re-export them with `pub use`. If this makes the code awkward,
+rethink the module structure.
+
+Place inherent `impl SomeType { ... }` blocks immediately after the type's
+definition. Keep its methods together there rather than spreading inherent
+implementations across modules.
+
+Use scheduled ECS systems with explicit queries and resources for simulation
+actions. Keep an object's interior state in ordinary structs owned by its
+component when that state has no independent ECS lifecycle. Put local invariants
+and state transitions in methods on those structs.
+
+Use typed FIFO queue resources for ordered requests and consume each queue in
+one system. Validate and apply a complete action within that system. Declare
+phase ordering in the schedule. Avoid runtime helpers taking `&mut World`,
+temporarily removing domain components, and deferred callbacks that implement
+domain logic. World access remains appropriate at bootstrap, persistence, and
+network transport boundaries. Tests should exercise queues and the registered
+production schedules.
+
+Prefer ordinary schedule boundaries for initialization, discovery, and publication.
+An additional frame or simulation tick is acceptable when no correctness invariant
+requires immediate consumption. Add explicit ordering only for a concrete data or
+behavioral dependency, and document that dependency when it is not obvious. Use
+Bevy's automatic deferred-command synchronization for those dependencies; an
+explicit `ApplyDeferred` needs a specific reason. Avoid chaining independent work.
+
 For monetary charges, round each charge up to the smallest currency unit.
 Do not implement fractional accumulation, carried remainders, or rounding-debt
 bookkeeping unless explicitly requested. This applies to turnover tax and
@@ -43,7 +72,7 @@ Do not modify files by writing Python, Perl, Ruby, sed, awk, cat,
 heredocs, or other shell scripts when `apply_patch` can reasonably
 perform the edit.
 
-You *should* use bash tools for things like moving files and deleting files, rather than applying huge patches.
+You *should* use bash tools like "rm" and "mv" for things like moving files and deleting files, rather than applying huge patches.
 
 Python/scripts are allowed only for:
 - genuinely generated output,

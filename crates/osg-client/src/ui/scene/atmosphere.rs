@@ -165,11 +165,7 @@ fn update(
                 systems.0.iter().any(|entry| *entry == system.0).then(|| {
                     (
                         body.0.entity,
-                        AtmosphereDistance::new(
-                            distance,
-                            body.0.radius_m,
-                            atmosphere.height_m,
-                        ),
+                        AtmosphereDistance::new(distance, body.0.radius_m, atmosphere.height_m),
                     )
                 })
             }),

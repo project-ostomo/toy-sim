@@ -77,19 +77,6 @@ pub fn daily_rate(day: i64) -> u128 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalletQuery {
-    pub owner: Principal,
-    pub before: Option<u64>,
-    pub limit: u16,
-}
-
-impl WalletQuery {
-    pub fn valid(&self) -> bool {
-        (1..=100).contains(&self.limit)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalletCommand {
     SetTurnoverTax {
         sovereignty: Id,
@@ -146,20 +133,6 @@ pub struct WalletBalance {
     pub reserved_lat: u64,
     pub next_demurrage: u64,
     pub lat_restricted: bool,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WalletSnapshot {
-    /// Latest executed FX trades, newest first, for market valuation history.
-    pub fx_trades: Vec<crate::market::Trade>,
-    pub owner: Option<Principal>,
-    pub balances: Vec<WalletBalance>,
-    pub entries: Vec<LedgerEntry>,
-    pub next_before: Option<u64>,
-    pub next_charge_ms: i64,
-    /// Price of the latest executed trade, in micro UEC per LAT.
-    pub market_uec_per_lat: Option<u64>,
-    pub error: Option<String>,
 }
 
 #[cfg(test)]

@@ -786,8 +786,8 @@ pub fn expedition_patrol() -> ShipBlueprint {
     ship.attach("coolant_tank", 7, "top", "bottom", 0);
     ship.attach("battery_2m", 4, "left", "right", 0);
     ship.attach("storage", 4, "right", "left", 0);
-    ship.attach("torquer_agile", 4, "top", "bottom", 0);
-    ship.attach("torquer_agile", 4, "bottom", "top", 0);
+    ship.attach("torquer_patrol_2m", 4, "top", "bottom", 0);
+    ship.attach("torquer_patrol_2m", 4, "bottom", "top", 0);
     ship.attach("slipdrive_ring_16m", 1, "bottom", "hull", 0);
     ship.parts[0].tanks.push(Tank {
         resource: "micropulse_charge".into(),

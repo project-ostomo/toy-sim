@@ -1,4 +1,4 @@
-use crate::state::SessionInfo;
+use crate::state::GameSession;
 mod geometry;
 mod snapshot;
 mod sprites;
@@ -40,7 +40,7 @@ const MAX_SELECTED_STARS: usize = 150_000;
 const MIN_BAKE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Component, Default)]
-pub(super) struct ViewSky {
+pub struct ViewSky {
     snapshot: Option<Arc<snapshot::Snapshot>>,
     /// Sprite mesh for `snapshot`; `None` when it has no point stars.
     mesh: Option<Handle<Mesh>>,
@@ -78,15 +78,16 @@ struct Upload {
 #[derive(Resource, Clone, Default, ExtractResource)]
 struct SkyUploads(Vec<Upload>);
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_resource::<Skies>()
         .init_resource::<Settings>()
         .init_resource::<SkyUploads>()
         .add_plugins(ExtractResourcePlugin::<SkyUploads>::default())
+        .add_systems(Last, update.in_set(crate::state::ClientSystems::Gameplay))
         .add_systems(
             PostUpdate,
-            (update, geometry::sync, sprites::sync)
-                .chain()
+            (geometry::sync, sprites::sync)
+                .in_set(crate::state::ClientSystems::Gameplay)
                 .before(bevy::transform::TransformSystems::Propagate),
         );
     sprites::install(app);
@@ -101,7 +102,7 @@ pub(super) fn install(app: &mut App) {
 
 /// Fixed near and far stars for the offscreen renderer fixture. The production
 /// sprite shader still computes exposure, culling and parallax each frame.
-pub(super) fn install_regression(app: &mut App) {
+pub fn install_regression(app: &mut App) {
     sprites::install(app);
     app.add_systems(PostUpdate, (regression_sky, sprites::sync).chain());
 }
@@ -161,7 +162,7 @@ fn acknowledge_upload(uploads: Res<SkyUploads>, meshes: Res<RenderAssets<RenderM
 }
 
 fn update(
-    session: Res<SessionInfo>,
+    session: Res<GameSession>,
     celestials: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
     settings: Res<Settings>,
     mut cameras: Query<(Entity, &ViewCamera, &Transform, &mut ViewSky, &ViewSystems)>,
@@ -175,8 +176,8 @@ fn update(
     }
 
     if skies.catalogue.is_none() && skies.opening.is_none() {
-        skies.opening = Some(AsyncComputeTaskPool::get().spawn(async {
-            let universe = crate::universe::shared_universe()?;
+        let universe = session.universe.clone();
+        skies.opening = Some(AsyncComputeTaskPool::get().spawn(async move {
             let stars = universe
                 .systems()
                 .iter()
@@ -206,9 +207,7 @@ fn update(
         }
     }
 
-    let Some(world) = session.world else {
-        return;
-    };
+    let world = session.key.world;
     for (_, _, _, mut view, systems) in &mut cameras {
         let mut bodies: Vec<_> = celestials
             .iter()
@@ -224,6 +223,7 @@ fn update(
         bodies.sort_unstable_by_key(|body| body.entity);
         let mut revision = std::collections::hash_map::DefaultHasher::new();
         world.hash(&mut revision);
+        session.key.generation.hash(&mut revision);
         for body in bodies {
             body.entity.hash(&mut revision);
             body.luminosity_lumens.to_bits().hash(&mut revision);

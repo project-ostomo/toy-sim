@@ -1,5 +1,5 @@
 use super::*;
-use osg_model::assets::{AssetKind, AssetSummary, AssetsQuery, AssetsSnapshot};
+use osg_model::assets::{AssetKind, AssetSummary};
 use std::collections::BTreeMap;
 
 #[cfg(test)]
@@ -14,7 +14,7 @@ enum Grouping {
 }
 
 #[derive(Default)]
-pub(super) struct State {
+pub struct State {
     grouping: Grouping,
     query: AssetsQuery,
     focused: Option<Id>,
@@ -30,11 +30,11 @@ impl State {
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut super::State,
     model: &FrameModel,
-    snapshot: Option<&AssetsSnapshot>,
+    snapshot: &AssetsView,
     intents: &mut Vec<Intent>,
 ) {
     let previous_owner = state.browser.query.owner;
@@ -58,8 +58,7 @@ pub(super) fn draw(
                         None,
                         "All authorized owners",
                     );
-                    let owners: BTreeSet<_> = model
-                        .society
+                    let owners: BTreeSet<_> = snapshot
                         .assets
                         .iter()
                         .map(|asset| asset.owner)
@@ -81,7 +80,7 @@ pub(super) fn draw(
                 });
         });
     });
-    // Bound search input before publishing it to the server.
+    // Bound search input before sending a query.
     state.search = state.search.chars().take(128).collect();
     if previous_owner != state.browser.query.owner || state.browser.query.search != state.search {
         state.browser.query.search = state.search.clone();
@@ -93,22 +92,10 @@ pub(super) fn draw(
         state.selected.clear();
     }
 
-    let Some(snapshot) = snapshot else {
-        components::empty_state(
-            ui,
-            "Loading assets",
-            "Waiting for inventories and station storage.",
-        );
-        return;
-    };
-    if let Some(error) = &snapshot.error {
-        ui.colored_label(THREAT, error);
-        return;
-    }
-    if snapshot.subscription.owner != state.browser.query.owner
-        || snapshot.subscription.search != state.browser.query.search
-        || snapshot.subscription.after != state.browser.query.after
-        || snapshot.subscription.goods_after != state.browser.query.goods_after
+    if snapshot.query.owner != state.browser.query.owner
+        || snapshot.query.search != state.browser.query.search
+        || snapshot.query.after != state.browser.query.after
+        || snapshot.query.goods_after != state.browser.query.goods_after
     {
         ui.weak("Loading selected page…");
         return;
@@ -194,12 +181,7 @@ pub(super) fn draw(
         });
 }
 
-fn list(
-    ui: &mut egui::Ui,
-    state: &mut super::State,
-    model: &FrameModel,
-    snapshot: &AssetsSnapshot,
-) {
+fn list(ui: &mut egui::Ui, state: &mut super::State, model: &FrameModel, snapshot: &AssetsView) {
     let search = state.search.to_lowercase();
     let mut groups = BTreeMap::<String, Vec<&AssetSummary>>::new();
     for asset in &snapshot.assets {
@@ -416,7 +398,7 @@ fn details(
     ui: &mut egui::Ui,
     state: &mut super::State,
     model: &FrameModel,
-    snapshot: &AssetsSnapshot,
+    snapshot: &AssetsView,
     intents: &mut Vec<Intent>,
 ) {
     if state.selected.len() > 1 {
@@ -482,8 +464,8 @@ fn details(
             ui.weak(format!("{} holdings", goods.locations));
         }
         ui.separator();
-        if snapshot.subscription.item != state.browser.query.item
-            || snapshot.subscription.sources_after != state.browser.query.sources_after
+        if snapshot.query.item != state.browser.query.item
+            || snapshot.query.sources_after != state.browser.query.sources_after
         {
             ui.weak("Loading holdings…");
             return;

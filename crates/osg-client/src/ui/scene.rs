@@ -6,11 +6,11 @@ mod glints;
 mod lighting;
 mod navigation_hud;
 mod projection;
-pub(crate) mod render_regressions;
+pub mod render_regressions;
 mod slip;
 mod transit;
-pub(super) use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
-pub(super) use orbit::ViewOptions;
+pub use camera::{CameraOptions, LOOK_AT_RANGE_M, ViewCamera};
+pub use orbit::ViewOptions;
 mod combat;
 mod orbit;
 mod sensor_hud;
@@ -30,11 +30,11 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Component)]
 #[relationship(relationship_target = ViewMembers)]
-pub(super) struct ViewMember(pub Entity);
+pub struct ViewMember(pub Entity);
 
 #[derive(Component, Default)]
 #[relationship_target(relationship = ViewMember, linked_spawn)]
-pub(super) struct ViewMembers(Vec<Entity>);
+pub struct ViewMembers(Vec<Entity>);
 
 #[derive(Component)]
 #[relationship(relationship_target = SourceInstances)]
@@ -58,7 +58,7 @@ struct ViewLayer(usize);
 #[derive(Component)]
 struct Shield;
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_resource::<camera::CameraDrag>()
         .add_plugins(osg_ship_view::mechanisms::MechanismPlugin)
         .add_plugins(osg_ship_view::slip::SlipRingPlugin)
@@ -66,12 +66,15 @@ pub(super) fn install(app: &mut App) {
         .insert_resource(GlobalAmbientLight::NONE)
         .add_systems(Startup, setup_ui_camera)
         .add_systems(
+            Last,
+            (camera::setup_views, own_visuals, cleanup_orphans)
+                .in_set(crate::state::ClientSystems::Gameplay),
+        )
+        .add_systems(Update, slip::prepare.in_set(PresentationSet::Views))
+        .add_systems(
             Update,
             (
-                camera::setup_views,
-                slip::prepare,
-                camera::update_views,
-                camera::track_camera_drag,
+                (camera::update_views, camera::track_camera_drag),
                 camera::camera_controls.in_set(super::input::GameplayInput::Mouse),
                 camera::animate_camera,
             )
@@ -83,19 +86,18 @@ pub(super) fn install(app: &mut App) {
             (
                 sync_ships,
                 sync_celestials,
-                cleanup_orphans,
-                own_visuals,
                 apply_visuals,
                 shield::update_flashes,
             )
-                .chain()
                 .in_set(PresentationSet::Render),
         )
         .add_systems(
             PostUpdate,
             // World assets acquire mesh children asynchronously. Publish their
             // view layers before camera and shadow visibility are collected.
-            propagate_layers.before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+            propagate_layers
+                .in_set(crate::state::ClientSystems::Gameplay)
+                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
         );
     app.add_systems(
         osg_ui::bevy_egui::EguiPrimaryContextPass,

@@ -2,7 +2,7 @@ use super::*;
 use osg_model::diplomacy::DeclarationCategory;
 use osg_ui::components::badge;
 
-fn bloc_color(
+pub fn bloc_color(
     directory: &OwnershipDirectory,
     bloc: &osg_model::diplomacy::PoliticalBloc,
 ) -> egui::Color32 {
@@ -38,13 +38,13 @@ fn identity_icon(
     icon.text(size).color(color)
 }
 
-pub(super) fn section(ui: &mut egui::Ui, title: &str) {
+pub fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(8.);
     ui.label(egui::RichText::new(title).size(11.).color(MUTED));
     ui.add_space(4.);
 }
 
-pub(super) fn row(ui: &mut egui::Ui, index: usize, body: impl FnOnce(&mut egui::Ui)) {
+pub fn row(ui: &mut egui::Ui, index: usize, body: impl FnOnce(&mut egui::Ui)) {
     let fill = if index % 2 == 0 {
         egui::Color32::from_rgb(21, 31, 41)
     } else {
@@ -59,7 +59,7 @@ pub(super) fn row(ui: &mut egui::Ui, index: usize, body: impl FnOnce(&mut egui::
         });
 }
 
-pub(super) fn tab(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
+pub fn tab(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
     let response = ui.add(
         egui::Button::new(egui::RichText::new(label).color(if selected { ACCENT } else { MUTED }))
             .frame(false),
@@ -73,16 +73,8 @@ pub(super) fn tab(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
     response.clicked()
 }
 
-pub(super) fn draw(
-    ui: &mut egui::Ui,
-    state: &mut State,
-    model: &FrameModel,
-    intents: &mut Vec<Intent>,
-) {
+pub fn draw(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mut Vec<Intent>) {
     let snapshot = model.society;
-    if state.selected.is_none() {
-        state.selected = Some(Principal::Player(snapshot.account));
-    }
     if state.tab == Tab::Politics && state.politics.is_blocs() && state.selected_bloc.is_none() {
         state.selected_bloc = snapshot.directory.diplomacy.blocs.keys().next().copied();
     }
@@ -98,7 +90,10 @@ pub(super) fn draw(
             egui::Layout::top_down(egui::Align::Min),
             |ui| {
                 ui.set_width(sidebar_width);
-                sidebar(ui, state, snapshot, intents);
+                egui::ScrollArea::vertical()
+                    .id_salt("directory_sidebar")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| sidebar(ui, state, snapshot, intents));
             },
         );
         ui.separator();
@@ -119,10 +114,10 @@ pub(super) fn draw(
     });
 }
 
-fn choose(
+pub fn choose(
     ui: &mut egui::Ui,
     state: &mut State,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     principal: Principal,
     prefix: &str,
 ) {
@@ -132,38 +127,14 @@ fn choose(
     let war = !shortcut
         && directory.political_posture(Principal::Player(snapshot.account), principal)
             == Some(Standing::Hostile);
-    let response = egui::Frame::new()
-        .fill(if selected {
-            egui::Color32::from_rgb(37, 69, 84)
-        } else {
-            egui::Color32::TRANSPARENT
-        })
-        .inner_margin(egui::Margin::symmetric(5, 4))
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                let icon = identity_icon(directory, principal, 14.);
-                ui.label(if shortcut {
-                    icon.color(ACCENT)
-                } else {
-                    icon
-                });
-                if shortcut {
-                    ui.label(egui::RichText::new(prefix).size(10.).color(MUTED));
-                }
-                let width = (ui.available_width() - if war { 42. } else { 0. }).max(0.);
-                ui.add_sized(
-                    [width, 18.],
-                    egui::Label::new(egui::RichText::new(name(directory, principal)).size(13.))
-                        .truncate(),
-                );
-                if war {
-                    badge(ui, "WAR", THREAT);
-                }
-            });
-        })
-        .response
-        .interact(egui::Sense::click());
+    let response = identity_row(
+        ui,
+        identity_icon(directory, principal, 14.),
+        shortcut.then_some(prefix),
+        &name(directory, principal),
+        selected,
+        war,
+    );
     if response.clicked() {
         state.inspect(principal);
     }
@@ -172,7 +143,7 @@ fn choose(
 fn sidebar(
     ui: &mut egui::Ui,
     state: &mut State,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     intents: &mut Vec<Intent>,
 ) {
     let directory = &snapshot.directory;
@@ -207,80 +178,17 @@ fn sidebar(
         .changed()
     {
         state.search = state.search.chars().take(128).collect();
-        state.after = None;
     }
-    egui::ScrollArea::vertical()
-        .id_salt("directory_tree")
-        .max_height((ui.available_height() - 135.).max(150.))
-        .show(ui, |ui| {
-            let filter = state.search.to_lowercase();
-            let mut grouped = BTreeSet::new();
-            for bloc in directory.diplomacy.blocs.values() {
-                if bloc_entry(
-                    ui,
-                    bloc,
-                    bloc_color(directory, bloc),
-                    state.selected_bloc == Some(bloc.id),
-                    false,
-                ) {
-                    state.selected_bloc = Some(bloc.id);
-                    state.tab = Tab::Politics;
-                    state.politics.select("blocs");
-                }
-                for &id in &bloc.members {
-                    grouped.insert(id);
-                    ui.indent(("bloc_polity", id), |ui| {
-                        polity_tree(ui, state, snapshot, id, &filter);
-                    });
-                }
-            }
-            section(ui, "UNALIGNED");
-            for &id in directory
-                .sovereignties
-                .keys()
-                .filter(|id| !grouped.contains(id))
-            {
-                ui.indent(("unaligned_polity", id), |ui| {
-                    polity_tree(ui, state, snapshot, id, &filter);
-                });
-            }
-            for player in directory
-                .players
-                .values()
-                .filter(|player| player.organization.is_none())
-            {
-                if player.name.to_lowercase().contains(&filter) {
-                    choose(ui, state, snapshot, Principal::Player(player.account), "");
-                }
-            }
-        });
-    if state.after.is_some() || state.next.is_some() {
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(state.after.is_some(), egui::Button::new("First"))
-                .clicked()
-            {
-                state.after = None;
-            }
-            if ui
-                .add_enabled(state.next.is_some(), egui::Button::new("More"))
-                .clicked()
-            {
-                state.after = state.next;
-            }
-        });
-    }
+    tree::draw(ui, state, snapshot);
     ui.separator();
     ui.collapsing("Administration", |ui| {
         for (tab, label) in [
             (Tab::Assets, "Asset permissions"),
             (Tab::ComputerGas, "Computer gas"),
-            (Tab::Profiles, "Organization profiles"),
         ] {
             if ui.button(label).clicked() {
                 state.tab = tab;
                 state.selected_bloc = None;
-                state.profile = selected_organization(snapshot, state.selected);
             }
         }
         ui.add(
@@ -306,72 +214,203 @@ fn sidebar(
     });
 }
 
-fn bloc_entry(
+pub fn bloc_entry(
     ui: &mut egui::Ui,
     bloc: &osg_model::diplomacy::PoliticalBloc,
     color: egui::Color32,
     selected: bool,
     shortcut: bool,
 ) -> bool {
+    identity_row(
+        ui,
+        Icon::Handshake.text(14.).color(color),
+        shortcut.then_some("Bloc"),
+        &bloc.name,
+        selected,
+        false,
+    )
+    .clicked()
+}
+
+fn identity_row(
+    ui: &mut egui::Ui,
+    icon: egui::RichText,
+    prefix: Option<&str>,
+    name: &str,
+    selected: bool,
+    war: bool,
+) -> egui::Response {
+    let label_width = ui
+        .painter()
+        .layout_no_wrap(
+            "Organization".into(),
+            egui::FontId::proportional(10.),
+            MUTED,
+        )
+        .size()
+        .x;
+
     egui::Frame::new()
         .fill(if selected {
             egui::Color32::from_rgb(37, 69, 84)
-        } else if shortcut {
-            egui::Color32::TRANSPARENT
         } else {
-            SURFACE_RAISED
+            egui::Color32::TRANSPARENT
         })
         .inner_margin(egui::Margin::symmetric(5, 4))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                if !shortcut {
-                    ui.label(egui::RichText::new("⌄").size(10.).color(MUTED));
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(20., 18.),
+                    egui::Layout::left_to_right(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_width(20.);
+                        ui.label(icon);
+                    },
+                );
+                if let Some(prefix) = prefix {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(label_width, 18.),
+                        egui::Layout::left_to_right(egui::Align::Min),
+                        |ui| {
+                            ui.set_min_width(label_width);
+                            ui.label(egui::RichText::new(prefix).size(10.).color(MUTED));
+                        },
+                    );
                 }
-                ui.label(Icon::Handshake.text(14.).color(color));
-                if shortcut {
-                    ui.label(egui::RichText::new("Bloc").size(10.).color(MUTED));
+                let width = (ui.available_width() - if war { 42. } else { 0. }).max(0.);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width, 18.),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_max_width(width);
+                        let label = egui::Label::new(egui::RichText::new(name).size(13.));
+                        ui.add(if prefix.is_some() {
+                            label.wrap()
+                        } else {
+                            label.truncate()
+                        });
+                    },
+                );
+                if war {
+                    badge(ui, "WAR", THREAT);
                 }
-                ui.add(egui::Label::new(egui::RichText::new(&bloc.name).size(13.)).truncate());
             });
         })
         .response
         .interact(egui::Sense::click())
-        .clicked()
+        .on_hover_text(name)
 }
 
-fn polity_tree(
-    ui: &mut egui::Ui,
-    state: &mut State,
-    snapshot: &SocietySnapshot,
-    id: Id,
-    filter: &str,
-) {
-    let directory = &snapshot.directory;
-    let principal = Principal::Sovereignty(id);
-    let matching = principals(directory)
-        .filter(|p| directory.lineage(*p).contains(&principal))
-        .any(|p| name(directory, p).to_lowercase().contains(filter));
-    if !matching {
-        return;
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directory_opens_with_authenticated_identity_and_keeps_navigation_after_request_failure() {
+        let ctx = egui::Context::default();
+        osg_ui::theme::install(&ctx);
+        let account = Id([42; 16]);
+        let mut state = State::new(account);
+        let mut snapshot = SocietyData::default();
+        let navigation = NavigationCatalogue::default();
+        let render = |state: &mut State, snapshot: &SocietyData| {
+            let model = FrameModel {
+                services: empty_services(),
+                declaration_history: &[],
+                declaration_history_next: None,
+                declaration_history_key: None,
+                industry: empty_industry(),
+
+                navigation_status: &NavigationStatus::Ready,
+                navigation_hash: None,
+                navigation: &navigation,
+                inhabited: Default::default(),
+                society: snapshot,
+                rows: Vec::new(),
+                ship: None,
+                details: None,
+                system: String::new(),
+                vicinity: String::new(),
+                connected: true,
+                status: "",
+                time_ns: 0,
+                calendar_unix_ms: 0,
+                diagnostics: Default::default(),
+                orbits: false,
+            };
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1000., 700.),
+                    )),
+                    ..Default::default()
+                },
+                |ui| super::super::draw(ui, state, &model, &mut Vec::new()),
+            )
+        };
+
+        snapshot.account = account;
+        snapshot.directory.players.insert(
+            account,
+            ownership::PlayerAffiliation {
+                account,
+                name: "Directory recovery pilot".into(),
+                organization: None,
+            },
+        );
+        let mut first = render(&mut state, &snapshot);
+        assert_eq!(state.selected, Some(Principal::Player(account)));
+        first.textures_delta.clear();
+        state.error = Some("Request unavailable".into());
+        let mut output = render(&mut state, &snapshot);
+        assert_eq!(state.selected, Some(Principal::Player(account)));
+        assert_eq!(state.politics.owner, state.selected);
+        assert!(output.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Directory recovery pilot"))
+        }), "the loaded directory must remain visible alongside the request error");
+        output.textures_delta.clear();
     }
-    choose(ui, state, snapshot, principal, "");
-    ui.indent(id, |ui| {
-        for org in directory
-            .organizations
-            .values()
-            .filter(|org| org.sovereignty == id)
-        {
-            choose(ui, state, snapshot, Principal::Organization(org.id), "");
-            if !filter.is_empty() {
-                for player in directory.players.values().filter(|p| {
-                    p.organization == Some(org.id) && p.name.to_lowercase().contains(filter)
-                }) {
-                    choose(ui, state, snapshot, Principal::Player(player.account), "");
+
+    #[test]
+    fn shortcut_values_share_a_column_and_long_values_stay_inside_it() {
+        for width in [185., 260.] {
+            let ctx = egui::Context::default();
+            osg_ui::theme::install(&ctx);
+            let rows = [
+                ("You", "Pilot"),
+                ("Organization", "Helion Flight Cooperative with a long name"),
+                ("Polity", "Helion Commonwealth"),
+                ("Bloc", "League of Free States"),
+            ];
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(width);
+                for (prefix, name) in rows {
+                    identity_row(ui, Icon::User.text(14.), Some(prefix), name, false, false);
                 }
+            });
+            output.textures_delta.clear();
+            let positions: Vec<_> = output
+                .shapes
+                .iter()
+                .filter_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if rows.iter().any(|(_, name)| *name == text.galley.text()) {
+                            return Some((text.pos, text.galley.size()));
+                        }
+                    }
+                    None
+                })
+                .collect();
+            assert_eq!(positions.len(), rows.len());
+            for (position, size) in &positions {
+                assert!((position.x - positions[0].0.x).abs() < 0.1);
+                assert!(position.x + size.x <= width + 0.5);
             }
+            assert!(positions[1].1.y > positions[0].1.y);
         }
-    });
+    }
 }
 
 fn detail(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mut Vec<Intent>) {
@@ -400,9 +439,14 @@ fn detail(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mu
         politics::draw(ui, &mut state.politics, snapshot, model, intents);
         return;
     }
-    let principal = state
-        .selected
-        .unwrap_or(Principal::Player(snapshot.account));
+    let Some(principal) = state.selected else {
+        ui.weak("Loading identity…");
+        return;
+    };
+    if !directory.contains(principal) {
+        ui.weak("Identity unavailable. Select another entry from the directory.");
+        return;
+    }
     state.politics.owner = Some(principal);
     ui.horizontal(|ui| {
         ui.label(identity_icon(directory, principal, 24.));
@@ -410,12 +454,22 @@ fn detail(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mu
             ui.heading(name(directory, principal));
             let subtitle = match principal {
                 Principal::Sovereignty(id) => format!(
-                    "Polity · {} organizations",
-                    directory
-                        .organizations
-                        .values()
-                        .filter(|org| org.sovereignty == id)
-                        .count()
+                    "Polity · {}",
+                    if state
+                        .tree
+                        .complete(crate::state::requests::directory::Branch::Organizations(id))
+                    {
+                        format!(
+                            "{} organizations",
+                            directory
+                                .organizations
+                                .values()
+                                .filter(|org| org.sovereignty == id)
+                                .count()
+                        )
+                    } else {
+                        "Loading organizations…".into()
+                    }
                 ),
                 Principal::Organization(id) => directory.organizations.get(&id).map_or_else(
                     || "Organization".into(),
@@ -497,15 +551,35 @@ fn detail(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mu
         Tab::Politics => politics::draw(ui, &mut state.politics, snapshot, model, intents),
         Tab::Assets => assets_panel(ui, state, snapshot, intents),
         Tab::ComputerGas => gas_accounts(ui, snapshot),
-        Tab::Profiles => profiles_panel(ui, state, snapshot),
-        Tab::Directory if state.members => members(ui, snapshot, principal, intents),
-        Tab::Directory => overview(ui, snapshot, principal, intents),
+        Tab::Directory if state.members => {
+            if let Principal::Organization(id) = principal {
+                state.tree.branch_status(
+                    ui,
+                    crate::state::requests::directory::Branch::Players(Some(id)),
+                );
+                if state
+                    .tree
+                    .complete(crate::state::requests::directory::Branch::Players(Some(id)))
+                {
+                    members(ui, snapshot, principal, intents);
+                }
+            }
+        }
+        Tab::Directory => {
+            if let Principal::Organization(id) = principal {
+                if let Some(profile) = organizations::profile(id.0) {
+                    profile_record(ui, state, profile);
+                    ui.separator();
+                }
+            }
+            overview(ui, snapshot, principal, intents);
+        }
     }
 }
 
 fn overview(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     principal: Principal,
     intents: &mut Vec<Intent>,
 ) {
@@ -572,7 +646,11 @@ fn overview(
         for (index, target) in targets.iter().enumerate() {
             row(ui, index, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(identity_icon(directory, Principal::Sovereignty(target.id), 14.));
+                    ui.label(identity_icon(
+                        directory,
+                        Principal::Sovereignty(target.id),
+                        14.,
+                    ));
                     ui.label(&target.name);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let posture = directory
@@ -628,9 +706,9 @@ fn overview(
     }
 }
 
-pub(super) fn personal_standing(
+pub fn personal_standing(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     principal: Principal,
     intents: &mut Vec<Intent>,
 ) {
@@ -666,7 +744,7 @@ pub(super) fn personal_standing(
 
 fn members(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     principal: Principal,
     intents: &mut Vec<Intent>,
 ) {

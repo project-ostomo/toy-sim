@@ -14,7 +14,7 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 #[derive(Serialize, Deserialize)]
 struct WorldRecord {
-    operations: crate::rpc::OperationHistory,
+    operations: crate::OperationHistory,
     economy: crate::sim::economy::Economy,
     epoch: Id,
     directory: osg_model::ownership::OwnershipDirectory,
@@ -61,8 +61,7 @@ struct ShipRecord {
     hardware: osg_ships::ShipState,
     parts: Vec<PartRecord>,
     software: Option<SoftwareRecord>,
-    industry: Option<industry::IndustryFacility>,
-    mine: Option<industry::MineSource>,
+    industry: Option<industry::IndustrialFacilityRecord>,
     control: Option<ControlRecord>,
     iff: Option<IffIdentity>,
     travel: AutopilotState,
@@ -147,7 +146,7 @@ fn definition_fingerprint(world: &World) -> [u8; 32] {
 pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut record = WorldRecord {
         operations: world
-            .get_resource::<crate::rpc::OperationHistory>()
+            .get_resource::<crate::OperationHistory>()
             .cloned()
             .unwrap_or_default(),
         economy: world.resource::<crate::sim::economy::Economy>().clone(),
@@ -236,11 +235,14 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                 });
             let hardware = hardware::snapshot(world, entity)
                 .context("ship hardware unavailable during checkpoint")?;
-            let facility = world.get::<industry::IndustryFacility>(entity).cloned();
-            let mine = world.get::<industry::MineSource>(entity).cloned();
+            let facility = world
+                .get::<industry::IndustrialFacility>(entity)
+                .map(|facility| facility.to_record());
             industry::validate_saved(
                 facility.as_ref(),
-                mine.as_ref(),
+                facility
+                    .as_ref()
+                    .and_then(|facility| facility.mine.as_ref()),
                 &design.0,
                 &hardware.inventory,
                 &world.resource::<vessel::ShipCatalogue>().0,
@@ -289,7 +291,6 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
                     .collect(),
                 software,
                 industry: facility,
-                mine,
                 control: control(world, entity),
                 iff: world
                     .get::<identity::Transponder>(entity)
@@ -464,7 +465,7 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         .filter_map(|ship| ship.industry.as_ref())
         .flat_map(|facility| &facility.jobs)
     {
-        if let industry::JobOutput::Ship(bytes) = &job.output {
+        if let industry::WorkOutput::Ship(bytes) = &job.work.output {
             let blueprint = osg_ships::ShipBlueprint::from_bytes(bytes)?;
             world
                 .resource_mut::<vessel::WasmRuntime>()
@@ -505,7 +506,9 @@ fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
         let design = blueprint.compile(catalogue)?;
         industry::validate_saved(
             ship.industry.as_ref(),
-            ship.mine.as_ref(),
+            ship.industry
+                .as_ref()
+                .and_then(|facility| facility.mine.as_ref()),
             &design,
             &ship.hardware.inventory,
             catalogue,
@@ -719,12 +722,12 @@ fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
     for ship in &record.ships {
         for job in ship.industry.iter().flat_map(|facility| &facility.jobs) {
             ensure!(
-                identities.insert(job.view.id),
+                identities.insert(job.id),
                 "duplicate persistent industry job identity"
             );
-            if let Some(payment) = &job.view.payment {
+            if let Some(payment) = &job.payment {
                 if !payment.charged {
-                    held.insert(job.view.id, payment);
+                    held.insert(job.id, payment);
                 }
             }
         }
@@ -766,7 +769,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     );
     validate(world, &record)?;
     let ledger = gas::GasLedger::from_snapshot(record.gas)?;
-    crate::sim::route_service::reset(world);
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
     let entities = world
         .query_filtered::<Entity, Without<bevy::ecs::resource::IsResource>>()
@@ -979,10 +981,10 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
         ));
 
         if let Some(facility) = ship.industry {
+            let design = &world.get::<vessel::ShipDesign>(entity).unwrap().0;
+            let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
+            let facility = industry::IndustrialFacility::from_record(facility, design, catalogue)?;
             world.entity_mut(entity).insert(facility);
-        }
-        if let Some(mine) = ship.mine {
-            world.entity_mut(entity).insert(mine);
         }
         relationships.push((
             entity,
@@ -1092,7 +1094,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     publish.add_systems((sensors::publish, crate::sim::services::publish_indexes).chain());
     publish.run(world);
     crate::sim::spatial::rebuild(world);
-    industry::refresh_publication(world);
     Ok(())
 }
 
@@ -1113,9 +1114,6 @@ mod tests {
         ItineraryEntry {
             directive: Directive::DockAt(station),
             label: "Dock".into(),
-            max_loss_ppm: 1.,
-            fuel_allowance_kg: 100.,
-            estimated_duration_ticks: None,
         }
     }
 
@@ -1145,6 +1143,7 @@ mod tests {
 
     fn saved_transit(origin: osg_model::GalacticPosition, tick: u64) -> travel::Transit {
         travel::Transit {
+            ignored_capture_body: None,
             origin,
             position: origin,
             destination: origin.offset_by(DVec3::X * 1e12),

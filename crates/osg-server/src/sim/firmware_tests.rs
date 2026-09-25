@@ -145,6 +145,65 @@ impl ScanSource for CountedSource {
 }
 
 #[test]
+fn expedition_patrol_firmware_delivers_full_thrust_without_losing_attitude() {
+    let catalogue = osg_ships::Catalogue::builtin();
+    let design = osg_ships::expedition_patrol().compile(&catalogue).unwrap();
+    let mut fixture = HardwareFixture::new(&design, &catalogue);
+    fixture.advance();
+    let mut runtime = ControllerRuntime::new().unwrap();
+    let mut computer = ready(&mut runtime, osg_ships::EXAMPLE_CONTROLLER);
+    computer.configure_hardware(&design, &catalogue);
+    let rated_thrust = hardware::propulsion::telemetry(&design, None).rated_forward_n;
+
+    for tick in 0..50 {
+        let state = fixture.snapshot();
+        let (mass, inertia) = state.mass_properties(&design, &catalogue);
+        let mut observation = input(tick as f64 * osg_model::TICK_SECONDS);
+        observation.tick = tick;
+        observation.observation.flight.mass_kg = mass;
+        observation.observation.flight.inertia = inertia.to_cols_array();
+        observation.observation.flight.radius_m = design.radius;
+        observation.observation.inventory = state.inventory.quantities.clone();
+        observation.devices = state.snapshot(&design);
+        let requested_throttle = if tick < 25 { 0.79 } else { 1.0 };
+        if tick == 0 || tick == 25 {
+            observation.commands = vec![Request {
+                id: tick + 1,
+                command: Command::Manual {
+                    throttle: requested_throttle,
+                    steering: [0.0; 3],
+                },
+            }];
+        }
+
+        let output = computer
+            .run_slice(observation, None, FUEL_PER_TICK, FUEL_PER_TICK)
+            .unwrap()
+            .output;
+        fixture.command(&output.devices);
+        fixture.advance();
+
+        if (10..25).contains(&tick) || tick >= 35 {
+            let actuation = fixture
+                .app
+                .world()
+                .get::<hardware::propulsion::ActuatorOutput>(fixture.ship)
+                .unwrap();
+            assert!(
+                -actuation.force.z > rated_thrust * requested_throttle * 0.99,
+                "tick {tick}: delivered {:?} of {rated_thrust} N",
+                actuation.force
+            );
+            assert!(
+                actuation.torque.length() < rated_thrust * 0.001,
+                "tick {tick}: residual torque {:?}",
+                actuation.torque
+            );
+        }
+    }
+}
+
+#[test]
 fn real_custom_firmware_registers_draws_and_acknowledges_input() {
     use osg_ships::{Catalogue, starter};
 

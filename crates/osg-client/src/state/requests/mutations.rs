@@ -1,4 +1,5 @@
 use super::{Mutations, call};
+use crate::state::SessionKey;
 use osg_model::{
     Id, diplomacy::DiplomacyCommand, economy::WalletCommand, industry::IndustryCommand,
     market::MarketCommand, ownership::SocietyCommand, rpc::Operation,
@@ -7,19 +8,18 @@ use osg_net::OsgNetClient;
 
 macro_rules! submit {
     ($name:ident, $command:ty, $perform:ident) => {
-        pub(crate) fn $name(
+        pub fn $name(
             requests: &mut Mutations,
             client: &OsgNetClient,
-            world: Id,
-            generation: u64,
+            key: SessionKey,
             command: $command,
         ) -> Id {
             let operation = Operation {
-                world,
+                world: key.world,
                 id: Id::new(),
             };
             let client = client.clone();
-            requests.submit(world, generation, operation.id, async move {
+            requests.submit(key, operation.id, async move {
                 $perform(&client, operation, command).await
             });
             operation.id
@@ -98,7 +98,7 @@ async fn market_call(
     }
 }
 
-pub(crate) async fn industry_call(
+pub async fn industry_call(
     client: &OsgNetClient,
     operation: Operation,
     command: IndustryCommand,

@@ -37,7 +37,7 @@ fn advance(world: &mut World) {
     world
         .resource_mut::<Time<Fixed>>()
         .advance_by(osg_model::TICK_DURATION);
-    industry::advance(world);
+    industry::tick(world);
     let mut initialize = Schedule::default();
     initialize.add_systems(hardware::initialize);
     initialize.run(world);
@@ -45,7 +45,7 @@ fn advance(world: &mut World) {
 
 #[test]
 fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
-    use crate::sim::{economy::Economy, industry::service};
+    use crate::sim::{economy::Economy, industry::service_client};
     use osg_model::{
         economy::{Currency, MONEY_SCALE},
         industry::*,
@@ -65,13 +65,12 @@ fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
         .next()
         .unwrap();
     let facility_id = id(world, facility).unwrap();
-    world.entity_mut(facility).insert((
-        ownership::AssetOwner(Principal::Player(operator)),
-        industry::IndustryFacility {
-            seeded: true,
-            ..Default::default()
-        },
-    ));
+    let state = industry::IndustrialFacility::from_design(
+        &world.get::<vessel::ShipDesign>(facility).unwrap().0,
+    );
+    world
+        .entity_mut(facility)
+        .insert((ownership::AssetOwner(Principal::Player(operator)), state));
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let recipe = manufacturing::recipes(&catalogue)
         .unwrap()
@@ -102,7 +101,7 @@ fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
             osg_model::calendar::now_unix_ms(),
         )
         .unwrap();
-    service::publish(
+    service_client::publish(
         world,
         operator,
         facility_id,
@@ -121,7 +120,7 @@ fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
     )
     .unwrap();
     let uploads = crate::blueprint_uploads::BlueprintUploads::default();
-    let quote = service::quote(
+    let quote = service_client::quote(
         world,
         customer,
         facility_id,
@@ -133,15 +132,15 @@ fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
         &uploads,
     )
     .unwrap();
-    service::order(world, customer, quote.clone(), &uploads).unwrap();
-    let job = service::jobs(world, customer, facility_id).unwrap()[0].id;
+    service_client::order(world, customer, quote.clone(), &uploads).unwrap();
+    let job = service_client::jobs(world, customer, facility_id).unwrap()[0].id;
     let checkpoint = capture(world).unwrap();
     restore(world, &checkpoint).unwrap();
     assert_eq!(
         world.resource::<Economy>().service_holds[&job].amount,
         quote.total
     );
-    service::cancel(world, customer, facility_id, job).unwrap();
+    service_client::cancel(world, customer, facility_id, job).unwrap();
     assert_eq!(
         world.resource::<Economy>().available(payer, Currency::Uec),
         1000 * MONEY_SCALE
@@ -152,7 +151,7 @@ fn public_service_checkpoint_keeps_payment_and_customer_storage_together() {
             input.quantity
         );
     }
-    service::order(world, customer, quote.clone(), &uploads).unwrap();
+    service_client::order(world, customer, quote.clone(), &uploads).unwrap();
     advance(world);
     let charged = world.resource::<Economy>().balances[&payer].uec;
     assert_eq!(charged, 1000 * MONEY_SCALE - quote.total);
@@ -176,19 +175,18 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
         .next()
         .unwrap();
     let facility_id = id(world, facility).unwrap();
-    world.entity_mut(facility).insert((
-        ownership::AssetOwner(Principal::Player(account)),
-        industry::IndustryFacility {
-            seeded: true,
-            ..Default::default()
-        },
-        industry::MineSource {
-            output: CargoItem::Resource("industrial_ore".into()),
-            units_per_second: 3,
-            remainder: 7,
-            last_recipient: Some(Id::new()),
-        },
-    ));
+    let mut state = industry::IndustrialFacility::from_design(
+        &world.get::<vessel::ShipDesign>(facility).unwrap().0,
+    );
+    state.set_mine(industry::MineSource {
+        output: CargoItem::Resource("industrial_ore".into()),
+        units_per_second: 3,
+        remainder: 7,
+        last_recipient: Some(Id::new()),
+    });
+    world
+        .entity_mut(facility)
+        .insert((ownership::AssetOwner(Principal::Player(account)), state));
     let catalogue = world.resource::<vessel::ShipCatalogue>().0.clone();
     let design = world.get::<vessel::ShipDesign>(facility).unwrap().0.clone();
     {
@@ -234,7 +232,7 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
             )
             .unwrap();
     }
-    industry::execute(
+    industry::enqueue_command(
         world,
         account,
         IndustryCommand::StartRecipe {
@@ -245,7 +243,7 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
         None,
     )
     .unwrap();
-    industry::execute(
+    industry::enqueue_command(
         world,
         account,
         IndustryCommand::BuildShip {
@@ -261,19 +259,25 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
         advance(world);
     }
     let jobs = &world
-        .get::<industry::IndustryFacility>(facility)
+        .get::<industry::IndustrialFacility>(facility)
         .unwrap()
-        .jobs;
+        .jobs();
     assert_eq!(jobs.len(), 2);
     assert!(jobs.iter().any(|job| {
-        matches!(&job.output, industry::JobOutput::Ship(bytes) if bytes.as_ref() == blueprint_bytes)
+        matches!(&job.work.output, industry::WorkOutput::Ship(bytes) if bytes.as_ref() == blueprint_bytes)
     }));
-    assert!(jobs.iter().all(|job| job.view.progress_ticks == 3));
+    assert!(jobs.iter().all(|job| job.progress_ticks == 3));
     assert!(!inventory(world, facility).reservations.is_empty());
     let saved_jobs = postcard::to_stdvec(jobs).unwrap();
     let saved_inventory = postcard::to_stdvec(inventory(world, facility)).unwrap();
-    let saved_mine =
-        postcard::to_stdvec(world.get::<industry::MineSource>(facility).unwrap()).unwrap();
+    let saved_mine = postcard::to_stdvec(
+        &world
+            .get::<industry::IndustrialFacility>(facility)
+            .unwrap()
+            .to_record()
+            .mine,
+    )
+    .unwrap();
     let initial_ship_count = world.query::<&vessel::ShipDesign>().iter(world).count();
     let bytes = capture(world).unwrap();
 
@@ -283,9 +287,9 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
     assert_eq!(
         postcard::to_stdvec(
             &world
-                .get::<industry::IndustryFacility>(facility)
+                .get::<industry::IndustrialFacility>(facility)
                 .unwrap()
-                .jobs
+                .jobs()
         )
         .unwrap(),
         saved_jobs
@@ -294,33 +298,40 @@ async fn industry_checkpoints_resume_reserved_work_and_complete_ship_constructio
         postcard::to_stdvec(inventory(world, facility)).unwrap(),
         saved_inventory
     );
-    industry::seed_demo(world, facility, account).unwrap();
+    world.run_schedule(FixedPreUpdate);
     assert_eq!(
         postcard::to_stdvec(inventory(world, facility)).unwrap(),
         saved_inventory
     );
     assert_eq!(
-        postcard::to_stdvec(world.get::<industry::MineSource>(facility).unwrap()).unwrap(),
+        postcard::to_stdvec(
+            &world
+                .get::<industry::IndustrialFacility>(facility)
+                .unwrap()
+                .to_record()
+                .mine
+        )
+        .unwrap(),
         saved_mine
     );
     for _ in 3..construction.duration_ticks - 1 {
         advance(world);
     }
     let jobs = &world
-        .get::<industry::IndustryFacility>(facility)
+        .get::<industry::IndustrialFacility>(facility)
         .unwrap()
-        .jobs;
+        .jobs();
     assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].view.progress_ticks + 1, jobs[0].view.duration_ticks);
+    assert_eq!(jobs[0].progress_ticks + 1, jobs[0].work.duration_ticks);
     let last_tick = capture(world).unwrap();
     restore(world, &last_tick).unwrap();
     advance(world);
     let facility = identity::lookup(world, facility_id).unwrap();
     assert!(
         world
-            .get::<industry::IndustryFacility>(facility)
+            .get::<industry::IndustrialFacility>(facility)
             .unwrap()
-            .jobs
+            .jobs()
             .is_empty()
     );
     assert_eq!(
@@ -454,19 +465,28 @@ fn assert_corruption_is_rejected(world: &mut World, bytes: &[u8], facility_id: I
                     .next()
                     .unwrap() -= 1
             }
-            1 => jobs[1].view.id = jobs[0].view.id,
-            2 => jobs[0].view.owner = Principal::Player(Id::new()),
-            3 => jobs[0].view.progress_ticks = jobs[0].view.duration_ticks + 1,
-            4 => match &mut jobs[0].output {
-                industry::JobOutput::Cargo(outputs) => outputs[0].quantity += 1,
+            1 => jobs[1].id = jobs[0].id,
+            2 => jobs[0].owner = Principal::Player(Id::new()),
+            3 => jobs[0].progress_ticks = jobs[0].work.duration_ticks + 1,
+            4 => match &mut jobs[0].work.output {
+                industry::WorkOutput::Cargo(outputs) => outputs[0].quantity += 1,
                 _ => unreachable!(),
             },
-            5 => match &mut jobs[1].output {
-                industry::JobOutput::Ship(bytes) => *bytes = std::sync::Arc::from([]),
+            5 => match &mut jobs[1].work.output {
+                industry::WorkOutput::Ship(bytes) => *bytes = std::sync::Arc::from([]),
                 _ => unreachable!(),
             },
-            6 => saved.mine.as_mut().unwrap().remainder = 10,
-            7 => jobs[0].view.module_part = Some(u64::MAX),
+            6 => {
+                saved
+                    .industry
+                    .as_mut()
+                    .unwrap()
+                    .mine
+                    .as_mut()
+                    .unwrap()
+                    .remainder = 10
+            }
+            7 => jobs[0].work.capability = osg_model::industry::IndustryCapability::Shipyard,
             8 => saved.industry = None,
             _ => unreachable!(),
         }

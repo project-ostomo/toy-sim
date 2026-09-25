@@ -194,7 +194,7 @@ impl Plugin for VesselsPlugin {
                 spawn.after(crate::sim::orrery::LoadOrrery),
             )
             .add_systems(
-                FixedUpdate,
+                FixedPreUpdate,
                 prepare_resets.before(HardwareSystems::Initialize),
             )
             .add_systems(
@@ -203,8 +203,7 @@ impl Plugin for VesselsPlugin {
                     allocate_gas,
                     run,
                     settle_gas,
-                    super::sensors::flush,
-                    clear_computer_resets,
+                    (super::sensors::flush, clear_computer_resets),
                 )
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)

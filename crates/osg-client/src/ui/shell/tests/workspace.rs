@@ -100,16 +100,23 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
         service: Default::default(),
         can_configure_service: false,
     };
-    let industry = IndustrySnapshot {
-        directory: vec![
-            summary(ship_id, "Wayfarer"),
-            summary(station, "Neris Anchorage"),
-        ],
+    let industry = IndustryView {
+        directory: QueryState::Ready(osg_model::rpc::Page {
+            items: vec![
+                summary(ship_id, "Wayfarer"),
+                summary(station, "Neris Anchorage"),
+            ],
+            next: None,
+            total: None,
+        }),
         facilities: vec![
             facility(ship_id, "Wayfarer"),
             facility(station, "Neris Anchorage"),
-        ],
-        hangar: Some(HangarView {
+        ]
+        .into_iter()
+        .map(|facility| (facility.entity, QueryState::Ready(facility)))
+        .collect(),
+        hangar: QueryState::Ready(HangarView {
             berths_used: Some(3),
             berths_total: Some(12),
             ship: ship_id,
@@ -161,16 +168,14 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
     ship.travel.preferences.max_loss_ppm = 1_000.;
     ship.travel.itinerary = [(1, 1600, 0.4), (3, 2750, 300.)]
         .into_iter()
-        .map(|(index, duration, loss)| {
+        .map(|(index, _, _)| {
             let system = &navigation.systems[index];
             let mut stage = entry(travel::Directive::SlipToSystem(system.id), 0.0);
             stage.label = format!("Slip to {}", system.name);
-            stage.estimated_duration_ticks = Some(duration);
-            stage.max_loss_ppm = loss;
             stage
         })
         .collect();
-    let society = ownership::SocietySnapshot {
+    let society = SocietyData {
         account,
         ..Default::default()
     };
@@ -179,7 +184,7 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
         declaration_history_next: None,
         declaration_history_key: None,
         services: empty_services(),
-        industry_ready: true,
+
         industry: &industry,
         society: &society,
         navigation: &navigation,
@@ -246,7 +251,7 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -283,7 +288,6 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
         for variant in [
             "shell",
             "settings",
-            "navigation",
             "map",
             "cargo",
             "consumables",
@@ -316,7 +320,6 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
                 );
             }
             if let Some(spec) = match variant {
-                "navigation" => Some(NAVIGATION),
                 "map" => Some(MAP),
                 "cargo" | "consumables" | "quantity" => Some(INVENTORY),
                 "storage" | "hangar" => Some(HANGAR),
@@ -348,15 +351,16 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
                         let mut intents = Vec::new();
                         panels::draw(
                             ui.ctx(),
+                            false,
                             &mut shell,
                             &mut panes.get(),
                             &model,
                             &selection,
                             &[],
                             &chat_log,
-                            None,
-                            None,
-                            None,
+                            &QueryState::Loading,
+                            &QueryState::Loading,
+                            &QueryState::Loading,
                             &mut intents,
                         );
                         assert!(intents.is_empty());
@@ -373,6 +377,29 @@ fn workspace_gallery_covers_navigation_inventory_and_chat() {
                 renderer.update(&output);
                 output.textures_delta.clear();
                 if frame == 4 {
+                    if variant == "map" {
+                        let mut labels = Vec::new();
+                        for shape in &output.shapes {
+                            collect_labels(&shape.shape, &mut labels);
+                        }
+                        for expected in
+                            ["Navigation map", "Fastest estimated route", "━ Best route"]
+                        {
+                            assert!(
+                                labels.iter().any(|label| label == expected),
+                                "Missing {expected}: {labels:?}"
+                            );
+                        }
+                        if size[0] >= 1200 {
+                            for denominator in [10_000, 1_000, 100, 10, 2] {
+                                let expected = format!("1 in {denominator}");
+                                assert!(labels.contains(&expected), "Missing {expected}");
+                            }
+                        }
+                        assert!(!labels.iter().any(|label| label.contains("Queued")
+                            || label.contains("Expanding")
+                            || label.contains("explored")));
+                    }
                     let directory = std::env::var_os("OSG_UI_GALLERY")
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(|| std::path::PathBuf::from("../../target/ui-gallery"));

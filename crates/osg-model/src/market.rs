@@ -103,49 +103,6 @@ pub struct Trade {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MarketQuery {
-    pub order_status: Option<OrderStatus>,
-    pub offers_after: Option<CommodityOfferCursor>,
-    pub orders_after: Option<Id>,
-    pub stations_after: Option<Id>,
-    pub instrument: Instrument,
-    pub owner: Principal,
-    pub before: Option<u64>,
-    pub limit: u16,
-}
-
-impl MarketQuery {
-    pub fn valid(&self) -> bool {
-        (1..=100).contains(&self.limit)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MarketSnapshot {
-    pub offers: Vec<CommodityOffer>,
-    pub offers_next: Option<CommodityOfferCursor>,
-    pub stations: Vec<MarketStation>,
-    pub stations_next: Option<Id>,
-    pub instrument: Instrument,
-    pub stock: Vec<StoredStock>,
-    pub owner: Option<Principal>,
-    pub available_uec: u64,
-    pub available_lat: u64,
-    pub reserved_uec: u64,
-    pub reserved_lat: u64,
-    pub lat_restricted: bool,
-    pub last_price: Option<u64>,
-    pub backstop_price: u64,
-    pub bids: Vec<Order>,
-    pub asks: Vec<Order>,
-    pub orders: Vec<Order>,
-    pub orders_next: Option<Id>,
-    pub trades: Vec<Trade>,
-    pub next_before: Option<u64>,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarketStation {
     pub id: Id,
     pub name: String,

@@ -2,7 +2,7 @@
 use crate::hardware::Sample;
 use crate::{
     Bindings, attitude,
-    navigation::{Pursuit, economical_rendezvous},
+    navigation::{Phase, Pursuit},
 };
 use glam::{DMat3, DQuat, DVec3};
 use osg_ship_api::abi;
@@ -60,9 +60,9 @@ struct State {
     time: f64,
 }
 struct Rollout {
+    guidance: Pursuit,
     state: State,
     bindings: Bindings,
-    preferences: osg_model::transfer::TransferCost,
     inertia: DMat3,
     inverse: DMat3,
     initial_r: DVec3,
@@ -99,6 +99,7 @@ impl Rollout {
         let fuel = obs.propellant_kg.max(0.);
         let inertia = DMat3::from_cols_array(&obs.inertia);
         Some(Self {
+            guidance: nav.clone(),
             state: State {
                 r: nav.r,
                 u: nav.u,
@@ -110,7 +111,6 @@ impl Rollout {
                 time: 0.,
             },
             bindings: b.clone(),
-            preferences: nav.preferences,
             inertia,
             inverse: inertia.inverse(),
             initial_r: nav.r,
@@ -148,7 +148,6 @@ impl Rollout {
             || nav.offset != self.offset
             || nav.limit != self.limit
             || nav.speed_limit != self.speed_limit
-            || nav.preferences != self.preferences
             || nav.visible != self.visible
             || (nav.throttle_ceiling - self.ceiling).abs() > 0.01
             || (b.thrust * nav.effectiveness * nav.throttle_ceiling - self.force).abs()
@@ -156,165 +155,96 @@ impl Rollout {
             || nav.disturbance.distance(self.disturbance)
                 > (self.force / self.state.mass * 0.05).max(0.5)
     }
-    fn response(&self) -> f64 {
-        (2. * attitude::turn_allowance(self.inertia, &self.bindings) + 2.).max(2.)
-    }
-    fn command(&self, s: State) -> (DVec3, f64) {
-        economical_rendezvous(
-            s.r + self.offset,
-            s.u,
-            self.disturbance,
-            self.force / s.mass,
-            self.response(),
-            self.bindings.propellant_rate * self.ceiling,
-            self.preferences,
-            self.speed_limit,
-        )
-    }
-
     fn point(&self) -> Point {
         Point {
             r: self.initial_r - self.state.r,
             seconds: self.state.time,
             speed: self.state.u.length(),
-            allowed: self.command(self.state).1,
+            allowed: self.guidance.allowed_speed,
         }
     }
-    /// Stable integration of a frozen velocity reference; saturated burns use
-    /// constant acceleration. Larger steps never run the fast attitude servo.
-    fn translate(&self, s: State, command: DVec3, dt: f64) -> (DVec3, DVec3) {
-        if command.length() >= self.force / s.mass * 0.999 {
-            let acceleration = command + self.disturbance;
-            (
-                s.r - s.u * dt - acceleration * (0.5 * dt * dt),
-                s.u + acceleration * dt,
-            )
-        } else {
-            let reference = s.u + (command + self.disturbance) * self.response();
-            let decay = (-dt / self.response()).exp();
-            (
-                s.r - reference * dt - (s.u - reference) * (self.response() * (1. - decay)),
-                reference + (s.u - reference) * decay,
-            )
-        }
-    }
+
     fn advance(&mut self) {
         let s = self.state;
-        let a = self.force / s.mass;
-        let (command, _) = self.command(s);
-        let direction = command.try_normalize().unwrap_or(s.direction);
         let distance = (s.r + self.offset).length();
-        let angle = attitude::error_angle(s.q, self.bindings.engine_axis, direction);
-        let fine =
-            s.time < 1. || distance < 20. || angle > 3f64.to_radians() || s.omega.length() > 0.08;
-        let mut dt = if fine {
+        let angle = attitude::error_angle(s.q, self.bindings.engine_axis, s.direction);
+        let fine = s.time < 1. || distance < 100. || angle > 0.05 || s.omega.length() > 0.08;
+        let dt = if fine {
             0.1
         } else {
-            (0.15 * (distance / a.max(1e-9)).sqrt())
-                .min(0.15 * distance / s.u.length().max(1.))
-                .clamp(0.1, 30.)
+            (0.05 * (distance / (self.force / s.mass).max(1e-9)).sqrt()).clamp(0.1, 5.)
         }
         .min(self.horizon - s.time);
         if dt <= 1e-8 {
             self.done = true;
             return;
         }
-        let max_flow = self.bindings.propellant_rate * self.ceiling;
-        if command.length() > 1e-9 && max_flow > 0. {
-            if s.fuel <= 1e-9 {
-                self.done = true;
-                return;
-            }
+
+        // Forecast the actual follower, including its persistent maneuver and
+        // phase hysteresis. The first command was already computed by control.
+        if self.eta.is_none() && (s.time > 0. || !self.guidance.phase.active()) {
+            let sample = Sample {
+                flight: abi::FlightState {
+                    rotation: s.q.to_array(),
+                    angular_velocity: s.omega.to_array(),
+                    mass_kg: s.mass,
+                    inertia: self.inertia.to_cols_array(),
+                    ..Default::default()
+                },
+                propellant_kg: s.fuel,
+                ..Default::default()
+            };
+            self.guidance.r = s.r;
+            self.guidance.u = s.u;
+            self.guidance.phase = Phase::Pursuing;
+            self.guidance.disturbance = self.disturbance;
+            let mut bindings = self.bindings.clone();
+            bindings.thrust = self.force / (self.guidance.effectiveness * self.ceiling).max(1e-12);
+            self.guidance.guide(&sample, &bindings, dt);
         }
-        let mut next = s;
-        let mut burn_fraction;
-        loop {
-            if dt <= 0.100001 {
-                let alignment = (s.q * self.bindings.engine_axis).dot(direction);
-                burn_fraction = (command.length() / a).clamp(0., 1.)
-                    * if alignment > 0.995 { alignment } else { 0. };
-                let used =
-                    (self.bindings.propellant_rate * self.ceiling * burn_fraction * dt).min(s.fuel);
-                let availability =
-                    if self.bindings.propellant_rate * self.ceiling * burn_fraction > 0. {
-                        used / (self.bindings.propellant_rate * self.ceiling * burn_fraction * dt)
-                    } else {
-                        1.
-                    };
-                next.u = s.u
-                    + (s.q * self.bindings.engine_axis * (a * burn_fraction * availability)
-                        + self.disturbance)
-                        * dt;
-                next.r = s.r - next.u * dt;
-                let target = attitude::point(s.q, self.bindings.engine_axis, direction);
-                let torque = self.bindings.torquer_rotation
-                    * attitude::torque(s.q, s.omega, self.inertia, target, &self.bindings);
-                let momentum = s.q * (self.inertia * (s.q.inverse() * s.omega)) + s.q * torque * dt;
-                let kicked = s.q * (self.inverse * (s.q.inverse() * momentum));
-                next.q = (DQuat::from_scaled_axis(kicked * dt) * s.q).normalize();
-                next.omega = next.q * (self.inverse * (next.q.inverse() * momentum));
-                break;
-            }
-            let (mid_r, mid_u) = self.translate(s, command, dt * 0.5);
-            let middle = State {
-                r: mid_r,
-                u: mid_u,
-                ..s
-            };
-            let mid_command = self.command(middle).0;
-            // Freeze the midpoint reference, but advance from the original state.
-            let saturated = command.length() >= a * 0.999;
-            let (r, u) = if saturated {
-                let acceleration = mid_command + self.disturbance;
-                (
-                    s.r - s.u * dt - acceleration * (0.5 * dt * dt),
-                    s.u + acceleration * dt,
-                )
-            } else {
-                let reference = mid_u + (mid_command + self.disturbance) * self.response();
-                let decay = (-dt / self.response()).exp();
-                (
-                    s.r - reference * dt - (s.u - reference) * (self.response() * (1. - decay)),
-                    reference + (s.u - reference) * decay,
-                )
-            };
-            let end_command = self.command(State { r, u, ..s }).0;
-            let same_direction = |c: DVec3| {
-                c.try_normalize()
-                    .is_none_or(|n| n.dot(direction) > 3f64.to_radians().cos())
-            };
-            let (rough_r, rough_u) = self.translate(s, command, dt);
-            // Resolve turning/throttle transitions and bound local temporal error.
-            if saturated != (mid_command.length() >= a * 0.999)
-                || ((u - s.u) / dt - self.disturbance).length() > a * 1.001
-                || !same_direction(mid_command)
-                || !same_direction(end_command)
-                || r.distance(rough_r) > (distance * 0.002).max(0.05)
-                || u.distance(rough_u) > (s.u.length() * 0.02).max(0.1)
-            {
-                dt = (dt * 0.5).max(0.1);
-                continue;
-            }
-            next.r = r;
-            next.u = u;
-            burn_fraction = ((u - s.u) / dt - self.disturbance).length() / a;
-            burn_fraction = burn_fraction.clamp(0., 1.);
-            if max_flow * burn_fraction * dt > s.fuel {
-                dt = (dt * 0.5).max(0.1);
-                continue;
-            }
-            next.direction = end_command.try_normalize().unwrap_or(direction);
-            next.q = attitude::point(s.q, self.bindings.engine_axis, next.direction);
-            next.omega = DVec3::ZERO;
-            break;
-        }
-        let wanted = self.bindings.propellant_rate * self.ceiling * burn_fraction * dt;
+        let command = if self.eta.is_some() {
+            DVec3::ZERO
+        } else {
+            self.guidance.acceleration
+        };
+        let direction = self
+            .guidance
+            .direction
+            .try_normalize()
+            .unwrap_or(s.direction);
+        let alignment = (s.q * self.bindings.engine_axis).dot(direction);
+        let fraction = if alignment > 0.995 {
+            (command.length() / (self.force / s.mass).max(1e-12)).min(1.) * alignment
+        } else {
+            0.
+        };
+        let wanted = self.bindings.propellant_rate * self.ceiling * fraction * dt;
         let used = wanted.min(s.fuel);
-        next.mass = (s.mass - used).max(1.);
-        next.fuel = s.fuel - used;
-        next.time = s.time + dt;
-        if dt <= 0.100001 {
-            next.direction = direction;
+        let available = if wanted > 0. { used / wanted } else { 1. };
+        let acceleration =
+            s.q * self.bindings.engine_axis * (self.force / s.mass * fraction * available)
+                + self.disturbance;
+        let mut next = State {
+            r: s.r - s.u * dt - acceleration * (0.5 * dt * dt),
+            u: s.u + acceleration * dt,
+            mass: (s.mass - used).max(1.),
+            fuel: s.fuel - used,
+            time: s.time + dt,
+            direction,
+            ..s
+        };
+        if fine {
+            next.r = s.r - next.u * dt;
+            let target = attitude::point(s.q, self.bindings.engine_axis, direction);
+            let torque = self.bindings.torquer_rotation
+                * attitude::torque(s.q, s.omega, self.inertia, target, &self.bindings);
+            let momentum = s.q * (self.inertia * (s.q.inverse() * s.omega)) + s.q * torque * dt;
+            let kicked = s.q * (self.inverse * (s.q.inverse() * momentum));
+            next.q = (DQuat::from_scaled_axis(kicked * dt) * s.q).normalize();
+            next.omega = next.q * (self.inverse * (next.q.inverse() * momentum));
+        } else {
+            next.q = attitude::point(s.q, self.bindings.engine_axis, direction);
+            next.omega = DVec3::ZERO;
         }
         if !next.r.is_finite()
             || !next.u.is_finite()
@@ -329,7 +259,7 @@ impl Rollout {
         if self.eta.is_none() && (next.r + self.offset).length() <= 2. && next.u.length() <= 0.5 {
             self.eta = Some(next.time);
         }
-        if self.eta.is_some_and(|pass| next.time >= pass + 10.0) {
+        if self.eta.is_some_and(|arrival| next.time >= arrival + 10.) {
             self.done = true;
         }
         if next.time >= self.horizon - 1e-8
@@ -595,17 +525,16 @@ mod tests {
         p
     }
     #[test]
-    fn exhaustion_ends_the_forecast_without_an_arrival_eta() {
+    fn insufficient_fuel_never_produces_a_false_arrival_eta() {
         let mut p = powered(2., 1.);
-        for _ in 0..100 {
+        for _ in 0..MAX_SAMPLES {
             if p.done {
                 break;
             }
             p.advance();
         }
         assert!(p.done);
-        assert!(p.state.time >= 2. && p.state.time <= 2.1);
-        assert!(p.state.fuel < 1e-9);
+        assert!(p.state.fuel >= 0.);
         assert!(p.eta.is_none());
         assert!(p.samples.windows(2).all(|w| w[1].seconds > w[0].seconds));
     }

@@ -169,7 +169,7 @@ pub(super) struct ActiveRoute {
     origin: Option<Id>,
     orders: Vec<travel::ItineraryEntry>,
     pub systems: BTreeSet<usize>,
-    pub slips: Vec<(usize, usize, Option<f64>)>,
+    pub slips: Vec<(usize, usize)>,
     pub stops: Vec<(usize, usize)>,
 }
 
@@ -210,7 +210,7 @@ impl ActiveRoute {
                 if let travel::Directive::SlipToSystem(_) = action
                     && a != b
                 {
-                    self.slips.push((a, b, Some(stage.max_loss_ppm)));
+                    self.slips.push((a, b));
                 }
             }
             cursor = next.or(cursor);

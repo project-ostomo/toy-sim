@@ -83,6 +83,7 @@ fn step(app: &mut App) {
     app.world_mut()
         .resource_mut::<Time<Fixed>>()
         .advance_by(osg_model::TICK_DURATION);
+    app.world_mut().run_schedule(FixedPreUpdate);
     app.world_mut().run_schedule(FixedUpdate);
 }
 
@@ -126,11 +127,12 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
     }
     crate::sim::hardware::install(&mut app);
     app.add_systems(
+        FixedPreUpdate,
+        prepare_resets.before(HardwareSystems::Initialize),
+    );
+    app.add_systems(
         FixedUpdate,
-        (
-            prepare_resets.before(HardwareSystems::Initialize),
-            (allocate_gas, run, settle_gas, clear_computer_resets).chain(),
-        ),
+        ((allocate_gas, run, settle_gas, clear_computer_resets).chain(),),
     );
     (app, entities)
 }
@@ -312,9 +314,6 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
     let itinerary = vec![ItineraryEntry {
         directive: Directive::SlipToSystem(Id::new()),
         label: "Next system".into(),
-        max_loss_ppm: 100.,
-        fuel_allowance_kg: 1.,
-        estimated_duration_ticks: None,
     }];
     app.world_mut()
         .init_resource::<crate::sim::simulation::SimulationCounters>();

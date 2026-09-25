@@ -16,7 +16,8 @@ pub struct SlipRingPlugin;
 
 impl Plugin for SlipRingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(PostUpdate, (discover, animate).chain());
+        app.add_systems(Last, discover)
+            .add_systems(PostUpdate, animate);
     }
 }
 

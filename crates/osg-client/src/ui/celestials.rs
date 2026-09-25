@@ -1,8 +1,7 @@
 use crate::state::{
-    Celestial, CelestialSystem, DisplayPose, NavigationState, RenderTime, SessionReset,
+    Celestial, CelestialSystem, DisplayPose, GameSession, RenderTime, SessionReset,
     ViewObservation, ViewSystems, WorldMember,
 };
-pub(crate) use crate::universe::shared_universe;
 use bevy::{
     prelude::*,
     tasks::{AsyncComputeTaskPool, Task, block_on, poll_once},
@@ -35,11 +34,7 @@ pub struct SystemDefinition {
 }
 
 impl SystemDefinition {
-    pub(crate) fn body_position(
-        &self,
-        body: Id,
-        time_ns: u64,
-    ) -> Option<osg_space::GalacticPosition> {
+    pub fn body_position(&self, body: Id, time_ns: u64) -> Option<osg_space::GalacticPosition> {
         let body = self.definition.solver.iter().find(|body_definition| {
             self.definition
                 .body_id(&body_definition.name)
@@ -56,7 +51,7 @@ impl SystemDefinition {
     }
 }
 
-pub(crate) fn celestial_identity(reference: CelestialRef) -> Id {
+pub fn celestial_identity(reference: CelestialRef) -> Id {
     let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame celestial entity v2");
     hash.update(&reference.system.0);
     hash.update(&reference.body.0);
@@ -75,7 +70,7 @@ struct SystemBodies(Vec<Entity>);
 struct BodyName(String);
 
 #[derive(Component)]
-pub(crate) struct PlanetSurface(pub osg_universe::surface::SurfaceParameters);
+pub struct PlanetSurface(pub osg_universe::surface::SurfaceParameters);
 
 #[derive(Resource, Default)]
 struct Definitions {
@@ -86,7 +81,6 @@ struct Definitions {
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CelestialSystems {
-    Definitions,
     Evaluate,
 }
 
@@ -94,17 +88,19 @@ pub fn install(app: &mut App) {
     app.init_resource::<Definitions>()
         .configure_sets(
             Update,
-            (CelestialSystems::Definitions, CelestialSystems::Evaluate)
-                .chain()
+            CelestialSystems::Evaluate
+                .in_set(crate::state::ClientSystems::Gameplay)
                 .after(crate::state::PresentationSet::Interpolate)
                 .before(crate::state::PresentationSet::Views),
         )
         .add_observer(reset)
         .add_systems(
-            Update,
-            (select_views, synchronize)
-                .chain()
-                .in_set(CelestialSystems::Definitions),
+            PostUpdate,
+            select_views.in_set(crate::state::ClientSystems::Gameplay),
+        )
+        .add_systems(
+            Last,
+            synchronize.in_set(crate::state::ClientSystems::Gameplay),
         )
         .add_systems(Update, evaluate.in_set(CelestialSystems::Evaluate));
 }
@@ -115,6 +111,7 @@ fn reset(_: On<SessionReset>, mut definitions: ResMut<Definitions>) {
 
 fn select_views(
     mut commands: Commands,
+    session: Res<GameSession>,
     views: Query<(
         Entity,
         &ViewObservation,
@@ -122,9 +119,7 @@ fn select_views(
         Option<&ViewSystems>,
     )>,
 ) {
-    let Ok(universe) = shared_universe() else {
-        return;
-    };
+    let universe = &session.universe;
     for (entity, observation, camera, previous) in &views {
         let position = camera.map_or(observation.0.origin, |camera| camera.origin);
         let mut desired: Vec<_> = universe
@@ -145,15 +140,11 @@ fn synchronize(
     mut commands: Commands,
     mut definitions: ResMut<Definitions>,
     views: Query<(Entity, &ViewSystems)>,
-    session: Res<NavigationState>,
+    session: Res<GameSession>,
     clock: Res<RenderTime>,
 ) {
-    let Some(epoch) = session.universe_descriptor.as_ref() else {
-        return;
-    };
-    let Ok(universe) = shared_universe() else {
-        return;
-    };
+    let epoch = &session.universe_descriptor;
+    let universe = &session.universe;
     let desired: BTreeSet<_> = views
         .iter()
         .flat_map(|(_, systems)| systems.0.iter().copied())
@@ -333,7 +324,7 @@ mod tests {
 
     #[test]
     fn local_definition_renders_without_asset_transport_and_releases_view_interest() {
-        let universe = shared_universe().unwrap();
+        let universe = crate::universe::shared_universe().unwrap();
         let id = Id(universe.systems()[0].id);
         let definition = universe.resolve(id.0).unwrap();
         let expected = definition
@@ -343,14 +334,7 @@ mod tests {
             .count();
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .insert_resource(NavigationState {
-                universe_descriptor: Some(UniverseDescriptor {
-                    fingerprint: universe.fingerprint(),
-                    epoch_mjd_utc: 60_000.0,
-                    sim_time_origin_ns: 0,
-                }),
-                ..Default::default()
-            })
+            .insert_resource(GameSession::test(Id([1; 16]), 1))
             .init_resource::<RenderTime>();
         install(&mut app);
         let view = app.world_mut().spawn(ViewSystems(vec![id])).id();

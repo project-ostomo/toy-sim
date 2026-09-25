@@ -1,23 +1,27 @@
 use bevy::prelude::*;
 use std::time::Duration;
 
-#[derive(Resource, Default)]
-pub(crate) struct CalendarClock {
-    anchor: Option<Anchor>,
-}
-
-struct Anchor {
-    unix_ms: i64,
-    received_at: Duration,
-    correction_ms: i64,
+#[derive(Resource)]
+pub struct CalendarClock {
+    anchor: Anchor,
 }
 
 impl CalendarClock {
+    pub fn new(unix_ms: i64, received_at: Duration) -> Self {
+        Self {
+            anchor: Anchor {
+                unix_ms,
+                received_at,
+                correction_ms: 0,
+            },
+        }
+    }
+
     pub fn observe(&mut self, calendar_unix_ms: i64, received_at: Duration) {
-        let current = self.now(received_at).unwrap_or(calendar_unix_ms);
+        let current = self.now(received_at);
         let correction = calendar_unix_ms.saturating_sub(current);
         let discontinuity = correction.unsigned_abs() > 2000;
-        self.anchor = Some(Anchor {
+        self.anchor = Anchor {
             unix_ms: if discontinuity {
                 calendar_unix_ms
             } else {
@@ -25,20 +29,25 @@ impl CalendarClock {
             },
             received_at,
             correction_ms: if discontinuity { 0 } else { correction },
-        });
+        };
     }
 
-    pub fn now(&self, elapsed: Duration) -> Option<i64> {
-        self.anchor.as_ref().map(|anchor| {
-            let age = elapsed.saturating_sub(anchor.received_at).as_millis();
-            let age_ms = age.min(i64::MAX as u128) as i64;
-            let adjustment = anchor.correction_ms.clamp(-age_ms / 20, age_ms / 20);
-            anchor
-                .unix_ms
-                .saturating_add(age_ms)
-                .saturating_add(adjustment)
-        })
+    pub fn now(&self, elapsed: Duration) -> i64 {
+        let anchor = &self.anchor;
+        let age = elapsed.saturating_sub(anchor.received_at).as_millis();
+        let age_ms = age.min(i64::MAX as u128) as i64;
+        let adjustment = anchor.correction_ms.clamp(-age_ms / 20, age_ms / 20);
+        anchor
+            .unix_ms
+            .saturating_add(age_ms)
+            .saturating_add(adjustment)
     }
+}
+
+struct Anchor {
+    unix_ms: i64,
+    received_at: Duration,
+    correction_ms: i64,
 }
 
 #[cfg(test)]
@@ -49,40 +58,42 @@ mod tests {
 
     #[test]
     fn ordinary_jitter_slews_smoothly_then_returns_to_wall_clock_speed() {
-        let mut clock = CalendarClock::default();
         let epoch = from_real_unix_ms(1_789_689_600_000);
-        assert_eq!(clock.now(Duration::ZERO), None);
+        let mut clock = CalendarClock::new(epoch, Duration::ZERO);
         clock.observe(epoch, Duration::ZERO);
         clock.observe(epoch + 900, Duration::from_secs(1));
-        assert_eq!(clock.now(Duration::from_secs(1)), Some(epoch + 1000));
-        assert_eq!(clock.now(Duration::from_secs(2)), Some(epoch + 1950));
-        assert_eq!(clock.now(Duration::from_secs(3)), Some(epoch + 2900));
-        assert_eq!(clock.now(Duration::from_secs(60)), Some(epoch + 59_900));
+        assert_eq!(clock.now(Duration::from_secs(1)), epoch + 1000);
+        assert_eq!(clock.now(Duration::from_secs(2)), epoch + 1950);
+        assert_eq!(clock.now(Duration::from_secs(3)), epoch + 2900);
+        assert_eq!(clock.now(Duration::from_secs(60)), epoch + 59_900);
 
         clock.observe(epoch + 3000, Duration::from_secs(3));
-        assert_eq!(clock.now(Duration::from_secs(3)), Some(epoch + 2900));
-        assert_eq!(clock.now(Duration::from_secs(4)), Some(epoch + 3950));
-        assert_eq!(clock.now(Duration::from_secs(5)), Some(epoch + 5000));
+        assert_eq!(clock.now(Duration::from_secs(3)), epoch + 2900);
+        assert_eq!(clock.now(Duration::from_secs(4)), epoch + 3950);
+        assert_eq!(clock.now(Duration::from_secs(5)), epoch + 5000);
     }
 
     #[test]
     fn real_wall_clock_corrections_are_adopted_in_both_directions() {
-        let mut clock = CalendarClock::default();
         let epoch = from_real_unix_ms(1_789_689_600_000);
+        let mut clock = CalendarClock::new(epoch, Duration::ZERO);
         clock.observe(epoch, Duration::ZERO);
         clock.observe(epoch - 60_000, Duration::from_secs(1));
-        assert_eq!(clock.now(Duration::from_secs(1)), Some(epoch - 60_000));
-        assert_eq!(clock.now(Duration::from_secs(2)), Some(epoch - 59_000));
+        assert_eq!(clock.now(Duration::from_secs(1)), epoch - 60_000);
+        assert_eq!(clock.now(Duration::from_secs(2)), epoch - 59_000);
         clock.observe(epoch + 10_000, Duration::from_secs(2));
-        assert_eq!(clock.now(Duration::from_secs(2)), Some(epoch + 10_000));
-        assert_eq!(clock.now(Duration::from_secs(3)), Some(epoch + 11_000));
+        assert_eq!(clock.now(Duration::from_secs(2)), epoch + 10_000);
+        assert_eq!(clock.now(Duration::from_secs(3)), epoch + 11_000);
     }
 
     #[test]
     fn calendar_ignores_positive_simulation_speed_changes() {
         let mut app = App::new();
         app.add_plugins(MinimalPlugins)
-            .init_resource::<CalendarClock>()
+            .insert_resource(CalendarClock::new(
+                from_real_unix_ms(1_789_689_600_000),
+                Duration::ZERO,
+            ))
             .insert_resource(TimeUpdateStrategy::ManualDuration(Duration::ZERO));
         app.update();
         let epoch = from_real_unix_ms(1_789_689_600_000);
@@ -105,7 +116,7 @@ mod tests {
         let elapsed = app.world().resource::<Time<Real>>().elapsed();
         assert_eq!(
             app.world().resource::<CalendarClock>().now(elapsed),
-            Some(epoch + 1250)
+            epoch + 1250
         );
 
         let mut virtual_time = app.world_mut().resource_mut::<Time<Virtual>>();
@@ -122,7 +133,7 @@ mod tests {
         let elapsed = app.world().resource::<Time<Real>>().elapsed();
         assert_eq!(
             app.world().resource::<CalendarClock>().now(elapsed),
-            Some(epoch + 1750)
+            epoch + 1750
         );
     }
 }

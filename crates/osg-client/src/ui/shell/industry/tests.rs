@@ -1,11 +1,9 @@
 use super::*;
-use industry_model::{
-    CargoStack, FacilityCapability, FacilitySummary, IndustryCatalogue, IndustrySnapshot, Recipe,
-};
+use industry_model::{CargoStack, FacilityCapability, FacilitySummary, IndustryCatalogue, Recipe};
 
 struct Fixture {
-    snapshot: IndustrySnapshot,
-    society: ownership::SocietySnapshot,
+    snapshot: IndustryView,
+    society: SocietyData,
     navigation: NavigationCatalogue,
     ship: ShipTelemetry,
     details: ShipPresentation,
@@ -68,11 +66,14 @@ impl Fixture {
             can_transfer: true,
         };
         Self {
-            snapshot: IndustrySnapshot {
-                subscription_revision: 1,
-                directory: vec![summary],
-                facilities: vec![facility],
-                catalogue: Some(IndustryCatalogue {
+            snapshot: IndustryView {
+                directory: QueryState::Ready(osg_model::rpc::Page {
+                    items: vec![summary],
+                    next: None,
+                    total: None,
+                }),
+                facilities: [(facility.entity, QueryState::Ready(facility))].into(),
+                catalogue: QueryState::Ready(IndustryCatalogue {
                     revision: [1; 32],
                     recipes: vec![Recipe {
                         id: "assemble".into(),
@@ -97,7 +98,7 @@ impl Fixture {
                 }),
                 ..Default::default()
             },
-            society: ownership::SocietySnapshot {
+            society: SocietyData {
                 account: Id([1; 16]),
                 ..Default::default()
             },
@@ -114,7 +115,7 @@ impl Fixture {
             declaration_history_next: None,
             declaration_history_key: None,
             industry: &self.snapshot,
-            industry_ready: true,
+
             society: &self.society,
             navigation: &self.navigation,
             inhabited: Default::default(),
@@ -128,7 +129,7 @@ impl Fixture {
             connected: true,
             status: "",
             time_ns: 0,
-            calendar_unix_ms: None,
+            calendar_unix_ms: 0,
             diagnostics: Default::default(),
             orbits: false,
         }
@@ -138,7 +139,14 @@ impl Fixture {
 #[test]
 fn cargo_feedback_prevents_reserved_remote_unauthorized_and_overfull_transfers() {
     let fixture = Fixture::new();
-    let source = &fixture.snapshot.facilities[0];
+    let source = fixture
+        .snapshot
+        .facilities
+        .values()
+        .next()
+        .unwrap()
+        .as_ref()
+        .unwrap();
     let stack = &source.items[0];
     let mut target = source.clone();
     target.entity = Id([3; 16]);
@@ -179,7 +187,15 @@ fn default_inventory_clips_cargo_and_scrolls_to_product_reservoirs() {
     context.all_styles_mut(|style| style.animation_time = 0.0);
 
     let mut fixture = Fixture::new();
-    fixture.snapshot.facilities[0].products = [
+    fixture
+        .snapshot
+        .facilities
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .products = [
         ("spent_fuel", "Spent reactor fuel"),
         ("bred_fuel", "Bred fuel awaiting processing"),
     ]
@@ -193,13 +209,44 @@ fn default_inventory_clips_cargo_and_scrolls_to_product_reservoirs() {
         unit_volume_m3: 0.001,
     })
     .collect();
-    fixture.snapshot.facilities[0].entity = fixture.ship.ship;
-    fixture.snapshot.facilities[0].items = (0..20)
+    fixture
+        .snapshot
+        .facilities
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .entity = fixture.ship.ship;
+    fixture
+        .snapshot
+        .facilities
+        .values_mut()
+        .next()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .items = (0..20)
         .map(|index| CargoStack {
             item: CargoItem::Part(format!("part_{index}")),
             name: format!("Part kit {index}"),
-            ..fixture.snapshot.facilities[0].items[0].clone()
+            ..fixture
+                .snapshot
+                .facilities
+                .values()
+                .next()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .items[0]
+                .clone()
         })
+        .collect();
+    fixture.snapshot.facilities = fixture
+        .snapshot
+        .facilities
+        .into_values()
+        .map(|value| (value.as_ref().unwrap().entity, value))
         .collect();
     let mut state = inventory::State::default();
     let mut transfers = cargo::Transfers::default();
@@ -313,7 +360,15 @@ fn default_inventory_clips_cargo_and_scrolls_to_product_reservoirs() {
 #[test]
 fn product_unloading_into_own_cargo_requires_capacity_and_permission() {
     let fixture = Fixture::new();
-    let mut source = fixture.snapshot.facilities[0].clone();
+    let mut source = fixture
+        .snapshot
+        .facilities
+        .values()
+        .next()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .clone();
     let product = CargoStack {
         item: CargoItem::Resource("bred_fuel".into()),
         quantity: 8,

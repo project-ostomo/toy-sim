@@ -5,18 +5,18 @@ use osg_ui::{
 };
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum GameplayInput {
+pub enum GameplayInput {
     Mouse,
     Keyboard,
 }
 
 #[derive(Resource, Default)]
-pub(super) struct InputCapture {
+pub struct InputCapture {
     pub mouse_available: bool,
     keyboard_available: bool,
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_resource::<InputCapture>();
     app.add_systems(PreUpdate, capture.after(EguiPreUpdateSet::BeginPass));
     app.add_systems(
@@ -26,22 +26,30 @@ pub(super) fn install(app: &mut App) {
     app.configure_sets(
         Update,
         (
-            GameplayInput::Mouse.run_if(mouse_available),
-            GameplayInput::Keyboard.run_if(keyboard_available),
+            GameplayInput::Mouse
+                .run_if(mouse_available)
+                .in_set(crate::state::ClientSystems::Gameplay),
+            GameplayInput::Keyboard
+                .run_if(keyboard_available)
+                .in_set(crate::state::ClientSystems::Gameplay),
         ),
     );
     app.configure_sets(
         EguiPrimaryContextPass,
         (
-            GameplayInput::Mouse.after(capture).run_if(mouse_available),
+            GameplayInput::Mouse
+                .after(capture)
+                .run_if(mouse_available)
+                .in_set(crate::state::ClientSystems::Gameplay),
             GameplayInput::Keyboard
                 .after(capture)
-                .run_if(keyboard_available),
+                .run_if(keyboard_available)
+                .in_set(crate::state::ClientSystems::Gameplay),
         ),
     );
 }
 
-pub(super) fn pointer_available(ctx: &egui::Context) -> bool {
+pub fn pointer_available(ctx: &egui::Context) -> bool {
     !ctx.is_pointer_over_egui()
         && !ctx.egui_wants_pointer_input()
         && !ctx.egui_is_using_pointer()

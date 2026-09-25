@@ -2,7 +2,7 @@ use super::*;
 use industry_model::{CargoItem, CargoStack, FacilityView, IndustryCommand};
 
 #[derive(Default, Resource)]
-pub(super) struct PaneState {
+pub struct PaneState {
     search: String,
     selected: Option<(Storage, CargoItem)>,
 }
@@ -15,7 +15,7 @@ struct DraggedCargo {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum Storage {
+pub enum Storage {
     Cargo,
     Product,
 }
@@ -28,7 +28,7 @@ struct Transfer {
 }
 
 #[derive(Default, Resource)]
-pub(super) struct Transfers {
+pub struct Transfers {
     pending: Option<Transfer>,
     dragging: Option<Id>,
     feedback: Option<(Id, String)>,
@@ -36,7 +36,7 @@ pub(super) struct Transfers {
 
 impl Transfers {
     #[cfg(test)]
-    pub(super) fn gallery_quantity(&mut self, source: Id, target: Id, item: CargoItem) {
+    pub fn gallery_quantity(&mut self, source: Id, target: Id, item: CargoItem) {
         self.pending = Some(Transfer {
             cargo: DraggedCargo {
                 source,
@@ -60,7 +60,7 @@ impl Transfers {
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut PaneState,
     inventory: Id,
@@ -68,17 +68,22 @@ pub(super) fn draw(
     transfers: &mut Transfers,
     intents: &mut Vec<Intent>,
 ) {
-    let Some(facility) = facility(model, inventory) else {
-        ui.weak(if model.industry.omitted_inventories.contains(&inventory) {
-            "Inventory exceeds the publication limit; close other inventory windows."
-        } else if model.industry_ready {
-            "Inventory unavailable or access revoked."
-        } else {
-            "Loading inventory…"
-        });
-        return;
-    };
+    if render_query(ui, model.industry.inventory(inventory), |ui, facility| {
+        draw_inventory(ui, state, facility, model, transfers, intents);
+    }) {
+        intents.push(Intent::RetryQueries);
+    }
+}
 
+fn draw_inventory(
+    ui: &mut egui::Ui,
+    state: &mut PaneState,
+    facility: &FacilityView,
+    model: &FrameModel,
+    transfers: &mut Transfers,
+    intents: &mut Vec<Intent>,
+) {
+    let inventory = facility.entity;
     ui.strong(&facility.name);
     ui.small(format!(
         "{:.1} / {:.1} m³",
@@ -86,9 +91,6 @@ pub(super) fn draw(
     ));
     if !facility.can_transfer {
         ui.colored_label(MUTED, "VIEW ONLY");
-    }
-    if let Some(error) = &model.industry.error {
-        ui.colored_label(THREAT, error);
     }
     feedback(ui, transfers, inventory);
     ui.weak("Drag between cargo windows · Shift-drag to choose quantity");
@@ -130,7 +132,7 @@ pub(super) fn draw(
     drop_target(ui, drop, inventory, None, model, transfers, intents);
 }
 
-pub(super) fn feedback(ui: &mut egui::Ui, transfers: &Transfers, inventory: Id) {
+pub fn feedback(ui: &mut egui::Ui, transfers: &Transfers, inventory: Id) {
     if let Some((target, message)) = &transfers.feedback {
         if *target == inventory {
             ui.colored_label(THREAT, message);
@@ -138,7 +140,7 @@ pub(super) fn feedback(ui: &mut egui::Ui, transfers: &Transfers, inventory: Id) 
     }
 }
 
-pub(super) fn tank_drop(
+pub fn tank_drop(
     ui: &mut egui::Ui,
     response: egui::Response,
     ship: Id,
@@ -301,7 +303,7 @@ fn submit(
     None
 }
 
-pub(super) fn tank_remaining(model: &FrameModel, ship: Id, resource: &str) -> Option<u64> {
+pub fn tank_remaining(model: &FrameModel, ship: Id, resource: &str) -> Option<u64> {
     if model.ship?.ship != ship {
         return None;
     }
@@ -325,7 +327,7 @@ pub(super) fn tank_remaining(model: &FrameModel, ship: Id, resource: &str) -> Op
     (unit_mass > 0.0).then(|| (missing_kg.max(0.0) / unit_mass).floor() as u64)
 }
 
-pub(super) fn draw_dialog(
+pub fn draw_dialog(
     ctx: &egui::Context,
     transfers: &mut Transfers,
     model: &FrameModel,
@@ -425,12 +427,8 @@ fn quantity_editor(ui: &mut egui::Ui, quantity: &mut u64, stack: &CargoStack, ma
     });
 }
 
-pub(super) fn facility<'a>(model: &'a FrameModel<'_>, id: Id) -> Option<&'a FacilityView> {
-    model
-        .industry
-        .facilities
-        .iter()
-        .find(|facility| facility.entity == id)
+pub fn facility<'a>(model: &'a FrameModel<'_>, id: Id) -> Option<&'a FacilityView> {
+    model.industry.inventory(id).as_ref()
 }
 
 fn available_stack<'a>(
@@ -451,18 +449,18 @@ fn stacks(facility: &FacilityView, storage: Storage) -> &[CargoStack] {
     }
 }
 
-pub(super) fn available(stack: &CargoStack) -> u64 {
+pub fn available(stack: &CargoStack) -> u64 {
     stack.quantity.saturating_sub(stack.reserved)
 }
 
-pub(super) fn item_label(item: &CargoItem) -> String {
+pub fn item_label(item: &CargoItem) -> String {
     match item {
         CargoItem::Resource(id) => id.replace('_', " "),
         CargoItem::Part(id) => format!("{} kit", id.replace('_', " ")),
     }
 }
 
-pub(super) fn quantity_label(item: &CargoItem, quantity: u64, unit_mass_kg: f64) -> String {
+pub fn quantity_label(item: &CargoItem, quantity: u64, unit_mass_kg: f64) -> String {
     if matches!(item, CargoItem::Resource(_)) && unit_mass_kg > 0. {
         osg_ui::units::mass(quantity as f64 * unit_mass_kg)
     } else {
@@ -470,14 +468,14 @@ pub(super) fn quantity_label(item: &CargoItem, quantity: u64, unit_mass_kg: f64)
     }
 }
 
-pub(super) fn colocated(source: &FacilityView, target: &FacilityView) -> bool {
+pub fn colocated(source: &FacilityView, target: &FacilityView) -> bool {
     source.entity != target.entity
         && ((source.location.is_some() && source.location == target.location)
             || source.location == Some(target.entity)
             || target.location == Some(source.entity))
 }
 
-pub(super) fn transfer_error(
+pub fn transfer_error(
     source: &FacilityView,
     target: &FacilityView,
     stack: &CargoStack,
@@ -501,7 +499,7 @@ pub(super) fn transfer_error(
     }
 }
 
-pub(super) fn quantity_from_mass(mass_kg: f64, unit_mass_kg: f64, maximum: u64) -> u64 {
+pub fn quantity_from_mass(mass_kg: f64, unit_mass_kg: f64, maximum: u64) -> u64 {
     if !mass_kg.is_finite() || !unit_mass_kg.is_finite() || unit_mass_kg <= 0.0 {
         return 0;
     }

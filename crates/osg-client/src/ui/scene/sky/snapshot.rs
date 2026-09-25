@@ -29,8 +29,8 @@ pub enum GeometryKey {
     Celestial(Id),
 }
 
-/// A star handed over from point sprites to an emissive sphere rendered at
-/// its galactic coordinates with true parallax.
+/// A cached candidate for an emissive sphere. Its angular size is evaluated
+/// at the current camera position every frame.
 #[derive(Clone)]
 pub struct GeometryStar {
     pub key: GeometryKey,
@@ -40,10 +40,12 @@ pub struct GeometryStar {
     pub colour: [f32; 3],
 }
 
-/// A point-sprite star, positioned relative to the snapshot origin.
+/// A sprite candidate, positioned relative to the snapshot origin. The shader
+/// suppresses its quad whenever its current angular size calls for a sphere.
 #[derive(Clone, Debug)]
 pub struct Sprite {
     pub offset: DVec3,
+    pub radius_m: f64,
     pub luminosity: f64,
     pub colour: [f32; 3],
 }
@@ -84,12 +86,9 @@ impl Snapshot {
         } in sources
         {
             let offset = star.position.relative_to(origin);
-            let distance = offset.length();
-            if distance <= 0.0 {
-                continue;
-            }
-            let angular_radius = (radius_m / distance).clamp(0.0, 1.0).asin();
-            if angular_radius >= HANDOVER && distance < MESH_RANGE_M {
+            // Keep candidates that can become resolvable anywhere in the
+            // snapshot's validity region. Handover is evaluated each frame.
+            if radius_m > 0.0 && offset.length() < VALIDITY_RADIUS_M + MESH_RANGE_M {
                 geometry.push(GeometryStar {
                     key,
                     position: star.position,
@@ -97,10 +96,10 @@ impl Snapshot {
                     luminosity: star.luminosity,
                     colour: star.colour,
                 });
-                continue;
             }
             stars.push(Sprite {
                 offset,
+                radius_m,
                 luminosity: star.luminosity,
                 colour: star.colour,
             });
@@ -167,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn resolvable_stars_divert_to_geometry_and_points_become_sprites() {
+    fn snapshots_keep_sprites_and_nearby_sphere_candidates() {
         let radius = 6.96e8;
         let distance = 1.495978707e11;
         let sun = star(1, DVec3::Z * distance);
@@ -183,7 +182,8 @@ mod tests {
             0,
             1.0,
         );
-        assert!(snapshot.stars.is_empty());
+        assert_eq!(snapshot.stars.len(), 1);
+        assert_eq!(snapshot.stars[0].radius_m, radius);
         let geometry = &snapshot.geometry[0];
         assert_eq!(geometry.key, GeometryKey::Catalogue(sun.id));
         assert_eq!(geometry.position, sun.position);

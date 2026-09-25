@@ -1,29 +1,20 @@
-use super::{NavigationStatus, SessionReset, requests};
+use super::requests::views::*;
+use super::{NavigationStatus, QueryState, SessionKey, requests};
 use bevy::prelude::*;
 use osg_model::*;
 
 #[derive(Resource, Default)]
-pub(crate) struct NavigationState {
-    pub universe_descriptor: Option<UniverseDescriptor>,
+pub struct NavigationState {
     pub inhabited: std::sync::Arc<InhabitedDirectory>,
     pub navigation: std::sync::Arc<NavigationCatalogue>,
     pub navigation_hash: Option<[u8; 32]>,
     pub navigation_status: NavigationStatus,
 }
 
-pub(super) fn reset_navigation(_: On<SessionReset>, mut state: ResMut<NavigationState>) {
-    let universe_descriptor = state.universe_descriptor.take();
-    *state = NavigationState {
-        universe_descriptor,
-        ..Default::default()
-    };
-}
-
 #[derive(Resource, Default)]
-pub(crate) struct SocietyState {
-    pub society: ownership::SocietySnapshot,
-    pub directory_entries: Vec<ownership::Principal>,
-    pub directory_next: Option<ownership::Principal>,
+pub struct SocietyState {
+    pub society: SocietyData,
+    pub directory: requests::directory::State,
     pub society_assets_next: Option<Id>,
     pub society_asset_loaded: Option<Id>,
     pub declaration_history: Vec<diplomacy::Declaration>,
@@ -34,47 +25,47 @@ pub(crate) struct SocietyState {
         ownership::Principal,
     )>,
     pub society_error: Option<String>,
-    pub interest: requests::SocietyInterest,
-    pub(crate) load: requests::Load<requests::SocietyInterest, requests::SocietyView>,
-    pub(crate) context: Option<(Id, u64)>,
+    pub query: requests::SocietyQuery,
+    pub load: requests::Load<requests::SocietyQuery, requests::SocietyView>,
+    pub context: Option<SessionKey>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct WalletState {
-    pub wallet: Option<economy::WalletSnapshot>,
-    pub interest: Option<economy::WalletQuery>,
-    pub(crate) load: requests::Load<economy::WalletQuery, economy::WalletSnapshot>,
+pub struct WalletState {
+    pub wallet: QueryState<WalletView>,
+    pub query: Option<WalletQuery>,
+    pub load: requests::Load<WalletQuery, WalletView>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct MarketState {
-    pub market: Option<market::MarketSnapshot>,
-    pub interest: Option<market::MarketQuery>,
-    pub(crate) load: requests::Load<market::MarketQuery, market::MarketSnapshot>,
+pub struct MarketState {
+    pub market: QueryState<MarketView>,
+    pub query: Option<MarketQuery>,
+    pub load: requests::Load<MarketQuery, MarketView>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct AssetsState {
-    pub assets: Option<assets::AssetsSnapshot>,
-    pub interest: Option<assets::AssetsQuery>,
-    pub(crate) load: requests::Load<assets::AssetsQuery, assets::AssetsSnapshot>,
+pub struct AssetsState {
+    pub assets: QueryState<AssetsView>,
+    pub query: Option<AssetsQuery>,
+    pub load: requests::Load<AssetsQuery, AssetsView>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct ServiceState {
-    pub services: requests::services::View,
-    pub interest: Option<requests::services::Interest>,
-    pub(crate) load: requests::Load<requests::services::Interest, requests::services::View>,
+pub struct ServiceState {
+    pub services: QueryState<requests::services::View>,
+    pub query: Option<requests::services::Query>,
+    pub load: requests::Load<requests::services::Query, requests::services::View>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct CommandState {
+pub struct CommandState {
     pub results: Vec<CommandResult>,
     pub events: Vec<osg_model::Event>,
 }
 
 #[derive(Resource, Default)]
-pub(crate) struct PlaybackState {
+pub struct PlaybackState {
     pub diagnostics: Option<Diagnostics>,
     pub target_frames: usize,
     pub underruns: u64,

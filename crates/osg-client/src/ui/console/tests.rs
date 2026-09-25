@@ -4,6 +4,7 @@ use osg_ui::bevy_egui::{EguiContext, EguiUserTextures, PrimaryEguiContext};
 
 pub(in crate::ui) fn details() -> ShipPresentation {
     ShipPresentation {
+        navigation_access: None,
         serial: {
             let mut terminal = osg_model::serial::Terminal::default();
             terminal.write(b"SHIP COMPUTER // ONLINE\r\nNavigation: Pursuing\r\nFollowing queued destination\r\nThrust command: 60%\r\n\x1b[33mFuel allowance: 50%\x1b[0m\r\nRoute executor: Executing queued command");
@@ -109,10 +110,7 @@ fn console_headless_layout_and_manual_lockout() {
     world.init_resource::<EguiUserTextures>();
     world.init_resource::<RenderTime>();
     world.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION));
-    world.insert_resource(SessionInfo {
-        world: Some(Id([9; 16])),
-        ..Default::default()
-    });
+    world.insert_resource(GameSession::test(Id([9; 16]), 1));
     world.insert_resource(Selection {
         ship: Some(Id([1; 16])),
         ..Default::default()

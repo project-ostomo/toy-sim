@@ -28,27 +28,10 @@ struct Plan {
     fuel_kg: f64,
     maneuver: Option<Pose>,
     score: f64,
-    mass: f64,
-    fuel_available: f64,
     capture_radius: f64,
     max_loss_ppm: f64,
     fuel_limit: f64,
     station: Option<EntityId>,
-}
-
-struct DirectTransfer {
-    relative_position: DVec3,
-    mass: f64,
-    fuel_available: f64,
-}
-
-impl DirectTransfer {
-    fn remains_valid(&self, relative_position: DVec3, mass: f64, fuel: f64) -> bool {
-        !planner::changed_materially(self.mass, mass)
-            && !planner::changed_materially(self.fuel_available, fuel)
-            && (relative_position - self.relative_position).length()
-                < (self.relative_position.length() * 0.2).max(100.)
-    }
 }
 
 #[derive(Default)]
@@ -59,9 +42,12 @@ pub struct Executor {
     pub aim_attitude: Option<[f64; 4]>,
     pub reference_changed: bool,
     pub speed_limit: f64,
-    pub preferences: osg_model::transfer::TransferCost,
     plan: Option<Plan>,
-    direct_transfer: Option<DirectTransfer>,
+    search_cursor: usize,
+    assistance: Vec<Option<EntityId>>,
+    beacon_after: Option<EntityId>,
+    beacons_loaded: bool,
+    search_input: Option<(Pose, Id, Option<Beacon>, ItineraryEntry, f64, f64)>,
     status: FirmwareStatus,
     manual_guidance: Option<Guidance>,
     next_track: u64,
@@ -84,6 +70,11 @@ pub struct Executor {
 }
 
 impl Executor {
+    pub fn console_status(&self) -> Option<String> {
+        self.active
+            .then(|| crate::display::status_line(&self.status))
+    }
+
     fn physical(&self, action: ProgramAction) -> Result<(), i32> {
         if osg_ship_api::sdk::tick()?.tick != self.callback_tick {
             return Err(abi::ERR_UNAVAILABLE);
@@ -93,6 +84,8 @@ impl Executor {
 
     pub fn set_guidance(&mut self, guidance: Option<Guidance>) {
         self.manual_guidance = guidance;
+        self.search_input = None;
+        self.plan = None;
         self.reference_changed = true;
         self.avoidance.reset();
     }
@@ -144,7 +137,11 @@ impl Executor {
         self.revision = Some(state.directive_revision);
         self.reference_changed = true;
         self.plan = None;
-        self.direct_transfer = None;
+        self.search_cursor = 0;
+        self.assistance.clear();
+        self.beacon_after = None;
+        self.beacons_loaded = false;
+        self.search_input = None;
         self.bay = None;
         self.next_track = 0;
         self.next_publish = 0;
@@ -181,7 +178,11 @@ impl Executor {
         self.active = state.enabled && !state.itinerary.is_empty();
         if !self.active {
             self.plan = None;
-            self.direct_transfer = None;
+            self.search_cursor = 0;
+            self.assistance.clear();
+            self.beacon_after = None;
+            self.beacons_loaded = false;
+            self.search_input = None;
             return self.manual(&pose);
         }
         self.manual_guidance = None;
@@ -209,7 +210,11 @@ impl Executor {
                 self.status.spent_exotic_fuel_kg += (previous - exotic_fuel_kg).max(0.);
             }
             self.plan = None;
-            self.direct_transfer = None;
+            self.search_cursor = 0;
+            self.assistance.clear();
+            self.beacon_after = None;
+            self.beacons_loaded = false;
+            self.search_input = None;
             self.next_track = 0;
             self.reference_changed = true;
             self.transit = false;
@@ -262,158 +267,45 @@ impl Executor {
             None
         };
         let final_station = target_station.as_ref().or(next_station.as_ref());
-        let direct = target_station
-            .as_ref()
-            .map(|station| self.transfer_estimate(&contact(&pose, &station.pose)).0);
 
+        let fuel_limit = state
+            .fuel_budget
+            .as_ref()
+            .and_then(|budget| {
+                budget
+                    .resources
+                    .iter()
+                    .find(|resource| resource.resource == slip::EXOTIC_RESOURCE)
+            })
+            .map_or(
+                exotic_fuel_kg + self.status.spent_exotic_fuel_kg,
+                |resource| resource.available_kg,
+            )
+            * state.preferences.fuel_fraction;
+        let available = exotic_fuel_kg.min((fuel_limit - self.status.spent_exotic_fuel_kg).max(0.));
+        let risk = RiskBudget {
+            max_log_loss: slip::log_loss_from_ppm(state.preferences.max_loss_ppm),
+            spent_log_loss: slip::log_loss_from_ppm(self.status.spent_loss_ppm),
+        }
+        .remaining_ppm();
         if self.tick >= self.next_track {
-            let direct_valid = self
-                .direct_transfer
-                .as_ref()
-                .zip(target_station.as_ref())
-                .is_some_and(|(transfer, station)| {
-                    transfer.remains_valid(
-                        station.pose.position.relative_to(pose.position),
-                        self.mass,
-                        exotic_fuel_kg,
-                    )
-                });
-            if !direct_valid {
-                self.direct_transfer = None;
-            }
-            let valid = self.plan.as_ref().is_some_and(|plan| {
-                !planner::changed_materially(plan.mass, self.mass)
-                    && !planner::changed_materially(plan.fuel_available, exotic_fuel_kg)
-            });
-            let feasible = if valid { self.track(&pose)? } else { false };
-            if !feasible {
-                if self.plan.is_some() {
-                    command(ProgramAction::CancelSlip)?;
-                }
+            if self.plan.is_some() && !self.track(&pose)? {
                 self.plan = None;
+                self.physical(ProgramAction::CancelSlip)?;
             }
-            // Close rendezvous uses the ordinary controller. Far transfers
-            // also evaluate capture geometries before choosing a maneuver.
-            if self.plan.is_none()
-                && self.direct_transfer.is_none()
-                && direct.is_none_or(|seconds| seconds > 300.)
-            {
-                if !state.preferences.allow_slipdrive {
-                    if target_station.is_none() {
-                        return self.fail("This itinerary requires an enabled slipdrive");
-                    }
-                } else if !slip_ready {
-                    if target_station.is_none() {
-                        return self.fail("No operational slipdrive is available");
-                    }
-                } else if exotic_fuel_kg <= 0. {
-                    if target_station.is_none() {
-                        return self.fail("No exotic fuel remains for this hop");
-                    }
-                } else {
-                    self.status.phase = FirmwarePhase::Planning;
-                    self.status.summary = "Comparing capture bodies and departure windows".into();
-                    self.next_publish = 0;
-                    self.publish()?;
-                    let (candidate, fuel_blocked) =
-                        self.search(&pose, system, final_station, entry, exotic_fuel_kg)?;
-                    // Queries can suspend across ticks. Never execute a plan
-                    // computed for a replaced directive or a moved ship.
-                    let ProgramReply::Travel {
-                        state: fresh,
-                        pose: current,
-                        tick: now,
-                        exotic_fuel_kg: fresh_fuel,
-                        ..
-                    } = query(&ProgramQuery::Travel)?
-                    else {
-                        return Err(abi::ERR_ARGUMENT);
-                    };
-                    if fresh.directive_revision != state.directive_revision || !fresh.enabled {
-                        command(ProgramAction::CancelSlip)?;
-                        self.active = false;
-                        return Ok(None);
-                    }
-                    let query_callback_tick = osg_ship_api::sdk::tick()?.tick;
-                    let fresh_mass = osg_ship_api::sdk::flight()?.mass_kg;
-                    let sample_tick = osg_ship_api::sdk::tick()?.tick;
-                    let resources_changed = planner::changed_materially(exotic_fuel_kg, fresh_fuel)
-                        || planner::changed_materially(self.mass, fresh_mass)
-                        || (fuel_blocked
-                            && (fresh_fuel > exotic_fuel_kg || fresh_mass < self.mass));
-                    if resources_changed || sample_tick != query_callback_tick {
-                        command(ProgramAction::CancelSlip)?;
-                        self.next_track = 0;
-                        self.tick = now;
-                        self.wait("Resources changed during planning; refreshing".into(), 0.);
-                        self.publish()?;
-                        return Ok(None);
-                    }
-                    if fuel_blocked && target_station.is_none() {
-                        return self
-                            .fail("The remaining exotic fuel allowance cannot reach this system");
-                    }
-                    let elapsed = now.saturating_sub(self.tick) as f64 * TICK_SECONDS;
-                    let expected = pose
-                        .position
-                        .offset_by(DVec3::from_array(pose.velocity) * elapsed);
-                    if current.position.relative_to(expected).length() > self.own_radius.max(100.) {
-                        command(ProgramAction::CancelSlip)?;
-                        self.next_track = 0;
-                        self.wait("Geometry changed during planning; refreshing".into(), 0.);
-                        self.publish()?;
-                        return Ok(None);
-                    }
-                    self.plan = candidate.filter(|plan| {
-                        direct
-                            .is_none_or(|seconds| planner::meaningfully_better(plan.score, seconds))
-                    });
-                    if self.plan.is_none() {
-                        // Choosing an ordinary transfer is a completed planning
-                        // decision. Retain it while relative geometry and
-                        // resources remain suitable, including across slices.
-                        self.direct_transfer =
-                            target_station.as_ref().map(|station| DirectTransfer {
-                                relative_position: station
-                                    .pose
-                                    .position
-                                    .offset_by(DVec3::from_array(station.pose.velocity) * elapsed)
-                                    .relative_to(current.position),
-                                mass: fresh_mass,
-                                fuel_available: fresh_fuel,
-                            });
-                    }
-                    self.tick = now;
-                    if self.plan.is_some() && !self.track(&current)? {
-                        self.plan = None;
-                        command(ProgramAction::CancelSlip)?;
-                    }
-                    // The caller refreshes its control sample after a
-                    // suspended search. Do the physical action next cycle.
-                    if now != tick {
-                        if self.plan.is_none() && target_station.is_none() {
-                            self.wait_horizon =
-                                (self.wait_horizon * 2.).min(MAX_PREDICTION_SECONDS * 0.5);
-                            self.next_track = now.saturating_add(300);
-                            self.wait(
-                                "No feasible capture in this window; waiting for new geometry"
-                                    .into(),
-                                30.,
-                            );
-                        } else {
-                            self.next_track = now;
-                        }
-                        self.publish()?;
-                        return Ok(None);
-                    }
-                }
-            }
-            if self.plan.is_none() && target_station.is_none() {
-                self.wait_horizon = (self.wait_horizon * 2.).min(MAX_PREDICTION_SECONDS * 0.5);
-                self.next_track = self.tick.saturating_add(300);
-            } else {
-                self.next_track = self.tick.saturating_add(30);
-            }
+            self.next_track = self.tick.saturating_add(30);
+        }
+        if slip_ready && state.preferences.allow_slipdrive {
+            self.search_input = Some((
+                pose.clone(),
+                system,
+                final_station.cloned(),
+                entry.clone(),
+                available,
+                risk,
+            ));
+        } else {
+            self.search_input = None;
         }
 
         if let Some(plan) = self.plan.clone() {
@@ -421,13 +313,67 @@ impl Executor {
         } else if let Some(station) = target_station.as_ref() {
             self.dock(&pose, station)
         } else {
-            self.wait(
-                "No feasible capture in this window; waiting for new geometry".into(),
-                self.next_track.saturating_sub(self.tick) as f64 * TICK_SECONDS,
-            );
+            self.status = FirmwareStatus {
+                spent_loss_ppm: self.status.spent_loss_ppm,
+                spent_exotic_fuel_kg: self.status.spent_exotic_fuel_kg,
+                ..Default::default()
+            };
+            if self.search_input.is_some() {
+                self.status.phase = FirmwarePhase::Planning;
+                self.status.summary = "Searching for a feasible capture".into();
+            } else {
+                self.wait(
+                    if state.preferences.allow_slipdrive {
+                        "Waiting for slipdrive availability"
+                    } else {
+                        "Slipdrive disabled in route preferences"
+                    }
+                    .into(),
+                    1.,
+                );
+            }
             self.publish()?;
             Ok(None)
         }
+    }
+
+    // Called after control and mailbox processing. One candidate per callback;
+    // no exhaustive search can hold up initial rendezvous guidance.
+    pub fn refine(&mut self) -> Result<(), i32> {
+        let Some((pose, system, station, entry, fuel, risk)) = self.search_input.take() else {
+            return Ok(());
+        };
+        let direct = matches!(entry.directive, Directive::DockAt(_))
+            .then(|| {
+                station
+                    .as_ref()
+                    .map(|station| self.transfer_estimate(&contact(&pose, &station.pose)).0)
+            })
+            .flatten();
+        // Even an ideal capture cannot beat charging plus the minimum transit.
+        // Leave the callback budget to guidance during the final approach.
+        if direct.is_some_and(|seconds| {
+            !planner::meaningfully_better(
+                slip::MIN_CHARGE_SECONDS + slip::MIN_TRANSIT_SECONDS,
+                seconds,
+            )
+        }) {
+            return Ok(());
+        }
+        let candidate = self.search(&pose, system, station.as_ref(), &entry, fuel, risk)?;
+        if let Some(candidate) = candidate {
+            let incumbent = self.plan.as_ref().map(|plan| {
+                plan.score - self.tick.saturating_sub(plan.epoch) as f64 * TICK_SECONDS
+            });
+            if incumbent
+                .into_iter()
+                .chain(direct)
+                .all(|seconds| planner::meaningfully_better(candidate.score, seconds))
+            {
+                self.plan = Some(candidate);
+            }
+        }
+        Ok(())
     }
 
     fn complete(&mut self) -> Result<(), i32> {
@@ -532,9 +478,12 @@ impl Executor {
         let direction = offset.normalize_or_zero();
         let closing = velocity.dot(direction);
         let lateral = (velocity - direction * closing).length();
-        let (time, fuel) =
-            self.preferences
-                .remaining(offset.length(), closing, self.acceleration, self.flow);
+        let (time, fuel) = osg_model::transfer::TransferCost { seconds_per_kg: 0. }.remaining(
+            offset.length(),
+            closing,
+            self.acceleration,
+            self.flow,
+        );
         let correction_s = lateral / self.acceleration;
         (
             time + correction_s + 2. * self.turn_s,
@@ -581,6 +530,12 @@ impl Executor {
             return Ok(None);
         }
         let mut target = station.pose.clone();
+        self.speed_limit = crate::navigation::arrival_speed(
+            (gap - DOCKING_CLEARANCE_M * 0.5).max(0.),
+            self.acceleration,
+            self.turn_s + 0.3,
+        )
+        .max(DOCKING_SPEED_M_S * 0.5);
         target.position = target.position.offset_by(
             delta.try_normalize().unwrap_or(DVec3::Z)
                 * (station.radius_m + self.own_radius + DOCKING_CLEARANCE_M * 0.5),
@@ -638,6 +593,7 @@ impl Executor {
                 },
                 radius_m: contact.radius_m,
                 slip_exclusion_m: 0.,
+                hill_radius_m: 0.,
             });
         }
         Ok(space)

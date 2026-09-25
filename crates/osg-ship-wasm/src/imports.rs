@@ -219,6 +219,31 @@ fn persistent(linker: &mut Linker<Host>) -> Result<()> {
 }
 
 fn context(linker: &mut Linker<Host>) -> Result<()> {
+    metered!(
+        linker,
+        "computer_send",
+        |mut caller: Caller<'_, Host>, pointer: u32, length: u32| {
+            CallPlan::bytes(&caller, pointer, length, w::MAX_COMPUTER_MESSAGE_BYTES)
+        },
+        {
+            status((|| {
+                if !caller.data().display_only {
+                    return Err(w::ERR_UNSUPPORTED.into());
+                }
+                if length as usize > w::MAX_COMPUTER_MESSAGE_BYTES
+                    || caller.data().output.computer_messages.len() >= 8
+                {
+                    return Err(w::ERR_LIMIT.into());
+                }
+                let mut message = w::ComputerMessage::default();
+                message.len = u64::from(length);
+                message.bytes[..length as usize]
+                    .copy_from_slice(payload(&caller, pointer, length)?);
+                caller.data_mut().output.computer_messages.push(message);
+                Ok(())
+            })())
+        }
+    )?;
     world::register(linker)?;
     beacons::register(linker)?;
     metered!(

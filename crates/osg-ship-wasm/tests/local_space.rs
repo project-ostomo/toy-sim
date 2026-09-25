@@ -54,6 +54,7 @@ fn local_observation_query_suspends_before_work_and_copies_a_full_bounded_reply(
                     pose: Pose::default(),
                     radius_m: 10.,
                     slip_exclusion_m: 0.,
+                    hill_radius_m: 0.,
                 })
                 .collect(),
             truncated: true,

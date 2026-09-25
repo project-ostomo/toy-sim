@@ -1385,6 +1385,19 @@ torque_nm = 1000000.0
 power_w = 2000000.0
 
 [[parts]]
+id = "torquer_patrol_2m"
+title = "2m expedition attitude actuator"
+dimensions = [20, 20, 20]
+model = "models/parts/torquer-1m.glb"
+model_scale = 2.0
+mass_kg = 900.0
+hull = 1000.0
+color = [0.40, 0.48, 0.55]
+kind = "torquer"
+torque_nm = 5000000.0
+power_w = 10000000.0
+
+[[parts]]
 id = "station_life_support_8m"
 title = "Station life support plant"
 dimensions = [80,80,80]

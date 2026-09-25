@@ -165,16 +165,18 @@ impl SurfaceCache {
     }
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_resource::<SurfaceCache>()
         .add_observer(reset)
         .add_systems(
-            Update,
-            (gather_demand, manage_tasks, rotate_clouds)
-                .chain()
-                .after(super::sync_celestials)
-                .in_set(PresentationSet::Render),
-        );
+            PostUpdate,
+            gather_demand.in_set(crate::state::ClientSystems::Gameplay),
+        )
+        .add_systems(
+            Last,
+            manage_tasks.in_set(crate::state::ClientSystems::Gameplay),
+        )
+        .add_systems(Update, rotate_clouds.in_set(PresentationSet::Render));
 }
 
 fn reset(
@@ -713,6 +715,9 @@ mod tests {
         ));
         world
             .run_system_once(super::super::camera::setup_views)
+            .unwrap();
+        world
+            .run_system_once(super::super::camera::update_views)
             .unwrap();
         for (index, entity) in views.iter().enumerate() {
             *world.get_mut::<Transform>(*entity).unwrap() = Transform::IDENTITY;

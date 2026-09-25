@@ -191,12 +191,10 @@ pub fn bundle(d: &CompiledShipDesign, state: ShipState) -> impl Bundle + use<> {
 }
 
 pub fn install(app: &mut App) {
+    install_initialization(app);
     app.add_systems(
         FixedUpdate,
-        (initialize, apply_impacts, advance_computer_clock)
-            .chain()
-            .in_set(HardwareSystems::Initialize)
-            .before(super::vessel::allocate_gas),
+        (apply_impacts, advance_computer_clock).before(super::vessel::allocate_gas),
     )
     .add_systems(
         FixedUpdate,
@@ -208,20 +206,14 @@ pub fn install(app: &mut App) {
             device_systems(),
             utilities::run,
             utilities::service_docked,
-            (
-                super::industry::schedule,
-                super::industry::settle,
-                super::industry::complete,
-                super::industry::advance_mines,
-                super::industry::refresh_publication,
-            )
-                .chain(),
             cooling::run,
             power_totals,
-            publish_mass,
-            transit_thermal,
-            dormant_thermal,
-            sensor_overrides,
+            (
+                publish_mass,
+                transit_thermal,
+                dormant_thermal,
+                sensor_overrides,
+            ),
         )
             .chain()
             .in_set(HardwareSystems::Run)
@@ -234,7 +226,14 @@ pub fn install(app: &mut App) {
     );
 }
 
-pub(crate) fn initialize(
+pub fn install_initialization(app: &mut App) {
+    app.add_systems(
+        FixedPreUpdate,
+        initialize.in_set(HardwareSystems::Initialize),
+    );
+}
+
+pub fn initialize(
     mut commands: Commands,
     ships: Query<(
         Entity,
@@ -299,35 +298,6 @@ pub(crate) fn initialize(
             devices::install(&mut part, &d.0.parts[index].definition.equipment);
             if let Equipment::Utility { utility } = &d.0.parts[index].definition.equipment {
                 part.insert(utilities::Utility(utility.clone()));
-                use osg_ships::utilities::UtilityDef;
-                let module = match *utility {
-                    UtilityDef::Factory {
-                        capability,
-                        power_per_lane_w,
-                        lanes,
-                    } => Some(super::industry::IndustryModule {
-                        part: d.0.parts[index].placed.id,
-                        capability,
-                        power_w: power_per_lane_w,
-                        lanes,
-                        radius_m: f64::INFINITY,
-                    }),
-                    UtilityDef::Shipyard {
-                        power_per_lane_w,
-                        lanes,
-                        max_radius_m,
-                    } => Some(super::industry::IndustryModule {
-                        part: d.0.parts[index].placed.id,
-                        capability: osg_model::industry::IndustryCapability::Shipyard,
-                        power_w: power_per_lane_w,
-                        lanes,
-                        radius_m: max_radius_m,
-                    }),
-                    _ => None,
-                };
-                if let Some(module) = module {
-                    part.insert(module);
-                }
             }
             cooling::install(&mut part, &d.0.parts[index].definition.equipment);
             reactors::install(&mut part, &d.0.parts[index].definition.equipment);

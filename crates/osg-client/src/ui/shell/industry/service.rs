@@ -6,7 +6,7 @@ use osg_model::{
 };
 
 #[derive(Default)]
-pub(crate) struct State {
+pub struct State {
     pub public: bool,
     pub facility: Option<Id>,
     pub work: Option<ServiceWork>,
@@ -21,13 +21,13 @@ pub(crate) struct State {
     preview_recipe: Option<String>,
 }
 
-pub(crate) enum Action {
+pub enum Action {
     Publish(Id, ServicePolicy),
     Order(ServiceQuote),
     Cancel(Id, Id),
 }
 
-pub(crate) async fn submit(
+pub async fn submit(
     net: osg_net::OsgNetClient,
     operation: osg_model::rpc::Operation,
     action: Action,
@@ -46,7 +46,7 @@ pub(crate) async fn submit(
 
 impl State {
     #[cfg(test)]
-    pub(crate) fn gallery_comparison(&mut self, work: ServiceWork) {
+    pub fn gallery_comparison(&mut self, work: ServiceWork) {
         self.comparison_work = Some(work);
         self.work = None;
     }
@@ -55,8 +55,8 @@ impl State {
         &self,
         open: bool,
         account: Id,
-    ) -> Option<crate::state::requests::services::Interest> {
-        (open && self.public).then(|| crate::state::requests::services::Interest {
+    ) -> Option<crate::state::requests::services::Query> {
+        (open && self.public).then(|| crate::state::requests::services::Query {
             search: self.search.clone(),
             after: self.after,
             facility: self.facility,
@@ -87,7 +87,7 @@ fn money(ui: &mut egui::Ui, id: impl std::hash::Hash + std::fmt::Debug, value: &
     }
 }
 
-pub(super) fn pricing(
+pub fn pricing(
     ui: &mut egui::Ui,
     state: &mut State,
     facility: &FacilityView,
@@ -357,7 +357,7 @@ pub(super) fn pricing(
         }
     });
     ui.weak("Unmatched customers pay list price.");
-    if let Some(catalogue) = &model.industry.catalogue {
+    if let Some(catalogue) = model.industry.catalogue.as_ref() {
         ui.add_space(12.);
         egui::Frame::new()
             .fill(osg_ui::desktop::SURFACE_RAISED)
@@ -413,13 +413,13 @@ fn tier_name(tier: &CustomerMatch, directory: &ownership::OwnershipDirectory) ->
     }
 }
 
-pub(super) fn customer(
+pub fn customer(
+    view: &crate::state::requests::services::View,
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
     intents: &mut Vec<Intent>,
 ) {
-    let view = model.services;
     if state.job_open || state.work.is_some() {
         if let Some(facility) = view
             .facilities
@@ -479,7 +479,7 @@ pub(super) fn customer(
                                         ui.weak("No materials in your station storage.");
                                     }
                                     ui.add_space(16.);
-                                    customer_jobs(ui, facility.summary.entity, model, intents);
+                                    customer_jobs(view, ui, facility.summary.entity, intents);
                                 });
                         },
                     );
@@ -487,11 +487,11 @@ pub(super) fn customer(
                     ui.allocate_ui_with_layout(
                         egui::vec2(430., height),
                         egui::Layout::top_down(egui::Align::Min),
-                        |ui| job_sheet(ui, state, facility, payer, model, intents),
+                        |ui| job_sheet(view, ui, state, facility, payer, model, intents),
                     );
                 });
             } else {
-                job_sheet(ui, state, facility, payer, model, intents);
+                job_sheet(view, ui, state, facility, payer, model, intents);
             }
             return;
         }
@@ -501,11 +501,16 @@ pub(super) fn customer(
         .auto_shrink([false, false])
         .min_scrolled_height(0.)
         .max_height(ui.available_height())
-        .show(ui, |ui| search(ui, state, model, intents));
+        .show(ui, |ui| search(view, ui, state, model, intents));
 }
 
-fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mut Vec<Intent>) {
-    let view = model.services;
+fn search(
+    view: &crate::state::requests::services::View,
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+    intents: &mut Vec<Intent>,
+) {
     osg_ui::components::action_header(
         ui,
         "public_industry",
@@ -534,7 +539,7 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mu
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut state.comparison_work, None, "All modules");
-                if let Some(catalogue) = &model.industry.catalogue {
+                if let Some(catalogue) = model.industry.catalogue.as_ref() {
                     for recipe in &catalogue.recipes {
                         let selected = match &state.comparison_work {
                             Some(ServiceWork::Recipe { recipe: id, .. }) => id == &recipe.id,
@@ -763,10 +768,11 @@ fn search(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mu
             });
         });
     ui.add_space(12.);
-    customer_jobs(ui, facility.summary.entity, model, intents);
+    customer_jobs(view, ui, facility.summary.entity, intents);
 }
 
 fn job_sheet(
+    view: &crate::state::requests::services::View,
     ui: &mut egui::Ui,
     state: &mut State,
     facility: &PublicFacility,
@@ -774,7 +780,6 @@ fn job_sheet(
     model: &FrameModel,
     intents: &mut Vec<Intent>,
 ) {
-    let view = model.services;
     egui::Frame::new()
         .fill(osg_ui::desktop::SURFACE_RAISED)
         .inner_margin(12.)
@@ -794,17 +799,17 @@ fn job_sheet(
                 .max_height((ui.available_height() - 84.).max(0.))
                 .show(ui, |ui| {
                     service_work_picker(ui, state, facility, payer, model);
-                    if let Some(quote) = current_quote(state, facility, payer, model) {
-                        quote_details(ui, quote, model, intents);
+                    if let Some(quote) = current_quote(state, facility, payer, view) {
+                        quote_details(view, ui, quote, intents);
                     }
                 });
 
             ui.separator();
-            if let Some(quote) = current_quote(state, facility, payer, model) {
+            if let Some(quote) = current_quote(state, facility, payer, view) {
                 let enough = quote
                     .inputs
                     .iter()
-                    .all(|input| available_stock(model, &input.item) >= input.quantity);
+                    .all(|input| available_stock(view, &input.item) >= input.quantity);
                 ui.colored_label(
                     ACCENT,
                     format!("Total {} {}", format_amount(quote.total), quote.currency),
@@ -825,9 +830,9 @@ fn current_quote<'a>(
     state: &State,
     facility: &PublicFacility,
     payer: Principal,
-    model: &'a FrameModel,
+    view: &'a crate::state::requests::services::View,
 ) -> Option<&'a ServiceQuote> {
-    model.services.quote.as_ref().filter(|quote| {
+    view.quote.as_ref().filter(|quote| {
         Some(&quote.work) == state.work.as_ref()
             && quote.payer == state.payer.unwrap_or(payer)
             && quote.facility == facility.summary.entity
@@ -860,7 +865,7 @@ fn service_work_picker(
         });
     ui.separator();
 
-    if let Some(catalogue) = &model.industry.catalogue {
+    if let Some(catalogue) = model.industry.catalogue.as_ref() {
         ui.strong("RECIPE / BLUEPRINT");
         for recipe in &catalogue.recipes {
             if !facility
@@ -914,19 +919,17 @@ fn service_work_picker(
     }
 }
 
-fn available_stock(model: &FrameModel, item: &CargoItem) -> u64 {
-    model
-        .services
-        .stock
+fn available_stock(view: &crate::state::requests::services::View, item: &CargoItem) -> u64 {
+    view.stock
         .iter()
         .find(|stock| &stock.item == item)
         .map_or(0, |stock| stock.quantity.saturating_sub(stock.reserved))
 }
 
 fn quote_details(
+    view: &crate::state::requests::services::View,
     ui: &mut egui::Ui,
     quote: &ServiceQuote,
-    model: &FrameModel,
     intents: &mut Vec<Intent>,
 ) {
     ui.separator();
@@ -946,7 +949,7 @@ fn quote_details(
                     ui.end_row();
 
                     for input in &quote.inputs {
-                        let available = available_stock(model, &input.item);
+                        let available = available_stock(view, &input.item);
                         enough &= available >= input.quantity;
                         ui.label(cargo::item_label(&input.item));
                         ui.monospace(input.quantity.to_string());
@@ -1003,11 +1006,7 @@ fn quote_details(
         ),
         (
             "Available",
-            format!(
-                "{} {}",
-                format_amount(model.services.available),
-                quote.currency
-            ),
+            format!("{} {}", format_amount(view.available), quote.currency),
         ),
     ];
     egui::ScrollArea::horizontal()
@@ -1033,8 +1032,12 @@ fn quote_details(
     ui.weak("Cancelling unstarted work releases its funds and inputs.");
 }
 
-fn customer_jobs(ui: &mut egui::Ui, facility: Id, model: &FrameModel, intents: &mut Vec<Intent>) {
-    let view = model.services;
+fn customer_jobs(
+    view: &crate::state::requests::services::View,
+    ui: &mut egui::Ui,
+    facility: Id,
+    intents: &mut Vec<Intent>,
+) {
     ui.strong("YOUR JOBS");
     if view.jobs.is_empty() {
         ui.weak("No work queued at this facility.");

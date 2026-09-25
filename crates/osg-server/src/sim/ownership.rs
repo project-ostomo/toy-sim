@@ -198,7 +198,7 @@ pub fn principal_access(
         )
 }
 
-fn treaty_permits(
+pub fn treaty_permits(
     directory: &OwnershipDirectory,
     owner: Principal,
     subject: Principal,
@@ -622,73 +622,46 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
     Ok(())
 }
 
-pub fn snapshot(world: &World, account: AccountId) -> SocietySnapshot {
-    let source = &world.resource::<Directory>().0;
-    let lineage = source.lineage(Principal::Player(account));
-    let mut directory = source.clone();
-    directory
-        .access_profiles
-        .retain(|_, profile| source.administers(account, profile.owner));
-    directory
-        .diplomacy
-        .trust
-        .retain(|(owner, _), _| source.administers(account, *owner));
-    directory
-        .standings
-        .retain(|(observer, _), _| lineage.contains(observer));
-    let mut administrators = std::collections::BTreeMap::new();
-    let mut assets: Vec<_> = world
-        .resource::<identity::IdentityIndex>()
-        .entries()
-        .iter()
-        .filter_map(|(id, entity)| {
-            let owner = world.get::<AssetOwner>(*entity)?.0;
-            let administers = *administrators
-                .entry(owner)
-                .or_insert_with(|| source.administers(account, owner));
-            let access = world.get::<AssetAccess>(*entity);
-            let permits = |permission| {
-                administers
-                    || access.is_some_and(|access| access.0.permits_lineage(&lineage, permission))
-            };
-            let can_manage = permits(Permission::ManageAccess);
-            if !can_manage && !permits(Permission::View) {
-                return None;
-            }
-            Some(AssetAffiliation {
-                entity: *id,
-                name: world
-                    .get::<super::vessel::Vessel>(*entity)
-                    .map_or_else(|| id.to_string(), |vessel| vessel.vessel_name.to_string()),
-                owner,
-                access: access.map(|access| access.0.clone()).unwrap_or_default(),
-                can_manage,
-            })
-        })
-        .collect();
-    assets.sort_by_key(|asset| asset.entity);
-    for asset in assets.iter().filter(|asset| asset.can_manage) {
-        if let Some(binding) = source.access_bindings.get(&asset.entity) {
-            if let Some(profile) = source.access_profiles.get(&binding.profile) {
-                directory
-                    .access_profiles
-                    .insert(profile.id, profile.clone());
-            }
-        }
-    }
-    directory.access_bindings.retain(|asset, binding| {
-        directory.access_profiles.contains_key(&binding.profile)
-            && assets
-                .iter()
-                .any(|entry| entry.entity == *asset && entry.can_manage)
-    });
-    SocietySnapshot {
-        standing_report: None,
-        account,
-        directory,
-        gas_accounts: gas_accounts(world, account),
-        assets,
-    }
+pub fn asset_access(
+    world: &World,
+    account: AccountId,
+    id: Id,
+) -> Result<osg_model::rpc::AssetAccessDetails> {
+    let entity = identity::lookup(world, id)?;
+    let owner = world
+        .get::<AssetOwner>(entity)
+        .context("Asset owner unavailable")?
+        .0;
+    let can_manage = can_access(world, account, entity, Permission::ManageAccess);
+    ensure!(
+        can_manage || can_access(world, account, entity, Permission::View),
+        "Asset access unavailable"
+    );
+
+    let directory = &world.resource::<Directory>().0;
+    let binding = can_manage
+        .then(|| directory.access_bindings.get(&id).cloned())
+        .flatten();
+    let profile = binding
+        .as_ref()
+        .and_then(|binding| directory.access_profiles.get(&binding.profile))
+        .cloned();
+    Ok(osg_model::rpc::AssetAccessDetails {
+        asset: AssetAffiliation {
+            entity: id,
+            name: world
+                .get::<super::vessel::Vessel>(entity)
+                .map_or_else(|| id.to_string(), |vessel| vessel.vessel_name.to_string()),
+            owner,
+            access: world
+                .get::<AssetAccess>(entity)
+                .map(|access| access.0.clone())
+                .unwrap_or_default(),
+            can_manage,
+        },
+        binding,
+        profile,
+    })
 }
 
 pub(crate) fn gas_accounts(world: &World, account: AccountId) -> Vec<GasAccountSnapshot> {
@@ -755,7 +728,11 @@ mod tests {
             .insert(AssetOwner(Principal::Player(owner)));
         apply(&mut world, owner, command).unwrap();
         assert_eq!(world.get::<AssetAccess>(entity).unwrap().0, profile.policy);
-        assert!(snapshot(&world, other).directory.access_profiles.is_empty());
+        assert!(
+            crate::rpc::list_access_profiles(&world, other)
+                .unwrap()
+                .is_empty()
+        );
 
         let mut changed = profile.clone();
         changed.policy.public.insert(Permission::Dock);
@@ -855,19 +832,18 @@ mod tests {
             .officers
             .insert(owner);
 
-        let owned = snapshot(&world, owner);
-        assert!(owned.valid());
-        assert_eq!(owned.gas_accounts.len(), 2);
+        let owned = gas_accounts(&world, owner);
+        assert!(owned.iter().all(GasAccountSnapshot::valid));
+        assert_eq!(owned.len(), 2);
         assert!(
             owned
-                .gas_accounts
                 .iter()
                 .any(|account| account.owner == Principal::Organization(organization))
         );
-        let ordinary = snapshot(&world, member);
-        assert!(ordinary.valid());
-        assert_eq!(ordinary.gas_accounts.len(), 1);
-        assert_eq!(ordinary.gas_accounts[0].owner, Principal::Player(member));
+        let ordinary = gas_accounts(&world, member);
+        assert!(ordinary.iter().all(GasAccountSnapshot::valid));
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(ordinary[0].owner, Principal::Player(member));
 
         world
             .resource_mut::<Directory>()
@@ -877,7 +853,7 @@ mod tests {
             .unwrap()
             .officers
             .remove(&owner);
-        assert_eq!(snapshot(&world, owner).gas_accounts.len(), 1);
+        assert_eq!(gas_accounts(&world, owner).len(), 1);
     }
 
     #[test]
@@ -913,9 +889,9 @@ mod tests {
         );
         assert!(!can_access(&world, old, ship, Permission::Industry));
         assert!(can_access(&world, new, ship, Permission::Industry));
-        assert!(snapshot(&world, old).assets.is_empty());
+        assert!(crate::sim::assets::list(&world, old, "", None).is_empty());
         assert_eq!(
-            snapshot(&world, new).assets[0].owner,
+            crate::sim::assets::list(&world, new, "", None)[0].owner,
             Principal::Player(new)
         );
     }
@@ -1156,8 +1132,7 @@ mod tests {
             Some(balance)
         );
         assert!(
-            !snapshot(&world, account)
-                .gas_accounts
+            !gas_accounts(&world, account)
                 .iter()
                 .any(|account| account.owner == owner)
         );
@@ -1187,15 +1162,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            snapshot(&world, account)
-                .directory
-                .standing(Principal::Player(account), target),
+            crate::rpc::resolve_standing(&world, account, target)
+                .unwrap()
+                .standing,
             Standing::Friendly
         );
         assert!(
-            !snapshot(&world, other)
-                .directory
-                .standings
+            !crate::rpc::standings(&world, other)
+                .unwrap()
                 .contains_key(&(Principal::Player(account), target))
         );
         apply(

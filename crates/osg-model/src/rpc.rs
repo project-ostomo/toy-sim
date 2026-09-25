@@ -40,6 +40,14 @@ pub enum IdentityRecord {
     Player(PlayerAffiliation),
 }
 
+/// Search matches and the records needed to display their ancestry.
+/// These records are not complete child lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IdentitySearch {
+    pub matches: Vec<Principal>,
+    pub identities: Vec<IdentityRecord>,
+}
+
 impl IdentityRecord {
     pub fn principal(&self) -> Principal {
         match self {

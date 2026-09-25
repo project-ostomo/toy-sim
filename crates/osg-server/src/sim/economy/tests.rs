@@ -158,7 +158,7 @@ fn recipient_overflow_does_not_debit_source() {
 }
 
 #[test]
-fn membership_does_not_grant_wallet_control_and_revocation_clears_snapshot() {
+fn membership_does_not_grant_wallet_control() {
     let mut world = World::new();
     let account = osg_model::Id([1; 16]);
     let other = osg_model::Id([2; 16]);
@@ -182,16 +182,10 @@ fn membership_does_not_grant_wallet_control_and_revocation_clears_snapshot() {
         )
         .is_err()
     );
-    let subscription = WalletQuery {
-        owner: owner(1),
-        before: None,
-        limit: 10,
-    };
-    assert_eq!(snapshot(&world, account, &subscription).entries.len(), 1);
-    let denied = snapshot(&world, other, &subscription);
-    assert!(denied.error.is_some());
-    assert!(denied.entries.is_empty());
-    assert!(denied.balances.is_empty());
+    let history = crate::rpc::wallet_history(&world, account, owner(1), None, 10).unwrap();
+    assert_eq!(history.items.len(), 1);
+    assert!(crate::rpc::wallet_history(&world, other, owner(1), None, 10).is_err());
+    assert!(crate::rpc::wallet_balance(&world, other, owner(1)).is_err());
 }
 
 #[test]

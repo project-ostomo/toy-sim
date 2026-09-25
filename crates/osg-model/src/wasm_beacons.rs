@@ -15,10 +15,6 @@ pub fn reply_fits(reply: &ProgramReply, capacity: wasm_world::ReplyCapacity) -> 
             beacons.iter().map(beacon_arena_bytes).sum(),
         ),
         ProgramReply::Orrery(bodies) => (bodies.len(), 0, 0),
-        ProgramReply::Route {
-            status: routing::Status::Ready { plan },
-            ..
-        } => (plan.itinerary.len(), plan.fuel_budget.resources.len(), 0),
         ProgramReply::Travel {
             state, location, ..
         } => (

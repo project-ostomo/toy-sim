@@ -6,6 +6,10 @@ use crate::sim::{
 };
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
+use std::collections::BTreeSet;
+
+#[cfg(test)]
+mod directory_tests;
 use osg_model::{
     AccountId, Id, assets::*, diplomacy::Diplomacy, economy::*, industry::*, market::*,
     ownership::*, rpc::*,
@@ -61,7 +65,7 @@ fn identities(directory: &OwnershipDirectory) -> impl Iterator<Item = IdentityRe
         )
 }
 
-pub(super) fn my_affiliation(world: &World, account: AccountId) -> Result<PlayerAffiliation> {
+pub fn my_affiliation(world: &World, account: AccountId) -> Result<PlayerAffiliation> {
     world
         .resource::<Directory>()
         .0
@@ -71,7 +75,7 @@ pub(super) fn my_affiliation(world: &World, account: AccountId) -> Result<Player
         .context("Account unavailable")
 }
 
-pub(super) fn declaration_history(
+pub fn declaration_history(
     world: &World,
     _: AccountId,
     source: Principal,
@@ -99,22 +103,96 @@ pub(super) fn declaration_history(
     )
 }
 
-pub(super) fn list_identities(
+pub fn list_blocs(
+    world: &World,
+    _: AccountId,
+) -> Result<Vec<osg_model::diplomacy::PoliticalBloc>> {
+    Ok(world
+        .resource::<Directory>()
+        .0
+        .diplomacy
+        .blocs
+        .values()
+        .cloned()
+        .collect())
+}
+
+pub fn list_polities(world: &World, _: AccountId) -> Result<Vec<Sovereignty>> {
+    Ok(world
+        .resource::<Directory>()
+        .0
+        .sovereignties
+        .values()
+        .cloned()
+        .collect())
+}
+
+pub fn list_organizations(
+    world: &World,
+    _: AccountId,
+    polity: Id,
+) -> Result<Vec<Organization>> {
+    let directory = &world.resource::<Directory>().0;
+    ensure!(
+        directory.sovereignties.contains_key(&polity),
+        "Polity unavailable"
+    );
+    Ok(directory
+        .organizations
+        .values()
+        .filter(|org| org.sovereignty == polity)
+        .cloned()
+        .collect())
+}
+
+/// `None` selects players without an organization.
+pub fn list_players(
+    world: &World,
+    _: AccountId,
+    organization: Option<Id>,
+) -> Result<Vec<PlayerAffiliation>> {
+    let directory = &world.resource::<Directory>().0;
+    ensure!(
+        organization.is_none_or(|id| directory.organizations.contains_key(&id)),
+        "Organization unavailable"
+    );
+    Ok(directory
+        .players
+        .values()
+        .filter(|player| player.organization == organization)
+        .cloned()
+        .collect())
+}
+
+pub fn search_identities(
     world: &World,
     _: AccountId,
     search: String,
-    after: Option<Principal>,
-    limit: u16,
-) -> Result<Page<IdentityRecord, Principal>> {
+) -> Result<IdentitySearch> {
     ensure!(search.len() <= 512, "search is too long");
-    let search = search.to_lowercase();
-    let entries = identities(&world.resource::<Directory>().0)
-        .filter(|entry| after.is_none_or(|after| entry.principal() > after))
-        .filter(|entry| entry.name().to_lowercase().contains(&search));
-    page(entries, limit, IdentityRecord::principal)
+    let search = search.trim().to_lowercase();
+    if search.is_empty() {
+        return Ok(IdentitySearch::default());
+    }
+    let directory = &world.resource::<Directory>().0;
+    let matches: Vec<_> = identities(directory)
+        .filter(|entry| entry.name().to_lowercase().contains(&search))
+        .map(|entry| entry.principal())
+        .collect();
+    let ancestry: BTreeSet<_> = matches
+        .iter()
+        .flat_map(|principal| directory.lineage(*principal))
+        .collect();
+    let identities = identities(directory)
+        .filter(|entry| ancestry.contains(&entry.principal()))
+        .collect();
+    Ok(IdentitySearch {
+        matches,
+        identities,
+    })
 }
 
-pub(super) fn resolve_identities(
+pub fn resolve_identities(
     world: &World,
     _: AccountId,
     principals: Vec<Principal>,
@@ -143,53 +221,28 @@ pub(super) fn resolve_identities(
         .collect())
 }
 
-pub(super) fn asset_access(
+pub fn asset_access(
     world: &World,
     account: AccountId,
     asset: Id,
 ) -> Result<AssetAccessDetails> {
-    let snapshot = ownership::snapshot(world, account);
-    let asset = snapshot
-        .assets
-        .into_iter()
-        .find(|entry| entry.entity == asset)
-        .context("Asset access unavailable")?;
-    let binding = snapshot
-        .directory
-        .access_bindings
-        .get(&asset.entity)
-        .cloned();
-    let profile = binding
-        .as_ref()
-        .and_then(|binding| snapshot.directory.access_profiles.get(&binding.profile))
-        .cloned();
-    Ok(AssetAccessDetails {
-        asset,
-        binding,
-        profile,
-    })
+    ownership::asset_access(world, account, asset)
 }
 
-pub(super) fn list_access_profiles(
+pub fn list_access_profiles(
     world: &World,
     account: AccountId,
-    after: Option<Id>,
-    limit: u16,
-) -> Result<Page<AccessProfile, Id>> {
+) -> Result<Vec<AccessProfile>> {
     let directory = &world.resource::<Directory>().0;
-    page(
-        directory
-            .access_profiles
-            .values()
-            .filter(|profile| directory.administers(account, profile.owner))
-            .filter(|profile| after.is_none_or(|after| profile.id > after))
-            .cloned(),
-        limit,
-        |profile| profile.id,
-    )
+    Ok(directory
+        .access_profiles
+        .values()
+        .filter(|profile| directory.administers(account, profile.owner))
+        .cloned()
+        .collect())
 }
 
-pub(super) fn diplomacy(
+pub fn diplomacy(
     world: &World,
     account: AccountId,
     principal: Principal,
@@ -211,7 +264,7 @@ pub(super) fn diplomacy(
     Ok(result)
 }
 
-pub(super) fn standings(
+pub fn standings(
     world: &World,
     account: AccountId,
 ) -> Result<std::collections::BTreeMap<(Principal, Principal), Standing>> {
@@ -225,7 +278,7 @@ pub(super) fn standings(
         .collect())
 }
 
-pub(super) fn resolve_standing(
+pub fn resolve_standing(
     world: &World,
     account: AccountId,
     target: Principal,
@@ -240,7 +293,7 @@ pub(super) fn resolve_standing(
     })
 }
 
-pub(super) fn list_assets(
+pub fn list_assets(
     world: &World,
     account: AccountId,
     search: String,
@@ -248,23 +301,21 @@ pub(super) fn list_assets(
     after: Option<Id>,
     limit: u16,
 ) -> Result<Page<AssetSummary, Id>> {
-    let query = AssetsQuery {
-        search,
-        owner,
-        after,
+    ensure!(search.len() <= 512, "Search is too long");
+    let entries = sim::assets::list(world, account, &search, owner);
+    let total = entries.len() as u64;
+    let mut result = page(
+        entries
+            .into_iter()
+            .filter(|entry| after.is_none_or(|after| entry.id > after)),
         limit,
-        ..Default::default()
-    };
-    ensure!(query.valid(), "Invalid asset query");
-    let snapshot = sim::assets::snapshot(world, account, &query);
-    Ok(Page {
-        items: snapshot.assets,
-        next: snapshot.next,
-        total: Some(snapshot.total_assets),
-    })
+        |entry| entry.id,
+    )?;
+    result.total = Some(total);
+    Ok(result)
 }
 
-pub(super) fn goods_totals(
+pub fn goods_totals(
     world: &World,
     account: AccountId,
     search: String,
@@ -272,23 +323,24 @@ pub(super) fn goods_totals(
     after: Option<CargoItem>,
     limit: u16,
 ) -> Result<Page<GoodsSummary, CargoItem>> {
-    let query = AssetsQuery {
-        search,
-        owner,
-        goods_after: after,
+    ensure!(search.len() <= 512, "Search is too long");
+    if let Some(item) = &after {
+        validate_item(item)?;
+    }
+    let entries = sim::assets::goods_totals(world, account, &search, owner);
+    let total = entries.len() as u64;
+    let mut result = page(
+        entries
+            .into_iter()
+            .filter(|entry| after.as_ref().is_none_or(|after| entry.item > *after)),
         limit,
-        ..Default::default()
-    };
-    ensure!(query.valid(), "Invalid goods query");
-    let snapshot = sim::assets::snapshot(world, account, &query);
-    Ok(Page {
-        items: snapshot.goods,
-        next: snapshot.goods_next,
-        total: Some(snapshot.total_goods),
-    })
+        |entry| entry.item.clone(),
+    )?;
+    result.total = Some(total);
+    Ok(result)
 }
 
-pub(super) fn stock_locations(
+pub fn stock_locations(
     world: &World,
     account: AccountId,
     item: CargoItem,
@@ -296,20 +348,21 @@ pub(super) fn stock_locations(
     after: Option<StockKey>,
     limit: u16,
 ) -> Result<Page<StockLocation, StockKey>> {
-    let query = AssetsQuery {
-        item: Some(item),
-        owner,
-        sources_after: after,
+    validate_item(&item)?;
+    let entries = sim::assets::stock_locations(world, account, &item, owner);
+    page(
+        entries
+            .into_iter()
+            .filter(|entry| after.as_ref().is_none_or(|after| entry.key > *after)),
         limit,
-        ..Default::default()
-    };
-    ensure!(query.valid(), "Invalid stock query");
-    let snapshot = sim::assets::snapshot(world, account, &query);
-    Ok(Page {
-        items: snapshot.sources,
-        next: snapshot.sources_next,
-        total: None,
-    })
+        |entry| entry.key.clone(),
+    )
+}
+
+fn validate_item(item: &CargoItem) -> Result<()> {
+    let (CargoItem::Resource(id) | CargoItem::Part(id)) = item;
+    ensure!(!id.is_empty() && id.len() <= 128, "Invalid item");
+    Ok(())
 }
 
 fn balance(world: &World, owner: Principal) -> WalletBalance {
@@ -332,26 +385,16 @@ fn balance(world: &World, owner: Principal) -> WalletBalance {
     }
 }
 
-pub(super) fn list_wallets(
-    world: &World,
-    account: AccountId,
-    after: Option<Principal>,
-    limit: u16,
-) -> Result<Page<WalletBalance, Principal>> {
+pub fn list_wallets(world: &World, account: AccountId) -> Result<Vec<WalletBalance>> {
     let directory = &world.resource::<Directory>().0;
-    page(
-        identities(directory)
-            .map(|entry| entry.principal())
-            .filter(|owner| {
-                after.is_none_or(|after| *owner > after) && directory.administers(account, *owner)
-            })
-            .map(|owner| balance(world, owner)),
-        limit,
-        |balance| balance.owner,
-    )
+    Ok(identities(directory)
+        .map(|entry| entry.principal())
+        .filter(|owner| directory.administers(account, *owner))
+        .map(|owner| balance(world, owner))
+        .collect())
 }
 
-pub(super) fn wallet_balance(
+pub fn wallet_balance(
     world: &World,
     account: AccountId,
     owner: Principal,
@@ -371,7 +414,7 @@ pub(super) fn wallet_balance(
     })
 }
 
-pub(super) fn wallet_history(
+pub fn wallet_history(
     world: &World,
     account: AccountId,
     owner: Principal,
@@ -394,24 +437,13 @@ pub(super) fn wallet_history(
     )
 }
 
-pub(super) fn gas_balances(
-    world: &World,
-    account: AccountId,
-    after: Option<Principal>,
-    limit: u16,
-) -> Result<Page<GasAccountSnapshot, Principal>> {
+pub fn gas_balances(world: &World, account: AccountId) -> Result<Vec<GasAccountSnapshot>> {
     let mut balances = ownership::gas_accounts(world, account);
     balances.sort_by_key(|balance| balance.owner);
-    page(
-        balances
-            .into_iter()
-            .filter(|balance| after.is_none_or(|after| balance.owner > after)),
-        limit,
-        |balance| balance.owner,
-    )
+    Ok(balances)
 }
 
-pub(super) fn order_book(
+pub fn order_book(
     world: &World,
     _: AccountId,
     instrument: Instrument,
@@ -454,7 +486,7 @@ pub(super) fn order_book(
     })
 }
 
-pub(super) fn list_orders(
+pub fn list_orders(
     world: &World,
     account: AccountId,
     owner: Principal,
@@ -483,7 +515,7 @@ pub(super) fn list_orders(
     page(orders, limit, |order| order.id)
 }
 
-pub(super) fn trade_history(
+pub fn trade_history(
     world: &World,
     _: AccountId,
     instrument: Instrument,
@@ -508,7 +540,7 @@ pub(super) fn trade_history(
     )
 }
 
-pub(super) fn list_market_stations(
+pub fn list_market_stations(
     world: &World,
     account: AccountId,
     after: Option<Id>,
@@ -534,7 +566,7 @@ pub(super) fn list_market_stations(
     page(stations, limit, |station| station.id)
 }
 
-pub(super) fn compare_commodity_offers(
+pub fn compare_commodity_offers(
     world: &World,
     account: AccountId,
     item: CargoItem,
@@ -626,101 +658,25 @@ pub(super) fn compare_commodity_offers(
     })
 }
 
-pub(super) fn storage_stock(
+pub fn storage_stock(
     world: &World,
     account: AccountId,
     owner: Principal,
     station: Id,
-    after: Option<CargoItem>,
-    limit: u16,
-) -> Result<Page<StoredStock, CargoItem>> {
+) -> Result<Vec<StoredStock>> {
     administers(world, account, owner)?;
     let economy = world.resource::<Economy>();
-    page(
-        economy
-            .storage
-            .get(&(station, owner))
-            .into_iter()
-            .flat_map(|stock| stock.iter())
-            .filter(|(item, _)| after.as_ref().is_none_or(|after| *item > after))
-            .map(|(item, quantity)| StoredStock {
-                item: item.clone(),
-                quantity: *quantity,
-                reserved: economy.stock_reserved(owner, station, item),
-            }),
-        limit,
-        |stock| stock.item.clone(),
-    )
-}
-
-pub(super) fn list_facilities(
-    world: &World,
-    account: AccountId,
-    after: Option<Id>,
-    limit: u16,
-) -> Result<Page<FacilitySummary, Id>> {
-    ensure!((1..=128).contains(&limit), "invalid page size");
-    let snapshot = sim::industry::snapshot(
-        world,
-        account,
-        &IndustryQuery {
-            directory: true,
-            directory_after: after,
-            ..Default::default()
-        },
-    );
-    let next = snapshot.directory_next;
-    let mut result = page(snapshot.directory, limit, |entry| entry.entity)?;
-    if result.next.is_none() {
-        result.next = next;
-    }
-    Ok(result)
-}
-
-pub(super) fn facility(world: &World, account: AccountId, facility: Id) -> Result<FacilityView> {
-    sim::industry::snapshot(
-        world,
-        account,
-        &IndustryQuery {
-            inventories: vec![facility],
-            ..Default::default()
-        },
-    )
-    .facilities
-    .into_iter()
-    .next()
-    .context("Facility access unavailable")
-}
-
-pub(super) fn hangar(
-    world: &World,
-    account: AccountId,
-    ship: Id,
-    after: Option<Id>,
-) -> Result<HangarView> {
-    sim::industry::snapshot(
-        world,
-        account,
-        &IndustryQuery {
-            hangar: Some(HangarQuery { ship, after }),
-            ..Default::default()
-        },
-    )
-    .hangar
-    .context("Hangar access unavailable")
-}
-
-pub(super) fn industry_catalogue(world: &World, account: AccountId) -> Result<IndustryCatalogue> {
-    sim::industry::snapshot(
-        world,
-        account,
-        &IndustryQuery {
-            catalogue: true,
-            ..Default::default()
-        },
-    )
-    .catalogue
-    .context("Industry catalogue unavailable")
+    Ok(economy
+        .storage
+        .get(&(station, owner))
+        .into_iter()
+        .flat_map(|stock| stock.iter())
+        .map(|(item, quantity)| StoredStock {
+            item: item.clone(),
+            quantity: *quantity,
+            reserved: economy.stock_reserved(owner, station, item),
+        })
+        .collect())
 }
 
 #[cfg(test)]

@@ -5,12 +5,10 @@ mod service;
 pub use service::*;
 
 pub const MAX_DIRECTORY_ENTRIES: usize = 128;
-pub const MAX_SUBSCRIBED_INVENTORIES: usize = 8;
 pub const MAX_CARGO_STACKS: usize = 1024;
 pub const MAX_FACILITY_JOBS: usize = 128;
 pub const MAX_CATALOGUE_RECIPES: usize = 1024;
 pub const MAX_CATALOGUE_BLUEPRINTS: usize = 32;
-pub const MAX_SNAPSHOT_BYTES: usize = 512 * 1024;
 pub const MAX_RECIPE_BATCHES: u32 = 10_000;
 pub const MAX_BLUEPRINT_UPLOAD_ERROR_BYTES: usize = 256;
 pub const MAX_BLUEPRINT_UPLOAD_ACK_BYTES: usize = 512;
@@ -165,22 +163,6 @@ pub enum IndustryCommand {
     },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IndustryQuery {
-    pub revision: u64,
-    pub directory: bool,
-    pub directory_after: Option<Id>,
-    pub hangar: Option<HangarQuery>,
-    pub inventories: Vec<EntityId>,
-    pub catalogue: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HangarQuery {
-    pub ship: Id,
-    pub after: Option<Id>,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HangarView {
     pub berths_used: Option<u32>,
@@ -234,16 +216,4 @@ pub struct IndustryCatalogue {
     pub revision: [u8; 32],
     pub recipes: Vec<Recipe>,
     pub blueprints: Vec<BlueprintView>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct IndustrySnapshot {
-    pub subscription_revision: u64,
-    pub error: Option<String>,
-    pub omitted_inventories: Vec<EntityId>,
-    pub directory: Vec<FacilitySummary>,
-    pub directory_next: Option<Id>,
-    pub hangar: Option<HangarView>,
-    pub facilities: Vec<FacilityView>,
-    pub catalogue: Option<IndustryCatalogue>,
 }

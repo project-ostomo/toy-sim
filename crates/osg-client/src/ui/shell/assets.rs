@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 mod browser;
 
 #[derive(Default, Resource)]
-pub(super) struct State {
+pub struct State {
     browser: browser::State,
     search: String,
     selected: BTreeSet<Id>,
@@ -18,16 +18,16 @@ pub(super) struct State {
 }
 
 impl State {
-    pub fn query(&mut self, open: bool) -> Option<osg_model::assets::AssetsQuery> {
+    pub fn query(&mut self, open: bool) -> Option<AssetsQuery> {
         self.browser.query(open)
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    snapshot: Option<&osg_model::assets::AssetsSnapshot>,
+    snapshot: &AssetsView,
     intents: &mut Vec<Intent>,
 ) {
     ui.painter()
@@ -45,12 +45,10 @@ pub(super) fn draw(
         "Assets",
         "Ships, installations and goods across authorized inventories",
         |ui| {
-            if let Some(snapshot) = snapshot {
-                ui.label(format!(
-                    "{} assets · {} kinds of goods",
-                    snapshot.total_assets, snapshot.total_goods
-                ));
-            }
+            ui.label(format!(
+                "{} assets · {} kinds of goods",
+                snapshot.total_assets, snapshot.total_goods
+            ));
         },
     );
     browser::draw(ui, state, model, snapshot, intents);

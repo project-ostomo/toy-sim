@@ -116,6 +116,8 @@ pub const REQUEST_STOP_FIRING: u64 = 8;
 pub const REQUEST_UNMARK_TARGET: u64 = 9;
 pub const REQUEST_START_FIRING: u64 = 10;
 pub const REQUEST_SET_GUIDANCE: u64 = 12;
+pub const REQUEST_COMPUTER_MESSAGE: u64 = 13;
+pub const MAX_COMPUTER_MESSAGE_BYTES: usize = 256;
 pub const INSTRUMENT_WEAPONS: u64 = 3;
 pub const CONTACT_PROJECTILE: u64 = 3;
 pub const WEAPONS_HOLD: u64 = 0;
@@ -200,6 +202,25 @@ impl<const N: usize> Text<N> {
 
 pub type Text64 = Text<64>;
 pub type Text256 = Text<256>;
+/// Opaque display-to-flight message. Its payload belongs to the installed firmware.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ComputerMessage {
+    pub len: u64,
+    pub bytes: [u8; MAX_COMPUTER_MESSAGE_BYTES],
+}
+
+impl Default for ComputerMessage {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            bytes: [0; MAX_COMPUTER_MESSAGE_BYTES],
+        }
+    }
+}
+
+impl private::Sealed for ComputerMessage {}
+impl Record for ComputerMessage {}
 impl private::Sealed for Text64 {}
 
 impl Record for Text64 {}
@@ -1181,6 +1202,7 @@ const _: () = assert!(core::mem::offset_of!(ScreenEvent, text) == 56);
 pub const IMPORTS: &[&str] = &[
     "chat_send",
     "serial_write",
+    "computer_send",
     "chat_read",
     "persistent_read",
     "persistent_write",
@@ -1192,12 +1214,11 @@ pub const IMPORTS: &[&str] = &[
     "slip_eligibility_batch",
     "travel_read",
     "destination_resolve",
-    "route_request",
-    "route_poll",
-    "travel_use_route",
     "travel_fail",
     "travel_publish_status",
     "travel_complete",
+    "travel_set_autopilot",
+    "travel_clear_itinerary",
     "travel_slip",
     "travel_reserve_bay",
     "travel_dock",
@@ -1280,6 +1301,7 @@ pub mod raw {
         pub fn contact_iff(contact: u64, out: *mut super::ContactIff, bytes: u32) -> i32;
         pub fn contact_label(contact: u64, out: *mut u8, bytes: u32) -> i32;
         pub fn request_info(index: u32, out: *mut u8, bytes: u32) -> i32;
+        pub fn computer_send(bytes: *const u8, length: u32) -> i32;
         pub fn request_read(index: u32, expected_kind: u64, out: *mut u8, bytes: u32) -> i32;
         pub fn request_reply(
             request: u64,

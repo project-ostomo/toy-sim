@@ -3,6 +3,8 @@ use bevy_egui::egui;
 use osg_model::drawing::ScreenImage;
 use osg_ship_api::abi::{ScreenDefinition, ScreenEvent, Text64};
 
+pub const BEZEL_EVENT: u8 = osg_ship_api::abi::EVENT_BEZEL as u8;
+
 pub fn show_remote(
     ui: &mut egui::Ui,
     definition: &osg_model::presentation::ScreenDefinition,

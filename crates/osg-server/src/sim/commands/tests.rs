@@ -351,9 +351,6 @@ fn manual_disengagement_preserves_itinerary_and_invalidates_pending_completion()
     let itinerary = vec![travel::ItineraryEntry {
         directive: travel::Directive::SlipToSystem(Id::new()),
         label: "Next system".into(),
-        max_loss_ppm: 50.,
-        fuel_allowance_kg: 10.,
-        estimated_duration_ticks: None,
     }];
     {
         let mut state = world.get_mut::<Travel>(ship).unwrap();
@@ -403,9 +400,6 @@ fn docked_ship_can_engage_an_itinerary() {
         .push(travel::ItineraryEntry {
             directive: travel::Directive::SlipToSystem(Id::new()),
             label: "Departure".into(),
-            max_loss_ppm: 100.,
-            fuel_allowance_kg: 1.,
-            estimated_duration_ticks: None,
         });
     let revision = world.get::<Control>(ship).unwrap().revision;
 

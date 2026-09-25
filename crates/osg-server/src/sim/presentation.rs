@@ -144,6 +144,7 @@ pub fn ship(world: &World, entity: Entity, include_instruments: bool) -> Option<
         }
     });
     Some(ShipPresentation {
+        navigation_access: super::services::navigation_access(world, entity),
         serial: software.controller.state.serial.screen.clone(),
         memory_limit_bytes: osg_ship_wasm::MEMORY_LIMIT as u64,
         cargo: cargo.cargo_stacks(catalogue).expect("valid ship cargo"),

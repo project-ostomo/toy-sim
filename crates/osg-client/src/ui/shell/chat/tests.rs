@@ -15,16 +15,16 @@ fn message(sequence: u64, text: String) -> ChatMessage {
 }
 
 struct Fixture {
-    society: ownership::SocietySnapshot,
+    society: SocietyData,
     navigation: NavigationCatalogue,
     ship: ShipTelemetry,
-    industry: industry_model::IndustrySnapshot,
+    industry: IndustryView,
 }
 
 impl Fixture {
     fn new() -> Self {
         Self {
-            society: ownership::SocietySnapshot {
+            society: SocietyData {
                 account: Id([1; 16]),
                 ..Default::default()
             },
@@ -41,7 +41,7 @@ impl Fixture {
             declaration_history_next: None,
             declaration_history_key: None,
             industry: &self.industry,
-            industry_ready: true,
+
             society: &self.society,
             navigation: &self.navigation,
             inhabited: Default::default(),
@@ -55,7 +55,7 @@ impl Fixture {
             connected: true,
             status: "",
             time_ns: 0,
-            calendar_unix_ms: None,
+            calendar_unix_ms: 0,
             diagnostics: Default::default(),
             orbits: false,
         }
@@ -177,7 +177,7 @@ fn long_unicode_scrollback_virtualizes_and_keeps_reader_position_during_new_mess
 
 #[test]
 fn sender_color_and_organization_follow_only_advertised_identity() {
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account: Id([1; 16]),
         ..Default::default()
     };

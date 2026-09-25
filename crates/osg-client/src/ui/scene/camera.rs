@@ -11,10 +11,10 @@ use bevy::{
 use osg_model::{GalacticPosition, Id};
 use osg_ui::egui;
 
-pub(in crate::ui) const LOOK_AT_RANGE_M: f64 = 100_000.0;
+pub const LOOK_AT_RANGE_M: f64 = 100_000.0;
 
 #[derive(Component, Default)]
-pub(in crate::ui) struct CameraOptions {
+pub struct CameraOptions {
     pub focus: Option<SelectedTarget>,
 }
 
@@ -25,17 +25,17 @@ pub(in crate::ui) struct CameraOptions {
     sky::ViewSky,
     exposure::ExposureSettings
 )]
-pub(in crate::ui) struct ViewCamera {
+pub struct ViewCamera {
     pub view: u64,
     pub origin: GalacticPosition,
     pub layer: usize,
-    pub(super) yaw: f32,
-    pub(super) pitch: f32,
-    pub(super) distance: f32,
-    pub(super) radius: f32,
-    pub(super) private: bool,
-    pub(super) followed: Option<Id>,
-    pub(super) aligned_to_sun: bool,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub distance: f32,
+    pub radius: f32,
+    pub private: bool,
+    pub followed: Option<Id>,
+    pub aligned_to_sun: bool,
     smoothed_angles: Option<Vec2>,
 }
 
@@ -49,7 +49,7 @@ impl ViewCamera {
     }
 }
 
-pub(super) fn regression_camera(layer: usize) -> ViewCamera {
+pub fn regression_camera(layer: usize) -> ViewCamera {
     ViewCamera {
         view: layer as u64,
         origin: GalacticPosition::default(),
@@ -72,7 +72,7 @@ fn smooth_angles(current: &mut Option<Vec2>, target: Vec2, dt: f32) -> Vec2 {
     *current
 }
 
-pub(super) fn setup_views(
+pub fn setup_views(
     mut commands: Commands,
     views: Query<(Entity, &ViewObservation, Option<&ViewSystems>), Without<ViewCamera>>,
     bodies: Query<(&Celestial, &DisplayPose, &CelestialSystem)>,
@@ -101,6 +101,8 @@ pub(super) fn setup_views(
             Hdr,
             // Space is black; stars are sprites drawn over the clear colour.
             Camera {
+                // The next Update assigns the viewport and pose before rendering.
+                is_active: false,
                 clear_color: ClearColorConfig::Custom(Color::BLACK),
                 ..default()
             },
@@ -130,7 +132,7 @@ pub(super) fn setup_views(
     }
 }
 
-pub(super) fn update_views(
+pub fn update_views(
     mut commands: Commands,
     mut cameras: Query<(
         Entity,
@@ -165,6 +167,7 @@ pub(super) fn update_views(
             continue;
         };
         let view = &observation.0;
+        camera.is_active = true;
         let mut origin = view
             .focused_ship
             .and_then(|id| {
@@ -278,9 +281,9 @@ pub(super) fn update_views(
 }
 
 #[derive(Resource, Default)]
-pub(super) struct CameraDrag(bool);
+pub struct CameraDrag(bool);
 
-pub(super) fn track_camera_drag(
+pub fn track_camera_drag(
     buttons: Res<ButtonInput<MouseButton>>,
     capture: Res<crate::ui::input::InputCapture>,
     mut drag: ResMut<CameraDrag>,
@@ -292,7 +295,7 @@ pub(super) fn track_camera_drag(
     }
 }
 
-pub(super) fn camera_controls(
+pub fn camera_controls(
     buttons: Res<ButtonInput<MouseButton>>,
     motion: Res<AccumulatedMouseMotion>,
     scroll: Res<AccumulatedMouseScroll>,
@@ -329,7 +332,7 @@ pub(super) fn camera_controls(
     }
 }
 
-pub(super) fn reset_focus(
+pub fn reset_focus(
     mut contexts: osg_ui::bevy_egui::EguiContexts,
     selection: Res<Selection>,
     mut cameras: Query<(&ViewCamera, &mut CameraOptions)>,
@@ -347,7 +350,7 @@ pub(super) fn reset_focus(
     Ok(())
 }
 
-pub(super) fn animate_camera(
+pub fn animate_camera(
     mut cameras: Query<(&mut ViewCamera, &mut Transform)>,
     time: Res<Time<Real>>,
 ) {
@@ -367,7 +370,7 @@ pub(super) fn animate_camera(
     }
 }
 
-pub(super) fn align_on_double_click(
+pub fn align_on_double_click(
     mut contexts: osg_ui::bevy_egui::EguiContexts,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,

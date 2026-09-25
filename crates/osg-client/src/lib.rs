@@ -1,5 +1,6 @@
 mod commands;
 mod headless;
+pub mod routing;
 pub use commands::Outgoing;
 pub use headless::HeadlessClient;
 #[cfg(any(feature = "ui", test))]

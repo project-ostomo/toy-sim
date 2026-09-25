@@ -1,11 +1,11 @@
 use super::*;
 use economy::{format_amount, parse_amount};
-use osg_model::market::{Instrument, MarketCommand, MarketQuery, MarketSnapshot, Side};
+use osg_model::market::{Instrument, MarketCommand, Side};
 use osg_ui::components;
 use ownership::Principal;
 
 #[derive(Default, Resource)]
-pub(super) struct State {
+pub struct State {
     instrument: Instrument,
     stations_after: Option<Id>,
     offers_after: Option<(Id, economy::Currency)>,
@@ -17,7 +17,7 @@ pub(super) struct State {
     price: String,
     immediate: bool,
     interval_ms: i64,
-    pub(super) orders: bool,
+    pub orders: bool,
     search: String,
     history: bool,
     bids: bool,
@@ -25,6 +25,13 @@ pub(super) struct State {
 }
 
 impl State {
+    pub fn new(account: AccountId) -> Self {
+        Self {
+            owner: Some(Principal::Player(account)),
+            ..Default::default()
+        }
+    }
+
     pub fn open_storage(&mut self, owner: Principal, station: Id, item: industry_model::CargoItem) {
         self.owner = Some(owner);
         self.instrument = Instrument::Commodity {
@@ -73,14 +80,15 @@ fn instrument_picker(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    snapshot: Option<&MarketSnapshot>,
+    snapshot: &MarketView,
 ) {
-    let stations = snapshot.map_or(&[][..], |snapshot| snapshot.stations.as_slice());
+    let stations = snapshot.stations.as_slice();
     let previous = state.instrument.clone();
     let items: std::collections::BTreeSet<_> = model
         .industry
         .catalogue
-        .iter()
+        .as_ref()
+        .into_iter()
         .flat_map(|catalogue| &catalogue.recipes)
         .flat_map(|recipe| recipe.inputs.iter().chain(&recipe.outputs))
         .map(|stack| stack.item.clone())
@@ -166,7 +174,7 @@ fn storage(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    market: &MarketSnapshot,
+    market: &MarketView,
     owner: Principal,
     intents: &mut Vec<Intent>,
 ) {
@@ -216,11 +224,11 @@ fn storage(
     ui.weak("Your ship must be docked here. Trades deliver into the buyer’s station storage.");
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    snapshot: Option<&MarketSnapshot>,
+    snapshot: &MarketView,
     intents: &mut Vec<Intent>,
 ) {
     ui.painter()
@@ -262,7 +270,7 @@ fn market_body(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    snapshot: Option<&MarketSnapshot>,
+    snapshot: &MarketView,
     intents: &mut Vec<Intent>,
 ) {
     let directory = &model.society.directory;
@@ -312,24 +320,10 @@ fn market_body(
                 }
             }
         });
-    if let Some(error) = snapshot.and_then(|market| market.error.as_ref()) {
-        ui.colored_label(THREAT, error);
+    if snapshot.owner != Some(owner) || snapshot.instrument != state.instrument {
         return;
     }
-    let Some(market) = snapshot
-        .filter(|market| market.owner == Some(owner) && market.instrument == state.instrument)
-    else {
-        components::empty_state(
-            ui,
-            "Loading market",
-            "Waiting for order book and account balances.",
-        );
-        return;
-    };
-    if let Some(error) = &market.error {
-        ui.colored_label(THREAT, error);
-        return;
-    }
+    let market = snapshot;
     let price = market
         .last_price
         .map_or_else(|| "No trades yet".into(), format_amount);
@@ -401,7 +395,7 @@ fn market_body(
     });
 }
 
-fn chart(ui: &mut egui::Ui, state: &mut State, market: &MarketSnapshot) {
+fn chart(ui: &mut egui::Ui, state: &mut State, market: &MarketView) {
     if state.interval_ms == 0 {
         state.interval_ms = 60_000;
     }
@@ -438,7 +432,7 @@ fn chart(ui: &mut egui::Ui, state: &mut State, market: &MarketSnapshot) {
     );
 }
 
-fn depth(ui: &mut egui::Ui, market: &MarketSnapshot) {
+fn depth(ui: &mut egui::Ui, market: &MarketView) {
     ui.weak("ORDER BOOK");
     let width = ui.available_width();
     let max = market
@@ -536,7 +530,7 @@ fn ticket(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    market: &MarketSnapshot,
+    market: &MarketView,
     owner: Principal,
     intents: &mut Vec<Intent>,
 ) {
@@ -601,7 +595,7 @@ fn ticket(
     });
 }
 
-fn commodity_offers(ui: &mut egui::Ui, state: &mut State, market: &MarketSnapshot) {
+fn commodity_offers(ui: &mut egui::Ui, state: &mut State, market: &MarketView) {
     ui.horizontal(|ui| {
         if ui
             .selectable_label(!state.history && !state.bids, "Offers")
@@ -732,7 +726,7 @@ fn open_orders(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
-    market: &MarketSnapshot,
+    market: &MarketView,
     intents: &mut Vec<Intent>,
 ) {
     ui.horizontal(|ui| {
@@ -846,7 +840,7 @@ fn open_orders(
     });
 }
 
-fn recent_trades(ui: &mut egui::Ui, state: &mut State, market: &MarketSnapshot) {
+fn recent_trades(ui: &mut egui::Ui, state: &mut State, market: &MarketView) {
     ui.colored_label(ACCENT, "Recent trades");
     let widths = [0.50, 0.25, 0.25].map(|f| (ui.available_width() - 16.) * f);
     components::table_row(

@@ -1,4 +1,4 @@
-//! Weighted time and propellant guidance with coasting, lateral correction,
+//! Fuel-constrained intercept guidance with coasting, lateral correction,
 //! and a braking envelope that includes attitude response.
 use crate::hardware::Sample;
 use crate::{Bindings, attitude};
@@ -23,7 +23,6 @@ impl Phase {
 #[derive(Clone, Debug)]
 pub struct Pursuit {
     pub target: Option<Contact>,
-    pub preferences: osg_model::transfer::TransferCost,
     pub visible: bool,
     pub phase: Phase,
     pub reason: String,
@@ -48,12 +47,12 @@ pub struct Pursuit {
     pub pointing_error: f64,
     braking: bool,
     pub direction: DVec3,
+    intercept: crate::rendezvous::Search,
 }
 impl Default for Pursuit {
     fn default() -> Self {
         Self {
             target: None,
-            preferences: Default::default(),
             visible: false,
             phase: Phase::Ready,
             reason: String::new(),
@@ -76,6 +75,7 @@ impl Default for Pursuit {
             pointing_error: 0.,
             braking: false,
             direction: DVec3::ZERO,
+            intercept: Default::default(),
         }
     }
 }
@@ -86,7 +86,8 @@ pub fn arrival_speed(distance: f64, acceleration: f64, turn_time: f64) -> f64 {
     ((delayed * delayed + 2. * braking * distance.max(0.)).sqrt() - delayed).max(0.)
 }
 
-pub fn economical_rendezvous(
+#[cfg(test)]
+fn economical_rendezvous(
     error: DVec3,
     velocity: DVec3,
     disturbance: DVec3,
@@ -156,6 +157,10 @@ fn burn_guidance(
 }
 
 impl Pursuit {
+    pub fn intercept_estimate(&self) -> Option<(f64, f64)> {
+        self.intercept.estimate()
+    }
+
     pub fn select(&mut self, id: u64, contacts: &[Contact], obs: &Sample) -> Result<(), String> {
         if self.phase.active() {
             return Err("Abort before changing target".into());
@@ -197,6 +202,7 @@ impl Pursuit {
         self.effectiveness = 1.;
         self.braking = false;
         self.phase = Phase::Pursuing;
+        self.intercept = Default::default();
         self.reason.clear();
         Ok(())
     }
@@ -333,18 +339,56 @@ impl Pursuit {
         } else {
             0.
         };
-        let (command, speed) = burn_guidance(
+        let flow = b.propellant_rate * self.throttle_ceiling;
+        let exhaust = a * obs.mass_kg / flow.max(1e-12);
+        let delta_v = exhaust * (obs.mass_kg / (obs.mass_kg - obs.propellant_kg).max(1.)).ln();
+        // Reserve velocity matching before allowing further acceleration.
+        let fuel_speed = ((delta_v * 0.98 - self.u.length()).max(0.) * 0.5
+            + self.u.dot(error.normalize_or_zero()).max(0.))
+        .max(0.);
+        let (feedback, speed) = burn_guidance(
             error,
             self.u,
             self.disturbance,
             a,
             turn_time,
-            b.propellant_rate * self.throttle_ceiling,
-            self.preferences,
-            self.speed_limit,
+            flow,
+            osg_model::transfer::TransferCost { seconds_per_kg: 0. },
+            self.speed_limit.min(fuel_speed),
             dt,
             &mut self.braking,
         );
+        let planned = self.intercept.update(
+            crate::rendezvous::State {
+                error,
+                velocity: self.u,
+                gravity: self.disturbance,
+                acceleration: a,
+                mass: obs.mass_kg,
+                flow,
+                fuel: obs.propellant_kg,
+                turn: self.turn_allowance,
+            },
+            dt,
+        );
+        let command = if error.length() < 100. {
+            // Allow time to rotate between terminal corrections.
+            let response = (2. * self.turn_allowance + 1.).max(2.);
+            (error / response.powi(2) - self.u * (2. / response) - self.disturbance)
+                .clamp_length_max(a)
+        } else if self.braking || self.u.length() > self.speed_limit {
+            feedback
+        } else {
+            planned.unwrap_or_else(|| {
+                // While searching for a fuel-feasible intercept, retain momentum
+                // and correct drift without starting an unbudgeted burn.
+                if feedback.dot(self.u) < 0. {
+                    feedback
+                } else {
+                    DVec3::ZERO
+                }
+            })
+        };
         self.allowed_speed = speed;
         self.stopping_distance =
             self.u.length_squared() / (2. * 0.9 * a) + self.u.length() * (turn_time + dt);
@@ -361,6 +405,8 @@ impl Pursuit {
         }
         if let Some(direction) = self.acceleration.try_normalize() {
             self.direction = direction;
+        } else if let Some(direction) = self.intercept.braking_direction() {
+            self.direction = direction;
         } else if self.u.length() > 0.5 {
             self.direction = -self.u.normalize();
         } else if self.direction == DVec3::ZERO {
@@ -373,6 +419,68 @@ impl Pursuit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_intercept_flips_brakes_and_finishes_with_limited_fuel() {
+        for fuel in [500., 25.] {
+            let mut bindings = Bindings::new(&crate::hardware::Hardware::default());
+            bindings.thrust = 10_000.;
+            bindings.propellant_rate = 1.;
+            bindings.engine_axis = DVec3::X;
+            bindings.torque_limit = 1000.;
+            bindings.torque_capacity = DVec3::splat(1000.);
+            let mut obs = Sample::default();
+            obs.flight.rotation = [0., 0., 0., 1.];
+            obs.flight.mass_kg = 1000.;
+            obs.flight.inertia = (DMat3::IDENTITY * 100.).to_cols_array();
+            obs.propellant_kg = fuel;
+            let mut nav = Pursuit::default();
+            nav.phase = Phase::Pursuing;
+            nav.r = DVec3::new(10_000., 2_000., 0.);
+            nav.u = DVec3::new(-10., 5., 0.);
+            let mut braking_ticks = 0;
+            let mut elapsed = 0.;
+            for _ in 0..12_000 {
+                if !nav.phase.active() {
+                    break;
+                }
+                nav.guide(&obs, &bindings, 0.1);
+                let q = glam::DQuat::from_array(obs.rotation);
+                let target = attitude::point(q, bindings.engine_axis, nav.direction);
+                let angle = q.angle_between(target);
+                let q = q.slerp(target, (0.1 / angle.max(0.1)).min(1.));
+                obs.flight.rotation = q.to_array();
+                let throttle = if (q * DVec3::X).dot(nav.direction) > 0.995 {
+                    nav.throttle
+                } else {
+                    0.
+                };
+                let acceleration = q * DVec3::X * (bindings.thrust * throttle / obs.mass_kg);
+                if acceleration.dot(nav.u) < 0. {
+                    braking_ticks += 1;
+                }
+                nav.r -= nav.u * 0.1 + acceleration * 0.005;
+                nav.u += acceleration * 0.1;
+                obs.propellant_kg -= throttle * 0.1;
+                obs.flight.mass_kg -= throttle * 0.1;
+                elapsed += 0.1;
+                assert!(obs.propellant_kg >= 0., "burn consumed braking reserve");
+            }
+            assert_eq!(
+                nav.phase,
+                Phase::Ready,
+                "fuel {fuel}, elapsed {elapsed}, r {:?}, v {:?}",
+                nav.r,
+                nav.u
+            );
+            assert!(nav.r.length() < 3. && nav.u.length() < 0.6);
+            assert!(braking_ticks > 10);
+            if fuel > 100. {
+                assert!(elapsed < 110., "arrival {elapsed}");
+            }
+        }
+    }
+
     fn contact(velocity: f64) -> Contact {
         Contact {
             id: 1,

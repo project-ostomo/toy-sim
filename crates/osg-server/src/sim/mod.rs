@@ -18,8 +18,6 @@ pub mod infrastructure;
 pub mod location;
 pub mod presentation;
 pub mod registry;
-pub mod route_service;
-pub mod routing;
 pub mod services;
 pub mod session;
 pub mod travel;
@@ -69,7 +67,7 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
             physics::PhysicsPlugin,
             vessel::VesselsPlugin,
         ));
-    route_service::install(&mut app);
+    app.add_plugins(industry::IndustryPlugin);
     app.add_systems(Last, session::maintain_cache);
     app.add_systems(First, economy::settle);
     registry::initialize(app.world_mut()).expect("valid universe catalogue");

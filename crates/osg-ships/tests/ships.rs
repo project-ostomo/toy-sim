@@ -9,6 +9,35 @@ fn fixture() -> (Catalogue, CompiledShipDesign, ShipState) {
 }
 
 #[test]
+fn expedition_patrol_has_attitude_authority_for_full_thrust() {
+    let design = expedition_patrol().compile(&Catalogue::builtin()).unwrap();
+    let mut engine_moment = glam::DVec3::ZERO;
+    let mut attitude_authority = glam::DVec3::ZERO;
+
+    for device in &design.device_catalogue {
+        let rotation = glam::DQuat::from_array(device.rotation);
+        match device.kind {
+            DeviceKind::Engine { thrust_n, .. } => {
+                let force = rotation * glam::DVec3::NEG_Z * thrust_n;
+                engine_moment += glam::DVec3::from_array(device.position_m).cross(force);
+            }
+            DeviceKind::Torquer { torque_nm, .. } => {
+                for axis in glam::DVec3::AXES {
+                    attitude_authority += (rotation * axis * torque_nm).abs();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Retain half the attitude authority for steering during a full burn.
+    assert!(
+        engine_moment.abs().cmple(attitude_authority * 0.5).all(),
+        "full-thrust moment {engine_moment:?} exceeds steering reserve from {attitude_authority:?}"
+    );
+}
+
+#[test]
 fn command_batch_rejects_mismatched_settings_before_mutation() {
     let (_, design, state) = fixture();
     let mut settings = state.settings;

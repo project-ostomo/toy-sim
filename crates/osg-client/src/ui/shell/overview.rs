@@ -6,7 +6,7 @@ pub(super) fn selected_item(
     can_control: bool,
     weapons: Option<&WeaponsInstrument>,
     rows: &[Row],
-    society: &ownership::SocietySnapshot,
+    society: &SocietyData,
     stand_off: &mut f64,
     intents: &mut Vec<Intent>,
 ) {
@@ -198,7 +198,10 @@ pub(super) fn selected_item(
                 .add_enabled(can_control, egui::Button::new("Dock"))
                 .clicked()
             {
-                intents.push(Intent::Navigate(vec![travel::Directive::DockAt(id)], append));
+                intents.push(Intent::Navigate(
+                    vec![travel::Directive::DockAt(id)],
+                    append,
+                ));
             }
             ui.weak("Shift: append to itinerary");
         });

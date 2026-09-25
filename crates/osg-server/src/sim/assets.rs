@@ -70,57 +70,12 @@ fn telemetry(world: &World, entity: Entity) -> Option<AssetTelemetry> {
     })
 }
 
-pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> AssetsSnapshot {
-    let mut result = AssetsSnapshot {
-        subscription: query.clone(),
-        ..Default::default()
-    };
-    if !query.valid() {
-        result.error = Some("Invalid asset subscription".into());
-        return result;
-    }
-
-    let directory = &world.resource::<ownership::Directory>().0;
-    let economy = world.resource::<Economy>();
-    let catalogue = world.get_resource::<vessel::ShipCatalogue>();
-    let search = query.search.to_lowercase();
-    let mut goods = BTreeMap::<CargoItem, GoodsSummary>::new();
-    let mut sources = BTreeMap::<StockKey, StockLocation>::new();
-    let mut public_reserved =
-        BTreeMap::<(Id, osg_model::ownership::Principal, CargoItem), u64>::new();
-    for (&station, &entity) in world.resource::<identity::IdentityIndex>().entries() {
-        if let Some(facility) = world.get::<super::industry::IndustryFacility>(entity) {
-            for job in &facility.jobs {
-                if let Some(payment) = &job.view.payment {
-                    for stack in &job.inputs {
-                        let amount = public_reserved
-                            .entry((station, payment.payer, stack.item.clone()))
-                            .or_default();
-                        *amount = amount.saturating_add(stack.quantity);
-                    }
-                }
-            }
-        }
-    }
-    let mut add_stock = |item: CargoItem, label: String, source: StockLocation| {
-        if source.quantity == 0 {
-            return;
-        }
-        let total = goods.entry(item.clone()).or_insert_with(|| GoodsSummary {
-            item: item.clone(),
-            name: label,
-            quantity: 0,
-            reserved: 0,
-            locations: 0,
-        });
-        total.quantity += source.quantity as u128;
-        total.reserved += source.reserved as u128;
-        total.locations += 1;
-        if query.item.as_ref() == Some(&item) {
-            sources.insert(source.key.clone(), source);
-        }
-    };
-
+fn accessible(
+    world: &World,
+    account: AccountId,
+    owner_filter: Option<osg_model::ownership::Principal>,
+) -> Vec<(Id, Entity, osg_model::ownership::Principal, bool, bool)> {
+    let mut entries = Vec::new();
     for (&id, &entity) in world.resource::<identity::IdentityIndex>().entries() {
         let Some(owner) = world
             .get::<ownership::AssetOwner>(entity)
@@ -128,7 +83,7 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
         else {
             continue;
         };
-        if query.owner.is_some_and(|selected| selected != owner) {
+        if owner_filter.is_some_and(|selected| selected != owner) {
             continue;
         }
         let permits = |permission| ownership::can_access(world, account, entity, permission);
@@ -140,6 +95,21 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
             continue;
         }
 
+        entries.push((id, entity, owner, can_manage, can_open));
+    }
+    entries
+}
+
+pub fn list(
+    world: &World,
+    account: AccountId,
+    search: &str,
+    owner_filter: Option<osg_model::ownership::Principal>,
+) -> Vec<AssetSummary> {
+    let search = search.to_lowercase();
+    let mut assets = Vec::new();
+    for (id, entity, owner, can_manage, can_open) in accessible(world, account, owner_filter) {
+        let permits = |permission| ownership::can_access(world, account, entity, permission);
         let presence = world
             .get::<travel::PresenceState>(entity)
             .map(|state| &state.0);
@@ -170,10 +140,7 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
             .to_lowercase()
             .contains(&search);
         if matches {
-            result.total_assets += 1;
-        }
-        if matches && query.after.is_none_or(|after| id > after) {
-            result.assets.push(AssetSummary {
+            assets.push(AssetSummary {
                 id,
                 name: asset_name,
                 owner,
@@ -197,7 +164,38 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
                 can_focus: permits(Permission::Control) && kind == AssetKind::Ship,
             });
         }
+    }
+    assets.sort_by_key(|asset| asset.id);
+    assets
+}
 
+fn visit_stock(
+    world: &World,
+    account: AccountId,
+    owner_filter: Option<osg_model::ownership::Principal>,
+    mut add_stock: impl FnMut(CargoItem, String, StockLocation),
+) {
+    let directory = &world.resource::<ownership::Directory>().0;
+    let economy = world.resource::<Economy>();
+    let catalogue = world.get_resource::<vessel::ShipCatalogue>();
+    let mut public_reserved =
+        BTreeMap::<(Id, osg_model::ownership::Principal, CargoItem), u64>::new();
+    for (&station, &entity) in world.resource::<identity::IdentityIndex>().entries() {
+        if let Some(facility) = world.get::<super::industry::IndustrialFacility>(entity) {
+            for job in facility.jobs() {
+                if let Some(payment) = &job.payment {
+                    for stack in &job.work.inputs {
+                        let amount = public_reserved
+                            .entry((station, payment.payer, stack.item.clone()))
+                            .or_default();
+                        *amount = amount.saturating_add(stack.quantity);
+                    }
+                }
+            }
+        }
+    }
+
+    for (id, entity, owner, _, can_open) in accessible(world, account, owner_filter) {
         if can_open {
             if let (Some(inventory), Some(catalogue)) =
                 (world.get::<hardware::ShipInventory>(entity), catalogue)
@@ -247,7 +245,7 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
     }
     for (&(station, owner), stock) in &storage {
         if !directory.administers(account, owner)
-            || query.owner.is_some_and(|selected| selected != owner)
+            || owner_filter.is_some_and(|selected| selected != owner)
         {
             continue;
         }
@@ -277,42 +275,48 @@ pub fn snapshot(world: &World, account: AccountId, query: &AssetsQuery) -> Asset
             );
         }
     }
+}
 
-    let limit = query.limit as usize;
-    result.assets.sort_by_key(|asset| asset.id);
-    if result.assets.len() > limit {
-        result.assets.truncate(limit);
-        result.next = result.assets.last().map(|asset| asset.id);
-    }
-    goods.retain(|_, goods| goods.name.to_lowercase().contains(&search));
-    result.total_goods = goods.len() as u64;
-    result.goods = goods
+pub fn goods_totals(
+    world: &World,
+    account: AccountId,
+    search: &str,
+    owner: Option<osg_model::ownership::Principal>,
+) -> Vec<GoodsSummary> {
+    let mut goods = BTreeMap::<CargoItem, GoodsSummary>::new();
+    visit_stock(world, account, owner, |item, name, source| {
+        if source.quantity == 0 {
+            return;
+        }
+        let total = goods.entry(item.clone()).or_insert_with(|| GoodsSummary {
+            item,
+            name,
+            quantity: 0,
+            reserved: 0,
+            locations: 0,
+        });
+        total.quantity += source.quantity as u128;
+        total.reserved += source.reserved as u128;
+        total.locations += 1;
+    });
+    let search = search.to_lowercase();
+    goods
         .into_values()
-        .filter(|goods| {
-            query
-                .goods_after
-                .as_ref()
-                .is_none_or(|after| goods.item > *after)
-        })
-        .take(limit + 1)
-        .collect();
-    if result.goods.len() > limit {
-        result.goods.truncate(limit);
-        result.goods_next = result.goods.last().map(|goods| goods.item.clone());
-    }
-    result.sources = sources
-        .into_values()
-        .filter(|source| {
-            query
-                .sources_after
-                .as_ref()
-                .is_none_or(|after| source.key > *after)
-        })
-        .take(limit + 1)
-        .collect();
-    if result.sources.len() > limit {
-        result.sources.truncate(limit);
-        result.sources_next = result.sources.last().map(|source| source.key.clone());
-    }
-    result
+        .filter(|goods| goods.name.to_lowercase().contains(&search))
+        .collect()
+}
+
+pub fn stock_locations(
+    world: &World,
+    account: AccountId,
+    item: &CargoItem,
+    owner: Option<osg_model::ownership::Principal>,
+) -> Vec<StockLocation> {
+    let mut sources = BTreeMap::new();
+    visit_stock(world, account, owner, |found, _, source| {
+        if &found == item && source.quantity > 0 {
+            sources.insert(source.key.clone(), source);
+        }
+    });
+    sources.into_values().collect()
 }

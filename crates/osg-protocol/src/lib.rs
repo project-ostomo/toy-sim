@@ -1,6 +1,5 @@
 pub mod industry;
 pub mod navigation;
-pub mod routing;
 
 use anyhow::{Result, ensure};
 pub use industry::{decode_blueprint_upload_ack, encode_blueprint_upload_ack};
@@ -94,16 +93,8 @@ pub fn validate_guidance(guidance: &travel::Guidance) -> Result<()> {
 
 pub fn validate_itinerary_entry(entry: &travel::ItineraryEntry) -> Result<()> {
     ensure!(
-        entry.max_loss_ppm.is_finite() && (0.0..=1_000_000.0).contains(&entry.max_loss_ppm),
-        "invalid directive failure probability"
-    );
-    ensure!(
         !entry.label.trim().is_empty() && entry.label.len() <= 256,
         "invalid directive label"
-    );
-    ensure!(
-        entry.fuel_allowance_kg.is_finite() && entry.fuel_allowance_kg >= 0.,
-        "invalid directive fuel allowance"
     );
     Ok(())
 }
@@ -192,7 +183,6 @@ pub fn validate_iff(iff: &IffIdentity) -> Result<()> {
 
 pub fn validate_ship_command(command: &ShipCommand) -> Result<()> {
     match command {
-        ShipCommand::UseRoute { id, .. } => ensure!(*id != 0, "invalid route request id"),
         ShipCommand::Flight(command) => match command {
             FlightCommand::AimDirection(direction) => ensure!(
                 direction.iter().all(|v| v.is_finite())
@@ -234,7 +224,7 @@ pub fn validate_ship_command(command: &ShipCommand) -> Result<()> {
         } => {
             ensure!(preferences.valid(), "invalid planning preference");
             ensure!(
-                itinerary.len() <= osg_model::routing::MAX_DIRECTIVES,
+                itinerary.len() <= osg_model::travel::MAX_DIRECTIVES,
                 "too many directives"
             );
         }

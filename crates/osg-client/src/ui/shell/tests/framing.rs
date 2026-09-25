@@ -2,7 +2,7 @@
 use super::*;
 
 #[derive(Default)]
-pub(in crate::ui::shell) struct Workspace {
+pub struct Workspace {
     shell: Shell,
     panes: TestPanes,
     foreground: Desktop,
@@ -37,15 +37,16 @@ impl Workspace {
         let mut intents = Vec::new();
         panels::draw(
             ctx,
+            false,
             &mut self.shell,
             &mut self.panes.get(),
             model,
             &selection,
             &[],
             &ChatState::default(),
-            None,
-            None,
-            None,
+            &QueryState::Loading,
+            &QueryState::Loading,
+            &QueryState::Loading,
             &mut intents,
         );
         assert!(intents.is_empty());

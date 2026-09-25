@@ -56,6 +56,138 @@ fn docking_removes_physics_and_private_pose_follows_the_station() {
 }
 
 #[test]
+fn stock_computer_docks_at_local_station_several_megameters_away() {
+    let account = Id::new();
+    let mut app = super::super::provision(&[account], None, None).unwrap();
+    app.update();
+    let world = app.world_mut();
+    let player = world
+        .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+        .single(world)
+        .unwrap();
+    let station = world
+        .query_filtered::<Entity, With<travel::DockingBays>>()
+        .single(world)
+        .unwrap();
+    let unrelated: Vec<_> = world
+        .query_filtered::<Entity, With<vessel::Vessel>>()
+        .iter(world)
+        .filter(|entity| *entity != player && *entity != station)
+        .collect();
+    for ship in unrelated {
+        world.despawn(ship);
+    }
+    let player_pose = *world.get::<precision::PreciseTransform>(player).unwrap();
+    world
+        .get_mut::<precision::PreciseTransform>(station)
+        .unwrap()
+        .translation_um = player_pose
+        .translation_um
+        .offset_by(player_pose.rotation * DVec3::NEG_Z * 7.85e6);
+    let ship_id = world.get::<identity::Identity>(player).unwrap().0;
+    let station_id = world.get::<identity::Identity>(station).unwrap().0;
+    let revision = world.get::<identity::Control>(player).unwrap().revision;
+    super::super::commands::execute(
+        world,
+        account,
+        ship_id,
+        revision,
+        osg_model::ShipCommand::SetItinerary {
+            preferences: Default::default(),
+            engage: true,
+            expected_revision: world
+                .get::<travel::Travel>(player)
+                .unwrap()
+                .0
+                .directive_revision,
+            itinerary: vec![osg_model::travel::Directive::DockAt(station_id)],
+        },
+    )
+    .unwrap();
+
+    let mut applied_thrust = false;
+    for tick in 0..20_000 {
+        app.update();
+        let world = app.world();
+        let state = &world.get::<travel::Travel>(player).unwrap().0;
+        assert!(state.failure.is_none(), "docking failed: {state:?}");
+        if tick > 300 {
+            let computer = &world
+                .get::<vessel::ShipSoftware>(player)
+                .unwrap()
+                .controller;
+            let now = world
+                .resource::<super::super::simulation::SimulationCounters>()
+                .ticks as f64
+                * osg_model::TICK_SECONDS;
+            assert!(
+                computer
+                    .state
+                    .navigation
+                    .as_ref()
+                    .is_some_and(|navigation| navigation.valid_until_s >= now),
+                "planning starved control publication at {tick}: {:?}",
+                computer.state.navigation
+            );
+        }
+        applied_thrust |= world
+            .get::<hardware::propulsion::ActuatorOutput>(player)
+            .is_some_and(|output| output.force.length() > 1.);
+        if tick % 2_000 == 0 {
+            let ship_pose = super::super::session::ship_pose(world, player).unwrap();
+            let station_pose = super::super::session::ship_pose(world, station).unwrap();
+            eprintln!(
+                "rendezvous {tick}: distance {:.0} m, speed {:.1} m/s, {:?}",
+                ship_pose
+                    .position
+                    .relative_to(station_pose.position)
+                    .length(),
+                (DVec3::from_array(ship_pose.velocity) - DVec3::from_array(station_pose.velocity))
+                    .length(),
+                world
+                    .get::<vessel::ShipSoftware>(player)
+                    .unwrap()
+                    .controller
+                    .state
+                    .navigation
+            );
+        }
+        if tick == 300 {
+            assert!(
+                applied_thrust,
+                "local rendezvous never applied thrust: {state:?}"
+            );
+            assert!(
+                !matches!(
+                    state.status.phase,
+                    osg_model::travel::FirmwarePhase::Planning
+                ),
+                "local rendezvous is still searching capture bodies: {state:?}"
+            );
+        }
+        if matches!(world.get::<travel::PresenceState>(player).unwrap().0,
+            osg_model::travel::Presence::Docked { host, .. } if host == station_id)
+        {
+            return;
+        }
+    }
+    let world = app.world();
+    let distance = super::super::session::ship_pose(world, player)
+        .unwrap()
+        .position
+        .relative_to(
+            super::super::session::ship_pose(world, station)
+                .unwrap()
+                .position,
+        )
+        .length();
+    panic!(
+        "local rendezvous did not dock within 2,000 seconds: distance {distance}, {:?}",
+        world.get::<travel::Travel>(player).unwrap().0
+    );
+}
+
+#[test]
 fn stock_computer_docks_from_default_spawn_without_entering_station() {
     let mut app = super::super::provision(&[Id::new()], None, None).unwrap();
     app.update();
@@ -85,9 +217,6 @@ fn stock_computer_docks_from_default_spawn_without_entering_station() {
             itinerary: vec![osg_model::travel::ItineraryEntry {
                 directive: osg_model::travel::Directive::DockAt(station_id),
                 label: "Dock at local station".into(),
-                max_loss_ppm: 100.,
-                fuel_allowance_kg: 0.,
-                estimated_duration_ticks: None,
             }],
             ..default()
         }),));
@@ -217,13 +346,18 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
         .quantities
         .clone();
     let stored_mass = world.get::<travel::StoredMass>(station).unwrap().0;
-    crate::sim::industry::transfer(
+    let source = world.get::<identity::Identity>(player).unwrap().0;
+    let target = world.get::<identity::Identity>(other).unwrap().0;
+    crate::sim::industry::enqueue_command(
         world,
         account,
-        player,
-        other,
-        osg_model::industry::CargoItem::Resource("rocket_propellant".into()),
-        20,
+        osg_model::industry::IndustryCommand::Transfer {
+            source,
+            target,
+            item: osg_model::industry::CargoItem::Resource("rocket_propellant".into()),
+            quantity: 20,
+        },
+        None,
     )
     .unwrap();
     assert_eq!(
@@ -239,13 +373,16 @@ fn docked_inventory_accepts_multiple_ships_and_transfers_only_cargo() {
         stored_mass
     );
     assert!(
-        crate::sim::industry::transfer(
+        crate::sim::industry::enqueue_command(
             world,
             account,
-            player,
-            other,
-            osg_model::industry::CargoItem::Resource("water".into()),
-            1
+            osg_model::industry::IndustryCommand::Transfer {
+                source,
+                target,
+                item: osg_model::industry::CargoItem::Resource("water".into()),
+                quantity: 1,
+            },
+            None,
         )
         .is_err()
     );

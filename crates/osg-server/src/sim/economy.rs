@@ -42,6 +42,68 @@ impl Default for Economy {
 }
 
 impl Economy {
+    pub fn charge_service(
+        &mut self,
+        job: osg_model::Id,
+        payment: &osg_model::industry::ServicePayment,
+        directory: &osg_model::ownership::OwnershipDirectory,
+        revenue: &Balance,
+        now: i64,
+    ) -> Result<Balance> {
+        if payment.charged {
+            return Ok(revenue.clone());
+        }
+        self.transaction(|economy| {
+            ensure!(
+                economy.release_service_hold(job).as_ref() == Some(payment),
+                "payment reservation no longer funded"
+            );
+            let mut updated = revenue.clone();
+            if payment.amount > 0 && payment.payer != payment.operator {
+                let before = economy
+                    .balances
+                    .get(&payment.operator)
+                    .cloned()
+                    .unwrap_or_default();
+                let restricted = payment.currency == Currency::Lat
+                    && economy.restricted(directory, payment.operator);
+                let start = economy.entries.len();
+                economy.transfer(
+                    Some(directory),
+                    payment.payer,
+                    payment.operator,
+                    payment.currency,
+                    payment.amount,
+                    restricted,
+                    now,
+                )?;
+                economy.reference_payment(start, job);
+                let after = economy
+                    .balances
+                    .get(&payment.operator)
+                    .cloned()
+                    .unwrap_or_default();
+                let uec = after
+                    .uec
+                    .checked_sub(before.uec)
+                    .context("service receipt underflow")?;
+                let lat = after
+                    .lat
+                    .checked_sub(before.lat)
+                    .context("service receipt underflow")?;
+                updated.uec = updated
+                    .uec
+                    .checked_add(uec)
+                    .context("service revenue overflow")?;
+                updated.lat = updated
+                    .lat
+                    .checked_add(lat)
+                    .context("service revenue overflow")?;
+            }
+            Ok(updated)
+        })
+    }
+
     pub fn at(now: i64) -> Self {
         Self {
             service_holds: BTreeMap::new(),
@@ -430,93 +492,4 @@ pub fn apply(
         .completed
         .insert((account, id));
     Ok(())
-}
-
-pub fn snapshot(world: &World, account: AccountId, subscription: &WalletQuery) -> WalletSnapshot {
-    let directory = &world.resource::<Directory>().0;
-    if !subscription.valid() || !directory.administers(account, subscription.owner) {
-        return WalletSnapshot {
-            error: Some("Wallet access unavailable".into()),
-            ..Default::default()
-        };
-    }
-    let economy = world.resource::<Economy>();
-    let owners = std::iter::once(Principal::Player(account))
-        .chain(
-            directory
-                .organizations
-                .keys()
-                .copied()
-                .map(Principal::Organization),
-        )
-        .chain(
-            directory
-                .sovereignties
-                .keys()
-                .copied()
-                .map(Principal::Sovereignty),
-        )
-        .filter(|owner| directory.administers(account, *owner));
-    let owners = std::iter::once(subscription.owner)
-        .chain(owners.filter(|owner| *owner != subscription.owner));
-    let balances = owners
-        .map(|owner| {
-            let balance = economy.balances.get(&owner).cloned().unwrap_or_default();
-            WalletBalance {
-                turnover_tax_bps: economy
-                    .tax_rate(directory, owner)
-                    .map_or(0, |(_, rate)| rate),
-                owner,
-                uec: balance.uec,
-                lat: balance.lat,
-                reserved_uec: economy.reserved(owner, Currency::Uec),
-                reserved_lat: economy.reserved(owner, Currency::Lat),
-                next_demurrage: (balance.uec.saturating_sub(DEMURRAGE_EXEMPTION) as u128
-                    * daily_rate(economy.last_day))
-                .div_ceil(RATE_SCALE) as u64,
-                lat_restricted: economy.restricted(directory, owner),
-            }
-        })
-        .take(256)
-        .collect();
-    let mut entries: Vec<_> = economy
-        .entries
-        .iter()
-        .rev()
-        .filter(|entry| {
-            entry.owner == subscription.owner
-                && subscription
-                    .before
-                    .is_none_or(|before| entry.sequence < before)
-        })
-        .take(subscription.limit as usize + 1)
-        .cloned()
-        .collect();
-    let more = entries.len() > subscription.limit as usize;
-    entries.truncate(subscription.limit as usize);
-    let next_before = more.then(|| entries.last().unwrap().sequence);
-    WalletSnapshot {
-        fx_trades: economy
-            .exchange
-            .trades
-            .iter()
-            .rev()
-            .filter(|trade| trade.instrument == osg_model::market::Instrument::Fx)
-            .take(60)
-            .cloned()
-            .collect(),
-        owner: Some(subscription.owner),
-        balances,
-        entries,
-        next_before,
-        next_charge_ms: (economy.last_day + 1) * DAY_MS,
-        market_uec_per_lat: economy
-            .exchange
-            .trades
-            .iter()
-            .rev()
-            .find(|trade| trade.instrument == osg_model::market::Instrument::Fx)
-            .map(|trade| trade.price),
-        error: None,
-    }
 }

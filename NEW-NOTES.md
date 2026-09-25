@@ -40,7 +40,7 @@ The current status may all be displayed on an advanced MFD.
 
 | Layer | Owner | Lifetime | Examples |
 |---|---|---|---|
-| Itinerary | Trip planner (server router) → server state | Until finished, failed or replaced | `[SlipToSystem(A), SlipToSystem(B), DockAt(Y)]` |
+| Itinerary | Client trip planner → server itinerary | Until finished, failed or replaced | `[SlipToSystem(A), SlipToSystem(B), DockAt(Y)]` |
 | Directive | Head of the itinerary | Until done or failed | `SlipToSystem(X)`, `DockAt(Y)` |
 | Plan | Ship firmware, private | Recomputed continuously | departure windows, aim points, sidesteps, burns |
 
@@ -50,10 +50,18 @@ The server is a referee and a provider of world services. It stores intent (itin
 
 Directives are deliberately local in scope:
 
-- **`SlipToSystem(X)`** — one interstellar hop, ending in a natural capture somewhere in X. The firmware chooses the capture body, the aim point on its exclusion sphere, and the departure time. It carries the risk allowance the trip planner assigned to the hop.
+- **`SlipToSystem(X)`** — one interstellar hop, ending in a natural capture somewhere in X. The firmware chooses the capture body, the aim point on its exclusion sphere, and the departure time. Directives carry no budgets.
 - **`DockAt(Y)`** — Y must be in the ship's overview, i.e. in the current system and known to the ship. If it isn't, the directive fails immediately. Getting from the capture point to the bay (transfer, rendezvous, bay reservation, docking) is up to the firmware.
 
-Because `DockAt` only works locally, we still need a trip planner. It is the existing server A* router, reduced to its strategic job: choose the sequence of systems and divide the risk and fuel budgets among the hops. It produces an itinerary of directives. It knows nothing in-system: no capture sphere geometry, departure clearance or local transfers. That is the firmware's job at run time, using live geometry.
+At departure, slip records the innermost body whose Hill sphere contains the ship.
+Only that body's exclusion zone cannot end that transit. Parent bodies remain
+eligible for capture, allowing a jump from a planet to its star. All exclusion
+zones still prohibit initiating slip inside them, and physical collisions still
+apply. This prevents using the current body's
+exclusion sphere to descend from a higher orbit. Capture by other bodies works
+normally. The departure body persists for the entire transit, including saves.
+
+Because `DockAt` only works locally, we still need a trip planner. This is ordinary server code, independent of WASM and installed firmware. It chooses a sequence of systems using catalogue distances, catalogue capture estimates, beacon access, ship mass, and available exotic fuel in kilograms. Fuel and destruction risk constrain the entire trip. It does not estimate sublight fuel, departure clearance, charging power, or local transfers. It returns high-level directives; trip settings and aggregate estimates are separate from the itinerary.
 
 The directive completes when the firmware reports it complete (captured in X; docked at Y). The server pops the itinerary and hands over the next directive.
 
@@ -78,13 +86,13 @@ Manual input (stick, throttle, and the old approach / keep range / align assists
 
 The autopilot is part of the user-programmable WASM firmware. The directive/status/failure contract is the public ABI; the standard firmware is one implementation of it, and players can write their own.
 
-Planning can be as heavy as it needs to be. WASM slices auto-suspend and resume, so a planner can just run a long search across many ticks without being written as a hand-sliced state machine. Meanwhile the control loop keeps the ship safe: holding attitude, finishing the current burn, or coasting.
+Planning must do bounded work per callback. Suspending a long search inside the flight callback also suspends that computer's control and input handling. Firmware therefore retains its candidate state between callbacks, updates control each cycle, and spends remaining time refining alternatives.
 
-The firmware computes everything, including risk. The trip planner hands each `SlipToSystem` a risk allowance. The firmware decides how to spend it (centre aim vs limb aim, waiting for a beacon, etc.) and reports what it spent. The server doesn't audit it. As today, a buggy controller can throw the ship away.
+The firmware computes execution risk and consumes the remaining trip allowance (centre aim vs limb aim, waiting for a beacon, etc.). Published cumulative exotic consumption and loss survive directive completion, pauses, and saves. The server validates physical actions; it does not select firmware maneuvers. A buggy controller can still throw the ship away.
 
 Suggested structure inside the standard firmware, running at three rates:
 
-- **Directive planner** (slow, event-driven, allowed to take many slices): reruns on a new directive, arrival, a missed capture, beacon loss, a large change in mass or fuel, or the previous plan becoming infeasible.
+- **Maneuver search** (bounded, continuous): warm-starts burn/coast/brake intercepts from live relative state and evaluates individual slip candidates. A feasible ordinary rendezvous can execute while alternatives are explored. Intercepts include velocity matching, turn time, differential gravity, changing mass, and braking propellant. The objective is earliest feasible completion, with fuel breaking ties.
 - **Tactical tracker** (every few seconds): checks the current plan against live geometry, re-predicts windows and aim points, and asks for a replan when the plan drifts too far. Plans should switch only when the new one is better by some margin, to avoid thrashing.
 - **Control** (every tick): the existing guidance law and slip-charge aim updates.
 
@@ -105,7 +113,7 @@ World services needed: `SlipEligibility` / `LocalSpace` answer "is it clear at t
 - Aiming at P's centre gives the highest P(capture).
 - Aiming toward the limb nearest where Y will be at arrival shortens the transfer afterwards, but lowers P(capture).
 
-So we trade capture risk against transfer time/Δv, within the hop's allowance. Other levers:
+So we trade capture risk against transfer time/Δv, within the remaining trip allowance. Other levers:
 
 - **Departure time**: the ship arrives with the galactic velocity it left with. Choosing a departure moment when that velocity best matches P's velocity at arrival reduces the matching burn.
 - **Capture body**: P's sphere is small for low-mass planets (Earth ≈ 0.0012 AU ≈ 180,000 km). Aiming at one of P's moons, or at the star and accepting a longer transfer, may beat aiming at P itself.
@@ -121,6 +129,10 @@ A dedicated autopilot MFD page (a firmware screen) shows: the itinerary with the
 
 - Remove `Order::{Guidance, Sublight, TravelTo, WaitUntil, Slip, Undock}` from the queue; `TravelToSystem` / `Dock` become `Directive::{SlipToSystem, DockAt}`. Undocking is implicit when a directive needs the ship in space.
 - Approach, keep range and align become manual flight assists; using one disengages the autopilot.
-- The router returns a directive itinerary with per-hop risk/fuel allowances instead of a fully expanded order list.
+- Strategic routing belongs entirely to the client. A cancellable worker runs A* over every known star, with no timeout or search-work cap. Labels retain nondominated combinations of estimated time, exotic fuel, cumulative log loss, and directive count; waypoint progress is part of the search state.
+- Inputs are the catalogue, departure position, ship mass, exotic fuel in kilograms, authorized navigation assistance, ordered destinations, and fuel/risk limits for the entire trip. Sublight fuel is outside this estimate. The server publishes assistance as a content-addressed asset derived from the ship owner's current permissions.
+- The map displays the frontier, explored systems, current expansion and branch only while searching. The best complete route remains visible after search ends. Large displays are sampled independently of search coverage. A complete route can be engaged while search continues; search stops on proof of optimality, exhaustion, cancellation, or an explicit failure. Closing the map cancels and retains the preview.
+- Before expansion, the planner walks arrival chains backwards using minimum cumulative loss, stopping on the departure position or an accessible beacon. This necessary-condition check relaxes fuel to a per-leg bound; the forward search enforces the complete trip budget. A disconnected destination produces an explicit no-route result. A* accounts for the unavoidable unassisted distance after the final accessible beacon when estimating remaining time.
+- Engaging rechecks the chosen path against current ship state and sends ordinary `SetItinerary` directives. Authority, itinerary, catalogue, or assistance changes invalidate the preview. The server validates the command and the ship firmware executes each directive. There are no route RPCs, server search jobs, or route WASM syscalls. Directives carry no risk, fuel, or timing fields.
 - Travel `ProgramAction`s become: `Complete { directive_revision }`, `Fail { reason }`, `PublishStatus { .. }`, plus the physical actions (`Slip`, `ReserveBay`, `Dock`, `Undock`) validated on physics alone, not against a queued order.
 - Persistence stores intent only; after a load, the firmware replans from scratch.

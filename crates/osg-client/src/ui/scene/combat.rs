@@ -117,14 +117,18 @@ fn sample(
     })
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.add_plugins(osg_ship_view::explosion::ExplosionPlugin)
         .init_resource::<EffectClock>()
         .add_observer(crate::state::reset_resource::<EffectClock>)
         .add_systems(
+            Last,
+            record_time.in_set(crate::state::ClientSystems::Gameplay),
+        )
+        .add_systems(
             PostUpdate,
-            (update, record_time)
-                .chain()
+            update
+                .in_set(crate::state::ClientSystems::Gameplay)
                 .before(bevy::transform::TransformSystems::Propagate),
         );
     debris::install(app);

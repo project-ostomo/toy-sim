@@ -2,7 +2,7 @@ use super::*;
 use osg_model::{industry::*, market::StoredStock, ownership::Principal};
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct Interest {
+pub(crate) struct Query {
     pub search: String,
     pub after: Option<Id>,
     pub facility: Option<Id>,
@@ -22,11 +22,7 @@ pub(crate) struct View {
     pub error: Option<String>,
 }
 
-pub(super) async fn fetch(
-    client: OsgNetClient,
-    world: Id,
-    query: Interest,
-) -> Result<View, String> {
+pub(super) async fn fetch(client: OsgNetClient, world: Id, query: Query) -> Result<View, String> {
     let page = call(client.list_public_facilities(world, query.search, query.after, 128)).await?;
     let mut view = View {
         facilities: page.items,
@@ -58,11 +54,11 @@ pub(super) async fn fetch(
     if let Some(facility) = query.facility {
         let (jobs, stock, wallet) = tokio::try_join!(
             call(client.service_jobs(world, facility)),
-            call(client.storage_stock(world, query.payer, facility, None, 128)),
+            call(client.storage_stock(world, query.payer, facility)),
             call(client.wallet_balance(world, query.payer)),
         )?;
         view.jobs = jobs;
-        view.stock = stock.items;
+        view.stock = stock;
         if query.work.is_some() {
             match view.quotes.get(&facility).cloned() {
                 Some(Ok(quote)) => {

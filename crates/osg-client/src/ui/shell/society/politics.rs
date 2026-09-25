@@ -130,7 +130,7 @@ fn category(ui: &mut egui::Ui, value: &mut DeclarationCategory) {
 pub(super) fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     model: &FrameModel,
     intents: &mut Vec<Intent>,
 ) {
@@ -565,7 +565,7 @@ fn agreements(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     intents: &mut Vec<Intent>,
 ) {
     presentation::section(ui, "AGREEMENTS");
@@ -742,7 +742,7 @@ fn blocs(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     intents: &mut Vec<Intent>,
 ) {
     for bloc in snapshot
@@ -902,7 +902,7 @@ fn blocs_editor(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     intents: &mut Vec<Intent>,
 ) {
     let polity = if let Principal::Sovereignty(id) = owner {

@@ -1,12 +1,12 @@
 use osg_model::*;
 use std::{collections::VecDeque, sync::Arc};
 
-pub(crate) struct Playback {
+pub struct Playback {
     frames: VecDeque<Arc<Frame>>,
     initial_target: usize,
     pub target_frames: usize,
     pub underruns: u64,
-    pub(crate) world: Option<Id>,
+    pub world: Option<Id>,
     playing: bool,
     current: Option<Arc<Frame>>,
     catching_up: bool,
@@ -14,12 +14,13 @@ pub(crate) struct Playback {
 }
 
 #[derive(Default)]
-pub(crate) struct Publications {
+pub struct Publications {
     pub sequence: u64,
     pub results: Vec<CommandResult>,
     pub events: Vec<Event>,
     pub combat: Vec<CombatEvent>,
     pub chat: Vec<chat::ChatUpdate>,
+    pub screens: Vec<ScreenUpdate>,
 }
 
 impl Playback {
@@ -61,6 +62,7 @@ impl Playback {
             || !combat.is_empty()
             || !frame.events.is_empty()
             || frame.chat.is_some()
+            || !frame.screens.is_empty()
         {
             self.publications.push_back(Publications {
                 sequence: frame.sequence,
@@ -68,6 +70,7 @@ impl Playback {
                 events: frame.events.clone(),
                 combat,
                 chat: frame.chat.iter().cloned().collect(),
+                screens: frame.screens.clone(),
             });
         }
     }
@@ -112,6 +115,16 @@ impl Playback {
         }
     }
 
+    pub fn apply_first(&mut self) -> Option<&Frame> {
+        if self.frames.len() >= self.target_frames {
+            return self.tick();
+        }
+        let frame = self.frames.pop_front()?;
+        self.publish(&frame);
+        self.current = Some(frame);
+        self.current.as_deref()
+    }
+
     pub fn queued_frames(&self) -> usize {
         self.frames.len()
     }
@@ -153,6 +166,7 @@ impl Playback {
             ready.events.extend(batch.events);
             ready.combat.extend(batch.combat);
             ready.chat.extend(batch.chat);
+            ready.screens.extend(batch.screens);
         }
         ready
     }
@@ -272,6 +286,14 @@ mod tests {
                 id: Id((sequence as u128).to_le_bytes()),
                 error: None,
             });
+            snapshot.screens.push(ScreenUpdate {
+                ship: Id([3; 16]),
+                slot: 1,
+                revision: 1,
+                tick: sequence,
+                frame: None,
+                error: Some(format!("publication {sequence}")),
+            });
             snapshot.presentation.combat.push(CombatEvent {
                 sequence,
                 sim_time_ns: snapshot.sim_time_ns,
@@ -288,6 +310,9 @@ mod tests {
             assert_eq!(playback.tick().unwrap().sequence, sequence);
             let publications = playback.take_publications(sequence);
             assert_eq!(publications.results.len(), 2);
+            assert_eq!(publications.screens.len(), 2);
+            assert_eq!(publications.screens[0].tick, sequence - 1);
+            assert_eq!(publications.screens[1].tick, sequence);
             assert_eq!(
                 publications.results[0].id,
                 Id(((sequence - 1) as u128).to_le_bytes())

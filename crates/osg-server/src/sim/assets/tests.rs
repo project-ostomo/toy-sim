@@ -32,12 +32,8 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
         .id();
     identity::register(&mut world, entity, Id([3; 16])).unwrap();
     world.insert_resource(vessel::ShipCatalogue(catalogue));
-    let query = AssetsQuery {
-        limit: 10,
-        ..Default::default()
-    };
-    let owned = snapshot(&world, account, &query);
-    let telemetry = owned.assets[0].telemetry.as_ref().unwrap();
+    let owned = list(&world, account, "", None);
+    let telemetry = owned[0].telemetry.as_ref().unwrap();
     assert_eq!(telemetry.cargo_capacity_m3, expected_capacity);
     assert_eq!(telemetry.energy_capacity_j, expected_battery);
     assert_eq!(telemetry.energy_j, 123);
@@ -48,9 +44,9 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
             .iter()
             .all(|tank| tank.quantity <= tank.capacity)
     );
-    let restricted = snapshot(&world, other, &query);
-    assert_eq!(restricted.assets.len(), 1);
-    assert!(restricted.assets[0].telemetry.is_none());
+    let restricted = list(&world, other, "", None);
+    assert_eq!(restricted.len(), 1);
+    assert!(restricted[0].telemetry.is_none());
     world
         .get_mut::<ownership::AssetAccess>(entity)
         .unwrap()
@@ -58,8 +54,8 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
         .public
         .insert(Permission::View);
     assert_eq!(
-        snapshot(&world, other, &query).assets[0].telemetry,
-        owned.assets[0].telemetry
+        list(&world, other, "", None)[0].telemetry,
+        owned[0].telemetry
     );
 }
 
@@ -125,39 +121,37 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
         );
     }
     world.insert_resource(vessel::ShipCatalogue(catalogue));
-    let mut query = AssetsQuery {
-        item: Some(water.clone()),
-        limit: 1,
-        ..Default::default()
-    };
-    let first = snapshot(&world, account, &query);
-    assert_eq!(first.total_assets, 2);
-    assert_eq!(first.assets.len(), 1);
-    assert_eq!(first.goods[0].quantity, 160);
-    assert_eq!(first.goods[0].reserved, 30);
-    assert_eq!(first.goods[0].locations, 4);
-    assert_eq!(first.sources.len(), 1);
-    assert!(first.sources_next.is_some());
+    let first =
+        crate::rpc::list_assets(&world, account, String::new(), None, None, 1).unwrap();
+    let goods = goods_totals(&world, account, "", None);
+    let sources =
+        crate::rpc::stock_locations(&world, account, water.clone(), None, None, 1)
+            .unwrap();
+    assert_eq!(first.total, Some(2));
+    assert_eq!(first.items.len(), 1);
+    assert_eq!(goods[0].quantity, 160);
+    assert_eq!(goods[0].reserved, 30);
+    assert_eq!(goods[0].locations, 4);
+    assert_eq!(sources.items.len(), 1);
+    assert!(sources.next.is_some());
 
-    query.after = first.next;
-    query.sources_after = first.sources_next;
-    let second = snapshot(&world, account, &query);
-    assert_ne!(first.assets[0].id, second.assets[0].id);
+    let second =
+        crate::rpc::list_assets(&world, account, String::new(), None, first.next, 1)
+            .unwrap();
+    let next_sources =
+        crate::rpc::stock_locations(&world, account, water.clone(), None, sources.next, 1)
+            .unwrap();
+    assert_ne!(first.items[0].id, second.items[0].id);
     assert!(second.next.is_none());
-    assert_ne!(first.sources[0].key, second.sources[0].key);
-    assert_eq!(second.goods[0].quantity, 160);
-
-    query.search = "water".into();
-    let goods_only = snapshot(&world, account, &query);
-    assert!(goods_only.assets.is_empty());
-    assert_eq!(goods_only.total_goods, 1);
-    assert_eq!(goods_only.goods[0].quantity, 160);
-    query.search.clear();
+    assert_ne!(sources.items[0].key, next_sources.items[0].key);
+    assert!(list(&world, account, "water", None).is_empty());
+    let filtered_goods = goods_totals(&world, account, "water", None);
+    assert_eq!(filtered_goods.len(), 1);
+    assert_eq!(filtered_goods[0].quantity, 160);
 
     // Public cargo visibility does not reveal another principal's custody.
-    query.owner = Some(owner);
-    let shared = snapshot(&world, other, &query);
-    assert_eq!(shared.goods[0].quantity, 120);
+    let shared = goods_totals(&world, other, "", Some(owner));
+    assert_eq!(shared[0].quantity, 120);
     for entity in entities {
         world
             .get_mut::<ownership::AssetAccess>(entity)
@@ -166,8 +160,7 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
             .public
             .clear();
     }
-    let revoked = snapshot(&world, other, &query);
-    assert!(revoked.assets.is_empty());
-    assert!(revoked.goods.is_empty());
-    assert!(revoked.sources.is_empty());
+    assert!(list(&world, other, "", Some(owner)).is_empty());
+    assert!(goods_totals(&world, other, "", Some(owner)).is_empty());
+    assert!(stock_locations(&world, other, &water, Some(owner)).is_empty());
 }

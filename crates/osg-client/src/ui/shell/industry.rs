@@ -1,5 +1,5 @@
-pub(super) mod construction;
-pub(super) mod service;
+pub mod construction;
+pub mod service;
 mod workspace;
 
 use super::*;
@@ -20,7 +20,7 @@ enum Tab {
 }
 
 #[derive(Default, Resource)]
-pub(super) struct State {
+pub struct State {
     overview: bool,
     new_job: bool,
     facility_search: String,
@@ -44,12 +44,12 @@ pub(super) struct State {
 
 #[cfg(test)]
 impl State {
-    pub(super) fn gallery_import(&mut self, blueprint: BlueprintView) {
+    pub fn gallery_import(&mut self, blueprint: BlueprintView) {
         self.import_mode = true;
         self.imported = Some(Ok(blueprint));
     }
 
-    pub(super) fn gallery_tab(&mut self, name: &str) {
+    pub fn gallery_tab(&mut self, name: &str) {
         self.overview = name == "facilities";
         self.tab = match name {
             "shipyard" => Tab::Shipyard,
@@ -62,7 +62,7 @@ impl State {
     }
 }
 
-pub(super) fn draw(
+pub fn draw(
     ui: &mut egui::Ui,
     state: &mut State,
     model: &FrameModel,
@@ -86,35 +86,54 @@ fn content(
         }
     }
 
-    if let Some(error) = &model.industry.error {
-        ui.colored_label(THREAT, error);
-    }
     if state.service.public {
-        service::customer(ui, &mut state.service, model, intents);
+        if render_query(ui, model.services, |ui, view| {
+            service::customer(view, ui, &mut state.service, model, intents)
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
         return;
     }
     if state.overview {
-        workspace::overview(ui, state, model);
+        if render_query(ui, &model.industry.directory, |ui, _| {
+            workspace::overview(ui, state, model)
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
         return;
     }
     state.construction.draw(ui, model.connected, intents);
     let facilities: Vec<_> = model
         .industry
-        .directory
-        .iter()
+        .summaries()
         .filter(|facility| !facility.capabilities.is_empty())
         .collect();
     if state.facility.is_none() {
         state.facility = facilities.first().map(|facility| facility.entity);
     }
-    let Some(facility) = state.facility.and_then(|id| cargo::facility(model, id)) else {
-        ui.weak(if state.facility.is_some() {
-            "Loading facility inventory and jobs…"
-        } else {
-            "No authorized facilities on this directory page."
-        });
+    let Some(id) = state.facility else {
+        if render_query(ui, &model.industry.directory, |ui, _| {
+            ui.weak("No authorized facilities on this directory page.");
+        }) {
+            intents.push(Intent::RetryQueries);
+        }
         return;
     };
+    if render_query(ui, model.industry.inventory(id), |ui, facility| {
+        facility_content(ui, state, facility, model, transfers, intents);
+    }) {
+        intents.push(Intent::RetryQueries);
+    }
+}
+
+fn facility_content(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    facility: &FacilityView,
+    model: &FrameModel,
+    transfers: &mut cargo::Transfers,
+    intents: &mut Vec<Intent>,
+) {
     ui.horizontal(|ui| {
         ui.label(Icon::Industry.text(24.).color(ACCENT));
         ui.heading(&facility.name);
@@ -190,10 +209,21 @@ fn production(
     facility: &FacilityView,
     intents: &mut Vec<Intent>,
 ) {
-    let Some(catalogue) = &model.industry.catalogue else {
-        ui.weak("Loading manufacturing catalogue…");
-        return;
-    };
+    if render_query(ui, &model.industry.catalogue, |ui, catalogue| {
+        production_catalogue(ui, state, model, facility, catalogue, intents);
+    }) {
+        intents.push(Intent::RetryQueries);
+    }
+}
+
+fn production_catalogue(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+    facility: &FacilityView,
+    catalogue: &industry_model::IndustryCatalogue,
+    intents: &mut Vec<Intent>,
+) {
     ui.add(
         egui::TextEdit::singleline(&mut state.search)
             .hint_text("Filter recipes…")
@@ -288,10 +318,21 @@ fn shipyard(
         ui.weak("This facility has no shipyard module.");
         return;
     }
-    let Some(catalogue) = &model.industry.catalogue else {
-        ui.weak("Loading ship blueprints…");
-        return;
-    };
+    if render_query(ui, &model.industry.catalogue, |ui, catalogue| {
+        shipyard_catalogue(ui, state, model, facility, catalogue, intents);
+    }) {
+        intents.push(Intent::RetryQueries);
+    }
+}
+
+fn shipyard_catalogue(
+    ui: &mut egui::Ui,
+    state: &mut State,
+    model: &FrameModel,
+    facility: &FacilityView,
+    catalogue: &industry_model::IndustryCatalogue,
+    intents: &mut Vec<Intent>,
+) {
     let mut owners = vec![facility.owner];
     if facility.can_transfer {
         owners.push(ownership::Principal::Player(model.society.account));

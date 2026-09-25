@@ -4,7 +4,7 @@ mod systems;
 
 use super::selection::Selection;
 use crate::state::{
-    CommandState, Outgoing, OwnedShip, RenderTime, SessionInfo, SessionReset, ShipDetails,
+    CommandState, GameSession, Outgoing, OwnedShip, RenderTime, SessionReset, ShipDetails,
 };
 use bevy::prelude::*;
 use osg_model::*;
@@ -16,7 +16,7 @@ use osg_ui::{
 };
 
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
-pub(super) struct ConsoleDraw;
+pub struct ConsoleDraw;
 
 #[derive(Default)]
 struct Smooth {
@@ -37,11 +37,11 @@ struct Console {
     power: systems::PowerDisplay,
 }
 
-pub(super) fn layer() -> egui::LayerId {
+pub fn layer() -> egui::LayerId {
     egui::LayerId::new(egui::Order::Background, egui::Id::new("ship_console"))
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_resource::<Console>()
         .add_observer(|_: On<SessionReset>, mut state: ResMut<Console>| *state = Console::default())
         .add_systems(
@@ -52,7 +52,8 @@ pub(super) fn install(app: &mut App) {
                 input
                     .after(super::shell::ShellDraw)
                     .after(keyboard_throttle),
-            ),
+            )
+                .in_set(crate::state::ClientSystems::Gameplay),
         );
 }
 
@@ -92,7 +93,7 @@ fn draw(
     mut contexts: EguiContexts,
     mut state: ResMut<Console>,
     selection: Res<Selection>,
-    session: Res<SessionInfo>,
+    _session: Res<GameSession>,
     clock: Res<RenderTime>,
     fixed: Res<Time<Fixed>>,
     ships: Query<(&OwnedShip, Option<&ShipDetails>)>,
@@ -165,7 +166,7 @@ fn draw(
                                     &details.0,
                                     clock.display_ns,
                                     &fixed,
-                                    session.status.is_empty(),
+                                    true,
                                 ),
                             }
                         });
@@ -180,7 +181,7 @@ fn keyboard_throttle(
     mut contexts: EguiContexts,
     mut state: ResMut<Console>,
     ships: Query<(&OwnedShip, &ShipDetails)>,
-    session: Res<SessionInfo>,
+    _session: Res<GameSession>,
     clock: Res<RenderTime>,
     time: Res<Time<Real>>,
     windows: Query<&Window>,
@@ -196,7 +197,7 @@ fn keyboard_throttle(
         return Ok(());
     };
     let command = throttle(&details.0, clock.display_ns);
-    if !manual(&ship.0, &details.0, session.status.is_empty()) || command.is_none() {
+    if !manual(&ship.0, &details.0, true) || command.is_none() {
         return Ok(());
     }
     if windows.iter().any(|w| w.focused) && !ctx.egui_is_using_pointer() {
@@ -217,7 +218,7 @@ fn input(
     mut state: ResMut<Console>,
     mut outgoing: ResMut<Outgoing>,
     ships: Query<(&OwnedShip, &ShipDetails)>,
-    session: Res<SessionInfo>,
+    _session: Res<GameSession>,
     feedback: Res<CommandState>,
     clock: Res<RenderTime>,
     time: Res<Time<Real>>,
@@ -249,7 +250,7 @@ fn input(
             state.feedback = Some("Throttle confirmation unavailable".into());
         }
     }
-    if !manual(&ship.0, &details.0, session.status.is_empty()) || command.is_none() {
+    if !manual(&ship.0, &details.0, true) || command.is_none() {
         state.pending = None;
         state.requested = None;
         return Ok(());
@@ -263,4 +264,4 @@ fn input(
 }
 
 #[cfg(test)]
-pub(super) mod tests;
+pub mod tests;

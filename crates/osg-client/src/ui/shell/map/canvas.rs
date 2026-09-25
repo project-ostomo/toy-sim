@@ -51,6 +51,12 @@ pub(super) fn draw(
     highlighted.extend(state.suggested.systems.iter().copied());
     let tree = &state.cache.inhabited_tree;
     let mut samples = tree.visible(&state.cache.positions, &state.camera, rect);
+    let empty = crate::routing::Progress::default();
+    let progress = state.route.search_progress().unwrap_or(&empty);
+    samples.extend(progress.samples.iter().copied());
+    samples.extend(progress.branch.iter().copied());
+    samples.extend(progress.current);
+    samples.retain(|&index| index < state.cache.positions.len());
     samples.extend(highlighted.iter().copied());
     samples.extend(
         state
@@ -80,6 +86,12 @@ pub(super) fn draw(
         .map(|(&index, &(position, _))| (index, position))
         .collect();
     reference_plane(&painter, rect, state);
+    for edge in progress.branch.windows(2) {
+        if let (Some(&a), Some(&b)) = (positions.get(&edge[0]), positions.get(&edge[1])) {
+            let (a, b) = clip_segment(rect, a, b);
+            painter.line_segment([a, b], egui::Stroke::new(1., ACCENT.gamma_multiply(0.4)));
+        }
+    }
     let search = state.search.trim().to_lowercase();
     let matching: std::collections::BTreeMap<_, _> = positions
         .keys()
@@ -95,29 +107,14 @@ pub(super) fn draw(
             )
         })
         .collect();
-    for &(a, b, loss) in state.active.slips.iter().chain(&state.suggested.slips) {
-        let (a, b) = (positions[&a], positions[&b]);
-        if a.distance(b) <= 1. || !rect.intersects(egui::Rect::from_two_pos(a, b)) {
-            continue;
+    for (route, color, width) in [
+        (&state.active, MUTED.gamma_multiply(0.5), 1.),
+        (&state.suggested, POSITIVE, 3.),
+    ] {
+        for &(a, b) in &route.slips {
+            let (a, b) = clip_segment(rect, positions[&a], positions[&b]);
+            painter.line_segment([a, b], egui::Stroke::new(width, color));
         }
-        let color = crate::ui::travel_risk::color(loss);
-        let (a, b) = clip_segment(rect, a, b);
-        painter.add(egui::Shape::dashed_line(
-            &[a, b],
-            egui::Stroke::new(2., color),
-            7.,
-            5.,
-        ));
-        painter.text(
-            a.lerp(b, 0.5),
-            egui::Align2::CENTER_BOTTOM,
-            loss.map_or_else(
-                || "SLIP · risk allowance unknown".into(),
-                |loss| format!("SLIP · risk allowance {loss:.2} ppm"),
-            ),
-            egui::FontId::monospace(10.),
-            color,
-        );
     }
 
     let mut visible: Vec<_> = positions
@@ -129,7 +126,8 @@ pub(super) fn draw(
             .iter()
             .copied()
             .filter(|&index| {
-                (matching[&index]
+                (progress.systems.get(index).is_some_and(|&state| state != 0)
+                    || matching[&index]
                     || highlighted.contains(&index)
                     || selected == Some(model.navigation.systems[index].id))
                     && positions[&index].distance_sq(pointer) <= 81.
@@ -186,6 +184,16 @@ pub(super) fn draw(
             color = color.gamma_multiply((0.45 + 0.55 * depth) as f32);
         }
         painter.circle_filled(position, radius, color);
+        let search_state = progress.systems.get(index).copied().unwrap_or(0);
+        if search_state & 1 != 0 {
+            painter.circle_filled(position, radius + 1., ACCENT.gamma_multiply(0.35));
+        }
+        if search_state & 2 != 0 {
+            painter.circle_stroke(position, radius + 2., egui::Stroke::new(1.5, ACCENT));
+        }
+        if progress.current == Some(index) {
+            painter.circle_stroke(position, radius + 5., egui::Stroke::new(2.5, WARNING));
+        }
         if model.inhabited.systems.binary_search(&system.id).is_ok() {
             painter.circle_stroke(position, radius + 1.5, egui::Stroke::new(1., color));
         }
@@ -286,24 +294,9 @@ fn reference_plane(painter: &egui::Painter, rect: egui::Rect, state: &State) {
             );
         }
     }
-    if let Some(&index) = state.selected.and_then(|id| state.cache.systems.get(&id)) {
-        let point = state.cache.positions[index];
-        let foot = glam::DVec3::new(point.x, point.y, 0.);
-        let a = state.camera.project(point, rect).0;
-        let b = state.camera.project(foot, rect).0;
-        if rect.intersects(egui::Rect::from_two_pos(a, b)) {
-            let (a, b) = clip_segment(rect, a, b);
-            painter.add(egui::Shape::dashed_line(
-                &[a, b],
-                egui::Stroke::new(1., MUTED),
-                3.,
-                4.,
-            ));
-        }
-    }
 }
 
-pub(super) fn legend(ui: &mut egui::Ui, mode: ColorBy) {
+pub(super) fn legend(ui: &mut egui::Ui, mode: ColorBy, searching: bool) {
     ui.horizontal_wrapped(|ui| {
         if mode == ColorBy::Bloc {
         for (bloc, label) in [
@@ -324,16 +317,12 @@ pub(super) fn legend(ui: &mut egui::Ui, mode: ColorBy) {
         ui.weak("Right-drag rotate · Middle-drag / Shift+right-drag pan · Scroll zoom · Double-click focus");
     });
     ui.horizontal_wrapped(|ui| {
-        ui.weak("Leg failure risk:");
-        for (loss, label) in [
-            (100.0, "≤100 ppm"),
-            (1_000.0, "≤1,000 ppm"),
-            (10_000.0, "≤10,000 ppm"),
-            (1_000_000.0, ">10,000 ppm"),
-        ] {
-            ui.colored_label(crate::ui::travel_risk::color(Some(loss)), label);
+        if searching {
+            ui.colored_label(ACCENT, "◌ Queued · ● Explored");
+            ui.colored_label(WARNING, "◎ Expanding");
         }
-        ui.colored_label(crate::ui::travel_risk::color(None), "Unknown");
+        ui.colored_label(POSITIVE, "━ Best route");
+        ui.colored_label(MUTED, "━ Active itinerary");
     });
 }
 

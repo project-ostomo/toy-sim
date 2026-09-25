@@ -1,4 +1,4 @@
-use crate::{GalacticPosition, Id, ProgramAction, ProgramQuery, ProgramReply, routing, travel};
+use crate::{GalacticPosition, Id, ProgramAction, ProgramQuery, ProgramReply, travel};
 use osg_ship_api::{abi::Text, world as abi};
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -243,10 +243,6 @@ impl From<&travel::ItineraryEntry> for abi::ItineraryEntry {
         Self {
             label: Text::new(&value.label),
             directive: (&value.directive).into(),
-            max_loss_ppm: value.max_loss_ppm,
-            fuel_allowance_kg: value.fuel_allowance_kg,
-            duration_present: value.estimated_duration_ticks.is_some() as u64,
-            duration_ticks: value.estimated_duration_ticks.unwrap_or_default(),
         }
     }
 }
@@ -255,19 +251,9 @@ impl TryFrom<&abi::ItineraryEntry> for travel::ItineraryEntry {
     type Error = ();
 
     fn try_from(value: &abi::ItineraryEntry) -> Result<Self, ()> {
-        if !value.max_loss_ppm.is_finite()
-            || !(0.0..=1_000_000.0).contains(&value.max_loss_ppm)
-            || !value.fuel_allowance_kg.is_finite()
-            || value.fuel_allowance_kg < 0.0
-        {
-            return Err(());
-        }
         Ok(Self {
             label: text(&value.label)?,
             directive: (&value.directive).try_into()?,
-            max_loss_ppm: value.max_loss_ppm,
-            fuel_allowance_kg: value.fuel_allowance_kg,
-            estimated_duration_ticks: optional(value.duration_present, value.duration_ticks)?,
         })
     }
 }
@@ -302,6 +288,7 @@ impl From<&crate::LocalObstacle> for abi::LocalObstacle {
             pose: (&value.pose).into(),
             radius_m: value.radius_m,
             slip_exclusion_m: value.slip_exclusion_m,
+            hill_radius_m: value.hill_radius_m,
         }
     }
 }
@@ -315,6 +302,7 @@ impl TryFrom<&abi::LocalObstacle> for crate::LocalObstacle {
             pose: (&value.pose).into(),
             radius_m: value.radius_m,
             slip_exclusion_m: value.slip_exclusion_m,
+            hill_radius_m: value.hill_radius_m,
         })
     }
 }
@@ -540,112 +528,6 @@ pub fn travel_reply(
     })
 }
 
-pub fn route_records(
-    id: u64,
-    status: &routing::Status,
-) -> (
-    abi::RouteReply,
-    Vec<abi::ItineraryEntry>,
-    Vec<abi::FuelRequirement>,
-) {
-    let mut header = abi::RouteReply {
-        id,
-        ..Default::default()
-    };
-    let mut orders = Vec::new();
-    let mut fuels = Vec::new();
-    match status {
-        routing::Status::Unknown => {}
-        routing::Status::Pending { progress } => {
-            header.status = 1;
-            header.stage = match progress.stage {
-                travel::PlanningStage::LoadingCatalogue => 0,
-                travel::PlanningStage::BuildingGraph => 1,
-                travel::PlanningStage::SearchingRoutes => 2,
-            };
-            header.completed = progress.completed as u64;
-            header.total_present = progress.total.is_some() as u64;
-            header.total = progress.total.unwrap_or_default() as u64;
-        }
-        routing::Status::Ready { plan } => {
-            header.status = 2;
-            header.planned_tick = plan.planned_tick;
-            header.directive_revision = plan.directive_revision;
-            header.topology_revision = plan.topology_revision;
-            header.itinerary_count = plan.itinerary.len() as u64;
-            header.fuel_count = plan.fuel_budget.resources.len() as u64;
-            header.fuel_complete = plan.fuel_budget.complete as u64;
-            header.estimated_loss_ppm = plan.estimated_loss_ppm;
-            header.exotic_fuel_kg = plan.exotic_fuel_kg;
-            orders.extend(plan.itinerary.iter().map(abi::ItineraryEntry::from));
-            fuels.extend(
-                plan.fuel_budget
-                    .resources
-                    .iter()
-                    .map(abi::FuelRequirement::from),
-            );
-        }
-        routing::Status::Failed { reason } => {
-            header.status = 3;
-            header.reason = Text::new(reason);
-        }
-    }
-    (header, orders, fuels)
-}
-
-pub fn route_reply(
-    header: &abi::RouteReply,
-    orders: &[abi::ItineraryEntry],
-    fuels: &[abi::FuelRequirement],
-) -> Result<ProgramReply, ()> {
-    let status = match header.status {
-        0 => routing::Status::Unknown,
-        1 => routing::Status::Pending {
-            progress: travel::PlanningProgress {
-                stage: match header.stage {
-                    0 => travel::PlanningStage::LoadingCatalogue,
-                    1 => travel::PlanningStage::BuildingGraph,
-                    2 => travel::PlanningStage::SearchingRoutes,
-                    _ => return Err(()),
-                },
-                completed: u32::try_from(header.completed).map_err(|_| ())?,
-                total: optional(
-                    header.total_present,
-                    u32::try_from(header.total).map_err(|_| ())?,
-                )?,
-            },
-        },
-        2 => routing::Status::Ready {
-            plan: routing::Plan {
-                estimated_loss_ppm: header.estimated_loss_ppm,
-                exotic_fuel_kg: header.exotic_fuel_kg,
-                planned_tick: header.planned_tick,
-                directive_revision: header.directive_revision,
-                topology_revision: header.topology_revision,
-                itinerary: counted(orders, header.itinerary_count)?
-                    .iter()
-                    .map(TryInto::try_into)
-                    .collect::<Result<_, _>>()?,
-                fuel_budget: travel::FuelBudget {
-                    resources: counted(fuels, header.fuel_count)?
-                        .iter()
-                        .map(TryInto::try_into)
-                        .collect::<Result<_, _>>()?,
-                    complete: flag(header.fuel_complete)?,
-                },
-            },
-        },
-        3 => routing::Status::Failed {
-            reason: text(&header.reason)?,
-        },
-        _ => return Err(()),
-    };
-    Ok(ProgramReply::Route {
-        id: header.id,
-        status,
-    })
-}
-
 fn counted<T>(values: &[T], count: u64) -> Result<&[T], ()> {
     values
         .get(..usize::try_from(count).map_err(|_| ())?)
@@ -757,23 +639,6 @@ impl TryFrom<&abi::ResolveQuery> for ProgramQuery {
     }
 }
 
-pub fn route_request(
-    header: &abi::RouteRequest,
-    orders: &[abi::Directive],
-) -> Result<ProgramQuery, ()> {
-    if orders.len() > routing::MAX_DIRECTIVES {
-        return Err(());
-    }
-    Ok(ProgramQuery::RouteRequest(routing::Request {
-        id: header.id,
-        preferences: (&header.preferences).try_into()?,
-        directives: orders
-            .iter()
-            .map(TryInto::try_into)
-            .collect::<Result<_, _>>()?,
-    }))
-}
-
 macro_rules! action {
     ($ty:ident, $value:ident, $body:expr) => {
         impl TryFrom<&abi::$ty> for ProgramAction {
@@ -787,20 +652,26 @@ macro_rules! action {
 }
 
 action!(
-    UseRoute,
-    value,
-    Self::UseRoute {
-        id: value.id,
-        directive_revision: value.directive_revision,
-        engage: flag(value.engage)?
-    }
-);
-action!(
     Fail,
     value,
     Self::Fail {
         directive_revision: value.directive_revision,
         reason: text(&value.reason)?
+    }
+);
+action!(
+    SetAutopilot,
+    value,
+    Self::SetAutopilot {
+        directive_revision: value.directive_revision,
+        enabled: flag(value.enabled)?
+    }
+);
+action!(
+    ClearItinerary,
+    value,
+    Self::ClearItinerary {
+        directive_revision: value.directive_revision
     }
 );
 action!(
@@ -1055,7 +926,7 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
         }
         ProgramQuery::Travel => {
             let mut output = abi::TravelReply::default();
-            let mut itinerary = vec![abi::ItineraryEntry::default(); routing::MAX_DIRECTIVES];
+            let mut itinerary = vec![abi::ItineraryEntry::default(); travel::MAX_DIRECTIVES];
             let mut fuels = vec![abi::FuelRequirement::default(); 256];
             let mut hierarchy =
                 vec![abi::CelestialRef::default(); crate::local_space::MAX_LOCAL_OBSTACLES];
@@ -1102,46 +973,6 @@ pub fn query(query: &ProgramQuery) -> Result<ProgramReply, i32> {
             syscall(unsafe { raw::destination_resolve(&input, &mut output) })?;
             Ok(ProgramReply::Pose((&output).into()))
         }
-        ProgramQuery::RouteRequest(_) | ProgramQuery::RoutePoll { .. } => {
-            let mut output = abi::RouteReply::default();
-            let mut orders = vec![abi::ItineraryEntry::default(); routing::MAX_DIRECTIVES];
-            let mut fuels = vec![abi::FuelRequirement::default(); 256];
-            let status = match query {
-                ProgramQuery::RouteRequest(request) => {
-                    let input = abi::RouteRequest {
-                        id: request.id,
-                        preferences: (&request.preferences).into(),
-                    };
-                    let inputs: Vec<abi::Directive> =
-                        request.directives.iter().map(Into::into).collect();
-                    unsafe {
-                        raw::route_request(
-                            &input,
-                            inputs.as_ptr(),
-                            inputs.len() as u32,
-                            &mut output,
-                            orders.as_mut_ptr(),
-                            orders.len() as u32,
-                            fuels.as_mut_ptr(),
-                            fuels.len() as u32,
-                        )
-                    }
-                }
-                ProgramQuery::RoutePoll { id } => unsafe {
-                    raw::route_poll(
-                        *id,
-                        &mut output,
-                        orders.as_mut_ptr(),
-                        orders.len() as u32,
-                        fuels.as_mut_ptr(),
-                        fuels.len() as u32,
-                    )
-                },
-                _ => unreachable!(),
-            };
-            syscall(status)?;
-            route_reply(&output, &orders, &fuels).map_err(|_| ERR_ARGUMENT)
-        }
         _ => crate::wasm_beacons::query(query),
     }
 }
@@ -1152,16 +983,17 @@ pub fn command(action: ProgramAction) -> Result<(), i32> {
     use osg_ship_api::abi::ERR_ARGUMENT;
 
     let result = match action {
-        ProgramAction::UseRoute {
-            id,
+        ProgramAction::SetAutopilot {
             directive_revision,
-            engage,
+            enabled,
         } => unsafe {
-            raw::travel_use_route(&abi::UseRoute {
-                id,
+            raw::travel_set_autopilot(&abi::SetAutopilot {
                 directive_revision,
-                engage: engage as u64,
+                enabled: enabled as u64,
             })
+        },
+        ProgramAction::ClearItinerary { directive_revision } => unsafe {
+            raw::travel_clear_itinerary(&abi::ClearItinerary { directive_revision })
         },
         ProgramAction::Fail {
             directive_revision,
@@ -1237,53 +1069,6 @@ mod tests {
     }
 
     #[test]
-    fn nested_route_records_preserve_optional_values_and_references() {
-        let plan = routing::Plan {
-            estimated_loss_ppm: 31.5,
-            exotic_fuel_kg: 14.0,
-            planned_tick: 42,
-            directive_revision: 17,
-            topology_revision: 8,
-            itinerary: vec![
-                travel::ItineraryEntry {
-                    label: "Target system".into(),
-                    directive: travel::Directive::SlipToSystem(Id([42; 16])),
-                    max_loss_ppm: 12.5,
-                    fuel_allowance_kg: 45.0,
-                    estimated_duration_ticks: Some(0),
-                },
-                travel::ItineraryEntry {
-                    label: "Station".into(),
-                    directive: travel::Directive::DockAt(Id([14; 16])),
-                    max_loss_ppm: 19.0,
-                    fuel_allowance_kg: 5.0,
-                    estimated_duration_ticks: None,
-                },
-            ],
-            fuel_budget: travel::FuelBudget {
-                resources: vec![travel::FuelRequirement {
-                    resource: "hydrogen".into(),
-                    required_kg: 72.,
-                    available_kg: 1300.,
-                }],
-                complete: true,
-            },
-        };
-        let status = routing::Status::Ready { plan };
-        let (header, orders, fuels) = route_records(19, &status);
-        let ProgramReply::Route {
-            id,
-            status: restored,
-        } = route_reply(&header, &orders, &fuels).unwrap()
-        else {
-            panic!("unexpected reply");
-        };
-        assert_eq!(id, 19);
-        assert_eq!(restored, status);
-        assert!(route_reply(&header, &[], &fuels).is_err());
-    }
-
-    #[test]
     fn travel_publication_preserves_context_and_rejects_short_arrays() {
         let body = travel::CelestialRef {
             system: Id([1; 16]),
@@ -1299,9 +1084,6 @@ mod tests {
             itinerary: vec![travel::ItineraryEntry {
                 directive: travel::Directive::DockAt(Id([3; 16])),
                 label: "Station".into(),
-                max_loss_ppm: 10.0,
-                fuel_allowance_kg: 50.0,
-                estimated_duration_ticks: None,
             }],
             status: travel::FirmwareStatus {
                 phase: travel::FirmwarePhase::Waiting {

@@ -88,7 +88,7 @@ fn prepare(
         &DisplayEnvironment,
         &ShipDesign,
         Option<&Display>,
-        Has<super::travel::Dormant>,
+        Has<super::travel::SystemsSuspended>,
     )>,
 ) {
     use osg_model::ownership::{Permission, Principal};
@@ -172,6 +172,7 @@ fn execute(
         &mut super::vessel::ComputerBudget,
         &DisplayEnvironment,
         &super::hardware::HardwareClock,
+        &mut super::vessel::ShipMailbox,
     )>,
 ) {
     let tick = clock.ticks;
@@ -180,7 +181,8 @@ fn execute(
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (ship, slots) in wanted {
-        let Ok((identity, owner, mut display, mut budget, env, clock)) = ships.get_mut(ship) else {
+        let Ok((identity, owner, mut display, mut budget, env, clock, _)) = ships.get_mut(ship)
+        else {
             continue;
         };
         let id = identity.0;
@@ -241,7 +243,7 @@ fn execute(
     }
     let mut starts = 0;
     for (ship, id, input, source, origin, slots) in work {
-        let (_, owner, mut display, mut budget, _, _) = ships.get_mut(ship).unwrap();
+        let (_, owner, mut display, mut budget, _, _, mut mailbox) = ships.get_mut(ship).unwrap();
         let mut reservation = grants.remove(&ship);
         let mut grant = reservation.as_ref().map_or(0, |grant| grant.limit());
         if display.program.needs_instance_start() && grant > display.program.boot_remaining_gas() {
@@ -286,6 +288,15 @@ fn execute(
 
         match result {
             Ok(slice) => {
+                if mailbox.inbox.len() + slice.output.computer_messages.len() > 255 {
+                    display
+                        .program
+                        .fail("Flight computer message queue is full".into());
+                } else {
+                    for message in slice.output.computer_messages {
+                        mailbox.command(osg_ship_wasm::Command::Message(message));
+                    }
+                }
                 for slot in slice.output.cleared_screens {
                     if let Ok(slot) = u8::try_from(slot) {
                         display.frames.remove(&slot);
@@ -346,7 +357,7 @@ pub fn input(
     text: &str,
 ) -> Result<()> {
     ensure!(
-        world.get::<super::travel::Dormant>(ship).is_none(),
+        world.get::<super::travel::SystemsSuspended>(ship).is_none(),
         "ship inactive"
     );
     ensure!(
@@ -400,7 +411,7 @@ pub fn frame(world: &World, ship: Entity, slot: u8) -> Option<ScreenUpdate> {
     let env = world.get::<DisplayEnvironment>(ship)?;
     let display = world.get::<Display>(ship)?;
     let control = world.get::<Control>(ship)?;
-    if world.get::<super::travel::Dormant>(ship).is_some()
+    if world.get::<super::travel::SystemsSuspended>(ship).is_some()
         || !env.powered
         || control.revision != display.authority
     {
@@ -603,6 +614,170 @@ mod tests {
     }
 
     #[test]
+    fn stock_autopilot_page_controls_flight_intent_through_its_message_queue() {
+        use crate::sim::{travel, vessel};
+        use osg_model::travel::{Directive, ItineraryEntry};
+
+        let account = Id::new();
+        let mut app = crate::sim::provision(&[account], None, None).unwrap();
+        let world = app.world_mut();
+        let ship = world
+            .query_filtered::<Entity, With<vessel::ControlledVessel>>()
+            .single(world)
+            .unwrap();
+        let id = world.get::<Identity>(ship).unwrap().0;
+        let station = world
+            .query_filtered::<&Identity, With<travel::DockingBays>>()
+            .iter(world)
+            .find(|station| station.0 != id)
+            .unwrap()
+            .0;
+        let session = session::connect(
+            world,
+            account,
+            crate::blueprint_uploads::BlueprintUploads::default(),
+        )
+        .unwrap();
+        world
+            .get_mut::<Session>(session)
+            .unwrap()
+            .screens
+            .insert((id, 0), 10);
+
+        let advance_until = |app: &mut App, condition: &dyn Fn(&World) -> bool| {
+            for _ in 0..400 {
+                app.update();
+                update(app.world_mut());
+                if condition(app.world()) {
+                    return;
+                }
+            }
+            let state = &app.world().get::<travel::Travel>(ship).unwrap().0;
+            panic!(
+                "stock display control did not complete: {state:?}; flight fault {:?}; display fault {:?}; inbox {}; frame {:?}",
+                app.world()
+                    .get::<vessel::ShipSoftware>(ship)
+                    .unwrap()
+                    .controller
+                    .fault,
+                app.world().get::<Display>(ship).unwrap().program.fault,
+                app.world()
+                    .get::<vessel::ShipMailbox>(ship)
+                    .unwrap()
+                    .inbox
+                    .len(),
+                frame(app.world(), ship, 1)
+            );
+        };
+        advance_until(&mut app, &|world| {
+            frame(world, ship, 0).is_some_and(|frame| frame.frame.is_some())
+        });
+        let metadata = definitions(app.world(), ship);
+        assert!(metadata.iter().any(|screen| screen.slot == 0));
+        assert!(metadata.iter().any(|screen| screen.slot == 1));
+        {
+            let world = app.world_mut();
+            let mut travel = world.get_mut::<travel::Travel>(ship).unwrap();
+            travel.0.enabled = false;
+            travel.0.itinerary = vec![ItineraryEntry {
+                directive: Directive::DockAt(station),
+                label: "Test destination".into(),
+            }];
+            drop(travel);
+            let mut session = world.get_mut::<Session>(session).unwrap();
+            session.screens.clear();
+            session.screens.insert((id, 1), 10);
+        }
+        advance_until(&mut app, &|world| {
+            frame(world, ship, 1).is_some_and(|frame| frame.frame.is_some())
+        });
+        let press = |world: &mut World, code| {
+            let revision = frame(world, ship, 1).unwrap().revision;
+            input(
+                world,
+                ship,
+                1,
+                revision,
+                abi::EVENT_BEZEL as u8,
+                code,
+                0,
+                [0.; 2],
+                "",
+            )
+            .unwrap();
+        };
+        press(app.world_mut(), 0);
+        advance_until(&mut app, &|world| {
+            world.get::<travel::Travel>(ship).unwrap().0.enabled
+                && frame(world, ship, 1)
+                    .and_then(|frame| frame.frame)
+                    .is_some_and(|frame| frame.buttons[0].as_deref() == Some("Pause"))
+        });
+        press(app.world_mut(), 0);
+        advance_until(&mut app, &|world| {
+            !world.get::<travel::Travel>(ship).unwrap().0.enabled
+        });
+        assert_eq!(
+            app.world()
+                .get::<travel::Travel>(ship)
+                .unwrap()
+                .0
+                .itinerary
+                .len(),
+            1
+        );
+        press(app.world_mut(), 1);
+        advance_until(&mut app, &|world| {
+            world
+                .get::<travel::Travel>(ship)
+                .unwrap()
+                .0
+                .itinerary
+                .is_empty()
+        });
+        assert!(!app.world().get::<travel::Travel>(ship).unwrap().0.enabled);
+    }
+
+    #[test]
+    fn display_messages_enter_the_flight_request_queue_without_host_interpretation() {
+        let (mut world, ship, _, _, _) = fixture();
+        let bytes = wat::parse_str(format!(
+            r#"(module
+                (import "ship" "computer_send" (func $send (param i32 i32) (result i32)))
+                (memory (export "memory") 1)
+                (data (i32.const 0) "\ff\00\a5")
+                (func (export "game_version") (result i32) i32.const {})
+                (func (export "ship_tick"))
+                (func (export "ship_display")
+                    i32.const 0 i32.const 3 call $send
+                    if unreachable end))"#,
+            osg_ship_api::GAME_VERSION,
+        ))
+        .unwrap();
+        world.get_mut::<DisplayEnvironment>(ship).unwrap().firmware = Arc::from(bytes);
+        for tick in 0..100 {
+            world.resource_mut::<SimulationCounters>().ticks = tick;
+            world
+                .get_mut::<super::super::hardware::HardwareClock>(ship)
+                .unwrap()
+                .0 = tick;
+            update(&mut world);
+            let mailbox = world
+                .get::<super::super::vessel::ShipMailbox>(ship)
+                .unwrap();
+            if let Some(request) = mailbox.inbox.first() {
+                let osg_ship_wasm::Command::Message(message) = &request.command else {
+                    panic!("display output must be an opaque computer message");
+                };
+                assert_eq!(message.len, 3);
+                assert_eq!(&message.bytes[..3], &[255, 0, 165]);
+                return;
+            }
+        }
+        panic!("display message did not reach the flight program");
+    }
+
+    #[test]
     fn authority_and_power_changes_revoke_frames_and_queued_input() {
         let (mut world, ship, _, _, id) = fixture();
         update(&mut world);
@@ -694,6 +869,55 @@ mod tests {
                 .has_pending_input()
         );
         assert!(input(&mut world, ship, 0, revision + 1, 0, 0, 0, [0.0; 2], "").is_err());
+    }
+
+    #[test]
+    fn displays_remain_available_in_dock_and_transit_until_systems_suspend() {
+        let (mut world, ship, _, _, id) = fixture();
+        update(&mut world);
+        let revision = publish_frame(&mut world, ship, id);
+        for presence in [
+            osg_model::travel::Presence::Docked {
+                host: Id::new(),
+                bay: 0,
+            },
+            osg_model::travel::Presence::SlipTransit(Id::new()),
+        ] {
+            super::super::travel::set_dormant(&mut world, ship, presence);
+            update(&mut world);
+            assert!(frame(&world, ship, 0).is_some());
+            assert_eq!(world.get::<Display>(ship).unwrap().revision, revision);
+            input(
+                &mut world,
+                ship,
+                0,
+                revision,
+                abi::EVENT_BEZEL as u8,
+                0,
+                0,
+                [0.; 2],
+                "",
+            )
+            .unwrap();
+        }
+        super::super::travel::set_dormant(&mut world, ship, osg_model::travel::Presence::Destroyed);
+        assert!(frame(&world, ship, 0).is_none());
+        assert!(
+            input(
+                &mut world,
+                ship,
+                0,
+                revision,
+                abi::EVENT_BEZEL as u8,
+                0,
+                0,
+                [0.; 2],
+                ""
+            )
+            .is_err()
+        );
+        update(&mut world);
+        assert!(world.get::<Display>(ship).is_none());
     }
     #[test]
     fn displays_spend_only_flight_leftovers_once_per_physical_tick() {

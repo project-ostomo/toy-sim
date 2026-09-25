@@ -140,6 +140,7 @@ fn slipping_observer_receives_its_own_trailing_wake() {
         osg_model::travel::Presence::SlipTransit(Id::new()),
     );
     world.entity_mut(observer).insert(travel::Transit {
+        ignored_capture_body: None,
         origin: start,
         position: origin,
         destination: origin.offset_by(DVec3::NEG_Z * distance),

@@ -241,7 +241,7 @@ fn heading(message: &ChatMessage, directory: &ownership::OwnershipDirectory) -> 
     heading
 }
 
-fn sender_color(message: &ChatMessage, society: &ownership::SocietySnapshot) -> egui::Color32 {
+fn sender_color(message: &ChatMessage, society: &SocietyData) -> egui::Color32 {
     super::super::standing::color(society.directory.advertised_standing(
         society.account,
         message.advertised_owner,

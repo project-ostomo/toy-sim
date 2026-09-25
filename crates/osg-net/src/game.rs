@@ -1,32 +1,37 @@
 //! Each method describes one operation. Screen composition belongs to the caller.
 use osg_model::{
     AccountId, Id, assets::*, diplomacy::*, economy::*, industry::*, market::*, ownership::*,
-    routing, rpc::*,
+    rpc::*,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
 #[osg_net_macros::rpc]
 pub trait GameRpc {
     async fn my_affiliation(&self, world: Id) -> Result<PlayerAffiliation, GameError>;
-    async fn list_identities(
+    async fn list_blocs(&self, world: Id) -> Result<Vec<PoliticalBloc>, GameError>;
+    async fn list_polities(&self, world: Id) -> Result<Vec<Sovereignty>, GameError>;
+    async fn list_organizations(
+        &self,
+        world: Id,
+        polity: Id,
+    ) -> Result<Vec<Organization>, GameError>;
+    async fn list_players(
+        &self,
+        world: Id,
+        organization: Option<Id>,
+    ) -> Result<Vec<PlayerAffiliation>, GameError>;
+    async fn search_identities(
         &self,
         world: Id,
         search: String,
-        after: Option<Principal>,
-        limit: u16,
-    ) -> Result<Page<IdentityRecord, Principal>, GameError>;
+    ) -> Result<IdentitySearch, GameError>;
     async fn resolve_identities(
         &self,
         world: Id,
         principals: Vec<Principal>,
     ) -> Result<Vec<IdentityRecord>, GameError>;
     async fn asset_access(&self, world: Id, asset: Id) -> Result<AssetAccessDetails, GameError>;
-    async fn list_access_profiles(
-        &self,
-        world: Id,
-        after: Option<Id>,
-        limit: u16,
-    ) -> Result<Page<AccessProfile, Id>, GameError>;
+    async fn list_access_profiles(&self, world: Id) -> Result<Vec<AccessProfile>, GameError>;
     async fn diplomacy(&self, world: Id, principal: Principal) -> Result<Diplomacy, GameError>;
     async fn resolve_standing(
         &self,
@@ -72,12 +77,7 @@ pub trait GameRpc {
         limit: u16,
     ) -> Result<Page<StockLocation, StockKey>, GameError>;
 
-    async fn list_wallets(
-        &self,
-        world: Id,
-        after: Option<Principal>,
-        limit: u16,
-    ) -> Result<Page<WalletBalance, Principal>, GameError>;
+    async fn list_wallets(&self, world: Id) -> Result<Vec<WalletBalance>, GameError>;
     async fn wallet_balance(&self, world: Id, owner: Principal)
     -> Result<WalletAccount, GameError>;
     async fn wallet_history(
@@ -87,12 +87,7 @@ pub trait GameRpc {
         before: Option<u64>,
         limit: u16,
     ) -> Result<Page<LedgerEntry, u64>, GameError>;
-    async fn gas_balances(
-        &self,
-        world: Id,
-        after: Option<Principal>,
-        limit: u16,
-    ) -> Result<Page<GasAccountSnapshot, Principal>, GameError>;
+    async fn gas_balances(&self, world: Id) -> Result<Vec<GasAccountSnapshot>, GameError>;
 
     async fn order_book(
         &self,
@@ -134,9 +129,7 @@ pub trait GameRpc {
         world: Id,
         owner: Principal,
         station: Id,
-        after: Option<CargoItem>,
-        limit: u16,
-    ) -> Result<Page<StoredStock, CargoItem>, GameError>;
+    ) -> Result<Vec<StoredStock>, GameError>;
 
     async fn list_facilities(
         &self,
@@ -436,27 +429,5 @@ pub trait GameRpc {
         bloc: Id,
         target: Id,
         standing: Standing,
-    ) -> Result<(), GameError>;
-
-    async fn route_request(
-        &self,
-        operation: Operation,
-        ship: Id,
-        authority_revision: u64,
-        request: routing::Request,
-    ) -> Result<routing::Status, GameError>;
-    async fn route_status(
-        &self,
-        world: Id,
-        ship: Id,
-        authority_revision: u64,
-        id: u64,
-    ) -> Result<routing::Status, GameError>;
-    async fn route_cancel(
-        &self,
-        operation: Operation,
-        ship: Id,
-        authority_revision: u64,
-        id: u64,
     ) -> Result<(), GameError>;
 }

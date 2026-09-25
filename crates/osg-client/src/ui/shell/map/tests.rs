@@ -46,9 +46,9 @@ fn catalogue() -> NavigationCatalogue {
     catalogue
 }
 
-pub(super) fn model<'a>(
+pub fn model<'a>(
     catalogue: &'a NavigationCatalogue,
-    society: &'a ownership::SocietySnapshot,
+    society: &'a SocietyData,
     ship: Option<&'a ShipTelemetry>,
 ) -> FrameModel<'a> {
     FrameModel {
@@ -57,7 +57,7 @@ pub(super) fn model<'a>(
         declaration_history_next: None,
         declaration_history_key: None,
         industry: empty_industry(),
-        industry_ready: true,
+
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: catalogue,
@@ -80,7 +80,7 @@ pub(super) fn model<'a>(
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: None,
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     }
@@ -148,13 +148,12 @@ fn empty_and_single_system_maps_have_finite_bounds() {
 #[test]
 fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared() {
     let catalogue = catalogue();
-    let society = ownership::SocietySnapshot::default();
+    let society = SocietyData::default();
     let mut ship = crate::ui::tests::ship(id(9000)).0;
-    let mut leg = crate::ui::shell::tests::entry(
+    let leg = crate::ui::shell::tests::entry(
         travel::Directive::SlipToSystem(catalogue.systems[2].id),
         60.,
     );
-    leg.max_loss_ppm = 1_234.0;
     ship.travel.itinerary.push(leg);
     let inhabited = std::sync::Arc::new(osg_model::InhabitedDirectory {
         systems: vec![id(1)],
@@ -190,7 +189,7 @@ fn browser_search_keeps_uninhabited_route_stops_only_until_the_route_is_cleared(
             expected
         );
         if !cleared {
-            assert_eq!(state.active.slips, [(0, 2, Some(1_234.0))]);
+            assert_eq!(state.active.slips, [(0, 2)]);
         }
     }
 }
@@ -227,11 +226,11 @@ fn search_and_active_slip_route_keep_all_systems_accessible() {
     ];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 1, Some(100.)), (1, 2999, Some(100.))]);
+    assert_eq!(active.slips, [(0, 1), (1, 2999)]);
     assert_eq!(active.stops, [(1, 1), (2, 2999)]);
     assert!(active.systems.contains(&2999));
     active.update(&cache, &catalogue, Some(id(1)), &orders[1..]);
-    assert_eq!(active.slips, [(1, 2999, Some(100.))]);
+    assert_eq!(active.slips, [(1, 2999)]);
 }
 
 #[test]
@@ -273,13 +272,13 @@ fn system_slip_route_resolves_without_ephemeris_download() {
     )];
     let mut active = ActiveRoute::default();
     active.update(&cache, &catalogue, Some(id(0)), &orders);
-    assert_eq!(active.slips, [(0, 2999, Some(100.))]);
+    assert_eq!(active.slips, [(0, 2999)]);
 }
 
 #[test]
 fn large_map_headless_draw_culls_zoomed_geometry_and_reports_frame_cpu() {
     let catalogue = catalogue();
-    let society = ownership::SocietySnapshot::default();
+    let society = SocietyData::default();
     let model = model(&catalogue, &society, None);
     let context = egui::Context::default();
     osg_ui::theme::install(&context);
@@ -331,7 +330,7 @@ fn large_map_headless_draw_culls_zoomed_geometry_and_reports_frame_cpu() {
 #[test]
 fn desktop_map_keeps_its_height_across_frames_and_search_results() {
     let catalogue = catalogue();
-    let mut society = ownership::SocietySnapshot::default();
+    let mut society = SocietyData::default();
     society.directory.sovereignties.insert(
         id(5002),
         ownership::Sovereignty {

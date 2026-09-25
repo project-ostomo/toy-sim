@@ -1,9 +1,10 @@
 use super::*;
 mod politics;
 mod presentation;
+mod tree;
 use osg_model::ownership::{
     AccessGrant, AccessPolicy, AssetAffiliation, OwnershipDirectory, Permission, Principal,
-    SocietyCommand, SocietySnapshot, Standing,
+    SocietyCommand, Standing,
 };
 use std::collections::BTreeSet;
 
@@ -17,26 +18,22 @@ enum Tab {
     Directory,
     Assets,
     ComputerGas,
-    Profiles,
     Politics,
 }
 
 #[derive(Resource, Default)]
-pub(super) struct State {
+pub struct State {
     tab: Tab,
     selected: Option<Principal>,
     selected_bloc: Option<Id>,
     members: bool,
     search: String,
-    after: Option<Principal>,
-    next: Option<Principal>,
+    tree: tree::Tree,
     assets_after: Option<Id>,
     assets_next: Option<Id>,
     loaded_asset: Option<Id>,
     error: Option<String>,
     organization_name: String,
-    profile: Option<Id>,
-    profile_search: String,
     asset: Option<Id>,
     draft: Option<AccessPolicy>,
     draft_owner: Option<Principal>,
@@ -47,8 +44,49 @@ pub(super) struct State {
 }
 
 impl State {
+    pub fn new(account: AccountId) -> Self {
+        Self {
+            selected: Some(Principal::Player(account)),
+            ..Default::default()
+        }
+    }
+
     #[cfg(test)]
-    pub(super) fn gallery_variant(&mut self, variant: &str, selected: Principal) {
+    pub fn gallery_loaded(&mut self, snapshot: &SocietyData) {
+        use crate::state::requests::directory::{Branch, Status};
+        let branches = [Branch::Blocs, Branch::Polities, Branch::Players(None)]
+            .into_iter()
+            .chain(
+                snapshot
+                    .directory
+                    .sovereignties
+                    .keys()
+                    .copied()
+                    .map(Branch::Organizations),
+            )
+            .chain(
+                snapshot
+                    .directory
+                    .organizations
+                    .keys()
+                    .copied()
+                    .map(|id| Branch::Players(Some(id))),
+            );
+        self.tree.status = branches
+            .map(|branch| {
+                (
+                    branch,
+                    Status {
+                        loaded: true,
+                        error: None,
+                    },
+                )
+            })
+            .collect();
+    }
+
+    #[cfg(test)]
+    pub fn gallery_variant(&mut self, variant: &str, selected: Principal) {
         match variant {
             "directory" => self.tab = Tab::Directory,
             "profile" | "polity" => {
@@ -86,32 +124,54 @@ impl State {
         }
     }
 
-    pub(super) fn request(
+    pub fn request(
         &mut self,
         open: bool,
         session: &crate::state::SocietyState,
-    ) -> crate::state::requests::SocietyInterest {
-        self.next = session.directory_next;
+    ) -> crate::state::requests::SocietyQuery {
+        self.tree.sync(session);
         self.assets_next = session.society_assets_next;
         self.loaded_asset = session.society_asset_loaded;
         self.error = session.society_error.clone();
-        crate::state::requests::SocietyInterest {
-            declaration_history: self.politics.history,
+        crate::state::requests::SocietyQuery {
+            declaration_history: (open && self.tab == Tab::Politics)
+                .then_some(self.politics.history)
+                .flatten(),
             history_before: self.politics.history_before,
             directory: open,
             search: self.search.clone(),
-            after: self.after,
+            branches: {
+                let mut branches = self.tree.requested.clone();
+                match self.selected {
+                    Some(Principal::Organization(id)) if self.members => {
+                        branches
+                            .insert(crate::state::requests::directory::Branch::Players(Some(id)));
+                    }
+                    Some(Principal::Sovereignty(id)) => {
+                        branches
+                            .insert(crate::state::requests::directory::Branch::Organizations(id));
+                    }
+                    _ => {}
+                }
+                branches
+            },
             selected: if self.tab == Tab::Politics {
                 self.politics.owner.or(self.selected)
             } else {
                 self.selected
             },
-            asset: self.asset,
+            asset: (open && self.tab == Tab::Assets)
+                .then_some(self.asset)
+                .flatten(),
             assets_after: self.assets_after,
+            assets: open && self.tab == Tab::Assets,
+            profiles: open && self.tab == Tab::Assets,
+            gas: open && self.tab == Tab::ComputerGas,
         }
     }
 
-    pub(super) fn inspect(&mut self, principal: Principal) {
+    pub fn inspect(&mut self, principal: Principal) {
+        self.tree.reveal_selected = true;
         self.tab = Tab::Directory;
         self.selected = Some(principal);
         self.selected_bloc = None;
@@ -134,120 +194,13 @@ impl State {
     }
 }
 
-pub(super) fn draw(
-    ui: &mut egui::Ui,
-    state: &mut State,
-    model: &FrameModel,
-    intents: &mut Vec<Intent>,
-) {
+pub fn draw(ui: &mut egui::Ui, state: &mut State, model: &FrameModel, intents: &mut Vec<Intent>) {
     if let Some(error) = &state.error {
         ui.colored_label(THREAT, error);
-        return;
     }
     ui.add_enabled_ui(model.connected, |ui| {
         presentation::draw(ui, state, model, intents)
     });
-}
-
-fn selected_organization(snapshot: &SocietySnapshot, principal: Option<Principal>) -> Option<Id> {
-    match principal? {
-        Principal::Organization(id) => Some(id),
-        Principal::Player(account) => snapshot.directory.players.get(&account)?.organization,
-        Principal::Sovereignty(_) => None,
-    }
-}
-
-fn profiles_panel(ui: &mut egui::Ui, state: &mut State, snapshot: &SocietySnapshot) {
-    let profiles = organizations::catalogue();
-    let membership = selected_organization(snapshot, Some(Principal::Player(snapshot.account)));
-    state.profile = state
-        .profile
-        .or(membership)
-        .or_else(|| profiles.first().map(|profile| Id(profile.id())));
-
-    ui.horizontal(|ui| {
-        ui.label(format!("{} public organization profiles", profiles.len()));
-        if ui
-            .add_enabled(membership.is_some(), egui::Button::new("My organization"))
-            .clicked()
-        {
-            state.profile = membership;
-            state.selected = membership.map(Principal::Organization);
-        }
-    });
-    ui.add(
-        egui::TextEdit::singleline(&mut state.profile_search)
-            .hint_text("Find an organization, sovereignty, home system, or role…")
-            .desired_width(f32::INFINITY),
-    );
-    ui.add_space(4.0);
-
-    let search = state.profile_search.trim().to_lowercase();
-    let matches: Vec<_> = profiles
-        .iter()
-        .filter(|profile| profile_matches(profile, &search))
-        .collect();
-    let height = ui.available_height().max(0.0);
-    ui.columns(2, |columns| {
-        egui::ScrollArea::vertical()
-            .id_salt("organization_profile_directory")
-            .auto_shrink([false, false])
-            .min_scrolled_height(0.0)
-            .max_height(height)
-            .show(&mut columns[0], |ui| {
-                if matches.is_empty() {
-                    ui.weak("No matching public organizations.");
-                }
-                for profile in matches {
-                    let id = Id(profile.id());
-                    if ui
-                        .selectable_label(state.profile == Some(id), &profile.name)
-                        .clicked()
-                    {
-                        state.profile = Some(id);
-                        state.selected = Some(Principal::Organization(id));
-                    }
-                }
-            });
-
-        egui::ScrollArea::vertical()
-            .id_salt(("organization_profile_record", state.profile))
-            .auto_shrink([false, false])
-            .min_scrolled_height(0.0)
-            .max_height(height)
-            .show(&mut columns[1], |ui| {
-                let Some(id) = state.profile else {
-                    ui.weak("Select an organization to read its public record.");
-                    return;
-                };
-                if Some(id) == membership {
-                    ui.colored_label(ACCENT, "YOUR ORGANIZATION");
-                }
-                if snapshot.directory.organizations.contains_key(&id)
-                    && ui.button("Affiliation & membership").clicked()
-                {
-                    state.inspect(Principal::Organization(id));
-                }
-                if let Some(profile) = organizations::profile(id.0) {
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                        profile_record(ui, state, profile);
-                    });
-                } else {
-                    ui.heading(name(&snapshot.directory, Principal::Organization(id)));
-                    ui.weak("This organization has no published historical profile.");
-                }
-            });
-    });
-}
-
-fn profile_matches(profile: &OrganizationProfile, search: &str) -> bool {
-    profile.name.to_lowercase().contains(search)
-        || profile.sovereignty.to_lowercase().contains(search)
-        || profile.home_system.to_lowercase().contains(search)
-        || profile
-            .roles
-            .iter()
-            .any(|role| role_name(*role).to_lowercase().contains(search))
 }
 
 fn role_name(role: OrganizationRole) -> &'static str {
@@ -265,8 +218,7 @@ fn role_name(role: OrganizationRole) -> &'static str {
 }
 
 fn profile_record(ui: &mut egui::Ui, state: &mut State, profile: &OrganizationProfile) {
-    ui.heading(&profile.name);
-    ui.label(format!("{} · {}", profile.sovereignty, profile.home_system));
+    ui.label(format!("Home system: {}", profile.home_system));
     ui.weak(format!(
         "Founded {} · Public record {}",
         profile.founded_year,
@@ -323,8 +275,7 @@ fn profile_relationships(ui: &mut egui::Ui, state: &mut State, profile: &Organiz
         ui.horizontal_wrapped(|ui| {
             if ui.link(&relation.organization).clicked() {
                 let id = Id(organizations::organization_id(&relation.organization));
-                state.profile = Some(id);
-                state.selected = Some(Principal::Organization(id));
+                state.inspect(Principal::Organization(id));
             }
             ui.colored_label(super::super::standing::color(Some(standing)), kind);
         });
@@ -333,7 +284,7 @@ fn profile_relationships(ui: &mut egui::Ui, state: &mut State, profile: &Organiz
     }
 }
 
-fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietySnapshot) {
+fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietyData) {
     ui.weak("Computers with the same owner share one global gas account.");
     ui.small("Available funds new work. Reserved is committed to pending work. Spent is total billed usage.");
     ui.add_space(8.);
@@ -386,7 +337,7 @@ fn gas_amount(amount: u64) -> String {
     grouped
 }
 
-pub(super) fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
+pub fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
     match principal {
         Principal::Sovereignty(id) => directory
             .sovereignties
@@ -416,7 +367,7 @@ fn lineage(directory: &OwnershipDirectory, principal: Principal) -> String {
         .join(" › ")
 }
 
-pub(super) fn principals(directory: &OwnershipDirectory) -> impl Iterator<Item = Principal> + '_ {
+pub fn principals(directory: &OwnershipDirectory) -> impl Iterator<Item = Principal> + '_ {
     directory
         .players
         .keys()
@@ -438,7 +389,7 @@ pub(super) fn principals(directory: &OwnershipDirectory) -> impl Iterator<Item =
         )
 }
 
-pub(super) fn standing_card(
+pub fn standing_card(
     ui: &mut egui::Ui,
     directory: &OwnershipDirectory,
     report: &ownership::StandingReport,
@@ -502,9 +453,9 @@ pub(super) fn standing_card(
     ui.weak("Contact identity follows its IFF broadcast.");
 }
 
-pub(super) fn contact_card(
+pub fn contact_card(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     report: &ownership::StandingReport,
     intents: &mut Vec<Intent>,
 ) {
@@ -519,7 +470,7 @@ pub(super) fn contact_card(
 
 fn contact_card_contents(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     report: &ownership::StandingReport,
     intents: &mut Vec<Intent>,
 ) {
@@ -640,7 +591,7 @@ fn contact_card_contents(
 
 fn membership(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     principal: Principal,
     intents: &mut Vec<Intent>,
 ) {
@@ -752,7 +703,7 @@ fn membership(
 fn assets_panel(
     ui: &mut egui::Ui,
     state: &mut State,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     intents: &mut Vec<Intent>,
 ) {
     let directory = &snapshot.directory;
@@ -867,7 +818,7 @@ fn assets_panel(
 
 fn transfer_editor(
     ui: &mut egui::Ui,
-    snapshot: &SocietySnapshot,
+    snapshot: &SocietyData,
     asset: &AssetAffiliation,
     selected: &mut Option<Principal>,
     intents: &mut Vec<Intent>,
@@ -907,7 +858,7 @@ fn transfer_editor(
     ui.weak("You must administer both owners. The ship keeps its current advertised IFF after transfer.");
 }
 
-fn transfer_recipients(snapshot: &SocietySnapshot, asset: &AssetAffiliation) -> Vec<Principal> {
+fn transfer_recipients(snapshot: &SocietyData, asset: &AssetAffiliation) -> Vec<Principal> {
     let directory = &snapshot.directory;
     if !directory.administers(snapshot.account, asset.owner) {
         return Vec::new();
@@ -919,7 +870,7 @@ fn transfer_recipients(snapshot: &SocietySnapshot, asset: &AssetAffiliation) -> 
         .collect()
 }
 
-pub(super) fn policy_editor(
+pub fn policy_editor(
     ui: &mut egui::Ui,
     directory: &OwnershipDirectory,
     draft: &mut AccessPolicy,

@@ -7,7 +7,7 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
     let owner = Principal::Player(account);
     let station = Id([2; 16]);
     let item = industry_model::CargoItem::Resource("water".into());
-    let mut society = ownership::SocietySnapshot {
+    let mut society = SocietyData {
         account,
         ..Default::default()
     };
@@ -19,8 +19,8 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
             organization: None,
         },
     );
-    let mut snapshot = AssetsSnapshot {
-        subscription: AssetsQuery {
+    let mut snapshot = AssetsView {
+        query: AssetsQuery {
             limit: 128,
             ..Default::default()
         },
@@ -158,7 +158,7 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
         declaration_history_next: None,
         declaration_history_key: None,
         industry: empty_industry(),
-        industry_ready: true,
+
         navigation_status: &NavigationStatus::Ready,
         navigation_hash: None,
         navigation: &navigation,
@@ -172,7 +172,7 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
         connected: true,
         status: "",
         time_ns: 0,
-        calendar_unix_ms: Some(0),
+        calendar_unix_ms: 0,
         diagnostics: Default::default(),
         orbits: true,
     };
@@ -184,12 +184,12 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
             let mut state = super::super::State::default();
             let mut workspace = crate::ui::shell::tests::framing::Workspace::new(&ctx);
             state.browser.focused = Some(Id([3; 16]));
-            snapshot.subscription.item = None;
+            snapshot.query.item = None;
             if variant == "type" {
                 state.browser.focused = None;
                 state.browser.grouping = Grouping::Type;
                 state.browser.query.item = Some(item.clone());
-                snapshot.subscription.item = Some(item.clone());
+                snapshot.query.item = Some(item.clone());
             } else if variant == "bulk" {
                 state.profile = Some(profile);
                 state.browser.grouping = Grouping::Type;
@@ -213,13 +213,7 @@ fn assets_gallery_covers_location_type_and_bulk_selection() {
                     |ui| {
                         let mut intents = Vec::new();
                         workspace.show(ui, crate::ui::shell::ASSETS, &model, |ui| {
-                            super::super::draw(
-                                ui,
-                                &mut state,
-                                &model,
-                                Some(&snapshot),
-                                &mut intents,
-                            );
+                            super::super::draw(ui, &mut state, &model, &snapshot, &mut intents);
                         });
                         assert!(intents.is_empty());
                     },

@@ -118,6 +118,15 @@ pub fn screen_event(index: u32) -> Result<abi::ScreenEvent, i32> {
     read(|p, n| unsafe { abi::raw::screen_event_read(index, p, n) })
 }
 
+/// Send an opaque message from a display to its flight program's request queue.
+#[cfg(target_arch = "wasm32")]
+pub fn computer_send(bytes: &[u8]) -> Result<(), i32> {
+    if bytes.len() > abi::MAX_COMPUTER_MESSAGE_BYTES {
+        return Err(abi::ERR_LIMIT);
+    }
+    check(unsafe { abi::raw::computer_send(bytes.as_ptr(), bytes.len() as u32) })
+}
+
 #[cfg(target_arch = "wasm32")]
 pub fn attitude(value: &abi::AttitudeState) -> Result<(), i32> {
     write(value, |p, n| unsafe {

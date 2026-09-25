@@ -64,10 +64,13 @@ struct FragmentVisual {
     camera: Entity,
 }
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
+    app.add_systems(Last, prepare.in_set(crate::state::ClientSystems::Gameplay));
     app.add_systems(
         PostUpdate,
-        (prepare, cool, update).chain().after(super::update),
+        (cool, update)
+            .before(TransformSystems::Propagate)
+            .in_set(crate::state::ClientSystems::Gameplay),
     );
 }
 

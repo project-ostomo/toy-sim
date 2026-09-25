@@ -17,7 +17,7 @@ const ZERO_MAGNITUDE_FLUX_W_M2: f64 = 3.6e-8;
 const REFERENCE_MAGNITUDE: f64 = 6.;
 
 #[derive(Component)]
-pub(super) struct VisualContact(pub Option<osg_model::Id>);
+pub struct VisualContact(pub Option<osg_model::Id>);
 
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
 struct GlintMaterial {
@@ -56,15 +56,15 @@ struct GlintAssets {
 #[derive(Component)]
 struct Glint;
 
-pub(super) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     embedded_asset!(app, "glints.wgsl");
     app.add_plugins(MaterialPlugin::<GlintMaterial>::default())
         .add_systems(Startup, setup)
         .add_systems(
             PostUpdate,
             render
-                .before(bevy::transform::TransformSystems::Propagate)
-                .before(bevy::camera::visibility::VisibilitySystems::CheckVisibility),
+                .in_set(crate::state::ClientSystems::Gameplay)
+                .before(bevy::transform::TransformSystems::Propagate),
         );
 }
 
@@ -79,14 +79,14 @@ fn setup(
     });
 }
 
-pub(super) fn diameter_pixels(radius: f64, depth: f64, height: f64, fov: f64) -> f64 {
+pub fn diameter_pixels(radius: f64, depth: f64, height: f64, fov: f64) -> f64 {
     if depth <= radius {
         return f64::INFINITY;
     }
     radius * height / ((depth * depth - radius * radius).sqrt() * (fov * 0.5).tan())
 }
 
-pub(super) fn mesh_needed(pixels: f64, already_spawned: bool) -> bool {
+pub fn mesh_needed(pixels: f64, already_spawned: bool) -> bool {
     let threshold = MESH_PIXELS
         + if already_spawned {
             -MESH_HYSTERESIS_PIXELS

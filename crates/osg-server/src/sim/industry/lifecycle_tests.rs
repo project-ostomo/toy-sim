@@ -6,7 +6,7 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
     let mut app = crate::sim::provision(&[account], None, None).unwrap();
     let world = app.world_mut();
     let facility = world
-        .query_filtered::<Entity, With<IndustryFacility>>()
+        .query_filtered::<Entity, With<IndustrialFacility>>()
         .single(world)
         .unwrap();
     let id = world.get::<identity::Identity>(facility).unwrap().0;
@@ -21,12 +21,12 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
     let metal_before = initial.cargo_quantity(&metal, &catalogue).unwrap();
     let electronics_before = initial.cargo_quantity(&electronics, &catalogue).unwrap();
 
-    seed_demo(world, facility, account).unwrap();
+    world.run_schedule(FixedPreUpdate);
     assert_eq!(
         postcard::to_stdvec(&world.get::<hardware::ShipInventory>(facility).unwrap().0).unwrap(),
         postcard::to_stdvec(&initial).unwrap()
     );
-    execute(
+    enqueue_command(
         world,
         account,
         IndustryCommand::StartRecipe {
@@ -37,10 +37,11 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
         None,
     )
     .unwrap();
-    let job = &world.get::<IndustryFacility>(facility).unwrap().jobs[0];
-    let duration = job.view.duration_ticks;
-    let energy = job.energy_j;
+    let job = &world.get::<IndustrialFacility>(facility).unwrap().jobs[0];
+    let duration = job.work.duration_ticks;
+    let energy = job.work.energy_j;
     let input = job
+        .work
         .inputs
         .iter()
         .find(|stack| stack.item == metal)
@@ -85,7 +86,7 @@ fn starter_stock_survives_initialization_and_real_ticks_finish_a_paid_factory_jo
     let inventory = &world.get::<hardware::ShipInventory>(facility).unwrap().0;
     assert!(
         world
-            .get::<IndustryFacility>(facility)
+            .get::<IndustrialFacility>(facility)
             .unwrap()
             .jobs
             .is_empty()

@@ -1,5 +1,5 @@
 use super::*;
-use crate::sim::{hardware, identity, industry, infrastructure, ownership, travel, vessel};
+use crate::sim::{hardware, identity, infrastructure, ownership, travel, vessel};
 use osg_model::{Id, industry::CargoItem, market::*};
 
 #[cfg(test)]
@@ -77,26 +77,6 @@ impl Transaction<'_> {
 }
 
 impl Economy {
-    pub(super) fn stock_snapshot(
-        &self,
-        owner: Principal,
-        instrument: &Instrument,
-    ) -> Vec<StoredStock> {
-        let Instrument::Commodity { station, .. } = instrument else {
-            return Vec::new();
-        };
-        self.storage
-            .get(&(*station, owner))
-            .into_iter()
-            .flat_map(|stock| stock.iter())
-            .map(|(item, &quantity)| StoredStock {
-                item: item.clone(),
-                quantity,
-                reserved: self.stock_reserved(owner, *station, item),
-            })
-            .collect()
-    }
-
     pub fn custody_totals(&self, station: Id) -> Result<BTreeMap<CargoItem, u64>> {
         let mut totals = BTreeMap::<CargoItem, u64>::new();
         for ((location, _), stock) in &self.storage {
@@ -255,6 +235,5 @@ pub fn apply(world: &mut World, account: AccountId, id: Id, command: MarketComma
     }
     economy.completed.insert((account, id));
     crate::sim::hardware::synchronize_mass(world, &[station_entity, ship_entity]);
-    industry::refresh_publication(world);
     Ok(())
 }

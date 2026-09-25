@@ -3,8 +3,11 @@ pub mod allocation;
 mod attitude;
 #[cfg(any(target_arch = "wasm32", test))]
 mod budget;
+#[cfg(any(target_arch = "wasm32", test))]
+mod display;
 pub mod navigation;
 pub mod prediction;
+mod rendezvous;
 use glam::{DMat3, DQuat, DVec3};
 
 use navigation::{Phase, Pursuit};
@@ -12,14 +15,14 @@ use osg_ship_api::abi::{self, Contact};
 pub mod hardware;
 pub mod weapons;
 use hardware::{Actuation, Capability, Hardware, Sample};
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "world/planner.rs"]
+mod directive_planner;
 #[cfg(target_arch = "wasm32")]
 pub mod firmware;
 #[cfg(any(target_arch = "wasm32", test))]
 #[path = "world/local.rs"]
 mod local_guidance;
-#[cfg(any(target_arch = "wasm32", test))]
-#[path = "world/planner.rs"]
-mod directive_planner;
 #[cfg(target_arch = "wasm32")]
 mod world;
 

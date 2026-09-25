@@ -482,8 +482,7 @@ connection ends, earlier accepted actions are not rolled back.
 | Ship | Apply a [ship command](#ship-commands) with the current authority revision | [Ships](#ships) |
 | RouteRequest / RoutePoll / RouteCancel | Submit, inspect or cancel a route for a controlled ship | [Route planning](#route-planning) |
 | Society | Change ownership, membership, standing or access | [Society](#society) |
-| IndustrySubscribe / IndustryUnsubscribe | Set or remove the session's industry selection | [Industry and cargo](#industry-and-cargo) |
-| Industry | Run an industry or cargo operation | [Industry and cargo](#industry-and-cargo) |
+|| Industry | Run an industry or cargo operation | [Industry and cargo](#industry-and-cargo) |
 | ChatSubscribe / ChatUnsubscribe / ChatSend | Local chat on a focused view | [Local chat](#local-chat) |
 | Debug | Privileged operations | [Debug](#debug) |
 
@@ -941,10 +940,11 @@ a subscribed, available display.
 | SetAssetAccess | Requires ManageAccess. Every grant principal must exist. |
 | TransferAsset | Requires administration of both the old and new owners. Clears the asset's access grants. Does not transfer IFF identity. |
 
-Updated ownership and access are published in the society snapshot.
-
-`society` in State is a complete replacement for the account's visible
-directory, assets and gas accounts.
+Ownership and access are queried through [typed RPC](rpc.md#directory-and-scoped-lists).
+Blocs, polities, organizations within a polity, and players within an organization
+are complete scoped lists. Global identity search includes ancestor records.
+Wallet lists, gas accounts, access profiles, and station stock are complete
+authorized lists as well.
 
 - Personal standing information is filtered to the observer's lineage.
 - Gas amounts are integer available, reserved and spent units. Only the
@@ -954,37 +954,14 @@ directory, assets and gas accounts.
 
 ## Industry and cargo
 
-### Subscription
+### Queries
 
-An [`IndustrySubscription`](protocol-schema.md#industrysubscription) contains a
-client-chosen revision, an optional directory page, distinct inventory IDs in
-priority order, an optional hangar selection, and catalogue interest.
-
-- Each revision must be higher than the last accepted revision, even after an
-  unsubscribe. The first may be zero.
-- `directory_after` is an exclusive ID cursor and requires `directory = true`.
-- Directory and hangar results are ordered by ID and filtered for access before
-  pagination. To get the next page, subscribe again with a new revision and the
-  returned cursor.
-
-### Snapshots
-
-An [`IndustrySnapshot`](protocol-schema.md#industrysnapshot) replaces the
-selected page, hangar and facility details for its subscription revision.
-Ignore snapshots from obsolete subscriptions.
-
-- `Frame.industry = None` means no update.
-- **Catalogue.** A missing catalogue in a received snapshot keeps the last one,
-  and a present catalogue replaces it. The catalogue revision is an opaque
-  content hash. With catalogue interest, a catalogue is sent on a new
-  subscription or a revision change. Unchanged snapshots may be omitted.
-- **Size.** Updates have a size budget. Inventories that don't fit are listed in
-  `omitted_inventories`; clear their old details rather than keeping stale
-  stacks. Stack lists are never partially truncated. If an individual inventory
-  is too large, or directory, hangar or catalogue overhead exceeds the budget,
-  the snapshot carries an error and empty details.
-- Unsubscribing, reconnecting and a world change clear the selection state and
-  retained details.
+Industry uses [typed RPC](rpc.md#inventory-queries). `list_facilities` and
+`hangar` return authorized pages; `facility` returns one inventory and
+`industry_catalogue` returns the catalogue. The client composes these results,
+tracks each inventory independently, and rejects superseded responses using
+its request context. There are no industry subscriptions or screen snapshots
+in main frames.
 
 ### Cargo model
 
@@ -1005,8 +982,8 @@ the server.
 | Refill | Move resource units from an accessible source into a ship's compatible tank storage. |
 | UnloadProduct | Move resource units from a facility's product storage to a target inventory. |
 
-Remote management does not imply remote cargo movement. Failures are action
-errors. Jobs and reservations appear in later industry snapshots.
+Remote management does not imply remote cargo movement. Mutations return RPC
+errors. Subsequent inventory queries reflect updated jobs and reservations.
 
 #### Example: dock, trade and refuel
 
@@ -1017,12 +994,13 @@ sequenceDiagram
     C->>S: Ship { ship, rev, Dock { station, bay 0 } }
     S->>C: State: result error = None
     S->>C: State: event docked, presence Docked { station, 0 }
-    C->>S: IndustrySubscribe { revision 1, inventories [ship, station], catalogue true }
-    S->>C: State: industry snapshot (stacks for ship and station, catalogue)
-    C->>S: Industry Transfer { source ship, target station, Resource(ore), 500 }
-    C->>S: Industry Refill { source station, ship, resource fuel, 200 }
-    S->>C: State: two results, error = None
-    S->>C: State: industry snapshot (updated stacks)
+    C->>S: RPC facility(ship), facility(station), industry_catalogue()
+    S->>C: RPC results: inventories and catalogue
+    C->>S: RPC transfer_cargo(operation, ship, station, Resource(ore), 500)
+    C->>S: RPC refill_ship(operation, station, ship, fuel, 200)
+    S->>C: RPC mutation results
+    C->>S: RPC facility(ship), facility(station)
+    S->>C: RPC results: updated inventories
     C->>S: Ship { ship, rev, Undock }
     S->>C: State: event undocked, presence Space
     Note over C: Transfers need physical reachability at both ends.
@@ -1275,8 +1253,7 @@ the byte limit, and with no Unicode control characters.
 | Galactic or relative destination | Each coordinate's absolute value <= 2^110 |
 | Guidance | Finite range 0–1e12 m; direction target only with Align, with finite components and squared length > 1e-12 |
 | ChatSubscribe / ChatSend | Positive subscription revision; ChatSend text follows the text rules, <= 1024 bytes |
-| IndustrySubscribe | <= 8 unique inventories; directory cursor only if the directory is requested |
-| StartRecipe | Recipe ID follows the text rules, <= 128 bytes; batches 1–10,000 |
+|| StartRecipe | Recipe ID follows the text rules, <= 128 bytes; batches 1–10,000 |
 | Transfer | Distinct source and target; positive quantity; resource or part ID follows the text rules, <= 128 bytes |
 | Refill / UnloadProduct | Positive quantity; resource ID follows the text rules, <= 128 bytes |
 | CreateOrganization | Name follows the text rules, <= 128 bytes |
@@ -1372,10 +1349,8 @@ failure levels from [Failure handling](#failure-handling).
 | Personal standing overrides | 256 | Action rejected |
 | Access grants per SetAssetAccess | 256 | Session disconnected (validation) |
 | Name, recipe, resource and part ID text | 128 bytes | Session disconnected (validation) |
-| Inventories per industry subscription | 8 | Session disconnected (validation) |
-| Directory or hangar entries per page | 128 | Paginated |
-| Industry update size | 512 KiB | Inventories listed in `omitted_inventories` |
-| Batches per StartRecipe | 1–10,000 | Session disconnected (validation) |
+|| Facility directory or hangar entries per page | 128 | Paginated |
+|| Batches per StartRecipe | 1–10,000 | Session disconnected (validation) |
 | Chat broadcast radius | 500 AU (inclusive sphere) | Not delivered |
 | Chat send rate per ship (all callers) | 3 per rolling 30 simulation ticks | Action rejected |
 | Chat pending queue | 256 messages | Action rejected |

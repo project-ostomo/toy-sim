@@ -10,7 +10,7 @@ use osg_model::Id;
 use osg_ships::{Catalogue, appearance::PreparedAppearance};
 use std::path::Path;
 
-pub(crate) fn path(hash: [u8; 32]) -> String {
+pub fn path(hash: [u8; 32]) -> String {
     use std::fmt::Write;
     let mut path = String::from("server://");
     for byte in hash {
@@ -56,35 +56,60 @@ impl AssetReader for ServerReader {
     }
 }
 
-pub(crate) fn register_source(app: &mut App, client: OsgNetClient) {
+pub fn register_source(app: &mut App, client: OsgNetClient) {
     app.register_asset_source(
         "server",
         AssetSourceBuilder::new(move || Box::new(ServerReader(client.clone()))),
     );
 }
 
-pub(crate) fn install(app: &mut App) {
+pub fn install(app: &mut App) {
     app.init_asset::<ShipAppearance>()
         .init_asset::<NavigationDefinition>()
+        .init_asset::<NavigationAccess>()
         .init_resource::<NavigationLoad>()
         .init_asset_loader::<ShipLoader>()
         .init_asset_loader::<NavigationLoader>()
+        .init_asset_loader::<NavigationAccessLoader>()
         .add_systems(
-            Update,
-            synchronize_appearances
-                .after(crate::state::PresentationSet::Interpolate)
-                .before(crate::state::PresentationSet::Views),
+            Last,
+            synchronize_appearances.in_set(crate::state::ClientSystems::Gameplay),
         );
     app.add_systems(
-        Update,
-        synchronize_navigation
-            .after(crate::state::PresentationSet::Interpolate)
-            .before(crate::state::PresentationSet::Views),
+        Last,
+        synchronize_navigation.in_set(crate::state::ClientSystems::Gameplay),
     );
 }
 
 #[derive(Asset, TypePath)]
-pub(crate) struct NavigationDefinition(pub std::sync::Arc<osg_model::InhabitedDirectory>);
+pub struct NavigationDefinition(pub std::sync::Arc<osg_model::InhabitedDirectory>);
+
+#[derive(Asset, TypePath)]
+pub struct NavigationAccess(pub std::collections::BTreeSet<Id>);
+
+#[derive(Default, TypePath)]
+struct NavigationAccessLoader;
+
+impl AssetLoader for NavigationAccessLoader {
+    type Asset = NavigationAccess;
+    type Settings = ();
+    type Error = anyhow::Error;
+
+    async fn load(
+        &self,
+        reader: &mut dyn Reader,
+        _: &(),
+        _: &mut LoadContext<'_>,
+    ) -> anyhow::Result<NavigationAccess> {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).await?;
+        Ok(NavigationAccess(
+            osg_protocol::navigation::decode_access(&bytes)?
+                .into_iter()
+                .collect(),
+        ))
+    }
+}
 
 #[derive(Default, TypePath)]
 struct NavigationLoader;
@@ -116,37 +141,15 @@ struct NavigationLoad {
 }
 
 fn synchronize_navigation(
-    identity: Option<Res<crate::state::SessionInfo>>,
-    session: Option<ResMut<crate::state::NavigationState>>,
+    identity: Res<crate::state::GameSession>,
+    mut session: ResMut<crate::state::NavigationState>,
     mut load: ResMut<NavigationLoad>,
     server: Res<AssetServer>,
     assets: Res<Assets<NavigationDefinition>>,
 ) {
     use crate::state::NavigationStatus;
-    let (Some(mut session), Some(identity)) = (session, identity) else {
-        return;
-    };
-    if session.navigation.systems.is_empty() {
-        if let Ok(universe) = crate::ui::celestials::shared_universe() {
-            let catalogue = osg_model::NavigationCatalogue {
-                topology_revision: 1,
-                systems: universe
-                    .systems()
-                    .iter()
-                    .map(|system| osg_model::NavigationSystem {
-                        id: Id(system.id),
-                        name: system.name.to_string(),
-                        position: system.position,
-                        sovereignty: None,
-                    })
-                    .collect(),
-                beacons: session.navigation.beacons.clone(),
-            };
-            session.navigation = std::sync::Arc::new(catalogue);
-        }
-    }
-    if load.generation != identity.generation || load.hash != session.navigation_hash {
-        load.generation = identity.generation;
+    if load.generation != identity.key.generation || load.hash != session.navigation_hash {
+        load.generation = identity.key.generation;
         load.hash = session.navigation_hash;
         load.asset = load.hash.map(|hash| server.load(path(hash)));
     }
@@ -158,26 +161,22 @@ fn synchronize_navigation(
     };
     let status = if let Some(definition) = assets.get(handle) {
         if !std::sync::Arc::ptr_eq(&session.inhabited, &definition.0) {
-            if let Ok(universe) = crate::ui::celestials::shared_universe() {
-                if definition
-                    .0
-                    .systems
-                    .iter()
-                    .any(|id| universe.system_index(id.0).is_none())
-                {
-                    session.navigation_status =
-                        NavigationStatus::Failed("directory contains an unknown system".into());
-                    return;
-                }
+            let universe = &identity.universe;
+            if definition
+                .0
+                .systems
+                .iter()
+                .any(|id| universe.system_index(id.0).is_none())
+            {
+                session.navigation_status =
+                    NavigationStatus::Failed("directory contains an unknown system".into());
+                return;
             }
             let old = session.inhabited.clone();
             let navigation = std::sync::Arc::make_mut(&mut session.navigation);
-            if let Ok(universe) = crate::ui::celestials::shared_universe() {
-                for id in old.ownership.keys().chain(definition.0.ownership.keys()) {
-                    if let Some(index) = universe.system_index(id.0) {
-                        navigation.systems[index].sovereignty =
-                            definition.0.ownership.get(id).copied();
-                    }
+            for id in old.ownership.keys().chain(definition.0.ownership.keys()) {
+                if let Some(index) = universe.system_index(id.0) {
+                    navigation.systems[index].sovereignty = definition.0.ownership.get(id).copied();
                 }
             }
             navigation.topology_revision = navigation.topology_revision.wrapping_add(1);
@@ -196,7 +195,7 @@ fn synchronize_navigation(
 }
 
 #[derive(Asset, TypePath)]
-pub(crate) struct ShipAppearance(pub PreparedAppearance);
+pub struct ShipAppearance(pub PreparedAppearance);
 
 #[derive(Default, TypePath)]
 struct ShipLoader;
@@ -220,15 +219,15 @@ impl AssetLoader for ShipLoader {
 }
 
 #[derive(Component)]
-pub(crate) struct MeshDemand;
+pub struct MeshDemand;
 
 #[derive(Component)]
-pub(crate) struct Appearance {
+pub struct Appearance {
     pub hash: [u8; 32],
     pub asset: Handle<ShipAppearance>,
 }
 
-pub(crate) fn synchronize_appearances(
+pub fn synchronize_appearances(
     mut commands: Commands,
     server: Res<AssetServer>,
     sources: Query<

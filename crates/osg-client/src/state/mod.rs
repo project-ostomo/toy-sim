@@ -1,20 +1,30 @@
+pub use requests::views::*;
 #[derive(bevy::prelude::Resource, Default)]
 #[cfg(feature = "ui")]
-pub(crate) struct SlipEffects(pub osg_model::slip_visual::SlipPresentation);
+pub struct SlipEffects(pub osg_model::slip_visual::SlipPresentation);
 
 mod calendar;
 mod chat;
-pub(super) use calendar::CalendarClock;
-pub(crate) use chat::{ChatFocus, ChatState};
+pub use calendar::CalendarClock;
+pub use chat::{ChatFocus, ChatState};
 mod diagnostics;
 mod domains;
-pub(super) use diagnostics::ClientDiagnostics;
-pub(super) use domains::*;
+pub use diagnostics::ClientDiagnostics;
+pub use domains::*;
 mod presentation;
-pub(crate) use crate::Outgoing;
+pub use crate::Outgoing;
+mod lifecycle;
+mod query;
 mod replication;
-pub(crate) mod requests;
+pub mod requests;
 mod transport;
+#[cfg(test)]
+pub use lifecycle::render_session_status;
+pub use lifecycle::{
+    Bootstrap, ClientPhase, ClientSystems, GameSession, SessionFailure, SessionInstalled,
+    SessionKey,
+};
+pub use query::{QueryState, render_query};
 
 use crate::{EventSubscription, OsgNetClient, playback::Playback};
 use bevy::prelude::*;
@@ -22,56 +32,57 @@ use osg_model::*;
 use presentation::interpolate;
 use replication::apply;
 use std::collections::BTreeMap;
-use transport::{receive, send};
+pub use transport::SessionEvents;
+use transport::{receive_session_events, send};
 
 #[derive(Component)]
-pub(super) struct WorldMember;
+pub struct WorldMember;
 
 #[derive(Component)]
-pub(super) struct Contact(pub SensorObservation, pub ContactRef);
+pub struct Contact(pub SensorObservation, pub ContactRef);
 
 #[derive(Component)]
-pub(super) struct Optical(pub optical::OpticalObservation);
+pub struct Optical(pub optical::OpticalObservation);
 
 #[derive(Component, Default)]
-pub(super) struct OpticalLight {
+pub struct OpticalLight {
     previous: f64,
     current: f64,
     pub display_w: f64,
 }
 
 #[derive(Component)]
-pub(super) struct OwnedShip(pub ShipTelemetry);
+pub struct OwnedShip(pub ShipTelemetry);
 
 #[derive(Component)]
-pub(super) struct ShipDetails(pub ShipPresentation);
+pub struct ShipDetails(pub ShipPresentation);
 
 #[derive(Component)]
-pub(super) struct NavigationObject(pub NavigationBeacon);
+pub struct NavigationObject(pub NavigationBeacon);
 
 #[derive(Component)]
-pub(super) struct ViewObservation(pub ViewState);
+pub struct ViewObservation(pub ViewState);
 
 #[derive(Component, Default)]
-pub(super) struct ViewSystems(pub Vec<Id>);
+pub struct ViewSystems(pub Vec<Id>);
 
 #[derive(Component)]
-pub(super) struct Celestial(pub CelestialPresentation);
+pub struct Celestial(pub CelestialPresentation);
 
 #[derive(Component)]
-pub(super) struct CelestialSystem(pub Id);
+pub struct CelestialSystem(pub Id);
 
 #[derive(Component, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SpatialInstance(pub Id);
+pub struct SpatialInstance(pub Id);
 
 #[derive(Component)]
-pub(super) struct DisplayPose(pub Pose);
+pub struct DisplayPose(pub Pose);
 
 #[derive(Component)]
-pub(super) struct DisplayVisual(pub ShipVisual);
+pub struct DisplayVisual(pub ShipVisual);
 
 #[derive(Component)]
-pub(super) struct CombatPublication(pub CombatEvent);
+pub struct CombatPublication(pub CombatEvent);
 
 #[derive(Component)]
 struct PoseSamples {
@@ -86,78 +97,24 @@ struct VisualSamples {
 }
 
 #[derive(Resource, Default)]
-pub(super) struct RenderTime {
+pub struct RenderTime {
     pub previous_ns: u64,
     pub current_ns: u64,
     pub display_ns: u64,
 }
 
 #[derive(Resource, Default)]
-pub(super) struct SessionInfo {
-    pub world: Option<Id>,
-    pub generation: u64,
+pub struct SessionInfo {
     pub tick: u64,
     pub sequence: u64,
     pub capabilities: Vec<DebugCapability>,
     pub status: String,
 }
 
-#[derive(Resource, Default)]
-pub(super) struct IndustryState {
-    pub snapshot: industry::IndustrySnapshot,
-    pub interest: Option<industry::IndustryQuery>,
-    pub(crate) load: requests::Load<industry::IndustryQuery, industry::IndustrySnapshot>,
-    revision: u64,
-}
-
-impl IndustryState {
-    pub fn ready(&self) -> bool {
-        self.interest.as_ref().is_some_and(|subscription| {
-            subscription.revision == self.snapshot.subscription_revision
-        })
-    }
-
-    pub fn subscribe(&mut self, mut wanted: Option<industry::IndustryQuery>) {
-        if let Some(wanted) = &mut wanted {
-            let mut seen = std::collections::BTreeSet::new();
-            wanted
-                .inventories
-                .retain(|inventory| seen.insert(*inventory));
-            wanted.revision = self.revision;
-        }
-        if wanted == self.interest {
-            return;
-        }
-        if let Some(mut wanted) = wanted {
-            self.revision = self
-                .revision
-                .checked_add(1)
-                .expect("industry revision exhausted");
-            wanted.revision = self.revision;
-            self.interest = Some(wanted);
-        } else {
-            self.interest = None;
-            self.snapshot = Default::default();
-        }
-    }
-
-    fn apply(&mut self, mut snapshot: industry::IndustrySnapshot) {
-        if self
-            .interest
-            .as_ref()
-            .is_none_or(|subscription| subscription.revision != snapshot.subscription_revision)
-        {
-            return;
-        }
-        if snapshot.catalogue.is_none() {
-            snapshot.catalogue = self.snapshot.catalogue.take();
-        }
-        self.snapshot = snapshot;
-    }
-}
+pub use requests::inventory::IndustryState;
 
 #[derive(Default, Debug, PartialEq, Eq)]
-pub(super) enum NavigationStatus {
+pub enum NavigationStatus {
     #[default]
     Unavailable,
     Loading,
@@ -166,9 +123,9 @@ pub(super) enum NavigationStatus {
 }
 
 #[derive(Event)]
-pub(crate) struct SessionReset;
+pub struct SessionReset;
 
-pub(crate) fn reset_resource<T: Resource<Mutability = bevy::ecs::component::Mutable> + Default>(
+pub fn reset_resource<T: Resource<Mutability = bevy::ecs::component::Mutable> + Default>(
     _: On<SessionReset>,
     mut value: ResMut<T>,
 ) {
@@ -186,7 +143,11 @@ struct Transport {
 struct BufferedPlayback(Playback);
 
 #[derive(Resource, Default)]
+pub struct ScreenFrames(pub BTreeMap<(Id, u8), ScreenUpdate>);
+
+#[derive(Resource, Default)]
 struct Replication {
+    applied: Option<SessionKey>,
     contacts: BTreeMap<(Id, u64), Entity>,
     ships: BTreeMap<Id, Entity>,
     optical: BTreeMap<(u64, Id), Entity>,
@@ -196,13 +157,14 @@ struct Replication {
 }
 
 #[derive(SystemSet, Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(super) enum PresentationSet {
+pub enum PresentationSet {
     Interpolate,
     Views,
     Render,
 }
 
-pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
+pub fn install(app: &mut App, client: OsgNetClient, local: bool) {
+    lifecycle::install(app);
     app.insert_resource(requests::NetworkClient(client.clone()));
     requests::install(app);
     app.insert_resource(Time::<Fixed>::from_duration(osg_model::TICK_DURATION))
@@ -218,7 +180,8 @@ pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
         .init_resource::<RenderTime>()
         .init_resource::<SlipEffects>()
         .add_observer(reset_resource::<SlipEffects>)
-        .init_resource::<CalendarClock>()
+        .init_resource::<Bootstrap>()
+        .init_resource::<SessionEvents>()
         .init_resource::<SessionInfo>()
         .init_resource::<NavigationState>()
         .init_resource::<SocietyState>()
@@ -230,7 +193,9 @@ pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
         .init_resource::<ChatState>()
         .init_resource::<CommandState>()
         .init_resource::<PlaybackState>()
-        .add_observer(domains::reset_navigation)
+        .init_resource::<ScreenFrames>()
+        .add_observer(reset_resource::<ScreenFrames>)
+        .add_observer(reset_resource::<NavigationState>)
         .add_observer(reset_resource::<SocietyState>)
         .add_observer(reset_resource::<WalletState>)
         .add_observer(reset_resource::<MarketState>)
@@ -251,8 +216,15 @@ pub(super) fn install(app: &mut App, client: OsgNetClient, local: bool) {
             )
                 .chain(),
         )
-        .add_systems(PreUpdate, receive)
-        .add_systems(FixedUpdate, (replication::reset, apply).chain())
+        .add_systems(
+            PreUpdate,
+            transport::receive_network_events.before(receive_session_events),
+        )
+        .add_systems(OnEnter(ClientPhase::Loading), lifecycle::start_bootstrap)
+        .add_systems(
+            osg_ui::bevy_egui::EguiPrimaryContextPass,
+            lifecycle::draw_session_status,
+        )
         .add_systems(Update, interpolate.in_set(PresentationSet::Interpolate))
-        .add_systems(FixedPostUpdate, send);
+        .add_systems(FixedPostUpdate, send.in_set(ClientSystems::Gameplay));
 }

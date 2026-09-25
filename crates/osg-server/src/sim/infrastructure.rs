@@ -97,7 +97,38 @@ pub fn spawn(world: &mut World, player: Entity) -> Result<()> {
     super::hardware::synchronize_mass(world, &[player]);
 
     let account = world.get::<identity::Control>(player).unwrap().account;
-    super::industry::seed_demo(world, station, account)?;
+    let mut access = world
+        .get::<ownership::AssetAccess>(station)
+        .map(|access| access.0.clone())
+        .unwrap_or_default();
+    access.grants.push(osg_model::ownership::AccessGrant {
+        principal: Principal::Player(account),
+        permissions: [
+            Permission::View,
+            Permission::Industry,
+            Permission::TransferCargo,
+        ]
+        .into(),
+    });
+    for stack in osg_ships::industry::starter_stock(&catalogue)? {
+        world
+            .get_mut::<hardware::ShipInventory>(station)
+            .unwrap()
+            .0
+            .insert_item(&stack.item, stack.quantity, capacity, &catalogue)?;
+    }
+    let design = &world.get::<vessel::ShipDesign>(station).unwrap().0;
+    let mut facility = super::industry::IndustrialFacility::from_design(design);
+    facility.set_mine(super::industry::MineSource {
+        output: industry::CargoItem::Resource("industrial_ore".into()),
+        units_per_second: 10,
+        remainder: 0,
+        last_recipient: None,
+    });
+    world
+        .entity_mut(station)
+        .insert((ownership::AssetAccess(access), facility));
+    hardware::synchronize_mass(world, &[station]);
     spawn_navigation_installations(world)?;
     hardware::utilities::refresh_emitters(world);
     Ok(())

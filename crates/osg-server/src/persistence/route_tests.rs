@@ -35,9 +35,6 @@ fn restored_itinerary_preserves_intent_budgets_and_failure_but_replans_status() 
             itinerary: vec![ItineraryEntry {
                 directive: Directive::DockAt(station),
                 label: "Destination station".into(),
-                max_loss_ppm: 8.5,
-                fuel_allowance_kg: 168.,
-                estimated_duration_ticks: Some(1200),
             }],
             risk_budget: osg_model::travel::RiskBudget {
                 max_log_loss: osg_model::travel::slip::log_loss_from_ppm(12.5),
