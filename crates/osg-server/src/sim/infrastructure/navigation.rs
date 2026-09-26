@@ -92,7 +92,10 @@ pub fn publish_navigation(world: &mut World) {
                     .as_ref()
                     .clone();
                 inhabited.extend(systems.iter().copied());
-                let directory = &world.resource::<ownership::Directory>().0;
+                let directory = &(&world
+                    .resource::<crate::sim::society::SocietyState>()
+                    .directory)
+                    .0;
                 let organization = owner.and_then(|owner| {
                     directory
                         .lineage(owner.0)
@@ -131,7 +134,10 @@ pub fn publish_navigation(world: &mut World) {
             },
         )
         .collect();
-    let society = &world.resource::<ownership::Directory>().0;
+    let society = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     let ownership: BTreeMap<_, _> = votes
         .into_iter()
         .filter_map(|(system, (total, votes))| {
@@ -324,7 +330,7 @@ mod tests {
             ),
         });
         world.init_resource::<identity::AppearanceAssets>();
-        world.init_resource::<ownership::Directory>();
+        world.init_resource::<crate::sim::society::SocietyState>();
         publish_navigation(&mut world);
         world
     }
@@ -393,9 +399,6 @@ mod tests {
                     .map(|directive| osg_model::travel::ItineraryEntry {
                         directive,
                         label: String::new(),
-                        max_loss_ppm: 0.0,
-                        fuel_allowance_kg: 0.0,
-                        estimated_duration_ticks: None,
                     })
                     .collect(),
                     ..Default::default()
@@ -500,7 +503,7 @@ mod tests {
             .init_resource::<Time<Fixed>>()
             .init_resource::<ActiveSystems>()
             .init_resource::<identity::AppearanceAssets>()
-            .init_resource::<ownership::Directory>()
+            .init_resource::<crate::sim::society::SocietyState>()
             .add_systems(Update, activate);
         let entity = app
             .world_mut()
@@ -600,6 +603,7 @@ mod tests {
 
         world.entity_mut(ship).remove::<travel::PresenceState>();
         world.entity_mut(ship).insert(travel::Transit {
+            ignored_capture_body: None,
             origin,
             position: origin,
             destination: stale,
@@ -678,7 +682,7 @@ mod tests {
             universe: Arc::new(universe),
         });
         world.init_resource::<identity::AppearanceAssets>();
-        world.init_resource::<ownership::Directory>();
+        world.init_resource::<crate::sim::society::SocietyState>();
         let spawn = |world: &mut World| {
             world
                 .spawn((
@@ -728,7 +732,10 @@ mod tests {
             (organization_a, sovereignty_a),
             (organization_b, sovereignty_b),
         ] {
-            let directory = &mut world.resource_mut::<ownership::Directory>().0;
+            let directory = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0;
             directory.sovereignties.insert(
                 sovereignty,
                 osg_model::ownership::Sovereignty {

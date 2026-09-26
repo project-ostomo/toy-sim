@@ -1,10 +1,11 @@
 use super::{hardware, identity, ownership, travel, vessel};
+use crate::sim::society::OwnershipDirectory;
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
 use osg_model::{
     AccountId, Id,
     industry::*,
-    ownership::{OwnershipDirectory, Permission, Principal},
+    ownership::{Permission, Principal},
 };
 use osg_ships::{Catalogue, CompiledShipDesign, Equipment, Inventory, utilities::UtilityDef};
 use serde::{Deserialize, Serialize};
@@ -21,14 +22,12 @@ mod production;
 mod queries;
 mod requests;
 mod service;
-mod validation;
 
 pub use requests::{
     CancelWork, CancellationQueue, CargoAction, CargoQueue, ConfigureService, Incoming,
     IndustryQueryQueue, IndustryQueryRequest, MAX_QUEUED_REQUESTS, Mutation, QueryItem,
     ReadRequest, ServicePolicyQueue, StartWork, WorkItem, WorkQueue,
 };
-pub use validation::validate_saved;
 
 const MAX_JOBS: usize = 128;
 const MAX_QUEUED_BLUEPRINT_BYTES: usize = 64 * 1024 * 1024;
@@ -602,7 +601,7 @@ impl Plugin for IndustryPlugin {
         .init_resource::<requests::CargoQueue>()
         .init_resource::<requests::WorkQueue>()
         .init_resource::<requests::IndustryQueryQueue>()
-        .init_resource::<crate::OperationHistory>()
+        .init_resource::<crate::sim::society::SocietyState>()
         .add_systems(
             FixedPreUpdate,
             initialize_facilities.in_set(hardware::HardwareSystems::Initialize),
@@ -618,6 +617,12 @@ impl Plugin for IndustryPlugin {
             )
                 .chain()
                 .after(hardware::HardwareSystems::Initialize),
+        )
+        .add_systems(
+            FixedUpdate,
+            // A destroyed facility must release unpaid commitments before any
+            // production work is considered for this tick.
+            production::release_destroyed_work.before(production::advance_production),
         )
         .add_systems(
             FixedUpdate,

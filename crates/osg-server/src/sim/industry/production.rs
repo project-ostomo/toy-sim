@@ -1,9 +1,67 @@
-use super::super::{economy::Economy, physics, precision::PreciseTransform};
+use super::super::{physics, precision::PreciseTransform};
 use super::*;
 use access::Asset;
 use osg_ships::ShipState;
 
+pub fn release_destroyed_work(
+    mut society: ResMut<crate::sim::society::SocietyState>,
+    catalogue: Res<vessel::ShipCatalogue>,
+    mut facilities: Query<
+        (
+            &identity::Identity,
+            &travel::PresenceState,
+            &mut IndustrialFacility,
+            &mut hardware::ShipInventory,
+        ),
+        Changed<travel::PresenceState>,
+    >,
+) {
+    for (identity, presence, mut facility, mut inventory) in &mut facilities {
+        if presence.0 != osg_model::travel::Presence::Destroyed {
+            continue;
+        }
+        let pending: Vec<_> = facility
+            .jobs()
+            .iter()
+            .filter(|job| job.payment.as_ref().is_some_and(|payment| !payment.charged))
+            .cloned()
+            .collect();
+        for job in pending {
+            let payment = job.payment.as_ref().unwrap();
+            let mut draft = society.clone();
+            let result = (|| -> Result<()> {
+                let mut next_inventory = inventory.0.clone();
+                let mut next_facility = facility.clone();
+                let stock = service::storage_credit(
+                    &draft.economy,
+                    &mut next_inventory,
+                    identity.0,
+                    payment.payer,
+                    &job.work.inputs,
+                )?;
+                next_facility.cancel(job.id, &mut next_inventory, &catalogue.0)?;
+                draft.economy.release(
+                    payment.payer,
+                    payment.currency,
+                    payment.amount,
+                    job.id,
+                    osg_model::calendar::now_unix_ms(),
+                )?;
+                service::write_stock(&mut draft.economy, identity.0, payment.payer, stock);
+                *society = draft;
+                inventory.0 = next_inventory;
+                *facility = next_facility;
+                Ok(())
+            })();
+            if let Err(error) = result {
+                bevy::log::error!(job = %job.id, %error, "could not release destroyed facility commitment");
+            }
+        }
+    }
+}
+
 pub fn advance_production(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     assets: Query<Asset>,
     mut facilities: Query<(
         &mut IndustrialFacility,
@@ -11,9 +69,11 @@ pub fn advance_production(
         &mut hardware::ShipThermal,
     )>,
     mut parts: Query<(&mut hardware::Device, &mut hardware::DevicePower)>,
-    mut economy: ResMut<Economy>,
-    directory: Res<ownership::Directory>,
 ) {
+    let state = &mut *society;
+    let directory = &state.directory;
+    let economy = &mut state.economy;
+
     let mut order: Vec<_> = assets
         .iter()
         .filter(|asset| facilities.contains(asset.entity))
@@ -55,14 +115,18 @@ pub fn advance_production(
                 continue;
             }
             if let Some(payment) = &facility.job(step.job).unwrap().payment {
-                match economy.charge_service(
+                let mut draft = economy.clone();
+                match draft.charge_service(
                     step.job,
                     payment,
                     &directory.0,
                     &facility.outside_revenue,
                     osg_model::calendar::now_unix_ms(),
                 ) {
-                    Ok(revenue) => facility.record_charge(step.job, revenue),
+                    Ok(revenue) => {
+                        *economy = draft;
+                        facility.record_charge(step.job, revenue);
+                    }
                     Err(_) => {
                         facility.block_job(step.job, JobStatus::AwaitingPayment);
                         continue;
@@ -82,6 +146,7 @@ pub fn advance_production(
 }
 
 pub fn complete_production(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     mut commands: Commands,
     assets: Query<Asset>,
     mut facilities: Query<(
@@ -92,14 +157,16 @@ pub fn complete_production(
     poses: Query<(&PreciseTransform, Option<&physics::Velocity>)>,
     accounts: Query<&identity::Account>,
     identities: Res<identity::IdentityIndex>,
-    directory: Res<ownership::Directory>,
-    mut economy: ResMut<Economy>,
     catalogue: Res<vessel::ShipCatalogue>,
     mut runtime: ResMut<vessel::WasmRuntime>,
     appearances: Res<identity::AppearanceAssets>,
-    gas: Res<super::super::gas::GasLedger>,
     mut events: ResMut<travel::TravelEvents>,
 ) {
+    let state = &mut *society;
+    let gas = &mut state.gas;
+    let directory = &state.directory;
+    let mut economy = &mut state.economy;
+
     let mut order: Vec<_> = assets
         .iter()
         .filter(|asset| facilities.contains(asset.entity))

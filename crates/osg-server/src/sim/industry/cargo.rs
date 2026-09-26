@@ -3,22 +3,24 @@ use access::{Asset, colocated, lookup};
 use requests::{CargoAction, CargoQueue};
 
 pub fn process_cargo(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     mut queue: ResMut<CargoQueue>,
     epoch: Res<identity::WorldEpoch>,
-    mut history: ResMut<crate::OperationHistory>,
     index: Res<identity::IdentityIndex>,
-    directory: Res<ownership::Directory>,
     catalogue: Res<vessel::ShipCatalogue>,
     assets: Query<Asset>,
     mut inventories: Query<&mut hardware::ShipInventory>,
     mut thermals: Query<&mut hardware::ShipThermal>,
 ) {
+    let state = &mut *society;
+    let directory = &state.directory;
+
     while let Some(request) = queue.0.pop_front() {
         if request.reply.is_closed() {
             continue;
         }
-        if let Some(result) = request.previous(epoch.0, &history) {
-            let _ = request.reply.send(result);
+        if request.wrong_world(epoch.0) {
+            request.finish(Err(anyhow::anyhow!("World changed; refresh state")));
             continue;
         }
         let result = (|| {
@@ -129,18 +131,21 @@ pub fn process_cargo(
             }
             Ok(())
         })();
-        request.finish(&mut history, result);
+        request.finish(result);
     }
 }
 
 pub fn advance_mines(
+    society: Res<crate::sim::society::SocietyState>,
     assets: Query<Asset>,
     mut facilities: Query<&mut IndustrialFacility>,
     mut inventories: Query<&mut hardware::ShipInventory>,
     dock_requests: Query<&hardware::utilities::DockServiceRequest>,
     catalogue: Res<vessel::ShipCatalogue>,
-    directory: Res<ownership::Directory>,
 ) {
+    let state = &*society;
+    let directory = &state.directory;
+
     let mut order: Vec<_> = assets
         .iter()
         .filter(|asset| facilities.contains(asset.entity))

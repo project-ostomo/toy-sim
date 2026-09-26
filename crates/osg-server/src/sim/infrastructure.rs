@@ -144,18 +144,22 @@ fn operator(world: &mut World, sovereignty: &str) -> Result<(Id, Id)> {
         name => format!("{name} Navigation Services"),
     };
     let organization = ownership::organization_id(&name);
-    world
-        .resource_mut::<ownership::Directory>()
-        .0
-        .organizations
-        .entry(organization)
-        .or_insert_with(|| Organization {
-            id: organization,
-            name,
-            sovereignty: ownership::sovereignty_id(sovereignty),
-            officers: Default::default(),
-            open_membership: false,
-        });
+    let mut society = world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.directory);
+    if !society.0.organizations.contains_key(&organization) {
+        society.0.organizations.insert(
+            organization,
+            Organization {
+                id: organization,
+                name,
+                sovereignty: ownership::sovereignty_id(sovereignty),
+                officers: Default::default(),
+                open_membership: false,
+            },
+        );
+    }
+    drop(society);
     let account = ownership::principal_id("navigation operator", sovereignty);
     ownership::affiliate(world, account, Some(organization))?;
     identity::add_account(world, account, false);

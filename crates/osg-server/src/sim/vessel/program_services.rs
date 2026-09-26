@@ -3,14 +3,14 @@ use crate::sim::chat::ChatService;
 use osg_model::{Id, chat::ChatPage, ownership::Principal};
 use osg_ship_wasm::ProgramServices;
 
-pub(crate) struct Services {
+pub struct Services {
     chat: Option<ChatService>,
     computer: Id,
     chat_scope: [u8; 32],
 }
 
 impl Services {
-    pub(crate) fn new(
+    pub fn new(
         chat: Option<ChatService>,
         world: Id,
         owner: Principal,

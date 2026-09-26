@@ -127,11 +127,14 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
                 let world = simulation.world_mut();
                 let now = osg_model::calendar::now_unix_ms();
                 world
-                    .resource_mut::<crate::sim::economy::Economy>()
+                    .resource_mut::<crate::sim::society::SocietyState>()
+                    .map_unchanged(|state| &mut state.economy)
                     .official_uec_per_lat = official_rate;
                 for (account, uec, lat, licensed, polities, blocs) in &funding {
                     let owner = osg_model::ownership::Principal::Player(*account);
-                    let mut economy = world.resource_mut::<crate::sim::economy::Economy>();
+                    let mut economy = world
+                        .resource_mut::<crate::sim::society::SocietyState>()
+                        .map_unchanged(|state| &mut state.economy);
                     if *licensed {
                         economy.licences.insert(owner);
                     }
@@ -141,27 +144,39 @@ pub async fn run(path: &Path, options: Options) -> Result<()> {
                     if *lat > 0 {
                         economy.issue(owner, osg_model::economy::Currency::Lat, *lat, now)?;
                     }
-                    let mut directory = world.resource_mut::<crate::sim::ownership::Directory>();
+                    let mut society = world.resource_mut::<crate::sim::society::SocietyState>();
+                    society.social_revision += 1;
+                    let directory = &mut society.directory;
                     for name in polities {
-                        directory
+                        let id = directory
                             .0
                             .sovereignties
-                            .values_mut()
+                            .values()
                             .find(|polity| polity.name == *name)
                             .context("configured officer polity unavailable")?
-                            .officers
-                            .insert(*account);
+                            .id;
+                        {
+                            let records = &mut directory.0.sovereignties;
+                            let mut record = records.get(&id).unwrap().clone();
+                            record.officers.insert(*account);
+                            records.insert(id, record);
+                        }
                     }
                     for name in blocs {
-                        directory
+                        let id = directory
                             .0
                             .diplomacy
                             .blocs
-                            .values_mut()
+                            .values()
                             .find(|bloc| bloc.name == *name)
                             .context("configured officer bloc unavailable")?
-                            .officers
-                            .insert(*account);
+                            .id;
+                        {
+                            let records = &mut directory.0.diplomacy.blocs;
+                            let mut record = records.get(&id).unwrap().clone();
+                            record.officers.insert(*account);
+                            records.insert(id, record);
+                        }
                     }
                 }
             }

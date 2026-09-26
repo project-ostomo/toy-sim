@@ -1,8 +1,9 @@
+use crate::sim::society::{FIRST_ID, LAST_ID, SocialIndex, search_gram};
 use crate::sim::{
     self,
-    economy::Economy,
+    economy::{DEMURRAGE_EXEMPTION, RATE_SCALE, daily_rate},
     identity,
-    ownership::{self, Directory},
+    ownership::{self},
 };
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
@@ -10,10 +11,12 @@ use std::collections::BTreeSet;
 
 #[cfg(test)]
 mod directory_tests;
+mod society;
 use osg_model::{
-    AccountId, Id, assets::*, diplomacy::Diplomacy, economy::*, industry::*, market::*,
+    AccountId, Id, assets::*, diplomacy::DiplomacyView, economy::*, industry::*, market::*,
     ownership::*, rpc::*,
 };
+pub use society::society_view;
 
 fn page<T, C>(
     items: impl IntoIterator<Item = T>,
@@ -37,37 +40,20 @@ fn page<T, C>(
 
 fn administers(world: &World, account: AccountId, owner: Principal) -> Result<()> {
     ensure!(
-        world.resource::<Directory>().0.administers(account, owner),
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .administers(account, owner),
         "Account administration required"
     );
     Ok(())
 }
 
-fn identities(directory: &OwnershipDirectory) -> impl Iterator<Item = IdentityRecord> + '_ {
-    directory
-        .sovereignties
-        .values()
-        .cloned()
-        .map(IdentityRecord::Sovereignty)
-        .chain(
-            directory
-                .organizations
-                .values()
-                .cloned()
-                .map(IdentityRecord::Organization),
-        )
-        .chain(
-            directory
-                .players
-                .values()
-                .cloned()
-                .map(IdentityRecord::Player),
-        )
-}
-
 pub fn my_affiliation(world: &World, account: AccountId) -> Result<PlayerAffiliation> {
-    world
-        .resource::<Directory>()
+    (&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .players
         .get(&account)
@@ -84,7 +70,10 @@ pub fn declaration_history(
     before: Option<u64>,
     limit: u16,
 ) -> Result<Page<osg_model::diplomacy::Declaration, u64>> {
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(
         directory.contains(source) && directory.contains(target),
         "principal unavailable"
@@ -95,20 +84,24 @@ pub fn declaration_history(
             .declaration_history
             .get(&(source, category, target))
             .into_iter()
-            .flat_map(|entries| entries.iter().rev())
-            .filter(|entry| before.is_none_or(|before| entry.revision < before))
+            .flat_map(|entries| {
+                let end = before.map_or(entries.len(), |before| {
+                    usize::try_from(before.saturating_sub(1))
+                        .unwrap_or(usize::MAX)
+                        .min(entries.len())
+                });
+                (0..end).rev().map(|index| &entries[index])
+            })
             .cloned(),
         limit,
         |entry| entry.revision,
     )
 }
 
-pub fn list_blocs(
-    world: &World,
-    _: AccountId,
-) -> Result<Vec<osg_model::diplomacy::PoliticalBloc>> {
-    Ok(world
-        .resource::<Directory>()
+pub fn list_blocs(world: &World, _: AccountId) -> Result<Vec<osg_model::diplomacy::PoliticalBloc>> {
+    Ok((&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .diplomacy
         .blocs
@@ -118,8 +111,9 @@ pub fn list_blocs(
 }
 
 pub fn list_polities(world: &World, _: AccountId) -> Result<Vec<Sovereignty>> {
-    Ok(world
-        .resource::<Directory>()
+    Ok((&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .sovereignties
         .values()
@@ -127,20 +121,21 @@ pub fn list_polities(world: &World, _: AccountId) -> Result<Vec<Sovereignty>> {
         .collect())
 }
 
-pub fn list_organizations(
-    world: &World,
-    _: AccountId,
-    polity: Id,
-) -> Result<Vec<Organization>> {
-    let directory = &world.resource::<Directory>().0;
+pub fn list_organizations(world: &World, _: AccountId, polity: Id) -> Result<Vec<Organization>> {
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(
         directory.sovereignties.contains_key(&polity),
         "Polity unavailable"
     );
     Ok(directory
         .organizations
-        .values()
-        .filter(|org| org.sovereignty == polity)
+        .query(
+            SocialIndex::Parent(Some(polity), FIRST_ID)
+                ..=SocialIndex::Parent(Some(polity), LAST_ID),
+        )
         .cloned()
         .collect())
 }
@@ -151,31 +146,55 @@ pub fn list_players(
     _: AccountId,
     organization: Option<Id>,
 ) -> Result<Vec<PlayerAffiliation>> {
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(
         organization.is_none_or(|id| directory.organizations.contains_key(&id)),
         "Organization unavailable"
     );
     Ok(directory
         .players
-        .values()
-        .filter(|player| player.organization == organization)
+        .query(
+            SocialIndex::Parent(organization, FIRST_ID)
+                ..=SocialIndex::Parent(organization, LAST_ID),
+        )
         .cloned()
         .collect())
 }
 
-pub fn search_identities(
-    world: &World,
-    _: AccountId,
-    search: String,
-) -> Result<IdentitySearch> {
+pub fn search_identities(world: &World, _: AccountId, search: String) -> Result<IdentitySearch> {
     ensure!(search.len() <= 512, "search is too long");
     let search = search.trim().to_lowercase();
     if search.is_empty() {
         return Ok(IdentitySearch::default());
     }
-    let directory = &world.resource::<Directory>().0;
-    let matches: Vec<_> = identities(directory)
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
+    let gram = search_gram(&search);
+    let range = SocialIndex::Gram(gram.clone(), FIRST_ID)..=SocialIndex::Gram(gram, LAST_ID);
+    let matches: Vec<_> = directory
+        .sovereignties
+        .query(range.clone())
+        .cloned()
+        .map(IdentityRecord::Sovereignty)
+        .chain(
+            directory
+                .organizations
+                .query(range.clone())
+                .cloned()
+                .map(IdentityRecord::Organization),
+        )
+        .chain(
+            directory
+                .players
+                .query(range)
+                .cloned()
+                .map(IdentityRecord::Player),
+        )
         .filter(|entry| entry.name().to_lowercase().contains(&search))
         .map(|entry| entry.principal())
         .collect();
@@ -183,9 +202,10 @@ pub fn search_identities(
         .iter()
         .flat_map(|principal| directory.lineage(*principal))
         .collect();
-    let identities = identities(directory)
-        .filter(|entry| ancestry.contains(&entry.principal()))
-        .collect();
+    let mut identities = Vec::new();
+    for chunk in ancestry.into_iter().collect::<Vec<_>>().chunks(128) {
+        identities.extend(resolve_identities(world, Id([0; 16]), chunk.to_vec())?);
+    }
     Ok(IdentitySearch {
         matches,
         identities,
@@ -198,7 +218,10 @@ pub fn resolve_identities(
     principals: Vec<Principal>,
 ) -> Result<Vec<IdentityRecord>> {
     ensure!(principals.len() <= 128, "too many identities");
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     Ok(principals
         .into_iter()
         .filter_map(|principal| match principal {
@@ -221,43 +244,111 @@ pub fn resolve_identities(
         .collect())
 }
 
-pub fn asset_access(
-    world: &World,
-    account: AccountId,
-    asset: Id,
-) -> Result<AssetAccessDetails> {
+pub fn asset_access(world: &World, account: AccountId, asset: Id) -> Result<AssetAccessDetails> {
     ownership::asset_access(world, account, asset)
 }
 
-pub fn list_access_profiles(
-    world: &World,
-    account: AccountId,
-) -> Result<Vec<AccessProfile>> {
-    let directory = &world.resource::<Directory>().0;
+pub fn list_access_profiles(world: &World, account: AccountId) -> Result<Vec<AccessProfile>> {
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     Ok(directory
-        .access_profiles
-        .values()
-        .filter(|profile| directory.administers(account, profile.owner))
+        .administered(account)
+        .flat_map(|owner| {
+            directory
+                .access_profiles
+                .query(SocialIndex::Owner(owner, FIRST_ID)..=SocialIndex::Owner(owner, LAST_ID))
+        })
         .cloned()
         .collect())
 }
 
-pub fn diplomacy(
-    world: &World,
-    account: AccountId,
-    principal: Principal,
-) -> Result<Diplomacy> {
-    let directory = &world.resource::<Directory>().0;
+pub fn diplomacy(world: &World, account: AccountId, principal: Principal) -> Result<DiplomacyView> {
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(directory.contains(principal), "Identity unavailable");
-    let mut result = Diplomacy {
-        blocs: directory.diplomacy.blocs.clone(),
-        declarations: directory.diplomacy.declarations.clone(),
-        agreements: directory.diplomacy.agreements.clone(),
-        trust: directory.diplomacy.trust.clone(),
-        postures: directory.diplomacy.postures.clone(),
+    let lineage = directory.lineage(Principal::Player(account));
+    let mut sources: BTreeSet<_> = lineage
+        .iter()
+        .copied()
+        .chain(directory.lineage(principal))
+        .collect();
+    for source in sources.clone() {
+        for (_, trustees) in directory.diplomacy.trust.range(
+            (source, osg_model::diplomacy::DeclarationCategory::Standing)
+                ..=(
+                    source,
+                    osg_model::diplomacy::DeclarationCategory::Recognition,
+                ),
+        ) {
+            sources.extend(trustees);
+        }
+    }
+    let mut result = DiplomacyView {
+        blocs: directory.diplomacy.blocs.to_map(),
+        declarations: sources
+            .iter()
+            .flat_map(|source| {
+                directory.diplomacy.declarations.range(
+                    (
+                        *source,
+                        osg_model::diplomacy::DeclarationCategory::Standing,
+                        Principal::Sovereignty(FIRST_ID),
+                    )
+                        ..=(
+                            *source,
+                            osg_model::diplomacy::DeclarationCategory::Recognition,
+                            Principal::Player(LAST_ID),
+                        ),
+                )
+            })
+            .map(|(key, value)| (*key, value.clone()))
+            .collect(),
+        agreements: sources
+            .iter()
+            .flat_map(|source| {
+                directory.diplomacy.agreements.query(
+                    SocialIndex::Party(*source, None, FIRST_ID)
+                        ..=SocialIndex::Party(*source, None, LAST_ID),
+                )
+            })
+            .map(|agreement| (agreement.id, agreement.clone()))
+            .collect(),
+        trust: sources
+            .iter()
+            .flat_map(|source| {
+                directory.diplomacy.trust.range(
+                    (*source, osg_model::diplomacy::DeclarationCategory::Standing)
+                        ..=(
+                            *source,
+                            osg_model::diplomacy::DeclarationCategory::Recognition,
+                        ),
+                )
+            })
+            .map(|(key, value)| (*key, value.iter().copied().collect()))
+            .collect(),
+        postures: sources
+            .iter()
+            .filter_map(|source| {
+                if let Principal::Sovereignty(id) = source {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .flat_map(|source| {
+                directory
+                    .diplomacy
+                    .postures
+                    .range((source, FIRST_ID)..=(source, LAST_ID))
+            })
+            .map(|(key, value)| (*key, *value))
+            .collect(),
         ..Default::default()
     };
-    let lineage = directory.lineage(Principal::Player(account));
     result.trust.retain(|(owner, _), _| {
         lineage.contains(owner) || (*owner == principal && directory.administers(account, *owner))
     });
@@ -268,12 +359,18 @@ pub fn standings(
     world: &World,
     account: AccountId,
 ) -> Result<std::collections::BTreeMap<(Principal, Principal), Standing>> {
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     let lineage = directory.lineage(Principal::Player(account));
-    Ok(directory
-        .standings
-        .iter()
-        .filter(|((source, _), _)| lineage.contains(source))
+    Ok(lineage
+        .into_iter()
+        .flat_map(|source| {
+            directory.standings.range(
+                (source, Principal::Sovereignty(FIRST_ID))..=(source, Principal::Player(LAST_ID)),
+            )
+        })
         .map(|(key, standing)| (*key, *standing))
         .collect())
 }
@@ -283,7 +380,10 @@ pub fn resolve_standing(
     account: AccountId,
     target: Principal,
 ) -> Result<StandingReport> {
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(directory.contains(target), "Identity unavailable");
     let (standing, source) = directory.standing_with_source(Principal::Player(account), target);
     Ok(StandingReport {
@@ -302,17 +402,14 @@ pub fn list_assets(
     limit: u16,
 ) -> Result<Page<AssetSummary, Id>> {
     ensure!(search.len() <= 512, "Search is too long");
-    let entries = sim::assets::list(world, account, &search, owner);
-    let total = entries.len() as u64;
-    let mut result = page(
+    let entries = sim::assets::list(world, account, &search, owner, after, limit as usize + 1);
+    page(
         entries
             .into_iter()
             .filter(|entry| after.is_none_or(|after| entry.id > after)),
         limit,
         |entry| entry.id,
-    )?;
-    result.total = Some(total);
-    Ok(result)
+    )
 }
 
 pub fn goods_totals(
@@ -366,8 +463,13 @@ fn validate_item(item: &CargoItem) -> Result<()> {
 }
 
 fn balance(world: &World, owner: Principal) -> WalletBalance {
-    let economy = world.resource::<Economy>();
-    let directory = &world.resource::<Directory>().0;
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     let balance = economy.balances.get(&owner).cloned().unwrap_or_default();
     WalletBalance {
         owner,
@@ -386,10 +488,12 @@ fn balance(world: &World, owner: Principal) -> WalletBalance {
 }
 
 pub fn list_wallets(world: &World, account: AccountId) -> Result<Vec<WalletBalance>> {
-    let directory = &world.resource::<Directory>().0;
-    Ok(identities(directory)
-        .map(|entry| entry.principal())
-        .filter(|owner| directory.administers(account, *owner))
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
+    Ok(directory
+        .administered(account)
         .map(|owner| balance(world, owner))
         .collect())
 }
@@ -400,16 +504,18 @@ pub fn wallet_balance(
     owner: Principal,
 ) -> Result<WalletAccount> {
     administers(world, account, owner)?;
-    let economy = world.resource::<Economy>();
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
     Ok(WalletAccount {
         balance: balance(world, owner),
         next_charge_ms: (economy.last_day + 1) * DAY_MS,
         market_uec_per_lat: economy
             .exchange
             .trades
-            .iter()
+            .query((Instrument::Fx, 0)..=(Instrument::Fx, u64::MAX))
             .rev()
-            .find(|trade| trade.instrument == Instrument::Fx)
+            .next()
             .map(|trade| trade.price),
     })
 }
@@ -423,14 +529,12 @@ pub fn wallet_history(
 ) -> Result<Page<LedgerEntry, u64>> {
     administers(world, account, owner)?;
     page(
-        world
-            .resource::<Economy>()
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
             .entries
-            .iter()
+            .query((owner, 0)..(owner, before.unwrap_or(u64::MAX)))
             .rev()
-            .filter(|entry| {
-                entry.owner == owner && before.is_none_or(|before| entry.sequence < before)
-            })
             .cloned(),
         limit,
         |entry| entry.sequence,
@@ -451,31 +555,29 @@ pub fn order_book(
 ) -> Result<OrderBook> {
     ensure!((1..=128).contains(&limit), "invalid order book depth");
     sim::economy::storage::validate_instrument(world, &instrument)?;
-    let economy = world.resource::<Economy>();
-    let mut bids: Vec<_> = economy
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
+    let bids: Vec<_> = economy
         .exchange
         .orders
-        .values()
-        .filter(|order| order.instrument == instrument && order.side == Side::Buy)
+        .book(&instrument, Side::Buy)
+        .take(limit as usize)
         .cloned()
         .collect();
-    let mut asks: Vec<_> = economy
+    let asks: Vec<_> = economy
         .exchange
         .orders
-        .values()
-        .filter(|order| order.instrument == instrument && order.side == Side::Sell)
+        .book(&instrument, Side::Sell)
+        .take(limit as usize)
         .cloned()
         .collect();
-    bids.sort_by_key(|order| (u64::MAX - order.price, order.sequence));
-    asks.sort_by_key(|order| (order.price, order.sequence));
-    bids.truncate(limit as usize);
-    asks.truncate(limit as usize);
     let last_price = economy
         .exchange
         .trades
-        .iter()
+        .query((instrument.clone(), 0)..=(instrument.clone(), u64::MAX))
         .rev()
-        .find(|trade| trade.instrument == instrument)
+        .next()
         .map(|trade| trade.price);
     Ok(OrderBook {
         instrument,
@@ -496,19 +598,20 @@ pub fn list_orders(
     limit: u16,
 ) -> Result<Page<Order, Id>> {
     administers(world, account, owner)?;
-    let exchange = &world.resource::<Economy>().exchange;
+    let exchange = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy)
+        .exchange;
     let mut orders: Vec<_> = exchange
         .orders
-        .values()
-        .chain(exchange.history.iter())
-        .filter(|order| {
-            order.owner == owner
-                && status.is_none_or(|status| order.status == status)
-                && instrument
-                    .as_ref()
-                    .is_none_or(|instrument| order.instrument == *instrument)
-                && after.is_none_or(|after| order.id > after)
-        })
+        .by_owner(owner, instrument.clone(), status, after)
+        .take(limit as usize + 1)
+        .chain(
+            exchange
+                .history
+                .by_owner(owner, instrument, status, after)
+                .take(limit as usize + 1),
+        )
         .cloned()
         .collect();
     orders.sort_by_key(|order| order.id);
@@ -524,16 +627,13 @@ pub fn trade_history(
 ) -> Result<Page<Trade, u64>> {
     sim::economy::storage::validate_instrument(world, &instrument)?;
     page(
-        world
-            .resource::<Economy>()
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
             .exchange
             .trades
-            .iter()
+            .query((instrument.clone(), 0)..(instrument, before.unwrap_or(u64::MAX)))
             .rev()
-            .filter(|trade| {
-                trade.instrument == instrument
-                    && before.is_none_or(|before| trade.sequence < before)
-            })
             .cloned(),
         limit,
         |trade| trade.sequence,
@@ -546,23 +646,19 @@ pub fn list_market_stations(
     after: Option<Id>,
     limit: u16,
 ) -> Result<Page<MarketStation, Id>> {
-    let mut stations: Vec<_> = world
-        .resource::<identity::IdentityIndex>()
-        .entries()
-        .iter()
-        .filter(|(id, _)| after.is_none_or(|after| **id > after))
-        .filter_map(|(id, entity)| {
-            let landmark = world.get::<sim::infrastructure::Landmark>(*entity)?;
-            world.get::<sim::hardware::ShipInventory>(*entity)?;
-            ownership::can_access(world, account, *entity, Permission::View).then(|| {
+    let stations = world
+        .resource::<sim::society::AssetRecords>()
+        .markets(after)
+        .filter_map(|record| {
+            let landmark = world.get::<sim::infrastructure::Landmark>(record.entity)?;
+            world.get::<sim::hardware::ShipInventory>(record.entity)?;
+            ownership::can_access(world, account, record.entity, Permission::View).then(|| {
                 MarketStation {
-                    id: *id,
+                    id: record.id,
                     name: landmark.name.clone(),
                 }
             })
-        })
-        .collect();
-    stations.sort_by_key(|station| station.id);
+        });
     page(stations, limit, |station| station.id)
 }
 
@@ -574,16 +670,18 @@ pub fn compare_commodity_offers(
     limit: u16,
 ) -> Result<Page<CommodityOffer, CommodityOfferCursor>> {
     ensure!((1..=128).contains(&limit), "invalid page size");
-    let economy = world.resource::<Economy>();
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
     let exchange_rate = economy
         .exchange
         .trades
-        .iter()
+        .query((Instrument::Fx, 0)..=(Instrument::Fx, u64::MAX))
         .rev()
-        .find(|trade| trade.instrument == Instrument::Fx)
+        .next()
         .map(|trade| trade.price);
     let mut rows = std::collections::BTreeMap::new();
-    for order in economy.exchange.orders.values() {
+    for order in economy.exchange.orders.commodity(&item, after) {
         let Instrument::Commodity {
             station,
             item: order_item,
@@ -593,6 +691,9 @@ pub fn compare_commodity_offers(
             continue;
         };
         let key = (*station, *currency);
+        if rows.len() > limit as usize && !rows.contains_key(&key) {
+            break;
+        }
         if *order_item != item || order.remaining == 0 || after.is_some_and(|after| key <= after) {
             continue;
         }
@@ -665,7 +766,9 @@ pub fn storage_stock(
     station: Id,
 ) -> Result<Vec<StoredStock>> {
     administers(world, account, owner)?;
-    let economy = world.resource::<Economy>();
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
     Ok(economy
         .storage
         .get(&(station, owner))
@@ -721,27 +824,32 @@ mod market_comparison_tests {
                 (2, Side::Buy, MONEY_SCALE, 5),
             ] {
                 let id = Id([index + offset * 20; 16]);
-                world.resource_mut::<Economy>().exchange.orders.insert(
-                    id,
-                    Order {
-                        status: OrderStatus::Open,
-                        closed_ms: None,
-                        original_quantity: quantity,
-                        filled_quantity: 0,
+                world
+                    .resource_mut::<crate::sim::society::SocietyState>()
+                    .map_unchanged(|state| &mut state.economy)
+                    .exchange
+                    .orders
+                    .insert(
                         id,
-                        instrument: Instrument::Commodity {
-                            station,
-                            item: item.clone(),
-                            currency: Currency::Lat,
+                        Order {
+                            status: OrderStatus::Open,
+                            closed_ms: None,
+                            original_quantity: quantity,
+                            filled_quantity: 0,
+                            id,
+                            instrument: Instrument::Commodity {
+                                station,
+                                item: item.clone(),
+                                currency: Currency::Lat,
+                            },
+                            owner: station_owner,
+                            side,
+                            price,
+                            remaining: quantity,
+                            sequence: index as u64,
+                            time_ms: 0,
                         },
-                        owner: station_owner,
-                        side,
-                        price,
-                        remaining: quantity,
-                        sequence: index as u64,
-                        time_ms: 0,
-                    },
-                );
+                    );
             }
         }
         let first = compare_commodity_offers(&world, account, item.clone(), None, 1).unwrap();
@@ -751,16 +859,21 @@ mod market_comparison_tests {
         assert_eq!(first.items[0].price, Some(2 * MONEY_SCALE));
         assert_eq!(first.items[0].comparable_uec, None);
         assert!(first.next.is_some());
-        world.resource_mut::<Economy>().exchange.trades.push(Trade {
-            instrument: Instrument::Fx,
-            sequence: 1,
-            time_ms: 0,
-            price: 4 * MONEY_SCALE,
-            quantity: MONEY_SCALE,
-            buyer: owner,
-            seller: owner,
-            backstop: false,
-        });
+        world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
+            .exchange
+            .trades
+            .insert(Trade {
+                instrument: Instrument::Fx,
+                sequence: 1,
+                time_ms: 0,
+                price: 4 * MONEY_SCALE,
+                quantity: MONEY_SCALE,
+                buyer: owner,
+                seller: owner,
+                backstop: false,
+            });
         let second = compare_commodity_offers(&world, account, item, first.next, 1).unwrap();
         assert_eq!(second.items[0].station.id, Id([11; 16]));
         assert_eq!(second.items[0].comparable_uec, Some(8 * MONEY_SCALE));
@@ -772,7 +885,12 @@ mod market_comparison_tests {
         for sequence in 2..=70 {
             let mut trade = history.items[0].clone();
             trade.sequence = sequence;
-            world.resource_mut::<Economy>().exchange.trades.push(trade);
+            world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.economy)
+                .exchange
+                .trades
+                .insert(trade);
         }
         let mut commodity_trade = history.items[0].clone();
         commodity_trade.sequence = 71;
@@ -782,10 +900,11 @@ mod market_comparison_tests {
             currency: Currency::Uec,
         };
         world
-            .resource_mut::<Economy>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
             .exchange
             .trades
-            .push(commodity_trade);
+            .insert(commodity_trade);
         let history = trade_history(&world, account, Instrument::Fx, None, 60).unwrap();
         assert_eq!(history.items.len(), 60);
         assert_eq!(history.items[0].sequence, 70);
@@ -815,7 +934,8 @@ mod market_comparison_tests {
         assert_ne!(first.items[0].id, second.items[0].id);
         let mut archived = first.items[0].clone();
         world
-            .resource_mut::<Economy>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
             .exchange
             .orders
             .remove(&archived.id);
@@ -823,10 +943,11 @@ mod market_comparison_tests {
         archived.remaining = 0;
         archived.closed_ms = Some(100);
         world
-            .resource_mut::<Economy>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
             .exchange
             .history
-            .push(archived.clone());
+            .insert(archived.id, archived.clone());
         let cancelled = list_orders(
             &world,
             account,

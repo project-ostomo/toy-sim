@@ -1,7 +1,7 @@
 use super::*;
 use crate::sim::{
     self,
-    ownership::{AssetOwner, Directory},
+    ownership::AssetOwner,
     travel::{PresenceState, Travel},
 };
 use bevy::math::DVec3;
@@ -18,17 +18,23 @@ fn fixture() -> (App, Id, Id, Entity, Id) {
         .find(|(_, _, control)| control.account == owner)
         .map(|(entity, id, _)| (entity, id.0))
         .unwrap();
-    let organization = world.resource::<Directory>().0.players[&owner]
+    let organization = (&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0
+        .players[&owner]
         .organization
         .unwrap();
-    world
-        .resource_mut::<Directory>()
-        .0
-        .organizations
-        .get_mut(&organization)
-        .unwrap()
-        .officers
-        .insert(officer);
+    {
+        let records = &mut world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
+            .0
+            .organizations;
+        let mut record = records.get(&organization).unwrap().clone();
+        record.officers.insert(officer);
+        records.insert(organization, record);
+    }
     world
         .entity_mut(ship)
         .insert(AssetOwner(ownership::Principal::Organization(organization)));
@@ -120,17 +126,23 @@ fn officer_executes_without_session_and_stale_or_revoked_authority_cannot_mutate
     );
     assert_eq!(world.get::<Travel>(ship).unwrap().0.itinerary.len(), 1);
 
-    let organization = world.resource::<Directory>().0.players[&member]
+    let organization = (&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0
+        .players[&member]
         .organization
         .unwrap();
-    world
-        .resource_mut::<Directory>()
-        .0
-        .organizations
-        .get_mut(&organization)
-        .unwrap()
-        .officers
-        .remove(&officer);
+    {
+        let records = &mut world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
+            .0
+            .organizations;
+        let mut record = records.get(&organization).unwrap().clone();
+        record.officers.remove(&officer);
+        records.insert(organization, record);
+    }
     assert!(source(world, officer, id).is_err());
     assert!(telemetry(world, officer, id).is_err());
     assert!(execute(world, officer, id, revision, ShipCommand::StopFiring).is_err());

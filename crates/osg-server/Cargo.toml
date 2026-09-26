@@ -4,12 +4,14 @@ version.workspace = true
 edition.workspace = true
 
 [features]
+society-bench = []
 collision-prototype = ["dep:rapier3d"]
 collision-prototype-allocations = ["collision-prototype"]
 dynamic_linking = ["dep:bevy_dylib"]
 profile = ["bevy/trace_chrome"]
 
 [dependencies]
+imbl = { version = "7.0.2", features = ["serde"] }
 osg-spatial = { path = "../osg-spatial" }
 rapier3d = { version = "=0.34.0", optional = true }
 rapier3d-f64 = { version = "=0.34.0" }

@@ -130,10 +130,7 @@ fn fleet_with_program(count: usize, wasm_bytes: Vec<u8>) -> (App, Vec<Entity>) {
         FixedPreUpdate,
         prepare_resets.before(HardwareSystems::Initialize),
     );
-    app.add_systems(
-        FixedUpdate,
-        ((allocate_gas, run, settle_gas, clear_computer_resets).chain(),),
-    );
+    app.add_systems(FixedUpdate, ((run, clear_computer_resets).chain(),));
     (app, entities)
 }
 
@@ -502,6 +499,13 @@ fn startup_waits_then_fault_clears_actuators_and_automatically_recovers() {
 fn one_fault_does_not_reset_other_computers() {
     let (mut app, entities) = fleet(8);
     boot(&mut app, entities[0]);
+    let owner = crate::sim::gas::payer(app.world(), entities[0]).unwrap();
+    let before = app
+        .world()
+        .resource::<crate::sim::society::SocietyState>()
+        .gas
+        .account(owner)
+        .unwrap();
     app.world_mut()
         .get_mut::<ShipMailbox>(entities[0])
         .unwrap()
@@ -512,6 +516,30 @@ fn one_fault_does_not_reset_other_computers() {
         assert_eq!(sw.controller.is_booting(), i == 0);
         assert_eq!(throttle(app.world(), entity), if i == 0 { 0. } else { 0.4 });
     }
+    let consumed: u64 = entities
+        .iter()
+        .map(|&entity| {
+            app.world()
+                .get::<ComputerBudget>(entity)
+                .unwrap()
+                .used_gas()
+        })
+        .sum();
+    let after = app
+        .world()
+        .resource::<crate::sim::society::SocietyState>()
+        .gas
+        .account(owner)
+        .unwrap();
+    assert!(
+        app.world()
+            .get::<ComputerBudget>(entities[0])
+            .unwrap()
+            .used_gas()
+            > 0
+    );
+    assert_eq!(before.available - after.available, consumed);
+    assert_eq!(after.spent - before.spent, consumed);
     assert_eq!(app.world().resource::<WasmRuntime>().0.cached_modules(), 1);
 }
 #[test]
@@ -644,9 +672,12 @@ fn fault_reboot_budget_pauses_without_power() {
 fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
     let (mut app, ships) = fleet(3);
     let owner = crate::sim::gas::payer(app.world(), ships[0]).unwrap();
-    let ledger = crate::sim::gas::GasLedger::default();
+    let mut ledger = crate::sim::gas::GasState::default();
     ledger.ensure_account(owner, 0);
-    app.insert_resource(ledger.clone());
+    app.init_resource::<crate::sim::society::SocietyState>();
+    app.world_mut()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .gas = ledger;
     for _ in 0..10 {
         step(&mut app);
     }
@@ -665,7 +696,11 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
         );
         assert_eq!(throttle(app.world(), ship), 0.);
     }
-    ledger.deposit(owner, 1_000_000).unwrap();
+    app.world_mut()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .gas
+        .deposit(owner, 1_000_000)
+        .unwrap();
     step(&mut app);
     let mut total = 0;
     for &ship in &ships {
@@ -684,14 +719,22 @@ fn zero_global_gas_stalls_paid_boot_and_shared_grants_conserve_the_pool() {
             .last_gas_used;
     }
     assert_eq!(total, 1_000_000);
-    let account = ledger.account(owner).unwrap();
-    assert_eq!(
-        (account.available, account.reserved, account.spent),
-        (0, 0, total)
-    );
-    assert!(ledger.snapshot().is_ok());
+    let account = app
+        .world()
+        .resource::<crate::sim::society::SocietyState>()
+        .gas
+        .account(owner)
+        .unwrap();
+    assert_eq!((account.available, account.spent), (0, total));
     step(&mut app);
-    assert_eq!(ledger.account(owner).unwrap(), account);
+    assert_eq!(
+        app.world()
+            .resource::<crate::sim::society::SocietyState>()
+            .gas
+            .account(owner)
+            .unwrap(),
+        account
+    );
 }
 
 #[test]
@@ -734,14 +777,17 @@ fn long_callbacks_suspend_without_fault_and_preserve_local_progress() {
         }
     }
     assert!(suspended && completed);
-    let ledger = app.world().resource::<crate::sim::gas::GasLedger>();
-    let account = ledger.account(owner).unwrap();
+    let account = app
+        .world()
+        .resource::<crate::sim::society::SocietyState>()
+        .gas
+        .account(owner)
+        .unwrap();
     assert!(account.spent > osg_ship_wasm::BOOT_GAS);
     assert_eq!(
         account.available + account.spent,
         crate::sim::gas::STARTING_GAS
     );
-    assert!(ledger.snapshot().is_ok());
 }
 
 #[test]
@@ -785,12 +831,6 @@ fn suspended_initializers_do_not_keep_later_computers_out_of_the_startup_queue()
         assert!(!software.controller.needs_instance_start());
         assert!(software.controller.fault.is_none());
     }
-    assert!(
-        app.world()
-            .resource::<crate::sim::gas::GasLedger>()
-            .snapshot()
-            .is_ok()
-    );
 }
 
 #[test]

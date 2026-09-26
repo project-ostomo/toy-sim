@@ -1,5 +1,4 @@
 use crate::{
-    Id,
     economy::WalletBalance,
     market::{Instrument, Order},
     ownership::{
@@ -19,12 +18,6 @@ impl std::fmt::Display for GameError {
 }
 
 impl std::error::Error for GameError {}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Operation {
-    pub world: Id,
-    pub id: Id,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Page<T, C> {

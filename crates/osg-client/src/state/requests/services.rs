@@ -2,7 +2,7 @@ use super::*;
 use osg_model::{industry::*, market::StoredStock, ownership::Principal};
 
 #[derive(Clone, PartialEq)]
-pub(crate) struct Query {
+pub struct Query {
     pub search: String,
     pub after: Option<Id>,
     pub facility: Option<Id>,
@@ -11,7 +11,7 @@ pub(crate) struct Query {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct View {
+pub struct View {
     pub facilities: Vec<PublicFacility>,
     pub next: Option<Id>,
     pub jobs: Vec<JobView>,
@@ -22,7 +22,7 @@ pub(crate) struct View {
     pub error: Option<String>,
 }
 
-pub(super) async fn fetch(client: OsgNetClient, world: Id, query: Query) -> Result<View, String> {
+pub async fn fetch(client: OsgNetClient, world: Id, query: Query) -> Result<View, String> {
     let page = call(client.list_public_facilities(world, query.search, query.after, 128)).await?;
     let mut view = View {
         facilities: page.items,
@@ -63,14 +63,8 @@ pub(super) async fn fetch(client: OsgNetClient, world: Id, query: Query) -> Resu
             match view.quotes.get(&facility).cloned() {
                 Some(Ok(quote)) => {
                     view.available = match quote.currency {
-                        economy::Currency::Uec => wallet
-                            .balance
-                            .uec
-                            .saturating_sub(wallet.balance.reserved_uec),
-                        economy::Currency::Lat => wallet
-                            .balance
-                            .lat
-                            .saturating_sub(wallet.balance.reserved_lat),
+                        economy::Currency::Uec => wallet.balance.uec,
+                        economy::Currency::Lat => wallet.balance.lat,
                     };
                     view.quote = Some(quote);
                 }

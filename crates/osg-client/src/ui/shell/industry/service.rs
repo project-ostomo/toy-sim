@@ -1,5 +1,6 @@
 use super::*;
 use industry_model::*;
+use osg_model::society::SocietyPresentation;
 use osg_model::{
     economy::{Currency, format_amount, parse_amount},
     ownership::Principal,
@@ -29,7 +30,7 @@ pub enum Action {
 
 pub async fn submit(
     net: osg_net::OsgNetClient,
-    operation: osg_model::rpc::Operation,
+    operation: Id,
     action: Action,
 ) -> Result<(), String> {
     use crate::state::requests::call;
@@ -398,7 +399,7 @@ pub fn pricing(
     }
 }
 
-fn tier_name(tier: &CustomerMatch, directory: &ownership::OwnershipDirectory) -> String {
+fn tier_name(tier: &CustomerMatch, directory: &SocietyPresentation) -> String {
     match tier {
         CustomerMatch::Principal(principal) => society::name(directory, *principal),
         CustomerMatch::Bloc(id) => directory

@@ -1,3 +1,4 @@
+use osg_model::society::SocietyPresentation;
 mod layout;
 
 use super::*;
@@ -221,7 +222,7 @@ fn composer(ui: &mut egui::Ui, state: &mut State, available: bool, intents: &mut
     }
 }
 
-fn heading(message: &ChatMessage, directory: &ownership::OwnershipDirectory) -> String {
+fn heading(message: &ChatMessage, directory: &SocietyPresentation) -> String {
     let timestamp = osg_model::calendar::format_utc(message.calendar_unix_ms);
     let mut parts = timestamp.split_whitespace();
     parts.next();

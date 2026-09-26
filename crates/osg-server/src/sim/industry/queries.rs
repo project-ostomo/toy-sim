@@ -10,7 +10,7 @@ pub struct IndustryReads<'w, 's> {
     inventories: Query<'w, 's, &'static hardware::ShipInventory>,
     facilities: Query<'w, 's, &'static IndustrialFacility>,
     parts: Query<'w, 's, &'static hardware::Device>,
-    directory: Res<'w, ownership::Directory>,
+    society: Res<'w, crate::sim::society::SocietyState>,
     identities: Res<'w, identity::IdentityIndex>,
     catalogue: Res<'w, vessel::ShipCatalogue>,
     manufacturing: Res<'w, ManufacturingCatalogue>,
@@ -100,7 +100,8 @@ impl IndustryReads<'_, '_> {
                 {
                     return None;
                 }
-                let (manage, transfer) = asset.inventory_access(&self.directory.0, account)?;
+                let (manage, transfer) =
+                    asset.inventory_access(&self.society.directory.0, account)?;
                 Some(self.summary(&asset, manage, transfer))
             })
             .collect();
@@ -118,7 +119,7 @@ impl IndustryReads<'_, '_> {
     fn facility(&self, account: AccountId, id: Id) -> Result<FacilityView> {
         let asset = self.assets.get(lookup(&self.identities, id)?)?;
         let (can_manage, can_transfer) = asset
-            .inventory_access(&self.directory.0, account)
+            .inventory_access(&self.society.directory.0, account)
             .context("Facility access unavailable")?;
         let inventory = &self.inventories.get(asset.entity)?.0;
         let summary = self.summary(&asset, can_manage, can_transfer);
@@ -140,7 +141,7 @@ impl IndustryReads<'_, '_> {
             service: facility
                 .map(|facility| facility.policy.clone())
                 .unwrap_or_default(),
-            can_configure_service: asset.operator(&self.directory.0, account),
+            can_configure_service: asset.operator(&self.society.directory.0, account),
         })
     }
 
@@ -149,7 +150,11 @@ impl IndustryReads<'_, '_> {
             && [Permission::View, Permission::Control]
                 .into_iter()
                 .any(|permission| {
-                    asset.permits(&self.directory.0, Principal::Player(account), permission)
+                    asset.permits(
+                        &self.society.directory.0,
+                        Principal::Player(account),
+                        permission,
+                    )
                 })
     }
 
@@ -171,7 +176,7 @@ impl IndustryReads<'_, '_> {
         };
         ensure!(host.available(), "Hangar access unavailable");
         let host_inventory = host
-            .inventory_access(&self.directory.0, account)
+            .inventory_access(&self.society.directory.0, account)
             .filter(|_| self.inventories.contains(host.entity))
             .map(|(manage, transfer)| self.summary(&host, manage, transfer));
         let mut ships: Vec<_> = host.stored.into_iter().flat_map(|stored| stored.iter()).filter_map(|entity| {
@@ -179,14 +184,14 @@ impl IndustryReads<'_, '_> {
             if !asset.available() || after.is_some_and(|after| asset.identity.0 <= after)
                 || !matches!(asset.presence.0, Presence::Docked { host: id, .. } if id == host.identity.0) { return None; }
             let can_focus = self.can_focus(&asset, account);
-            let access = asset.inventory_access(&self.directory.0, account).filter(|_| self.inventories.contains(entity));
+            let access = asset.inventory_access(&self.society.directory.0, account).filter(|_| self.inventories.contains(entity));
             if !can_focus && access.is_none() { return None; }
             let (manage, transfer) = access.unwrap_or_default();
             Some(HangarEntry {
                 inventory: self.summary(&asset, manage, transfer),
                 can_focus,
                 can_open_inventory: access.is_some(),
-                can_control: can_focus && asset.permits(&self.directory.0, Principal::Player(account), Permission::Control),
+                can_control: can_focus && asset.permits(&self.society.directory.0, Principal::Player(account), Permission::Control),
             })
         }).collect();
         ships.sort_by_key(|ship| ship.inventory.entity);
@@ -233,7 +238,7 @@ impl IndustryReads<'_, '_> {
                 Some(PublicFacility {
                     summary: self.summary(
                         &asset,
-                        asset.operator(&self.directory.0, account),
+                        asset.operator(&self.society.directory.0, account),
                         false,
                     ),
                     policy: facility.policy.clone(),
@@ -264,7 +269,7 @@ impl IndustryReads<'_, '_> {
 
     fn jobs(&self, account: AccountId, id: Id) -> Result<Vec<JobView>> {
         let asset = self.assets.get(lookup(&self.identities, id)?)?;
-        let operator = asset.operator(&self.directory.0, account);
+        let operator = asset.operator(&self.society.directory.0, account);
         Ok(self
             .facilities
             .get(asset.entity)
@@ -272,10 +277,9 @@ impl IndustryReads<'_, '_> {
             .flat_map(|facility| &facility.jobs)
             .filter(|job| {
                 operator
-                    || job
-                        .payment
-                        .as_ref()
-                        .is_some_and(|payment| self.directory.0.administers(account, payment.payer))
+                    || job.payment.as_ref().is_some_and(|payment| {
+                        self.society.directory.0.administers(account, payment.payer)
+                    })
             })
             .map(ProductionJob::view)
             .collect())
@@ -293,7 +297,7 @@ impl IndustryReads<'_, '_> {
         let asset = self.assets.get(lookup(&self.identities, id)?)?;
         ensure!(asset.available(), "facility unavailable");
         ensure!(
-            self.directory.0.administers(account, payer),
+            self.society.directory.0.administers(account, payer),
             "payer authority required"
         );
         let facility = self.facilities.get(asset.entity)?;
@@ -314,13 +318,20 @@ impl IndustryReads<'_, '_> {
             access::construction_bay(
                 &self.assets,
                 &asset,
-                &self.directory.0,
+                &self.society.directory.0,
                 payer,
                 plan.required_radius_m,
                 construction::dry_mass(&plan, &self.catalogue.0)?,
             )?;
         }
-        facility.quote(id, asset.owner.0, payer, work, &plan, &self.directory.0)
+        facility.quote(
+            id,
+            asset.owner.0,
+            payer,
+            work,
+            &plan,
+            &self.society.directory.0,
+        )
     }
 }
 

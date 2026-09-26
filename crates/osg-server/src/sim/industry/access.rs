@@ -1,4 +1,5 @@
 use super::*;
+use crate::sim::society::OwnershipDirectory;
 use bevy::ecs::query::QueryData;
 use osg_model::travel::Presence;
 

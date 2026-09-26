@@ -1,6 +1,6 @@
 use super::*;
-use crate::{OperationHistory, blueprint_uploads::BlueprintUploads};
-use osg_model::rpc::{GameError, Operation, Page};
+use crate::blueprint_uploads::BlueprintUploads;
+use osg_model::rpc::{GameError, Page};
 use std::collections::VecDeque;
 use tokio::sync::oneshot;
 
@@ -8,29 +8,20 @@ pub const MAX_QUEUED_REQUESTS: usize = 16_384;
 
 pub struct Mutation<A> {
     pub account: AccountId,
-    pub operation: Operation,
-    pub fingerprint: [u8; 32],
+    pub world: Id,
     pub arguments: A,
     pub reply: oneshot::Sender<Result<(), GameError>>,
 }
 
 impl<A> Mutation<A> {
-    pub fn previous(&self, epoch: Id, history: &OperationHistory) -> Option<Result<(), GameError>> {
-        if epoch != self.operation.world {
-            return Some(Err(GameError(
-                "World changed; reload before retrying".into(),
-            )));
-        }
-        match history.replay(self.account, self.operation.id, self.fingerprint) {
-            Ok(previous) => previous,
-            Err(error) => Some(Err(GameError(error.to_string()))),
-        }
+    pub fn wrong_world(&self, epoch: Id) -> bool {
+        self.world != epoch
     }
 
-    pub fn finish(self, history: &mut OperationHistory, result: Result<()>) {
-        let result = result.map_err(|error| GameError(error.to_string()));
-        history.record(self.account, self.operation.id, self.fingerprint, &result);
-        let _ = self.reply.send(result);
+    pub fn finish(self, result: Result<()>) {
+        let _ = self
+            .reply
+            .send(result.map_err(|error| GameError(error.to_string())));
     }
 }
 

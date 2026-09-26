@@ -141,7 +141,7 @@ fn loading_failure_and_first_directory_frame_render_headlessly() {
             assert_eq!(
                 states
                     .society
-                    .request(true, &SocietyState::default())
+                    .request(true, &SocietyUiState::default())
                     .selected,
                 Some(ownership::Principal::Player(account))
             );
@@ -923,6 +923,73 @@ fn society_gallery_covers_directory_and_diplomacy() {
             vec![use_principal, lfs_principal],
         );
     }
+    // The fixture includes the presentation fields supplied by society_view.
+    let viewer = Principal::Player(account);
+    let organization_principal = Principal::Organization(organization);
+    society.directory.viewer = account;
+    society.directory.administered = [viewer, organization_principal, use_principal].into();
+    for &id in society.directory.sovereignties.keys() {
+        let principal = Principal::Sovereignty(id);
+        society
+            .directory
+            .ancestry
+            .insert(principal, vec![principal]);
+    }
+    society.directory.ancestry.insert(
+        organization_principal,
+        vec![organization_principal, use_principal],
+    );
+    society.directory.ancestry.insert(
+        Principal::Organization(hostile_org),
+        vec![
+            Principal::Organization(hostile_org),
+            Principal::Sovereignty(Id([30; 16])),
+        ],
+    );
+    for &id in society.directory.players.keys() {
+        let principal = Principal::Player(id);
+        let ancestors = if id == hostile_player {
+            vec![
+                principal,
+                Principal::Organization(hostile_org),
+                Principal::Sovereignty(Id([30; 16])),
+            ]
+        } else {
+            vec![principal, organization_principal, use_principal]
+        };
+        society.directory.ancestry.insert(principal, ancestors);
+    }
+    for target in [viewer, organization_principal, use_principal] {
+        society.directory.reports.insert(
+            (viewer, target),
+            (Standing::Friendly, ownership::StandingSource::Default),
+        );
+    }
+    society.directory.reports.insert(
+        (viewer, Principal::Player(hostile_player)),
+        (Standing::Hostile, ownership::StandingSource::Default),
+    );
+    for (&(_, category, target), declaration) in &society.directory.diplomacy.declarations {
+        society
+            .directory
+            .diplomacy
+            .resolved
+            .insert((viewer, category, target), declaration.clone());
+        society
+            .directory
+            .diplomacy
+            .resolved
+            .insert((use_principal, category, target), declaration.clone());
+    }
+    for (&(source, target), &standing) in &society.directory.diplomacy.postures {
+        society.directory.postures.insert(
+            (
+                Principal::Sovereignty(source),
+                Principal::Sovereignty(target),
+            ),
+            standing,
+        );
+    }
     let navigation = NavigationCatalogue::default();
     let model = FrameModel {
         declaration_history: &history,
@@ -1108,6 +1175,7 @@ fn society_gallery_covers_directory_and_diplomacy() {
                         size,
                         &directory.join(format!("society-{variant}-{}x{}.png", size[0], size[1])),
                     );
+                    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text().contains("Identity unavailable"))));
                     workspace.assert_bounds();
                 }
             }
@@ -1480,7 +1548,6 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
     society.gas_accounts.push(ownership::GasAccountSnapshot {
         owner,
         available: 1_250_000,
-        reserved: 50_000,
         spent: 3_100_000,
     });
     let organization = Id([12; 16]);
@@ -1497,7 +1564,6 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
     society.gas_accounts.push(ownership::GasAccountSnapshot {
         owner: Principal::Organization(organization),
         available: 88_400_000,
-        reserved: 120_000,
         spent: 5_400_000,
     });
     let navigation = NavigationCatalogue::default();
@@ -1547,11 +1613,11 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
                     } else {
                         12_940 * MONEY_SCALE + 250_000
                     },
-                    next_demurrage: (25_000_u128 * MONEY_SCALE as u128 * economy::daily_rate(0))
-                        .div_ceil(economy::RATE_SCALE) as u64,
+                    next_demurrage: 15_279_134,
                     lat_restricted: restricted,
                 }],
                 entries: vec![LedgerEntry {
+                    bucket: osg_model::economy::BalanceBucket::Available,
                     sequence: 1,
                     time_ms: 0,
                     owner,
@@ -1596,6 +1662,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
                 (8, EntryKind::Transfer, false, 480),
             ] {
                 snapshot.entries.push(LedgerEntry {
+                    bucket: osg_model::economy::BalanceBucket::Available,
                     sequence: index,
                     time_ms: 1_790_208_000_000 + index as i64 * 60_000,
                     owner,
@@ -1614,6 +1681,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
             snapshot.entries.insert(
                 0,
                 LedgerEntry {
+                    bucket: osg_model::economy::BalanceBucket::Available,
                     sequence: 2,
                     time_ms: economy::DAY_MS,
                     owner,
@@ -1633,6 +1701,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
                     snapshot.entries.insert(
                         0,
                         LedgerEntry {
+                            bucket: osg_model::economy::BalanceBucket::Available,
                             sequence: 3,
                             time_ms: economy::DAY_MS + 1000,
                             owner,
@@ -1646,12 +1715,7 @@ fn wallet_gallery_settles_at_desktop_and_compact_sizes() {
                         },
                     );
                 }
-                snapshot.balances[0].next_demurrage =
-                    (snapshot.balances[0]
-                        .uec
-                        .saturating_sub(economy::DEMURRAGE_EXEMPTION) as u128
-                        * economy::daily_rate(1))
-                    .div_ceil(economy::RATE_SCALE) as u64;
+                snapshot.balances[0].next_demurrage = 15_269_796;
                 let mut rect = egui::Rect::NOTHING;
                 let mut output = ctx.run_ui(
                     egui::RawInput {

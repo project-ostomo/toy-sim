@@ -1361,7 +1361,6 @@ pub struct SocietySnapshot {
 pub struct GasAccountSnapshot {
     pub owner: Principal,
     pub available: u64,
-    pub reserved: u64,
     pub spent: u64,
 }
 ```

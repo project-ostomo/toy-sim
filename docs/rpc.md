@@ -55,7 +55,7 @@ connection. The deadline is 30 seconds. Calls are never retried automatically.
 Dropping a pending client call cancels its local network task; it does not prove
 that a server mutation was cancelled.
 
-## Authority and operation IDs
+## Authority and request execution
 
 The authenticated connection supplies the acting account. Handlers enqueue work
 onto the simulation thread and check the expected world before executing it.
@@ -63,10 +63,10 @@ Network tasks serialize owned results after the simulation operation completes.
 Each server loop processes up to four queued operations per connection,
 independently of simulation stepping.
 
-Mutation arguments include `Operation { world, id }`. Reusing an ID with the same
-method and arguments returns its saved result; reusing it with different arguments
-fails. Operation results and game state are saved in the same world checkpoint.
-Checkpoint durability follows the existing world persistence policy.
+Mutations include the current world ID and execute once through a typed ECS
+queue. A lost response leaves the outcome unknown to that connection. The client
+reconnects and queries current state. Checkpoint durability follows the existing
+world persistence policy.
 
 Calls on different streams may execute in either order. Await a mutation before
 making a query that depends on its effect.
@@ -142,8 +142,10 @@ Industry RPCs enqueue typed requests with oneshot replies. Each simulation tick
 processes FIFO queues in this order: service policy changes, cancellations,
 cargo changes, then new work. Ordering is guaranteed within a queue; phase
 ordering takes precedence across queues. Each consumer validates and applies a
-whole request before replying. Repeated operation IDs replay their stored
-result, and conflicting arguments or stale world IDs are rejected.
+whole request before replying. Requests carry the current world ID and stale
+world IDs are rejected. Each call is submitted once and has one reply channel.
+After a connection failure the client reconnects and fetches current state;
+it does not resend mutations or request replay receipts.
 
 `IndustrialFacility` owns its modules, lane assignments, jobs, service policy,
 revenue, and mine state. Scheduled systems advance production after dock
@@ -168,12 +170,48 @@ unstarted job releases funds and restores its inputs. Finished goods enter the
 customer's station storage; ships enter the operator's hangar under the
 customer's ownership.
 
-Reserved UEC remains subject to daily demurrage. If a reservation becomes
-unfunded, the job waits for payment and can be cancelled and ordered again.
+Each wallet has available and aggregate reserved balances for each currency.
+Admission moves the agreed price into the payer's reserved balance; the job
+stores the corresponding commitment. Starting work transfers that amount to the
+operator. Cancelling unstarted work or destroying its facility releases it to
+the payer's available balance. Paid work is not refunded. Daily demurrage applies
+only to available UEC above the exemption.
+
+Buy orders pay turnover tax once when placed, on the full submitted
+quantity valued at the limit price. The charge rounds up and is paid in the
+instrument's quoted currency (UEC for FX). It requires available funds in addition
+to the order's commitment. Cancellation and an immediate order's unfilled
+remainder do not refund tax. Fills transfer their full amounts without charging
+tax again. Sell orders, including automatic LAT conversions, pay no market tax.
+Bilateral tariffs apply to ordinary transfers.
+
 `service_jobs` exposes customer jobs and operator queues without granting access
 to another customer's station inventory.
 
 ## Diplomacy
+
+The authoritative `SocietyState` resource owns organizations, affiliations,
+diplomacy, access profiles, money, markets, ledger history, station storage and
+gas accounts. Wallet, market and society commands enter a typed FIFO queue
+consumed by a scheduled ECS system. The RPC transport only authenticates,
+enqueues and awaits the oneshot reply.
+
+`society_view` returns one replaceable UI result, including the requested identity
+branches, authorization decisions, ancestry and resolved standings. Clients
+render that result without maintaining an authoritative ownership directory or
+resolving social rules locally. Shared model types describe requests and responses.
+
+Server stores maintain secondary indexes within their collection APIs. Ledger
+pages seek by owner and sequence; trade pages by instrument and sequence; orders
+by owner, instrument, status, and book priority. Social records index membership,
+officers, treaty parties and name search. Access bindings index their profile.
+Asset publication maintains visibility and customer indexes from ECS changes.
+
+An economy action calculates proposed replacements for the records it touches
+against immutable live state. After every validation succeeds, the scheduled
+system applies the replacements and appends ledger and trade entries. Failed
+calculations publish nothing. Record edits use explicit replacement, which
+updates the collection's indexes together with the record.
 
 `declaration_history` returns revisions newest first, with a `before` cursor.
 Ordinary diplomacy queries contain current declarations and omit the history.

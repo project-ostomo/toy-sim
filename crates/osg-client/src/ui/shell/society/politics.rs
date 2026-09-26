@@ -1,5 +1,6 @@
 use super::*;
 use osg_model::diplomacy::*;
+use osg_model::society::SocietyPresentation;
 
 #[derive(Default, PartialEq, Eq)]
 enum Tab {
@@ -205,7 +206,7 @@ fn target_picker(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
 ) {
     egui::ComboBox::from_id_salt("diplomacy_edit_target")
         .selected_text(
@@ -228,7 +229,7 @@ fn declarations(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     can_edit: bool,
     intents: &mut Vec<Intent>,
 ) {
@@ -367,7 +368,7 @@ fn sources(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     intents: &mut Vec<Intent>,
 ) {
     presentation::section(ui, "WAR / PEACE · FIXED BY AFFILIATION");
@@ -486,7 +487,7 @@ fn sources_editor(
     ui: &mut egui::Ui,
     state: &mut State,
     owner: Principal,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     intents: &mut Vec<Intent>,
 ) {
     ui.weak(format!("{:?} priority · reorder sources", state.category));

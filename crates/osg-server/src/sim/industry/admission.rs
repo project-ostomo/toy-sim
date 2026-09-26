@@ -1,23 +1,24 @@
-use super::super::economy::Economy;
 use super::*;
 use access::{Asset, construction_bay, lookup};
 use requests::*;
 
 pub fn configure_services(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     mut queue: ResMut<ServicePolicyQueue>,
     epoch: Res<identity::WorldEpoch>,
-    mut history: ResMut<crate::OperationHistory>,
     index: Res<identity::IdentityIndex>,
-    directory: Res<ownership::Directory>,
     assets: Query<Asset>,
     mut facilities: Query<&mut IndustrialFacility>,
 ) {
+    let state = &mut *society;
+    let directory = &state.directory;
+
     while let Some(request) = queue.0.pop_front() {
         if request.reply.is_closed() {
             continue;
         }
-        if let Some(result) = request.previous(epoch.0, &history) {
-            let _ = request.reply.send(result);
+        if request.wrong_world(epoch.0) {
+            request.finish(Err(anyhow::anyhow!("World changed; refresh state")));
             continue;
         }
         let result = (|| {
@@ -47,18 +48,16 @@ pub fn configure_services(
                 .get_mut(entity)?
                 .replace_policy(request.arguments.policy.clone())
         })();
-        request.finish(&mut history, result);
+        request.finish(result);
     }
 }
 
 pub fn cancel_work(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     mut queue: ResMut<CancellationQueue>,
     epoch: Res<identity::WorldEpoch>,
-    mut history: ResMut<crate::OperationHistory>,
     index: Res<identity::IdentityIndex>,
-    directory: Res<ownership::Directory>,
     catalogue: Res<vessel::ShipCatalogue>,
-    mut economy: ResMut<Economy>,
     assets: Query<Asset>,
     mut facilities: Query<(&mut IndustrialFacility, &mut hardware::ShipInventory)>,
 ) {
@@ -66,10 +65,13 @@ pub fn cancel_work(
         if request.reply.is_closed() {
             continue;
         }
-        if let Some(result) = request.previous(epoch.0, &history) {
-            let _ = request.reply.send(result);
+        if request.wrong_world(epoch.0) {
+            request.finish(Err(anyhow::anyhow!("World changed; refresh state")));
             continue;
         }
+        let mut state = society.clone();
+        let directory = &state.directory;
+        let mut economy = &mut state.economy;
         let result = (|| {
             let entity = lookup(&index, request.arguments.facility)?;
             let asset = assets.get(entity)?;
@@ -103,28 +105,39 @@ pub fn cancel_work(
                 asset.authorize(&directory.0, request.account, Permission::Industry)?;
                 None
             };
-            facility.cancel(job.id, &mut next, &catalogue.0)?;
+            let mut next_facility = facility.clone();
+            next_facility.cancel(job.id, &mut next, &catalogue.0)?;
+            if let Some(payment) = &job.payment {
+                economy.release(
+                    payment.payer,
+                    payment.currency,
+                    payment.amount,
+                    job.id,
+                    osg_model::calendar::now_unix_ms(),
+                )?;
+            }
+            *facility = next_facility;
             inventory.0 = next;
             if let Some((owner, stock)) = credit {
                 service::write_stock(&mut economy, asset.identity.0, owner, stock);
-                economy.service_holds.remove(&job.id);
             }
             Ok(())
         })();
-        request.finish(&mut history, result);
+        if result.is_ok() {
+            *society = state;
+        }
+        request.finish(result);
     }
 }
 
 pub fn start_work(
+    mut society: ResMut<crate::sim::society::SocietyState>,
     mut queue: ResMut<WorkQueue>,
     epoch: Res<identity::WorldEpoch>,
-    mut history: ResMut<crate::OperationHistory>,
     index: Res<identity::IdentityIndex>,
-    directory: Res<ownership::Directory>,
     catalogue: Res<vessel::ShipCatalogue>,
     manufacturing: Res<ManufacturingCatalogue>,
     mut runtime: ResMut<vessel::WasmRuntime>,
-    mut economy: ResMut<Economy>,
     assets: Query<Asset>,
     parts: Query<&hardware::Device>,
     mut facilities: Query<(&mut IndustrialFacility, &mut hardware::ShipInventory)>,
@@ -134,10 +147,13 @@ pub fn start_work(
         if request.reply.is_closed() {
             continue;
         }
-        if let Some(result) = request.previous(epoch.0, &history) {
-            let _ = request.reply.send(result);
+        if request.wrong_world(epoch.0) {
+            request.finish(Err(anyhow::anyhow!("World changed; refresh state")));
             continue;
         }
+        let mut state = society.clone();
+        let directory = &state.directory;
+        let mut economy = &mut state.economy;
         let result = (|| {
             let id = match &request.arguments {
                 StartWork::Recipe { facility, .. } | StartWork::Ship { facility, .. } => *facility,
@@ -251,7 +267,10 @@ pub fn start_work(
                         .checked_sub(input.quantity)
                         .context("input custody shortage")?;
                 }
-                remaining.retain(|_, quantity| *quantity > 0);
+                remaining = remaining
+                    .into_iter()
+                    .filter(|(_, quantity)| *quantity > 0)
+                    .collect();
                 next.custody.retain(|_, quantity| *quantity > 0);
                 stock = Some(remaining);
                 job.payment = Some(ServicePayment {
@@ -263,16 +282,27 @@ pub fn start_work(
                 });
             }
             let payment = job.payment.clone();
-            let job_id = facility.admit(job, &mut next, &catalogue.0, &operational)?;
+            let mut next_facility = facility.clone();
+            let job_id = next_facility.admit(job, &mut next, &catalogue.0, &operational)?;
+            if let Some(payment) = payment {
+                economy.reserve(
+                    payment.payer,
+                    payment.currency,
+                    payment.amount,
+                    job_id,
+                    osg_model::calendar::now_unix_ms(),
+                )?;
+            }
+            *facility = next_facility;
             inventory.0 = next;
             if let Some(stock) = stock {
                 service::write_stock(&mut economy, id, owner, stock);
             }
-            if let Some(payment) = payment {
-                economy.service_holds.insert(job_id, payment);
-            }
             Ok(())
         })();
-        request.finish(&mut history, result);
+        if result.is_ok() {
+            *society = state;
+        }
+        request.finish(result);
     }
 }

@@ -1,5 +1,6 @@
 use super::super::economy::Economy;
 use super::*;
+use crate::sim::society::OwnershipDirectory;
 
 pub fn tier_matches(
     directory: &OwnershipDirectory,
@@ -25,7 +26,7 @@ pub fn storage_credit(
     station: Id,
     owner: Principal,
     stacks: &[ItemStack],
-) -> Result<BTreeMap<CargoItem, u64>> {
+) -> Result<imbl::OrdMap<CargoItem, u64>> {
     let mut stock = economy
         .storage
         .get(&(station, owner))
@@ -51,7 +52,7 @@ pub fn write_stock(
     economy: &mut Economy,
     station: Id,
     owner: Principal,
-    stock: BTreeMap<CargoItem, u64>,
+    stock: imbl::OrdMap<CargoItem, u64>,
 ) {
     if stock.is_empty() {
         economy.storage.remove(&(station, owner));

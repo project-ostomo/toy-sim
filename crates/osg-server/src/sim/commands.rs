@@ -164,8 +164,9 @@ pub fn execute(
                 "IFF owner must identify current controller"
             );
             ensure!(
-                world
-                    .resource::<super::ownership::Directory>()
+                (&world
+                    .resource::<crate::sim::society::SocietyState>()
+                    .directory)
                     .0
                     .can_advertise(account, iff.faction),
                 "IFF faction access denied"

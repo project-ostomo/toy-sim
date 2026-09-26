@@ -1,10 +1,10 @@
 use super::*;
+use osg_model::society::SocietyPresentation;
 mod politics;
 mod presentation;
 mod tree;
 use osg_model::ownership::{
-    AccessGrant, AccessPolicy, AssetAffiliation, OwnershipDirectory, Permission, Principal,
-    SocietyCommand, Standing,
+    AccessGrant, AccessPolicy, AssetAffiliation, Permission, Principal, SocietyCommand, Standing,
 };
 use std::collections::BTreeSet;
 
@@ -127,7 +127,7 @@ impl State {
     pub fn request(
         &mut self,
         open: bool,
-        session: &crate::state::SocietyState,
+        session: &crate::state::SocietyUiState,
     ) -> crate::state::requests::SocietyQuery {
         self.tree.sync(session);
         self.assets_next = session.society_assets_next;
@@ -167,6 +167,7 @@ impl State {
             assets: open && self.tab == Tab::Assets,
             profiles: open && self.tab == Tab::Assets,
             gas: open && self.tab == Tab::ComputerGas,
+            advertised: Default::default(),
         }
     }
 
@@ -297,11 +298,11 @@ fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietyData) {
         .id_salt("computer_gas_accounts")
         .show(ui, |ui| {
             egui::Grid::new("gas_account_balances")
-                .num_columns(4)
+                .num_columns(3)
                 .spacing(egui::vec2(20., 12.))
                 .striped(true)
                 .show(ui, |ui| {
-                    for heading in ["Owner", "Available", "Reserved", "Spent"] {
+                    for heading in ["Owner", "Available", "Lifetime spent"] {
                         ui.strong(heading);
                     }
                     ui.end_row();
@@ -317,7 +318,6 @@ fn gas_accounts(ui: &mut egui::Ui, snapshot: &SocietyData) {
                                     ACCENT
                                 }),
                         );
-                        ui.monospace(gas_amount(account.reserved));
                         ui.monospace(gas_amount(account.spent));
                         ui.end_row();
                     }
@@ -337,7 +337,7 @@ fn gas_amount(amount: u64) -> String {
     grouped
 }
 
-pub fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
+pub fn name(directory: &SocietyPresentation, principal: Principal) -> String {
     match principal {
         Principal::Sovereignty(id) => directory
             .sovereignties
@@ -357,7 +357,7 @@ pub fn name(directory: &OwnershipDirectory, principal: Principal) -> String {
     })
 }
 
-fn lineage(directory: &OwnershipDirectory, principal: Principal) -> String {
+fn lineage(directory: &SocietyPresentation, principal: Principal) -> String {
     directory
         .lineage(principal)
         .into_iter()
@@ -367,7 +367,7 @@ fn lineage(directory: &OwnershipDirectory, principal: Principal) -> String {
         .join(" › ")
 }
 
-pub fn principals(directory: &OwnershipDirectory) -> impl Iterator<Item = Principal> + '_ {
+pub fn principals(directory: &SocietyPresentation) -> impl Iterator<Item = Principal> + '_ {
     directory
         .players
         .keys()
@@ -391,7 +391,7 @@ pub fn principals(directory: &OwnershipDirectory) -> impl Iterator<Item = Princi
 
 pub fn standing_card(
     ui: &mut egui::Ui,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     report: &ownership::StandingReport,
 ) {
     use ownership::StandingSource;
@@ -872,7 +872,7 @@ fn transfer_recipients(snapshot: &SocietyData, asset: &AssetAffiliation) -> Vec<
 
 pub fn policy_editor(
     ui: &mut egui::Ui,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     draft: &mut AccessPolicy,
     selected: &mut Option<Principal>,
 ) {
@@ -949,7 +949,7 @@ fn permission_checks(ui: &mut egui::Ui, permissions: &mut BTreeSet<Permission>) 
 fn principal_picker(
     ui: &mut egui::Ui,
     id: &'static str,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     selected: &mut Option<Principal>,
     candidates: impl Iterator<Item = Principal>,
 ) -> egui::Response {

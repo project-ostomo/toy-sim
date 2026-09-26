@@ -741,9 +741,7 @@ fn jobs(ui: &mut egui::Ui, model: &FrameModel, facility: &FacilityView, intents:
                     JobStatus::Queued => "Queued",
                     JobStatus::Running => "Running",
                     JobStatus::AwaitingPower => "Waiting for power",
-                    JobStatus::AwaitingPayment => {
-                        "Payment reservation expired · cancel and order again"
-                    }
+                    JobStatus::AwaitingPayment => "Payment could not be completed",
                     JobStatus::AwaitingCargoSpace => "Complete · waiting for cargo space",
                     JobStatus::AwaitingBerth => "Complete · waiting for hangar capacity",
                     JobStatus::ModuleUnavailable => "Installed module unavailable",

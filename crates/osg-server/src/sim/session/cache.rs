@@ -11,7 +11,7 @@ use std::{
 
 use crate::sim::{
     identity::{Control, Identity, IdentityIndex},
-    ownership::{self, AssetAccess, AssetOwner, Directory},
+    ownership::{self, AssetAccess, AssetOwner},
     vessel::Vessel,
 };
 
@@ -28,7 +28,8 @@ struct ScanCount(usize);
 
 fn invalidate(
     mut cache: ResMut<Cache>,
-    directory: Option<Res<Directory>>,
+    directory: Option<Res<crate::sim::society::SocietyState>>,
+    mut social_revision: Local<Option<u64>>,
     identities: Option<Res<IdentityIndex>>,
     changed: Query<
         (),
@@ -41,12 +42,14 @@ fn invalidate(
         )>,
     >,
 ) {
-    if directory.is_some_and(|value| value.is_changed())
+    let revision = directory.as_ref().map(|value| value.social_revision);
+    if revision != *social_revision
         || identities.is_some_and(|value| value.is_changed())
         || !changed.is_empty()
     {
         cache.0.clear();
     }
+    *social_revision = revision;
 }
 
 fn invalidate_removed(
@@ -264,7 +267,9 @@ mod tests {
         assert_eq!(transferred.ships.len(), 1);
         assert!(transferred.ships[0].2);
 
-        world.resource_mut::<Directory>().set_changed();
+        world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .social_revision += 1;
         prepare_publication(&mut world);
         let refreshed = get(&mut world, viewer);
         assert!(!Arc::ptr_eq(&transferred, &refreshed));

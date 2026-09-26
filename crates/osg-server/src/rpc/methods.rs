@@ -6,7 +6,7 @@ use sim::industry::{
     CancelWork, CargoAction, ConfigureService, Incoming, IndustryQueryRequest, ReadRequest,
     StartWork,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 macro_rules! industry_query {
     ($name:ident($($argument:ident: $ty:ty),*) -> $result:ty, $variant:ident, $args:expr) => {
@@ -20,9 +20,8 @@ macro_rules! industry_query {
 
 macro_rules! industry_mutation {
     ($name:ident($($argument:ident: $ty:ty),*) => $args:expr, $variant:ident) => {
-        async fn $name(&self, operation: Operation, $($argument: $ty),*) -> Result<(), GameError> {
-            let wire = ($($argument.clone(),)*);
-            self.queue_mutation(operation, stringify!($name), wire, $args, Incoming::$variant).await
+        async fn $name(&self, world: Id, $($argument: $ty),*) -> Result<(), GameError> {
+            self.queue_mutation(world, $args, Incoming::$variant).await
         }
     };
 }
@@ -37,15 +36,14 @@ macro_rules! query {
 
 macro_rules! mutation {
     ($name:ident($($argument:ident: $ty:ty),*) => $command:expr, $apply:ident) => {
-        async fn $name(&self, operation: Operation, $($argument: $ty),*) -> Result<(), GameError> {
-            self.mutate(operation, stringify!($name), $command, move |world, account, uploads, command| {
-                $apply(world, account, uploads, operation.id, command)
-            }).await
+        async fn $name(&self, world: Id, $($argument: $ty),*) -> Result<(), GameError> {
+            self.queue_society(world, $command).await
         }
     };
 }
 
 impl osg_net::GameRpc for Handler {
+    query!(society_view(query: osg_model::society::SocietyQuery) -> osg_model::society::SocietyView);
     query!(my_affiliation() -> PlayerAffiliation);
     query!(list_blocs() -> Vec<PoliticalBloc>);
     query!(list_polities() -> Vec<Sovereignty>);
@@ -55,7 +53,7 @@ impl osg_net::GameRpc for Handler {
     query!(resolve_identities(principals: Vec<Principal>) -> Vec<IdentityRecord>);
     query!(asset_access(asset: Id) -> AssetAccessDetails);
     query!(list_access_profiles() -> Vec<AccessProfile>);
-    query!(diplomacy(principal: Principal) -> Diplomacy);
+    query!(diplomacy(principal: Principal) -> DiplomacyView);
     query!(resolve_standing(target: Principal) -> StandingReport);
     query!(declaration_history(source: Principal, category: DeclarationCategory, target: Principal, before: Option<u64>, limit: u16) -> Page<Declaration, u64>);
     query!(standings() -> BTreeMap<(Principal, Principal), Standing>);
@@ -124,49 +122,26 @@ impl osg_net::GameRpc for Handler {
 
     async fn publish_service_prices(
         &self,
-        operation: Operation,
+        world: Id,
         facility: Id,
         policy: ServicePolicy,
     ) -> Result<(), GameError> {
         self.queue_mutation(
-            operation,
-            "publish_service_prices",
-            (facility, policy.clone()),
+            world,
             ConfigureService { facility, policy },
             Incoming::Configure,
         )
         .await
     }
 
-    async fn order_industry_job(
-        &self,
-        operation: Operation,
-        quote: ServiceQuote,
-    ) -> Result<(), GameError> {
-        self.queue_mutation(
-            operation,
-            "order_industry_job",
-            quote.clone(),
-            StartWork::Public(quote),
-            Incoming::Work,
-        )
-        .await
+    async fn order_industry_job(&self, world: Id, quote: ServiceQuote) -> Result<(), GameError> {
+        self.queue_mutation(world, StartWork::Public(quote), Incoming::Work)
+            .await
     }
 
-    async fn cancel_service_job(
-        &self,
-        operation: Operation,
-        facility: Id,
-        job: Id,
-    ) -> Result<(), GameError> {
-        self.queue_mutation(
-            operation,
-            "cancel_service_job",
-            (facility, job),
-            CancelWork { facility, job },
-            Incoming::Cancel,
-        )
-        .await
+    async fn cancel_service_job(&self, world: Id, facility: Id, job: Id) -> Result<(), GameError> {
+        self.queue_mutation(world, CancelWork { facility, job }, Incoming::Cancel)
+            .await
     }
 
     mutation!(transfer_money(from: Principal, to: Principal, currency: Currency, amount: u64)
@@ -225,56 +200,4 @@ impl osg_net::GameRpc for Handler {
     mutation!(set_bloc_officer(bloc: Id, account: AccountId, officer: bool) => DiplomacyCommand::SetBlocOfficer { bloc, account, officer }, diplomacy);
     mutation!(set_political_posture(polity: Id, target: Id, standing: Standing) => DiplomacyCommand::SetPosture { polity, target, standing }, diplomacy);
     mutation!(set_bloc_posture(bloc: Id, target: Id, standing: Standing) => DiplomacyCommand::SetBlocPosture { bloc, target, standing }, diplomacy);
-}
-
-fn wallet(
-    world: &mut World,
-    account: AccountId,
-    _: &BlueprintUploads,
-    id: Id,
-    command: WalletCommand,
-) -> anyhow::Result<()> {
-    match &command {
-        WalletCommand::Transfer {
-            from, to, amount, ..
-        }
-        | WalletCommand::TransferGas { from, to, amount } => {
-            anyhow::ensure!(from != to && *amount > 0, "invalid transfer");
-        }
-        WalletCommand::SetTurnoverTax { basis_points, .. } => {
-            anyhow::ensure!(*basis_points <= 10_000, "invalid tax rate")
-        }
-    }
-    sim::economy::apply(world, account, id, command)
-}
-
-fn market(
-    world: &mut World,
-    account: AccountId,
-    _: &BlueprintUploads,
-    id: Id,
-    command: MarketCommand,
-) -> anyhow::Result<()> {
-    sim::economy::exchange::apply(world, account, id, command)
-}
-
-fn society(
-    world: &mut World,
-    account: AccountId,
-    _: &BlueprintUploads,
-    _: Id,
-    command: SocietyCommand,
-) -> anyhow::Result<()> {
-    sim::ownership::apply(world, account, command)
-}
-
-fn diplomacy(
-    world: &mut World,
-    account: AccountId,
-    _: &BlueprintUploads,
-    _: Id,
-    command: DiplomacyCommand,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(command.valid(), "invalid diplomacy arguments");
-    sim::diplomacy::apply(world, account, command)
 }

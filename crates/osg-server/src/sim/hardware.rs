@@ -194,7 +194,7 @@ pub fn install(app: &mut App) {
     install_initialization(app);
     app.add_systems(
         FixedUpdate,
-        (apply_impacts, advance_computer_clock).before(super::vessel::allocate_gas),
+        (apply_impacts, advance_computer_clock).before(super::vessel::run),
     )
     .add_systems(
         FixedUpdate,
@@ -217,7 +217,7 @@ pub fn install(app: &mut App) {
         )
             .chain()
             .in_set(HardwareSystems::Run)
-            .after(super::vessel::settle_gas)
+            .after(super::vessel::run)
             .in_set(super::simulation::SimulationSystems::PrepareBodies),
     )
     .add_systems(

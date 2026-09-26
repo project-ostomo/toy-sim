@@ -2,8 +2,7 @@
 
 The server saves one world payload per SQLite checkpoint. A transaction publishes
 one complete generation, using WAL mode and FULL synchronization. Three
-generations are retained. One checksum covers each checkpoint's tick, timestamp
-and world payload. SQLite `PRAGMA user_version` stores the shared `GAME_VERSION`,
+generations are retained. SQLite `PRAGMA user_version` stores the shared `GAME_VERSION`,
 which also controls connection and firmware compatibility.
 
 The default configuration is:
@@ -32,14 +31,30 @@ shutdown. The server takes a final checkpoint and waits for its commit. On Unix,
 SIGUSR1 requests an extra checkpoint while the server keeps running. A process
 abort or machine failure loses changes since the last committed checkpoint.
 
-The newest generation is authoritative. A checksum, format or reference error
-stops startup with a diagnostic; it does not silently roll the world back. Older
-generations remain available for an operator to inspect and recover explicitly.
+The newest generation is authoritative. Decoding or reconstruction errors stop
+startup. Older generations remain available for explicit recovery.
 Preserve the database and its WAL when diagnosing a failed recovery. Saving errors
 are reported to the server loop and cause shutdown rather than continued unsaved
 operation.
 
 ## Saved state
+
+The server's `SocietyState` contains social records, economy and gas accounts.
+Indexed Rust collections serialize canonical records and rebuild secondary
+indexes when restored. Saves are trusted: loading does not check checksums,
+duplicate keys, references, balances or other domain invariants. Malformed saves
+have unspecified behavior. Derived asset indexes live in a separate ECS resource and
+rebuild through normal publication. Gas is serialized inside `SocietyState`.
+
+Authoritative maps, sets and declaration histories use persistent `imbl`
+collections. Cloning the state shares their storage; writes copy the affected
+paths. Queued actions mutate a draft and publish it only on success. Physical
+component replacements are prepared alongside the draft before publication.
+Snapshots serialize values, without sharing pointers or secondary indexes.
+
+The checkpoint remains one atomic SQLite payload. SQLite does not serve live
+society queries. This schema uses game version 63 and does not migrate earlier
+checkpoints.
 
 The world record includes stable identities, political affiliations and standing
 overrides, asset owners and access grants,
@@ -68,10 +83,11 @@ this also works while autopilot is paused or the flight computer is booting.
 Gas balances are saved for their actual owner: a player, organization or
 sovereignty. Available and spent gas retain their exact integer values, together
 with the allocation cursor used to share scarce gas fairly between computers.
-Capture requires every reservation to be settled, including reservations of zero
-gas. A checkpoint cannot contain outstanding debits. Restore validates all billing
-principals and requires an account for every ship with a computer before replacing
-the world; it does not replenish a saved balance from the starting allocation.
+Each computer system debits grants, executes computers, then refunds unused gas
+and records actual spending before returning. Flight computers execute in parallel;
+display computers retain their serial scheduling and share the physical tick cap.
+Checkpoints run outside these systems, after refunds. Restoring preserves saved
+gas balances and allocation cursors.
 
 Queued slip orders preserve their typed destination references. An active charge
 also retains its concrete candidate, start tick and accumulated energy. A ship
@@ -80,22 +96,18 @@ already in transit restores the galactic endpoint frozen at departure.
 Slip history saves coalesced swept spans and short transition impulses, including
 passage timestamps, inertial drift, visual seeds and opaque effect identities.
 Each deposited portion expires after 300 simulation seconds. Restoring preserves
-its remaining lifetime; the source ship does not need to survive. Invalid timing
-or non-finite geometry is rejected before changing the world.
+its remaining lifetime; the source ship does not need to survive.
 
 Industry state is saved with each facility. Jobs retain their UUID, creator and
 output owner, capability, exact input and output specifications, total processing
 energy, stored output energy and integer progress. Shipyard jobs also retain the
-complete blueprint, including its program. Recovery validates that program before
-replacing any world entities.
+complete blueprint, including its program. Recovery compiles these blueprints to
+reconstruct the runtime designs.
 
 Cargo includes resource quantities and packaged part kits. Reservations remain
 inside the same physical inventory and count toward its mass and volume. Their
-totals must equal the sum of pending jobs' inputs exactly. Capture and recovery
-reject orphan reservations, unavailable items, overflowing counts, invalid job
-owners and output specifications, and jobs requiring an absent installed
-capability. Damaged or unpowered modules can retain suspended jobs. Job UUIDs
-cannot duplicate one another or another world identity.
+totals reflect pending jobs' inputs. Damaged or unpowered modules can retain
+suspended jobs.
 
 Snapshots occur between simulation updates, so they cannot interrupt completion
 between consuming ingredients, creating the output and removing the job. A
@@ -114,9 +126,8 @@ simulation ticks; restarting does not produce material for the downtime. The
 facility's starter-grant flag is durable, preventing recovery from repeating the
 initial stock grant.
 
-Saved programs must implement the current game version. Restore validates each
-program's content hash, imports and `game_version` export before replacing world
-entities. An unsupported saved program stops startup with an error.
+Saved programs are instantiated through the normal WASM runtime. Unsupported
+imports or a mismatched `game_version` export cause instantiation to fail.
 
 Authentication configuration stays outside the database. Back it up together with
 the world; restoring a world without the matching account credentials does not
@@ -129,13 +140,8 @@ Sensor snapshots and contact handles are transient and rebuilt from restored geo
 An incompatible `GAME_VERSION` stops startup. There are no separate database,
 checkpoint, or world-section versions and no automatic migration.
 
-A world record stores a BLAKE3 fingerprint over organization lore and the shared
-universe fingerprint. The universe fingerprint covers astronomical inputs,
-authored definitions, and generator revision without generating system bodies.
-Restore compares it against the loaded universe before mutating the world.
-The ship-resource catalogue and persistent references are validated separately.
-
-An incompatible game version or changed catalogue requires an explicit new database. Preserve the previous state and
+A changed catalogue is assumed compatible with the saved world. To start a new world,
+preserve the previous state and
 choose a new `--state-dir` for the debug launcher, or another `[persistence].path`
 for a dedicated server. A normal restart with unchanged definitions restores the
 same world. Moving or deleting the original ship blueprint file remains safe

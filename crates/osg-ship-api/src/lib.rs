@@ -2,7 +2,7 @@
 #![no_std]
 
 /// Shared compatibility version for firmware, connections, and saved worlds.
-pub const GAME_VERSION: u16 = 61;
+pub const GAME_VERSION: u16 = 63;
 
 pub mod abi;
 pub mod beacons;

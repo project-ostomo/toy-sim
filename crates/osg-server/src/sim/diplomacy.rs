@@ -1,17 +1,18 @@
+use crate::sim::society::{FIRST_ID, LAST_ID, SocialIndex};
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
 use osg_model::{AccountId, Id, diplomacy::*, ownership::Principal};
 use std::collections::BTreeSet;
 
-use super::ownership::Directory;
-
 #[cfg(test)]
 mod tests;
 
-pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -> Result<()> {
+pub fn apply(
+    directory: &mut crate::sim::society::OwnershipDirectory,
+    account: AccountId,
+    command: DiplomacyCommand,
+) -> Result<()> {
     ensure!(command.valid(), "invalid diplomacy command");
-    let directory = &world.resource::<Directory>().0;
-    let mut diplomacy = directory.diplomacy.clone();
     let administer = |principal| -> Result<()> {
         ensure!(
             directory.administers(account, principal),
@@ -29,18 +30,23 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             administer(declaration.source)?;
             known(declaration.target)?;
             let key = (declaration.source, declaration.category, declaration.target);
-            let revision = diplomacy.declarations.get(&key).map_or(0, |d| d.revision);
+            let revision = directory
+                .diplomacy
+                .declarations
+                .get(&key)
+                .map_or(0, |d| d.revision);
             ensure!(
                 declaration.revision == revision,
                 "declaration changed; refresh before publishing"
             );
             declaration.revision = revision.checked_add(1).context("revision exhausted")?;
-            diplomacy
+            directory
+                .diplomacy
                 .declaration_history
                 .entry(key)
                 .or_default()
-                .push(declaration.clone());
-            diplomacy.declarations.insert(key, declaration);
+                .push_back(declaration.clone());
+            directory.diplomacy.declarations.insert(key, declaration);
         }
         DiplomacyCommand::SetTrust {
             owner,
@@ -52,7 +58,10 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                 known(*source)?;
                 ensure!(*source != owner, "own declarations already take priority");
             }
-            diplomacy.trust.insert((owner, category), sources);
+            directory
+                .diplomacy
+                .trust
+                .insert((owner, category), sources.into());
         }
         DiplomacyCommand::ProposeAgreement {
             from,
@@ -65,7 +74,7 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             known(to)?;
             ensure!(from != to, "agreement needs two parties");
             let id = Id::new();
-            diplomacy.agreements.insert(
+            directory.diplomacy.agreements.insert(
                 id,
                 Agreement {
                     id,
@@ -84,9 +93,11 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             expected_revision,
             status,
         } => {
-            let agreement = diplomacy
+            let mut agreement = directory
+                .diplomacy
                 .agreements
-                .get_mut(&id)
+                .get(&id)
+                .cloned()
                 .context("agreement unavailable")?;
             ensure!(
                 agreement.revision == expected_revision,
@@ -110,32 +121,42 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                 .revision
                 .checked_add(1)
                 .context("revision exhausted")?;
+            directory.diplomacy.agreements.insert(id, agreement);
         }
         DiplomacyCommand::CreateBloc { name, founder } => {
             administer(Principal::Sovereignty(founder))?;
             ensure!(
-                !diplomacy
+                directory
+                    .diplomacy
                     .blocs
-                    .values()
-                    .any(|bloc| bloc.members.contains(&founder)),
+                    .query(
+                        SocialIndex::Member(founder, FIRST_ID)
+                            ..=SocialIndex::Member(founder, LAST_ID)
+                    )
+                    .next()
+                    .is_none(),
                 "leave the current bloc first"
             );
             ensure!(
-                !diplomacy
+                directory
+                    .diplomacy
                     .blocs
-                    .values()
-                    .any(|bloc| bloc.name.eq_ignore_ascii_case(&name)),
+                    .query(
+                        SocialIndex::Name(name.to_lowercase(), FIRST_ID)
+                            ..=SocialIndex::Name(name.to_lowercase(), LAST_ID)
+                    )
+                    .next()
+                    .is_none(),
                 "bloc name already registered"
             );
             let id = Id::new();
-            let posture = diplomacy
+            let posture = directory
+                .diplomacy
                 .postures
-                .iter()
-                .filter_map(|(&(source, target), &standing)| {
-                    (source == founder).then_some((target, standing))
-                })
+                .range((founder, FIRST_ID)..=(founder, LAST_ID))
+                .map(|(&(_, target), &standing)| (target, standing))
                 .collect();
-            diplomacy.blocs.insert(
+            directory.diplomacy.blocs.insert(
                 id,
                 PoliticalBloc {
                     id,
@@ -156,18 +177,29 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             administer(Principal::Sovereignty(polity))?;
             ensure!(
                 !apply
-                    || !diplomacy
+                    || directory
+                        .diplomacy
                         .blocs
-                        .values()
-                        .any(|bloc| bloc.members.contains(&polity)),
+                        .query(
+                            SocialIndex::Member(polity, FIRST_ID)
+                                ..=SocialIndex::Member(polity, LAST_ID)
+                        )
+                        .next()
+                        .is_none(),
                 "already a bloc member"
             );
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             if apply {
                 bloc.applications.insert(polity);
             } else {
                 ensure!(bloc.applications.remove(&polity), "application unavailable");
             }
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
         DiplomacyCommand::DecideApplication {
             bloc,
@@ -176,13 +208,23 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
         } => {
             ensure!(
                 !admit
-                    || !diplomacy
+                    || directory
+                        .diplomacy
                         .blocs
-                        .values()
-                        .any(|bloc| bloc.members.contains(&polity)),
+                        .query(
+                            SocialIndex::Member(polity, FIRST_ID)
+                                ..=SocialIndex::Member(polity, LAST_ID)
+                        )
+                        .next()
+                        .is_none(),
                 "already a bloc member"
             );
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(
                 bloc.officers.contains(&account),
                 "bloc officer authority required"
@@ -192,15 +234,35 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                 bloc.members.insert(polity);
                 bloc.posture.remove(&polity);
                 for &member in &bloc.members {
-                    diplomacy.postures.remove(&(member, polity));
+                    directory.diplomacy.postures.remove(&(member, polity));
                 }
                 for (&target, &standing) in &bloc.posture {
                     if target != polity {
-                        diplomacy.postures.insert((polity, target), standing);
+                        directory
+                            .diplomacy
+                            .postures
+                            .insert((polity, target), standing);
                     }
                 }
-                for bloc in diplomacy.blocs.values_mut() {
-                    bloc.applications.remove(&polity);
+            }
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
+            if admit {
+                let applicants: Vec<_> = directory
+                    .diplomacy
+                    .blocs
+                    .query(
+                        super::society::SocialIndex::Application(polity, super::society::FIRST_ID)
+                            ..=super::society::SocialIndex::Application(
+                                polity,
+                                super::society::LAST_ID,
+                            ),
+                    )
+                    .map(|bloc| bloc.id)
+                    .collect();
+                for id in applicants {
+                    let mut applicant = directory.diplomacy.blocs.get(&id).unwrap().clone();
+                    applicant.applications.remove(&polity);
+                    directory.diplomacy.blocs.insert(id, applicant);
                 }
             }
         }
@@ -210,7 +272,12 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             request,
         } => {
             administer(Principal::Sovereignty(polity))?;
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(bloc.members.contains(&polity), "membership unavailable");
             if request {
                 ensure!(
@@ -223,13 +290,19 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                     "withdrawal request unavailable"
                 );
             }
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
         DiplomacyCommand::DecideBlocWithdrawal {
             bloc,
             polity,
             grant,
         } => {
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(
                 bloc.officers.contains(&account),
                 "bloc officer authority required"
@@ -242,9 +315,15 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                 ensure!(bloc.members.remove(&polity), "membership unavailable");
             }
             // The copied posture deliberately survives departure.
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
         DiplomacyCommand::RemoveBlocMember { bloc, polity } => {
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(
                 bloc.officers.contains(&account),
                 "bloc officer authority required"
@@ -252,6 +331,7 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             ensure!(bloc.members.remove(&polity), "membership unavailable");
             bloc.withdrawals.remove(&polity);
             // The copied posture deliberately survives departure.
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
         DiplomacyCommand::SetBlocOfficer {
             bloc,
@@ -259,7 +339,12 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             officer: enabled,
         } => {
             known(Principal::Player(officer))?;
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(
                 bloc.officers.contains(&account),
                 "bloc officer authority required"
@@ -273,6 +358,7 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
                 );
                 bloc.officers.remove(&officer);
             }
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
         DiplomacyCommand::SetPosture {
             polity,
@@ -283,13 +369,21 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             known(Principal::Sovereignty(target))?;
             ensure!(polity != target, "invalid posture target");
             ensure!(
-                !diplomacy
+                directory
+                    .diplomacy
                     .blocs
-                    .values()
-                    .any(|bloc| bloc.members.contains(&polity)),
+                    .query(
+                        SocialIndex::Member(polity, FIRST_ID)
+                            ..=SocialIndex::Member(polity, LAST_ID)
+                    )
+                    .next()
+                    .is_none(),
                 "bloc members follow bloc posture"
             );
-            diplomacy.postures.insert((polity, target), standing);
+            directory
+                .diplomacy
+                .postures
+                .insert((polity, target), standing);
         }
         DiplomacyCommand::SetBlocPosture {
             bloc,
@@ -297,7 +391,12 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             standing,
         } => {
             known(Principal::Sovereignty(target))?;
-            let bloc = diplomacy.blocs.get_mut(&bloc).context("bloc unavailable")?;
+            let mut bloc = directory
+                .diplomacy
+                .blocs
+                .get(&bloc)
+                .cloned()
+                .context("bloc unavailable")?;
             ensure!(
                 bloc.officers.contains(&account),
                 "bloc officer authority required"
@@ -308,17 +407,23 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             );
             bloc.posture.insert(target, standing);
             for &member in &bloc.members {
-                diplomacy.postures.insert((member, target), standing);
+                directory
+                    .diplomacy
+                    .postures
+                    .insert((member, target), standing);
             }
+            directory.diplomacy.blocs.insert(bloc.id, bloc);
         }
     }
     ensure!(
-        diplomacy.valid(directory),
+        directory.diplomacy.valid(directory),
         "diplomacy capacity or validation failure"
     );
-    let mut directory = world.resource_mut::<Directory>();
-    for polity in directory.0.sovereignties.values_mut() {
-        polity.bloc = if diplomacy
+    let polities: Vec<_> = directory.sovereignties.keys().copied().collect();
+    for id in polities {
+        let mut polity = directory.sovereignties.get(&id).unwrap().clone();
+        polity.bloc = if directory
+            .diplomacy
             .blocs
             .get(&super::ownership::principal_id(
                 "bloc",
@@ -327,7 +432,8 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
             .is_some_and(|bloc| bloc.members.contains(&polity.id))
         {
             osg_model::ownership::Bloc::Union
-        } else if diplomacy
+        } else if directory
+            .diplomacy
             .blocs
             .get(&super::ownership::principal_id(
                 "bloc",
@@ -339,7 +445,7 @@ pub fn apply(world: &mut World, account: AccountId, command: DiplomacyCommand) -
         } else {
             osg_model::ownership::Bloc::NonAligned
         };
+        directory.sovereignties.insert(id, polity);
     }
-    directory.0.diplomacy = diplomacy;
     Ok(())
 }

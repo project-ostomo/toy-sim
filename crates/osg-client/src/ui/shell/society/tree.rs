@@ -1,5 +1,6 @@
 use super::*;
 use crate::state::requests::directory::{Branch, Status};
+use osg_model::society::SocietyPresentation;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -25,7 +26,7 @@ pub struct Tree {
 }
 
 impl Tree {
-    pub fn sync(&mut self, session: &crate::state::SocietyState) {
+    pub fn sync(&mut self, session: &crate::state::SocietyUiState) {
         if self.context != session.context {
             *self = Self {
                 context: session.context,
@@ -37,7 +38,7 @@ impl Tree {
         self.matches = session.directory.matches.clone();
     }
 
-    fn reveal(&mut self, directory: &OwnershipDirectory, principal: Principal) {
+    fn reveal(&mut self, directory: &SocietyPresentation, principal: Principal) {
         for ancestor in directory.lineage(principal) {
             if ancestor != principal {
                 self.open.insert(Node::Principal(ancestor), true);
@@ -119,7 +120,7 @@ fn arrow(ui: &mut egui::Ui, tree: &mut Tree, node: Node, searching: bool) -> boo
 
 fn visible(
     state: &State,
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     principal: Principal,
     inherited: bool,
 ) -> bool {
@@ -326,6 +327,10 @@ mod tests {
         let id = Id([1; 16]);
         let principal = Principal::Sovereignty(id);
         let mut snapshot = SocietyData::default();
+        snapshot
+            .directory
+            .ancestry
+            .insert(principal, vec![principal]);
         snapshot.directory.sovereignties.insert(
             id,
             ownership::Sovereignty {

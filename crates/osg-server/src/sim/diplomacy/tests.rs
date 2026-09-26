@@ -5,19 +5,27 @@ fn fixture() -> (World, AccountId, Id, Id, Id) {
     let mut world = World::new();
     let account = Id([1; 16]);
     super::super::identity::initialize(&mut world, &[account]);
-    world.resource_mut::<Directory>().0.diplomacy.blocs.clear();
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.directory)
+        .0
+        .diplomacy
+        .blocs
+        .clear();
     let first = super::super::ownership::sovereignty_id("Helion Commonwealth");
     let second = super::super::ownership::sovereignty_id("Aurora Compact");
     let target = super::super::ownership::sovereignty_id("USE");
     for polity in [first, second] {
-        world
-            .resource_mut::<Directory>()
-            .0
-            .sovereignties
-            .get_mut(&polity)
-            .unwrap()
-            .officers
-            .insert(account);
+        {
+            let records = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0
+                .sovereignties;
+            let mut record = records.get(&polity).unwrap().clone();
+            record.officers.insert(account);
+            records.insert(polity, record);
+        }
     }
     (world, account, first, second, target)
 }
@@ -29,7 +37,9 @@ fn active_terms_grant_navigation_and_inherit_wanted_and_defence() {
     let owner = Principal::Sovereignty(first);
     let partner = Principal::Sovereignty(second);
     let subject = Principal::Sovereignty(target);
-    let mut directory = world.resource_mut::<Directory>();
+    let mut directory = world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.directory);
     let id = Id([8; 16]);
     directory.0.diplomacy.agreements.insert(
         id,
@@ -108,10 +118,10 @@ fn declaration_revisions_keep_ordered_public_history() {
     let source = Principal::Sovereignty(first);
     let target = Principal::Sovereignty(target);
     for (revision, enabled) in [(0, true), (1, false)] {
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            DiplomacyCommand::Publish(Declaration {
+            (DiplomacyCommand::Publish(Declaration {
                 source,
                 target,
                 category: DeclarationCategory::Embargo,
@@ -119,12 +129,14 @@ fn declaration_revisions_keep_ordered_public_history() {
                 standing: Standing::Neutral,
                 enabled,
                 note: format!("revision {revision}"),
-            }),
+            }))
+            .into(),
         )
         .unwrap();
     }
-    let history = &world
-        .resource::<Directory>()
+    let history = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .diplomacy
         .declaration_history[&(source, DeclarationCategory::Embargo, target)];
@@ -136,8 +148,12 @@ fn declaration_revisions_keep_ordered_public_history() {
         vec![1, 2]
     );
     assert!(
-        !world.resource::<Directory>().0.diplomacy.declarations
-            [&(source, DeclarationCategory::Embargo, target)]
+        !(&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .declarations[&(source, DeclarationCategory::Embargo, target)]
             .enabled
     );
 }
@@ -145,123 +161,153 @@ fn declaration_revisions_keep_ordered_public_history() {
 #[test]
 fn application_requires_officer_decision_and_departure_retains_posture() {
     let (mut world, account, first, second, target) = fixture();
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::CreateBloc {
+        (DiplomacyCommand::CreateBloc {
             name: "Test federation".into(),
             founder: first,
-        },
+        })
+        .into(),
     )
     .unwrap();
-    let bloc = *world
-        .resource::<Directory>()
+    let bloc = *(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .diplomacy
         .blocs
         .keys()
         .next()
         .unwrap();
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::SetBlocPosture {
+        (DiplomacyCommand::SetBlocPosture {
             bloc,
             target,
             standing: Standing::Hostile,
-        },
+        })
+        .into(),
     )
     .unwrap();
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::ApplyToBloc {
+        (DiplomacyCommand::ApplyToBloc {
             bloc,
             polity: second,
             apply: true,
-        },
+        })
+        .into(),
     )
     .unwrap();
     assert!(
-        !world.resource::<Directory>().0.diplomacy.blocs[&bloc]
+        !(&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .blocs[&bloc]
             .members
             .contains(&second)
     );
     assert!(
-        apply(
+        crate::sim::society::submit(
             &mut world,
             Id([9; 16]),
-            DiplomacyCommand::DecideApplication {
+            (DiplomacyCommand::DecideApplication {
                 bloc,
                 polity: second,
                 admit: true
-            }
+            })
+            .into()
         )
         .is_err()
     );
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::DecideApplication {
+        (DiplomacyCommand::DecideApplication {
             bloc,
             polity: second,
             admit: true,
-        },
+        })
+        .into(),
     )
     .unwrap();
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::RequestBlocWithdrawal {
+        (DiplomacyCommand::RequestBlocWithdrawal {
             bloc,
             polity: second,
             request: true,
-        },
+        })
+        .into(),
     )
     .unwrap();
     assert!(
-        world.resource::<Directory>().0.diplomacy.blocs[&bloc]
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .blocs[&bloc]
             .members
             .contains(&second)
     );
     assert!(
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            DiplomacyCommand::SetPosture {
+            (DiplomacyCommand::SetPosture {
                 polity: second,
                 target,
                 standing: Standing::Neutral,
-            },
+            })
+            .into()
         )
         .is_err()
     );
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::DecideBlocWithdrawal {
+        (DiplomacyCommand::DecideBlocWithdrawal {
             bloc,
             polity: second,
             grant: true,
-        },
+        })
+        .into(),
     )
     .unwrap();
     assert_eq!(
-        world.resource::<Directory>().0.diplomacy.postures[&(second, target)],
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .postures[&(second, target)],
         Standing::Hostile
     );
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::SetPosture {
+        (DiplomacyCommand::SetPosture {
             polity: second,
             target,
             standing: Standing::Neutral,
-        },
+        })
+        .into(),
     )
     .unwrap();
     assert_eq!(
-        world.resource::<Directory>().0.diplomacy.postures[&(second, target)],
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .postures[&(second, target)],
         Standing::Neutral
     );
 }
@@ -269,17 +315,19 @@ fn application_requires_officer_decision_and_departure_retains_posture() {
 #[test]
 fn withdrawals_require_member_authority_and_officer_resolution() {
     let (mut world, account, first, second, _) = fixture();
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::CreateBloc {
+        (DiplomacyCommand::CreateBloc {
             name: "Withdrawal test".into(),
             founder: first,
-        },
+        })
+        .into(),
     )
     .unwrap();
-    let bloc = *world
-        .resource::<Directory>()
+    let bloc = *(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .diplomacy
         .blocs
@@ -287,14 +335,16 @@ fn withdrawals_require_member_authority_and_officer_resolution() {
         .next()
         .unwrap();
     let polity_officer = Id([7; 16]);
-    world
-        .resource_mut::<Directory>()
-        .0
-        .sovereignties
-        .get_mut(&first)
-        .unwrap()
-        .officers
-        .insert(polity_officer);
+    {
+        let records = &mut world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
+            .0
+            .sovereignties;
+        let mut record = records.get(&first).unwrap().clone();
+        record.officers.insert(polity_officer);
+        records.insert(first, record);
+    }
 
     let request = DiplomacyCommand::RequestBlocWithdrawal {
         bloc,
@@ -316,68 +366,97 @@ fn withdrawals_require_member_authority_and_officer_resolution() {
         polity: first,
         grant: false,
     };
-    assert!(apply(&mut world, Id([9; 16]), request.clone()).is_err());
     assert!(
-        apply(
+        crate::sim::society::submit(&mut world, Id([9; 16]), (request.clone()).into()).is_err()
+    );
+    assert!(
+        crate::sim::society::submit(
             &mut world,
             account,
-            DiplomacyCommand::RequestBlocWithdrawal {
+            (DiplomacyCommand::RequestBlocWithdrawal {
                 bloc,
                 polity: second,
                 request: true
-            }
+            })
+            .into()
         )
         .is_err()
     );
-    assert!(apply(&mut world, account, grant.clone()).is_err());
+    assert!(crate::sim::society::submit(&mut world, account, (grant.clone()).into()).is_err());
 
-    apply(&mut world, polity_officer, request.clone()).unwrap();
-    assert!(apply(&mut world, polity_officer, request.clone()).is_err());
-    assert!(apply(&mut world, polity_officer, grant.clone()).is_err());
+    crate::sim::society::submit(&mut world, polity_officer, (request.clone()).into()).unwrap();
     assert!(
-        apply(
+        crate::sim::society::submit(&mut world, polity_officer, (request.clone()).into()).is_err()
+    );
+    assert!(
+        crate::sim::society::submit(&mut world, polity_officer, (grant.clone()).into()).is_err()
+    );
+    assert!(
+        crate::sim::society::submit(
             &mut world,
             polity_officer,
-            DiplomacyCommand::RemoveBlocMember {
+            (DiplomacyCommand::RemoveBlocMember {
                 bloc,
                 polity: first
-            }
+            })
+            .into()
         )
         .is_err()
     );
     assert!(
-        world.resource::<Directory>().0.diplomacy.blocs[&bloc]
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .blocs[&bloc]
             .withdrawals
             .contains(&first)
     );
-    apply(&mut world, polity_officer, cancel.clone()).unwrap();
-    assert!(apply(&mut world, account, grant).is_err());
+    crate::sim::society::submit(&mut world, polity_officer, (cancel.clone()).into()).unwrap();
+    assert!(crate::sim::society::submit(&mut world, account, (grant).into()).is_err());
 
-    apply(&mut world, polity_officer, request.clone()).unwrap();
-    apply(&mut world, account, refuse).unwrap();
+    crate::sim::society::submit(&mut world, polity_officer, (request.clone()).into()).unwrap();
+    crate::sim::society::submit(&mut world, account, (refuse).into()).unwrap();
     assert!(
-        world.resource::<Directory>().0.diplomacy.blocs[&bloc]
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .blocs[&bloc]
             .members
             .contains(&first)
     );
     assert!(
-        world.resource::<Directory>().0.diplomacy.blocs[&bloc]
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .diplomacy
+            .blocs[&bloc]
             .withdrawals
             .is_empty()
     );
-    assert!(apply(&mut world, polity_officer, cancel).is_err());
+    assert!(crate::sim::society::submit(&mut world, polity_officer, (cancel).into()).is_err());
 
-    apply(&mut world, polity_officer, request).unwrap();
-    apply(
+    crate::sim::society::submit(&mut world, polity_officer, (request).into()).unwrap();
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::RemoveBlocMember {
+        (DiplomacyCommand::RemoveBlocMember {
             bloc,
             polity: first,
-        },
+        })
+        .into(),
     )
     .unwrap();
-    let bloc = &world.resource::<Directory>().0.diplomacy.blocs[&bloc];
+    let bloc = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0
+        .diplomacy
+        .blocs[&bloc];
     assert!(bloc.members.is_empty());
     assert!(bloc.withdrawals.is_empty());
 }
@@ -397,24 +476,35 @@ fn declarations_use_revisions_and_trust_preserves_provenance() {
         enabled: true,
         note: "Public declaration".into(),
     };
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::Publish(declaration.clone()),
+        (DiplomacyCommand::Publish(declaration.clone())).into(),
     )
     .unwrap();
-    assert!(apply(&mut world, account, DiplomacyCommand::Publish(declaration)).is_err());
-    apply(
+    assert!(
+        crate::sim::society::submit(
+            &mut world,
+            account,
+            (DiplomacyCommand::Publish(declaration)).into()
+        )
+        .is_err()
+    );
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::SetTrust {
+        (DiplomacyCommand::SetTrust {
             owner: observer,
             category: DeclarationCategory::Standing,
             sources: vec![source],
-        },
+        })
+        .into(),
     )
     .unwrap();
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     let resolved = directory
         .diplomacy
         .resolve(observer, DeclarationCategory::Standing, target)
@@ -431,20 +521,22 @@ fn proposer_cannot_accept_for_counterparty_and_terminated_agreement_stays_closed
     let (mut world, account, first, _, target) = fixture();
     let from = Principal::Sovereignty(first);
     let to = Principal::Sovereignty(target);
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::ProposeAgreement {
+        (DiplomacyCommand::ProposeAgreement {
             from,
             to,
             title: "Accord".into(),
             terms: vec![AgreementTerm::DockingAccess],
             note: "Mutual recognition".into(),
-        },
+        })
+        .into(),
     )
     .unwrap();
-    let id = *world
-        .resource::<Directory>()
+    let id = *(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .diplomacy
         .agreements
@@ -452,36 +544,39 @@ fn proposer_cannot_accept_for_counterparty_and_terminated_agreement_stays_closed
         .next()
         .unwrap();
     assert!(
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            DiplomacyCommand::ChangeAgreement {
+            (DiplomacyCommand::ChangeAgreement {
                 id,
                 expected_revision: 1,
                 status: AgreementStatus::Active
-            }
+            })
+            .into()
         )
         .is_err()
     );
-    apply(
+    crate::sim::society::submit(
         &mut world,
         account,
-        DiplomacyCommand::ChangeAgreement {
+        (DiplomacyCommand::ChangeAgreement {
             id,
             expected_revision: 1,
             status: AgreementStatus::Terminated,
-        },
+        })
+        .into(),
     )
     .unwrap();
     assert!(
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            DiplomacyCommand::ChangeAgreement {
+            (DiplomacyCommand::ChangeAgreement {
                 id,
                 expected_revision: 2,
                 status: AgreementStatus::Active
-            }
+            })
+            .into()
         )
         .is_err()
     );

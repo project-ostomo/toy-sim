@@ -108,7 +108,9 @@ fn provision_inner(
     if let Some(account) = debug_account {
         identity::add_account(world, account, true);
         let now = osg_model::calendar::now_unix_ms();
-        let mut economy = world.resource_mut::<super::economy::Economy>();
+        let mut economy = world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy);
         for currency in [Currency::Uec, Currency::Lat] {
             economy.issue(
                 Principal::Player(account),

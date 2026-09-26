@@ -20,6 +20,7 @@ pub mod presentation;
 pub mod registry;
 pub mod services;
 pub mod session;
+pub mod society;
 pub mod travel;
 pub use bootstrap::{ScenarioConfig, apply_debug_requests, provision};
 pub mod identity;
@@ -68,6 +69,7 @@ pub fn application(ship: Option<std::path::PathBuf>) -> App {
             vessel::VesselsPlugin,
         ));
     app.add_plugins(industry::IndustryPlugin);
+    society::install(&mut app);
     app.add_systems(Last, session::maintain_cache);
     app.add_systems(First, economy::settle);
     registry::initialize(app.world_mut()).expect("valid universe catalogue");

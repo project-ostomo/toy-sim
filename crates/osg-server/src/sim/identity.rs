@@ -214,7 +214,12 @@ pub fn attach_ship(world: &mut World, ship: Entity, owner: Id, id: Id) -> anyhow
         .get::<super::vessel::Vessel>(ship)
         .map(|v| v.vessel_name.to_string())
         .filter(|n| !n.is_empty());
-    let faction = world.resource::<super::ownership::Directory>().0.players[&owner].organization;
+    let faction = (&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0
+        .players[&owner]
+        .organization;
     world.entity_mut(ship).insert((
         Control {
             account: owner,

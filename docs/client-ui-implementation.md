@@ -18,7 +18,7 @@ original 32 screens; see [repair results](ui-repair-results.md) for verification
 - Wallet window, account selection, transfers, licence restriction display,
   daily charge estimates, currency filters and paginated ledger history.
 - Integer UEC/LAT accounting, market conversion, gas transfers, persisted
-  transaction receipts and settlement dates.
+  ledger entries and settlement dates.
 - Directory diplomacy tab: declarations, ordered sources, agreements, dynamic
   blocs, application inbox, officers and posture commands. Existing USE and LFS
   membership is seeded into bloc records. Structured agreements govern docking,
@@ -34,15 +34,18 @@ original 32 screens; see [repair results](ui-repair-results.md) for verification
   independent cursors and a maximum page size of 128. Custody is counted once.
 - Global LAT/UEC exchange: price/time matching, partial fills, reserved balances,
   limit and immediate orders, cancellations, bounded subscriptions, trade history,
-  candles and persisted command receipts. The USE supplies an unlimited LAT bid.
+  candles and persisted order history. The USE supplies an unlimited LAT bid.
   Charts provide price and UTC axes, 1-minute/5-minute/hourly intervals and
   OHLC/volume hover details for the loaded history page.
 - Station commodity books in UEC or LAT, with reserved stock and delivery into
   principal storage. Deposits and withdrawals retain physical cargo capacity and
   mass accounting at the station.
-- Sovereignty officers can set turnover tax. Ordinary monetary receipts, both FX
-  legs and backstop payouts are taxed; each charge rounds up to a microcurrency
-  unit. Tax remittance does not recursively incur another charge.
+- Sovereignty officers can set turnover tax. Ordinary transfer receipts and
+  buy order placement are taxed; each charge rounds up to a microcurrency
+  unit. Buyers pay upfront on their full limit value in the quoted currency,
+  with no refunds for cancellation or unfilled quantity. Fills transfer full
+  amounts, and sellers pay no market tax. Tax remittance does not recursively
+  incur another charge.
 - Workspace window visibility, position, size and lock state persist locally in
   `$XDG_CONFIG_HOME/toy-sim/workspace.toml` (or `~/.config/toy-sim/workspace.toml`).
 - `OsgNetClient` owns picomux, main events, simulation inputs and typed RPC calls.
@@ -87,7 +90,7 @@ Apply `1 - 0.8^(1/D)` to the balance above 50,000 UEC per account, where D is
 365 or 366 for the day being charged. Round each charge up to the smallest currency
 unit. Persist the last settled day and catch up missed days before transactions.
 Do not accumulate fractional charges. Turnover tax likewise rounds each charge up
-and applies to monetary transfers, including FX conversions.
+and applies to ordinary transfer receipts and buy order placement.
 
 The USE provides an unlimited standing buy order for LAT at a configurable
 backstop price, initially 3.20 UEC/LAT. It receives LAT and issues UEC to pay for
@@ -97,8 +100,9 @@ Unlicensed USE recipients must sell incoming LAT through this market.
 
 Wallet valuations use the latest executed FX price, or “Market price unavailable”
 before the first trade. Restricted receipts execute against market bids and then
-the backstop. Reservations are included in balances subject to demurrage; newest
-bids are cancelled if daily charges leave their reservations unfunded.
+the backstop. Available and reserved balances are separate wallet buckets.
+Demurrage applies only to available UEC; open orders and unstarted public jobs
+retain their commitments in the owner's aggregate reserved balance.
 
 ## Layout constraints
 
@@ -206,7 +210,7 @@ available, reserved and spent totals.
 Workspace compilation across all targets passes. The client suite passes all
 164 tests; model 23, network library 14 and protocol 6 tests also pass. All five
 server network integration tests pass, including authenticated standing/history
-queries, mutation replay, process restart and world replacement.
+queries, disconnected mutation replies, process restart and world replacement.
 
 The server library has 326 passing tests and one ignored test when the following
 four failures from the full run are excluded. These remain unresolved in the

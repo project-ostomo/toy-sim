@@ -2,7 +2,7 @@ use super::{hardware, vessel};
 use bevy::{
     ecs::system::RunSystemOnce,
     math as glam,
-    prelude::{App, Entity, Fixed, FixedUpdate, IntoScheduleConfigs, Time},
+    prelude::{App, Entity, Fixed, FixedUpdate, Time},
 };
 use osg_ship_api::abi;
 use osg_ship_wasm::*;
@@ -808,10 +808,7 @@ fn standard_firmware_drives_micropulse_engine_with_charges_and_no_bulk_propellan
     ));
 
     let mut fixture = HardwareFixture::new(&design, &catalogue);
-    fixture.app.add_systems(
-        FixedUpdate,
-        (vessel::allocate_gas, vessel::run, vessel::settle_gas).chain(),
-    );
+    fixture.app.add_systems(FixedUpdate, vessel::run);
     fixture
         .app
         .world_mut()
@@ -908,10 +905,7 @@ fn common_sky_boots_standard_computer_and_flies_with_supported_passengers() {
     assert!(engines.iter().all(|device| device.control_enabled));
 
     let mut fixture = HardwareFixture::new(&design, &catalogue);
-    fixture.app.add_systems(
-        FixedUpdate,
-        (vessel::allocate_gas, vessel::run, vessel::settle_gas).chain(),
-    );
+    fixture.app.add_systems(FixedUpdate, vessel::run);
     fixture
         .app
         .world_mut()

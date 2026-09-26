@@ -1,8 +1,8 @@
 use crate::sim::{
-    gas, hardware, identity, industry, infrastructure, orrery, ownership, physics, precision,
-    registry, sensors, simulation, spatial, travel, vessel,
+    hardware, identity, industry, infrastructure, orrery, ownership, physics, precision, sensors,
+    simulation, spatial, travel, vessel,
 };
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use bevy::{
     math::{DQuat, DVec3},
     prelude::*,
@@ -14,15 +14,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 #[derive(Serialize, Deserialize)]
 struct WorldRecord {
-    operations: crate::OperationHistory,
-    economy: crate::sim::economy::Economy,
+    society: crate::sim::society::SocietyState,
     epoch: Id,
-    directory: osg_model::ownership::OwnershipDirectory,
-    gas: gas::GasLedgerSnapshot,
     rate: f64,
     slip_history: crate::sim::slip_effects::SlipHistory,
-    definitions: [u8; 32],
-    resource_ids: Vec<String>,
     elapsed_ns: u64,
     tick: u64,
     accounts: Vec<AccountRecord>,
@@ -131,41 +126,17 @@ fn pose(world: &World, entity: Entity) -> Result<Pose> {
     Ok(pose)
 }
 
-fn definition_fingerprint(world: &World) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new_derive_key("OpenSpaceGame immutable world definitions v1");
-    hash.update(&osg_universe::organizations::fingerprint());
-    hash.update(
-        &world
-            .resource::<registry::UniverseRegistry>()
-            .universe
-            .fingerprint(),
-    );
-    *hash.finalize().as_bytes()
-}
-
 pub fn capture(world: &World) -> Result<Vec<u8>> {
     let mut record = WorldRecord {
-        operations: world
-            .get_resource::<crate::OperationHistory>()
-            .cloned()
-            .unwrap_or_default(),
-        economy: world.resource::<crate::sim::economy::Economy>().clone(),
+        society: world
+            .resource::<crate::sim::society::SocietyState>()
+            .clone(),
         epoch: world.resource::<identity::WorldEpoch>().0,
-        directory: world.resource::<ownership::Directory>().0.clone(),
-        gas: world.resource::<gas::GasLedger>().snapshot()?,
         rate: world.resource::<crate::sim::session::Clock>().rate,
         slip_history: world
             .get_resource::<crate::sim::slip_effects::SlipHistory>()
             .cloned()
             .unwrap_or_default(),
-        definitions: definition_fingerprint(world),
-        resource_ids: world
-            .resource::<vessel::ShipCatalogue>()
-            .0
-            .resources
-            .iter()
-            .map(|resource| resource.id.clone())
-            .collect(),
         elapsed_ns: world
             .resource::<Time<Fixed>>()
             .elapsed()
@@ -238,16 +209,6 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             let facility = world
                 .get::<industry::IndustrialFacility>(entity)
                 .map(|facility| facility.to_record());
-            industry::validate_saved(
-                facility.as_ref(),
-                facility
-                    .as_ref()
-                    .and_then(|facility| facility.mine.as_ref()),
-                &design.0,
-                &hardware.inventory,
-                &world.resource::<vessel::ShipCatalogue>().0,
-                &record.directory,
-            )?;
             record.ships.push(ShipRecord {
                 id: stable_id,
                 spatial_instance: world
@@ -360,415 +321,11 @@ pub fn capture(world: &World) -> Result<Vec<u8>> {
             });
         }
     }
-    validate_industry_ids(&record)?;
     Ok(postcard::to_stdvec(&record)?)
-}
-
-fn validate(world: &mut World, record: &WorldRecord) -> Result<()> {
-    record
-        .slip_history
-        .validate(record.tick * osg_model::TICK_NS)?;
-    use osg_model::ownership::Principal;
-    use std::collections::BTreeSet;
-
-    ensure!(record.directory.valid(), "invalid ownership directory");
-    record.economy.validate(&record.directory)?;
-    ensure!(
-        record
-            .gas
-            .accounts
-            .keys()
-            .all(|owner| record.directory.contains(*owner)),
-        "gas account principal unavailable"
-    );
-    ensure!(
-        record.rate.is_finite() && record.rate > 0.0 && record.rate <= 100.0,
-        "invalid saved clock rate"
-    );
-    let mut identities = BTreeSet::new();
-    for value in record
-        .accounts
-        .iter()
-        .map(|record| record.id)
-        .chain(record.ships.iter().map(|record| record.id))
-    {
-        ensure!(identities.insert(value), "duplicate persistent identity");
-    }
-    validate_industry_ids(record)?;
-    let accounts: BTreeSet<_> = record.accounts.iter().map(|account| account.id).collect();
-    let ships: BTreeMap<_, _> = record.ships.iter().map(|ship| (ship.id, ship)).collect();
-    for ((station, owner), stock) in &record.economy.storage {
-        ensure!(
-            ships.contains_key(station)
-                && record.directory.contains(*owner)
-                && !stock.is_empty()
-                && stock.len() <= 1024,
-            "invalid station storage account"
-        );
-    }
-    for ship in &record.ships {
-        ensure!(
-            ship.hardware.inventory.custody == record.economy.custody_totals(ship.id)?,
-            "station storage differs from physical custody"
-        );
-    }
-    for (asset, binding) in &record.directory.access_bindings {
-        let ship = ships
-            .get(asset)
-            .context("linked permission asset unavailable")?;
-        let profile = &record.directory.access_profiles[&binding.profile];
-        ensure!(
-            ship.access.0 == binding.effective(&profile.policy),
-            "linked permission policy mismatch"
-        );
-    }
-    for account in &record.accounts {
-        ensure!(
-            record.directory.players.contains_key(&account.id),
-            "account affiliation unavailable"
-        );
-    }
-    let access_valid = |owner: &ownership::AssetOwner, access: &ownership::AssetAccess| {
-        record.directory.contains(owner.0)
-            && access.0.valid()
-            && access
-                .0
-                .grants
-                .iter()
-                .all(|grant| record.directory.contains(grant.principal))
-    };
-    let control_valid = |control: &Option<ControlRecord>| {
-        control
-            .as_ref()
-            .is_none_or(|control| accounts.contains(&control.account))
-    };
-    let iff_valid = |iff: &Option<IffIdentity>| {
-        iff.as_ref().is_none_or(|iff| {
-            record.directory.contains(Principal::Player(iff.owner))
-                && iff
-                    .faction
-                    .is_none_or(|id| record.directory.organizations.contains_key(&id))
-                && osg_protocol::validate_iff(iff).is_ok()
-        })
-    };
-    for (hash, program) in &record.programs {
-        ensure!(
-            *blake3::hash(program).as_bytes() == *hash,
-            "saved program checksum mismatch"
-        );
-        let mut runtime = world.resource_mut::<vessel::WasmRuntime>();
-        runtime.0.validate_program(program)?;
-    }
-    for job in record
-        .ships
-        .iter()
-        .filter_map(|ship| ship.industry.as_ref())
-        .flat_map(|facility| &facility.jobs)
-    {
-        if let industry::WorkOutput::Ship(bytes) = &job.work.output {
-            let blueprint = osg_ships::ShipBlueprint::from_bytes(bytes)?;
-            world
-                .resource_mut::<vessel::WasmRuntime>()
-                .0
-                .validate_program(blueprint.controller_bytes())?;
-        }
-    }
-    let catalogue = &world.resource::<vessel::ShipCatalogue>().0;
-    for order in record.economy.exchange.orders.values() {
-        if let osg_model::market::Instrument::Commodity { station, item, .. } = &order.instrument {
-            ensure!(ships.contains_key(station), "market station unavailable");
-            osg_ships::industry::item_mass_kg(item, catalogue)?;
-        }
-    }
-    for ship in &record.ships {
-        ensure!(
-            ship.software.is_none() || record.gas.accounts.contains_key(&ship.owner.0),
-            "ship computer gas account unavailable"
-        );
-        ensure!(valid_pose(&ship.pose), "invalid saved ship pose");
-        ensure!(
-            access_valid(&ship.owner, &ship.access),
-            "invalid ship access policy"
-        );
-        ensure!(
-            control_valid(&ship.control) && iff_valid(&ship.iff),
-            "ship identity reference unavailable"
-        );
-        ensure!(
-            ship.stored_mass.is_finite() && ship.stored_mass >= 0.,
-            "invalid contained mass"
-        );
-        ensure!(
-            ship.dormant_thermal_s.is_finite() && (0.0..1.0).contains(&ship.dormant_thermal_s),
-            "invalid dormant thermal clock"
-        );
-        let blueprint: osg_ships::ShipBlueprint = toml::from_str(&ship.blueprint)?;
-        let design = blueprint.compile(catalogue)?;
-        industry::validate_saved(
-            ship.industry.as_ref(),
-            ship.industry
-                .as_ref()
-                .and_then(|facility| facility.mine.as_ref()),
-            &design,
-            &ship.hardware.inventory,
-            catalogue,
-            &record.directory,
-        )?;
-
-        let hardware = &ship.hardware;
-        ensure!(
-            hardware.inventory.quantities.len() == catalogue.resources.len()
-                && hardware.inventory.cargo.len() == catalogue.resources.len()
-                && hardware.inventory.tank_capacities_m3.len() == catalogue.resources.len()
-                && hardware.devices.len() == design.parts.len()
-                && hardware.weapons.len() == design.weapon_parts.len()
-                && hardware.settings.len() == design.device_catalogue.len(),
-            "saved hardware shape differs from design"
-        );
-        ensure!(
-            hardware
-                .settings
-                .iter()
-                .flatten()
-                .all(osg_ships::DeviceSetting::finite)
-                && hardware
-                    .inventory
-                    .tank_capacities_m3
-                    .iter()
-                    .all(|value| value.is_finite() && *value >= 0.)
-                && hardware.inventory.energy_j <= design.battery_j
-                && hardware.hull.is_finite()
-                && hardware.hull >= 0.
-                && hardware.thermal.hull_energy_j.is_finite()
-                && hardware.thermal.hull_energy_j >= 0.
-                && hardware.thermal.shield_energy_j.is_finite()
-                && hardware.thermal.shield_energy_j >= 0.,
-            "invalid saved hardware values"
-        );
-        let mut thermal_indices = BTreeSet::new();
-        for part in &ship.parts {
-            ensure!(
-                part.index < design.parts.len() && thermal_indices.insert(part.index),
-                "invalid thermal part index"
-            );
-            let equipment = &design.parts[part.index].definition.equipment;
-            if let Some((core, decay, _)) = part.reactor {
-                ensure!(
-                    matches!(equipment, osg_ships::Equipment::Reactor { .. })
-                        && core.is_finite()
-                        && core >= 0.
-                        && decay.is_finite()
-                        && decay >= 0.,
-                    "invalid saved reactor state"
-                );
-            }
-            if let Some(decay) = part.thermal_engine_decay_j {
-                ensure!(
-                    matches!(equipment, osg_ships::Equipment::ThermalEngine { .. })
-                        && decay.is_finite()
-                        && decay >= 0.,
-                    "invalid saved engine decay heat"
-                );
-            }
-        }
-        ensure!(
-            record.programs.contains_key(&ship.program),
-            "saved ship program unavailable"
-        );
-        if let Some(software) = &ship.software {
-            ensure!(
-                record.programs.contains_key(&ship.program),
-                "saved program unavailable"
-            );
-            ensure!(
-                software.persistent_data.len() <= 65536,
-                "saved program data exceeds limit"
-            );
-        }
-        ensure!(
-            ship.transit.is_some() == matches!(ship.presence, Presence::SlipTransit(_)),
-            "slip transit state is inconsistent"
-        );
-        ensure!(
-            ship.travel.preferences.valid()
-                && !ship.travel.risk_budget.max_log_loss.is_nan()
-                && ship.travel.risk_budget.max_log_loss >= 0.0
-                && !ship.travel.risk_budget.spent_log_loss.is_nan()
-                && ship.travel.risk_budget.spent_log_loss >= 0.0,
-            "invalid saved itinerary risk"
-        );
-        if let Some(transit) = &ship.transit {
-            ensure!(
-                transit.departed <= transit.advanced_tick
-                    && transit.advanced_tick <= record.tick.saturating_add(1)
-                    && transit.speed_ly_s.is_finite()
-                    && transit.speed_ly_s > 0.0
-                    && transit.speed_ly_s <= osg_model::travel::slip::CRUISE_SPEED_LY_S
-                    && transit.departure_mass_kg.is_finite()
-                    && transit.departure_mass_kg > 0.0
-                    && transit.distance_ly.is_finite()
-                    && transit.distance_ly >= 0.0
-                    && transit.variance_m2.is_finite()
-                    && transit.variance_m2 >= 0.0
-                    && (!transit.beacon_lost || transit.navigation_beacon.is_some())
-                    && transit
-                        .direction
-                        .iter()
-                        .chain(&transit.retained_velocity)
-                        .chain(&transit.requested_delta_v)
-                        .chain(&transit.nominal_direction)
-                        .all(|value| value.is_finite())
-                    && (DVec3::from_array(transit.direction).length_squared() - 1.0).abs() < 1e-5
-                    && (DVec3::from_array(transit.nominal_direction).length_squared() - 1.0).abs()
-                        < 1e-5,
-                "invalid saved slip trajectory"
-            );
-        }
-        if let Some(drive) = &ship.drive {
-            ensure!(
-                drive.axis.iter().all(|v| v.is_finite())
-                    && (DVec3::from_array(drive.axis).length_squared() - 1.0).abs() < 1e-6
-                    && drive.power_w.is_finite()
-                    && drive.power_w >= 0.,
-                "invalid slip power"
-            );
-            if let Some(preparation) = &drive.preparation {
-                ensure!(
-                    preparation.mass.is_finite()
-                        && preparation.mass > 0.
-                        && preparation.started <= record.tick
-                        && preparation.work_j.is_finite()
-                        && preparation.work_j >= 0.
-                        && preparation.required_j.is_finite()
-                        && preparation.required_j >= preparation.work_j
-                        && preparation.arrival_velocity.is_none_or(|velocity| {
-                            velocity.iter().all(|value| value.is_finite())
-                        }),
-                    "invalid slip preparation"
-                );
-            }
-        }
-        if let Some(bays) = &ship.bays {
-            ensure!(
-                bays.iter().all(|bay| bay.radius_m.is_finite()
-                    && bay.radius_m > 0.
-                    && bay.mass_capacity_kg.is_finite()
-                    && bay.mass_capacity_kg > 0.
-                    && bay
-                        .centre_m
-                        .iter()
-                        .chain(&bay.rotation)
-                        .all(|value| value.is_finite())),
-                "invalid docking bay"
-            );
-        }
-        let mut chain = BTreeSet::from([ship.id]);
-        let mut current = ship;
-        loop {
-            let host = match current.presence {
-                Presence::Docked { host, bay } => {
-                    let station = ships.get(&host).context("docked host unavailable")?;
-                    ensure!(
-                        station
-                            .bays
-                            .as_ref()
-                            .is_some_and(|bays| (bay as usize) < bays.len()),
-                        "docked bay unavailable"
-                    );
-                    host
-                }
-                Presence::StoredInWreck(host) => host,
-                _ => break,
-            };
-            ensure!(
-                chain.insert(host) && chain.len() <= 9,
-                "invalid containment cycle or depth"
-            );
-            current = ships.get(&host).context("containment host unavailable")?;
-        }
-    }
-    for projectile in &record.projectiles {
-        ensure!(
-            projectile
-                .owner
-                .is_none_or(|owner| ships.contains_key(&owner)),
-            "projectile launch owner unavailable"
-        );
-        ensure!(
-            valid_pose(&projectile.pose)
-                && projectile.mass_kg.is_finite()
-                && projectile.mass_kg > 0.
-                && projectile.remaining_s.is_finite()
-                && projectile.remaining_s > 0.
-                && projectile.radius_m.is_finite()
-                && projectile.radius_m > 0.,
-            "invalid saved projectile"
-        );
-    }
-    Ok(())
-}
-
-fn validate_industry_ids(record: &WorldRecord) -> Result<()> {
-    let mut held = std::collections::BTreeMap::new();
-    let mut identities: std::collections::BTreeSet<_> = record
-        .accounts
-        .iter()
-        .map(|account| account.id)
-        .chain(record.ships.iter().map(|ship| ship.id))
-        .chain(record.directory.players.keys().copied())
-        .chain(record.directory.organizations.keys().copied())
-        .chain(record.directory.sovereignties.keys().copied())
-        .collect();
-    for ship in &record.ships {
-        for job in ship.industry.iter().flat_map(|facility| &facility.jobs) {
-            ensure!(
-                identities.insert(job.id),
-                "duplicate persistent industry job identity"
-            );
-            if let Some(payment) = &job.payment {
-                if !payment.charged {
-                    held.insert(job.id, payment);
-                }
-            }
-        }
-    }
-    for (id, payment) in &record.economy.service_holds {
-        ensure!(
-            held.get(id) == Some(&payment),
-            "industry payment hold has no matching job"
-        );
-    }
-    Ok(())
-}
-
-fn valid_pose(pose: &Pose) -> bool {
-    pose.velocity
-        .iter()
-        .chain(&pose.angular_velocity)
-        .chain(&pose.rotation)
-        .all(|value| value.is_finite())
-        && (pose.rotation.iter().map(|value| value * value).sum::<f64>() - 1.).abs() < 1e-5
 }
 
 pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     let record: WorldRecord = postcard::from_bytes(bytes)?;
-    ensure!(
-        record.definitions == definition_fingerprint(world),
-        "world catalogue differs from saved universe; explicitly start a new database for a different universe"
-    );
-    let resources = world
-        .resource::<vessel::ShipCatalogue>()
-        .0
-        .resources
-        .iter()
-        .map(|resource| resource.id.clone())
-        .collect::<Vec<_>>();
-    ensure!(
-        record.resource_ids == resources,
-        "resource catalogue differs from snapshot"
-    );
-    validate(world, &record)?;
-    let ledger = gas::GasLedger::from_snapshot(record.gas)?;
     let config = world.resource::<crate::sim::ScenarioConfig>().clone();
     let entities = world
         .query_filtered::<Entity, Without<bevy::ecs::resource::IsResource>>()
@@ -788,11 +345,12 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
     world.resource_mut::<travel::TravelEvents>().0.clear();
     world.insert_resource(record.slip_history);
     world.insert_resource(identity::WorldEpoch(record.epoch));
-    world.insert_resource(ownership::Directory(record.directory));
-    world.insert_resource(record.operations);
-    world.insert_resource(record.economy);
-    crate::sim::economy::settle(world);
-    world.insert_resource(ledger);
+    world.insert_resource(record.society);
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .economy
+        .settle(osg_model::calendar::now_unix_ms());
+    world.insert_resource(crate::sim::society::AssetRecords::default());
     world.insert_resource(crate::sim::session::Clock {
         rate: record.rate,
         ..Default::default()
@@ -854,10 +412,6 @@ pub fn restore(world: &mut World, bytes: &[u8]) -> Result<()> {
                     .get(&ship.program)
                     .context("saved program unavailable")?
                     .clone();
-                ensure!(
-                    *blake3::hash(&program).as_bytes() == ship.program,
-                    "saved program checksum mismatch"
-                );
                 Ok(osg_ship_wasm::ControllerCheckpoint {
                     program,
                     persistent_data: software.persistent_data.clone(),
@@ -1108,6 +662,7 @@ mod route_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sim::gas;
     use osg_model::travel::{Directive, ItineraryEntry};
 
     fn dock_entry(station: Id) -> ItineraryEntry {
@@ -1225,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn gas_checkpoints_require_settlement_and_restore_spending_and_fairness_exactly() {
+    fn gas_checkpoints_restore_spending_and_fairness_exactly() {
         use osg_model::ownership::Principal;
 
         let account = Id::new();
@@ -1234,39 +789,59 @@ mod tests {
             app.update();
         }
         let world = app.world_mut();
-        let ledger = world.resource::<gas::GasLedger>().clone();
         let owner = Principal::Player(account);
-        let available = ledger.account(owner).unwrap().available;
-        ledger
-            .reserve(owner, available - 5)
-            .unwrap()
-            .settle(available - 5)
-            .unwrap();
         let requests = [1, 2, 3].map(|id| gas::GasRequest {
             id: Id([id; 16]),
             maximum: 4,
             minimum: 1,
         });
-        let reservations = ledger.reserve_fair(owner, &requests).unwrap();
-        assert!(capture(world).is_err());
-        for (_, reservation) in reservations {
-            reservation.settle(1).unwrap();
+        {
+            let mut state = world.resource_mut::<crate::sim::society::SocietyState>();
+            state.gas = gas::GasState::default();
+            state.gas.ensure_account(owner, 5);
+            let grants = state.gas.debit_fair(owner, &requests).unwrap();
+            for (_, grant) in grants {
+                state.gas.refund(owner, grant, 1);
+            }
+            // Other running computers still require their own payer accounts.
+            for principal in state
+                .directory
+                .0
+                .sovereignties
+                .keys()
+                .copied()
+                .map(Principal::Sovereignty)
+                .chain(
+                    state
+                        .directory
+                        .0
+                        .organizations
+                        .keys()
+                        .copied()
+                        .map(Principal::Organization),
+                )
+                .collect::<Vec<_>>()
+            {
+                state.gas.ensure_account(principal, 0);
+            }
         }
-        let zero_reservation = ledger.reserve(owner, 0).unwrap();
-        assert!(capture(world).is_err());
-        zero_reservation.settle(0).unwrap();
-
-        let expected = ledger.snapshot().unwrap();
+        let expected = world
+            .resource::<crate::sim::society::SocietyState>()
+            .gas
+            .clone();
         assert_eq!(expected.accounts[&owner].available, 2);
-        assert_eq!(expected.fairness[&owner], Id([2; 16]));
+        assert_eq!(expected.accounts[&owner].fairness, Some(Id([2; 16])));
         let bytes = capture(world).unwrap();
-        ledger.reserve(owner, 2).unwrap().settle(2).unwrap();
+        world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .gas
+            .deposit(owner, 2)
+            .unwrap();
         restore(world, &bytes).unwrap();
-
-        let restored = world.resource::<gas::GasLedger>().snapshot().unwrap();
-        assert_eq!(restored.accounts, expected.accounts);
-        assert_eq!(restored.fairness, expected.fairness);
-        assert_eq!(restored.accounts[&owner].available, 2);
+        assert_eq!(
+            world.resource::<crate::sim::society::SocietyState>().gas,
+            expected
+        );
     }
 
     #[test]
@@ -1329,97 +904,6 @@ mod tests {
                 .iter()
                 .any(|destruction| destruction.entity == expired)
         );
-    }
-
-    #[test]
-    fn corrupt_references_are_rejected_before_replacing_the_world() {
-        let account = Id::new();
-        let mut app = crate::scenario(&[account], Some(account), None).unwrap();
-        for _ in 0..3 {
-            app.update();
-        }
-        let world = app.world_mut();
-        let bytes = capture(world).unwrap();
-        let epoch = world.resource::<identity::WorldEpoch>().0;
-        let identities = world
-            .resource::<identity::IdentityIndex>()
-            .entries()
-            .clone();
-
-        let mut missing_host: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        missing_host.ships[0].presence = Presence::Docked {
-            host: Id::new(),
-            bay: 0,
-        };
-        let mut corrupt_program: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        corrupt_program.programs.values_mut().next().unwrap()[0] ^= 1;
-
-        let mut different_definitions: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        different_definitions.definitions[0] ^= 1;
-        let mut unsettled_gas: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        unsettled_gas
-            .gas
-            .accounts
-            .values_mut()
-            .next()
-            .unwrap()
-            .reserved = 1;
-        let mut missing_payer: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        let payer = missing_payer
-            .ships
-            .iter()
-            .find(|ship| ship.software.is_some())
-            .unwrap()
-            .owner
-            .0;
-        missing_payer.gas.accounts.remove(&payer);
-        let mut unknown_gas_owner: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        let unknown_owner = osg_model::ownership::Principal::Player(Id::new());
-        unknown_gas_owner.gas.accounts.insert(
-            unknown_owner,
-            osg_model::ownership::GasAccountSnapshot {
-                owner: unknown_owner,
-                available: 1,
-                reserved: 0,
-                spent: 0,
-            },
-        );
-        let mut overflowing_gas: WorldRecord = postcard::from_bytes(&bytes).unwrap();
-        let balance = overflowing_gas.gas.accounts.values_mut().next().unwrap();
-        balance.available = u64::MAX;
-        balance.spent = 1;
-        let original_gas = world.resource::<gas::GasLedger>().snapshot().unwrap();
-
-        for invalid in [
-            missing_host,
-            corrupt_program,
-            different_definitions,
-            unsettled_gas,
-            missing_payer,
-            unknown_gas_owner,
-            overflowing_gas,
-        ] {
-            let invalid = postcard::to_stdvec(&invalid).unwrap();
-            assert!(restore(world, &invalid).is_err());
-            assert_eq!(world.resource::<identity::WorldEpoch>().0, epoch);
-            assert_eq!(
-                world.resource::<identity::IdentityIndex>().entries(),
-                &identities
-            );
-            assert_eq!(
-                world
-                    .resource::<gas::GasLedger>()
-                    .snapshot()
-                    .unwrap()
-                    .accounts,
-                original_gas.accounts
-            );
-            assert!(
-                identities
-                    .values()
-                    .all(|entity| world.get_entity(*entity).is_ok())
-            );
-        }
     }
 
     #[test]

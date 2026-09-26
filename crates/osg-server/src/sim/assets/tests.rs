@@ -6,6 +6,36 @@ use osg_model::{
 };
 
 #[test]
+fn publication_removes_grants_and_assets_from_visibility_indexes() {
+    let mut world = World::new();
+    let owner = Id([1; 16]);
+    let viewer = Id([2; 16]);
+    let asset = Id([3; 16]);
+    identity::initialize(&mut world, &[owner, viewer]);
+    let entity = world
+        .spawn((
+            ownership::AssetOwner(Principal::Player(owner)),
+            ownership::AssetAccess(AccessPolicy {
+                public: [Permission::View].into(),
+                grants: Vec::new(),
+            }),
+        ))
+        .id();
+    identity::register(&mut world, entity, asset).unwrap();
+    crate::sim::society::publish_for_test(&mut world);
+    assert_eq!(list(&world, viewer, "", None, None, 128).len(), 1);
+
+    world.entity_mut(entity).remove::<ownership::AssetAccess>();
+    crate::sim::society::publish_for_test(&mut world);
+    assert!(list(&world, viewer, "", None, None, 128).is_empty());
+    assert_eq!(list(&world, owner, "", None, None, 128).len(), 1);
+
+    world.despawn(entity);
+    crate::sim::society::publish_for_test(&mut world);
+    assert!(list(&world, owner, "", None, None, 128).is_empty());
+}
+
+#[test]
 fn asset_telemetry_uses_inventory_and_requires_view_permission() {
     let mut world = World::new();
     let account = Id([1; 16]);
@@ -32,7 +62,8 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
         .id();
     identity::register(&mut world, entity, Id([3; 16])).unwrap();
     world.insert_resource(vessel::ShipCatalogue(catalogue));
-    let owned = list(&world, account, "", None);
+    crate::sim::society::publish_for_test(&mut world);
+    let owned = list(&world, account, "", None, None, 128);
     let telemetry = owned[0].telemetry.as_ref().unwrap();
     assert_eq!(telemetry.cargo_capacity_m3, expected_capacity);
     assert_eq!(telemetry.energy_capacity_j, expected_battery);
@@ -44,7 +75,8 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
             .iter()
             .all(|tank| tank.quantity <= tank.capacity)
     );
-    let restricted = list(&world, other, "", None);
+    crate::sim::society::publish_for_test(&mut world);
+    let restricted = list(&world, other, "", None, None, 128);
     assert_eq!(restricted.len(), 1);
     assert!(restricted[0].telemetry.is_none());
     world
@@ -54,7 +86,7 @@ fn asset_telemetry_uses_inventory_and_requires_view_permission() {
         .public
         .insert(Permission::View);
     assert_eq!(
-        list(&world, other, "", None)[0].telemetry,
+        list(&world, other, "", None, None, 128)[0].telemetry,
         owned[0].telemetry
     );
 }
@@ -90,13 +122,15 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
             .id();
         identity::register(&mut world, entity, id).unwrap();
         entities.push(entity);
-        let mut economy = world.resource_mut::<Economy>();
+        let mut economy = world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy);
         economy
             .storage
-            .insert((id, owner), [(water.clone(), 20)].into());
+            .insert((id, owner), [(water.clone(), 20_u64)].into_iter().collect());
         economy
             .storage
-            .insert((id, guest), [(water.clone(), 20)].into());
+            .insert((id, guest), [(water.clone(), 20_u64)].into_iter().collect());
         let order = Id([n + 10; 16]);
         economy.exchange.orders.insert(
             order,
@@ -121,13 +155,12 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
         );
     }
     world.insert_resource(vessel::ShipCatalogue(catalogue));
-    let first =
-        crate::rpc::list_assets(&world, account, String::new(), None, None, 1).unwrap();
+    crate::sim::society::publish_for_test(&mut world);
+    let first = crate::rpc::list_assets(&world, account, String::new(), None, None, 1).unwrap();
     let goods = goods_totals(&world, account, "", None);
     let sources =
-        crate::rpc::stock_locations(&world, account, water.clone(), None, None, 1)
-            .unwrap();
-    assert_eq!(first.total, Some(2));
+        crate::rpc::stock_locations(&world, account, water.clone(), None, None, 1).unwrap();
+    assert_eq!(first.total, None);
     assert_eq!(first.items.len(), 1);
     assert_eq!(goods[0].quantity, 160);
     assert_eq!(goods[0].reserved, 30);
@@ -136,15 +169,14 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
     assert!(sources.next.is_some());
 
     let second =
-        crate::rpc::list_assets(&world, account, String::new(), None, first.next, 1)
-            .unwrap();
+        crate::rpc::list_assets(&world, account, String::new(), None, first.next, 1).unwrap();
     let next_sources =
-        crate::rpc::stock_locations(&world, account, water.clone(), None, sources.next, 1)
-            .unwrap();
+        crate::rpc::stock_locations(&world, account, water.clone(), None, sources.next, 1).unwrap();
     assert_ne!(first.items[0].id, second.items[0].id);
     assert!(second.next.is_none());
     assert_ne!(sources.items[0].key, next_sources.items[0].key);
-    assert!(list(&world, account, "water", None).is_empty());
+    crate::sim::society::publish_for_test(&mut world);
+    assert!(list(&world, account, "water", None, None, 128).is_empty());
     let filtered_goods = goods_totals(&world, account, "water", None);
     assert_eq!(filtered_goods.len(), 1);
     assert_eq!(filtered_goods[0].quantity, 160);
@@ -160,7 +192,8 @@ fn goods_totals_respect_custody_permissions_and_page_boundaries() {
             .public
             .clear();
     }
-    assert!(list(&world, other, "", Some(owner)).is_empty());
+    crate::sim::society::publish_for_test(&mut world);
+    assert!(list(&world, other, "", Some(owner), None, 128).is_empty());
     assert!(goods_totals(&world, other, "", Some(owner)).is_empty());
     assert!(stock_locations(&world, other, &water, Some(owner)).is_empty());
 }

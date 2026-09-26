@@ -1,7 +1,7 @@
 //! Test clients submit the same typed requests and run the registered schedules.
 use super::*;
 use crate::blueprint_uploads::BlueprintUploads;
-use osg_model::rpc::{GameError, Operation};
+use osg_model::rpc::GameError;
 use requests::*;
 use tokio::sync::oneshot;
 
@@ -9,8 +9,7 @@ pub fn install(world: &mut World) {
     if world.contains_resource::<WorkQueue>() {
         return;
     }
-    world.init_resource::<super::super::economy::Economy>();
-    world.init_resource::<super::super::gas::GasLedger>();
+    world.init_resource::<crate::sim::society::SocietyState>();
     world.init_resource::<travel::TravelEvents>();
     world.init_resource::<vessel::WasmRuntime>();
     world.init_resource::<bevy::ecs::schedule::Schedules>();
@@ -59,14 +58,10 @@ fn submit<A>(
 ) -> Result<()> {
     install(world);
     let (reply, mut receive) = oneshot::channel();
-    let operation = Operation {
-        world: world.resource::<identity::WorldEpoch>().0,
-        id: Id::new(),
-    };
+    let epoch = world.resource::<identity::WorldEpoch>().0;
     let request = wrap(Mutation {
         account,
-        operation,
-        fingerprint: [0; 32],
+        world: epoch,
         arguments,
         reply,
     });

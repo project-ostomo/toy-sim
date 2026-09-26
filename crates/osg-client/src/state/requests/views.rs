@@ -1,6 +1,6 @@
 //! Client query parameters and views composed from independent RPC responses.
 use super::QueryState;
-use osg_model::{AccountId, Id, assets::*, economy::*, industry::*, market::*, ownership::*};
+use osg_model::{Id, assets::*, economy::*, industry::*, market::*, ownership::*};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndustryQuery {
@@ -123,11 +123,4 @@ pub struct MarketView {
     pub next_before: Option<u64>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SocietyData {
-    pub standing_report: Option<StandingReport>,
-    pub account: AccountId,
-    pub directory: OwnershipDirectory,
-    pub assets: Vec<AssetAffiliation>,
-    pub gas_accounts: Vec<GasAccountSnapshot>,
-}
+pub use osg_model::society::SocietyData;

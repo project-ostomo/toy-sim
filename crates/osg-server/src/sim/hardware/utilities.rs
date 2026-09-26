@@ -1,7 +1,7 @@
 use super::*;
 use crate::sim::{
     identity::{DirectoryEmitter, NavigationBeaconEmitter},
-    ownership::{self, AssetAccess, AssetOwner, Directory},
+    ownership::{self, AssetAccess, AssetOwner},
     travel::{Bay, DockingBays, Dormant},
 };
 use osg_ships::utilities::UtilityDef;
@@ -275,7 +275,7 @@ pub fn run(
 
 pub fn service_docked(
     time: Res<Time<Fixed>>,
-    directory: Option<Res<Directory>>,
+    directory: Option<Res<crate::sim::society::SocietyState>>,
     cat: Res<ShipCatalogue>,
     hosts: Query<
         (
@@ -305,7 +305,7 @@ pub fn service_docked(
                 continue;
             };
             if !ownership::permits_principal(
-                &directory.0,
+                &directory.directory.0,
                 owner.0,
                 access.map(|access| &access.0),
                 guest_owner.0,
@@ -748,23 +748,27 @@ mod tests {
         world.entity_mut(fixture.ship).insert(AssetOwner(
             osg_model::ownership::Principal::Organization(organization),
         ));
-        world
-            .resource_mut::<Directory>()
-            .0
-            .organizations
-            .get_mut(&organization)
-            .unwrap()
-            .officers
-            .insert(owner);
+        {
+            let records = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0
+                .organizations;
+            let mut record = records.get(&organization).unwrap().clone();
+            record.officers.insert(owner);
+            records.insert(organization, record);
+        }
         ownership::affiliate(world, owner, None).unwrap();
-        world
-            .resource_mut::<Directory>()
-            .0
-            .organizations
-            .get_mut(&organization)
-            .unwrap()
-            .officers
-            .remove(&owner);
+        {
+            let records = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0
+                .organizations;
+            let mut record = records.get(&organization).unwrap().clone();
+            record.officers.remove(&owner);
+            records.insert(organization, record);
+        }
         let before = world.get::<ShipInventory>(guest).unwrap().0.clone();
         world.run_system_once(service_docked).unwrap();
         assert_eq!(

@@ -1,5 +1,5 @@
 use super::ViewCamera;
-use crate::state::{DisplayPose, Optical, OwnedShip, ShipDetails, SocietyState, ViewObservation};
+use crate::state::{DisplayPose, Optical, OwnedShip, ShipDetails, SocietyUiState, ViewObservation};
 use crate::ui::{Selection, shell::Shell};
 use bevy::{prelude::*, window::PrimaryWindow};
 use osg_ui::bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
@@ -18,7 +18,7 @@ fn overlay(
     mut contexts: EguiContexts,
     mut selection: ResMut<Selection>,
     shell: Res<Shell>,
-    session: Res<SocietyState>,
+    session: Res<SocietyUiState>,
     optical: Query<(&Optical, &DisplayPose)>,
     cameras: Query<(&Camera, &GlobalTransform, &ViewCamera, &ViewObservation)>,
     owned: Query<(&OwnedShip, Option<&ShipDetails>)>,

@@ -46,8 +46,9 @@ pub fn draw(
         "Ships, installations and goods across authorized inventories",
         |ui| {
             ui.label(format!(
-                "{} assets · {} kinds of goods",
-                snapshot.total_assets, snapshot.total_goods
+                "{} assets shown · {} kinds of goods shown",
+                snapshot.assets.len(),
+                snapshot.goods.len()
             ));
         },
     );

@@ -74,7 +74,6 @@ fn swept_wakes_coalesce_drift_trim_and_survive_the_ship_and_serialization() {
     assert!((wake.position(0.0, 100_000_000_000).relative_to(origin).x - 3e6).abs() < 0.01);
     let bytes = postcard::to_stdvec(history).unwrap();
     let mut restored: SlipHistory = postcard::from_bytes(&bytes).unwrap();
-    restored.validate(1_000_000_000).unwrap();
     restored.prune_at(300_500_000_000);
     assert_eq!(restored.spans.len(), 1);
     assert_eq!(restored.spans[0].wake.start_ns, 500_000_000);

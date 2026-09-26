@@ -16,7 +16,7 @@ impl Fixture {
     fn new() -> Self {
         let mut world = World::new();
         world.init_resource::<identity::IdentityIndex>();
-        world.insert_resource(ownership::Directory(OwnershipDirectory::default()));
+        world.insert_resource(crate::sim::society::SocietyState::default());
         world.insert_resource(vessel::ShipCatalogue(Catalogue::builtin()));
         identity::initialize(&mut world, &[id(1), id(2)]);
         install(&mut world);

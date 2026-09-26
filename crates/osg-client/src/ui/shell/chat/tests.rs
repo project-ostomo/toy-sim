@@ -182,7 +182,7 @@ fn sender_color_and_organization_follow_only_advertised_identity() {
         ..Default::default()
     };
     let mut message = message(1, "Hello".into());
-    let advertised = ownership::Principal::Organization(Id([3; 16]));
+    society.directory.viewer = society.account;
     society.directory.organizations.insert(
         Id([3; 16]),
         ownership::Organization {
@@ -193,8 +193,8 @@ fn sender_color_and_organization_follow_only_advertised_identity() {
             officers: Default::default(),
         },
     );
-    society.directory.standings.insert(
-        (ownership::Principal::Player(society.account), advertised),
+    society.directory.advertised.insert(
+        (message.advertised_owner, message.advertised_organization),
         ownership::Standing::Hostile,
     );
     assert_eq!(sender_color(&message, &society), THREAT);

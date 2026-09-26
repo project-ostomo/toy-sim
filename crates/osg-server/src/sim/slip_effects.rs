@@ -1,6 +1,5 @@
 //! Shared residual slip light, independent of the ship's lifetime and sensors.
 use super::{identity, simulation::SimulationCounters, spatial, travel};
-use anyhow::{Result, ensure};
 use bevy::{math::DVec3, prelude::*};
 use osg_model::{AccountId, GalacticPosition, Id, ViewState, slip_visual::*};
 use serde::{Deserialize, Serialize};
@@ -142,40 +141,6 @@ impl SlipHistory {
         self.transitions.retain(|event| {
             time_ns.saturating_sub(event.time_ns) < (TRANSITION_LIFETIME_S * 1e9) as u64
         });
-    }
-
-    pub fn validate(&self, time_ns: u64) -> Result<()> {
-        let finite = |v: [f64; 3]| v.iter().all(|v| v.is_finite());
-        for span in &self.spans {
-            let w = &span.wake;
-            ensure!(
-                w.start_ns < w.end_ns && w.end_ns <= time_ns + osg_model::TICK_NS,
-                "invalid wake times"
-            );
-            ensure!(
-                finite(w.drift_m_s) && w.radius_m.is_finite() && w.radius_m > 0.0,
-                "invalid wake geometry"
-            );
-            ensure!(
-                w.offset_m.is_finite() && w.offset_m >= 0.0,
-                "invalid wake offset"
-            );
-        }
-        for event in &self.transitions {
-            ensure!(
-                event.time_ns <= time_ns + osg_model::TICK_NS,
-                "invalid slip transition time"
-            );
-            ensure!(
-                finite(event.drift_m_s)
-                    && finite(event.direction)
-                    && (DVec3::from_array(event.direction).length() - 1.0).abs() < 1e-6
-                    && event.radius_m.is_finite()
-                    && event.radius_m > 0.0,
-                "invalid slip transition geometry"
-            );
-        }
-        Ok(())
     }
 }
 

@@ -42,7 +42,7 @@ before changing runtime opacity.
   correct composition, visible text or presence of required information.
 
 Preserve the requested Charon/Sarasa fonts, 20% effective annual demurrage computed
-daily, rounding charges up, turnover tax on all transfers including FX, market
+daily, rounding charges up, turnover tax on ordinary transfer receipts and upfront buy orders, market
 LAT valuation and the unlimited UEC bid for LAT. Figma's older economic text
 must not replace those decisions. Automated officers remain ordinary accounts
 operated through headless clients.

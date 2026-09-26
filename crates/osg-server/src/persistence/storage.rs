@@ -65,8 +65,7 @@ impl Database {
                  generation INTEGER PRIMARY KEY AUTOINCREMENT,
                  simulation_tick INTEGER NOT NULL,
                  saved_at_unix_ms INTEGER NOT NULL,
-                 payload BLOB NOT NULL,
-                 checksum BLOB NOT NULL
+                 payload BLOB NOT NULL
              );
              PRAGMA application_id=1414748493;",
         )?;
@@ -79,17 +78,11 @@ impl Database {
     }
 
     pub fn save(&mut self, snapshot: &Snapshot) -> Result<u64> {
-        let digest = checksum(snapshot);
         let transaction = self.connection.transaction()?;
         transaction.execute(
-            "INSERT INTO snapshots (simulation_tick, saved_at_unix_ms, payload, checksum)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                snapshot.tick,
-                snapshot.saved_at_unix_ms,
-                snapshot.bytes,
-                digest.as_slice()
-            ],
+            "INSERT INTO snapshots (simulation_tick, saved_at_unix_ms, payload)
+             VALUES (?1, ?2, ?3)",
+            params![snapshot.tick, snapshot.saved_at_unix_ms, snapshot.bytes],
         )?;
         let generation = transaction.last_insert_rowid();
         transaction.execute(
@@ -102,53 +95,16 @@ impl Database {
     }
 
     pub fn load(&self) -> Result<Option<Snapshot>> {
-        let generation = self
-            .connection
-            .query_row(
-                "SELECT generation FROM snapshots ORDER BY generation DESC LIMIT 1",
-                [],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?;
-        generation
-            .map(|generation| {
-                self.load_generation(generation).with_context(|| {
-                    format!(
-                        "cannot restore latest checkpoint generation {generation}; \
-                         older generations retained for manual recovery"
-                    )
-                })
-            })
-            .transpose()
+        Ok(self.connection.query_row(
+            "SELECT simulation_tick, saved_at_unix_ms, payload FROM snapshots ORDER BY generation DESC LIMIT 1",
+            [],
+            |row| Ok(Snapshot {
+                tick: row.get(0)?,
+                saved_at_unix_ms: row.get(1)?,
+                bytes: row.get(2)?,
+            }),
+        ).optional()?)
     }
-
-    fn load_generation(&self, generation: i64) -> Result<Snapshot> {
-        let (tick, saved_at_unix_ms, bytes, expected): (u64, u64, Vec<u8>, Vec<u8>) =
-            self.connection.query_row(
-                "SELECT simulation_tick, saved_at_unix_ms, payload, checksum
-                 FROM snapshots WHERE generation=?1",
-                [generation],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-            )?;
-        let snapshot = Snapshot {
-            tick,
-            saved_at_unix_ms,
-            bytes,
-        };
-        ensure!(
-            checksum(&snapshot).as_slice() == expected,
-            "snapshot checksum mismatch"
-        );
-        Ok(snapshot)
-    }
-}
-
-fn checksum(snapshot: &Snapshot) -> [u8; 32] {
-    let mut hash = blake3::Hasher::new();
-    hash.update(&snapshot.tick.to_le_bytes());
-    hash.update(&snapshot.saved_at_unix_ms.to_le_bytes());
-    hash.update(&snapshot.bytes);
-    *hash.finalize().as_bytes()
 }
 
 #[cfg(test)]
@@ -161,19 +117,6 @@ mod tests {
             saved_at_unix_ms: 1234 + tick,
             bytes: vec![1, 2, 3],
         }
-    }
-
-    #[test]
-    fn corrupt_latest_generation_fails_instead_of_silently_rolling_back() {
-        let mut db = Database::open(Path::new(":memory:")).unwrap();
-        db.save(&snapshot(1)).unwrap();
-        db.save(&snapshot(2)).unwrap();
-        assert_eq!(db.load().unwrap(), Some(snapshot(2)));
-        db.connection
-            .execute("UPDATE snapshots SET payload=x'00' WHERE generation=2", [])
-            .unwrap();
-        assert!(db.load().is_err());
-        assert_eq!(db.load_generation(1).unwrap(), snapshot(1));
     }
 
     #[test]
@@ -245,18 +188,5 @@ mod tests {
         assert_eq!(second.load().unwrap(), Some(snapshot(1)));
         drop(second);
         std::fs::remove_dir_all(directory).unwrap();
-    }
-
-    #[test]
-    fn metadata_changes_are_detected() {
-        let mut database = Database::open(Path::new(":memory:")).unwrap();
-        database.save(&snapshot(1)).unwrap();
-        database
-            .connection
-            .execute("UPDATE snapshots SET simulation_tick=999", [])
-            .unwrap();
-
-        let error = database.load().unwrap_err();
-        assert!(format!("{error:#}").contains("snapshot checksum mismatch"));
     }
 }

@@ -179,12 +179,7 @@ pub fn update(
         let world = key.world;
         let net = client.0.clone();
         requests.submit(key, command, async move {
-            crate::state::requests::mutations::industry_call(
-                &net,
-                osg_model::rpc::Operation { world, id: command },
-                build,
-            )
-            .await
+            crate::state::requests::mutations::industry_call(&net, world, build).await
         });
         shell.feedback = Some(Feedback {
             pending: vec![command],

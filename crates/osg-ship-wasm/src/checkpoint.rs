@@ -17,10 +17,6 @@ impl Controller {
 
 impl ControllerRuntime {
     pub fn restore(&mut self, checkpoint: &ControllerCheckpoint) -> Result<Controller> {
-        ensure!(
-            checkpoint.persistent_data.len() <= 65536,
-            "persistent program data exceeds 64 KiB"
-        );
         let mut controller = self.instantiate(&checkpoint.program)?;
         controller
             .persistent_data

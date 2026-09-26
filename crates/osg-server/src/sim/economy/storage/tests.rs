@@ -1,7 +1,8 @@
 use super::*;
+use crate::sim::travel;
 
 #[test]
-fn failed_payment_restores_stock_after_delivery() {
+fn failed_payment_leaves_stock_undelivered() {
     let seller = Principal::Player(Id([1; 16]));
     let buyer = Principal::Player(Id([2; 16]));
     let station = Id([3; 16]);
@@ -16,13 +17,15 @@ fn failed_payment_restores_stock_after_delivery() {
     economy.issue(buyer, Currency::Uec, 100, 0).unwrap();
     economy
         .storage
-        .insert((station, seller), BTreeMap::from([(item, 1)]));
+        .insert((station, seller), [(item, 1_u64)].into_iter().collect());
     let before = postcard::to_stdvec(&economy).unwrap();
 
-    let result = economy.transaction(|transaction| {
-        transaction.move_stock(seller, buyer, &instrument, 1)?;
-        transaction.transfer(None, buyer, seller, Currency::Uec, 1, false, 0)
-    });
+    let mut draft = economy.clone();
+    let result = (|| {
+        let plan = &mut draft;
+        plan.move_stock(seller, buyer, &instrument, 1)?;
+        plan.transfer(None, buyer, seller, Currency::Uec, 1, false, 0)
+    })();
     assert!(result.is_err());
     assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
 }
@@ -76,7 +79,8 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
     identity::register(&mut world, ship_entity, ship).unwrap();
     world.insert_resource(vessel::ShipCatalogue(catalogue.clone()));
     world
-        .resource_mut::<Economy>()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
         .issue(
             Principal::Player(buyer),
             Currency::Uec,
@@ -85,18 +89,20 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
         )
         .unwrap();
 
-    exchange::apply(
+    crate::sim::society::submit(
         &mut world,
         seller,
-        Id::new(),
-        MarketCommand::MoveStorage {
-            owner: Principal::Player(seller),
-            station,
-            ship: station,
-            item: item.clone(),
-            quantity: 100,
-            deposit: true,
-        },
+        crate::sim::society::Action::Market(
+            Id::new(),
+            MarketCommand::MoveStorage {
+                owner: Principal::Player(seller),
+                station,
+                ship: station,
+                item: item.clone(),
+                quantity: 100,
+                deposit: true,
+            },
+        ),
     )
     .unwrap();
     assert_eq!(
@@ -113,32 +119,48 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
         item: item.clone(),
         currency: Currency::Uec,
     };
-    exchange::apply(
+    let sovereignty = crate::sim::ownership::sovereignty_id("Helion Commonwealth");
+    {
+        let mut society = world.resource_mut::<crate::sim::society::SocietyState>();
+        society.economy.turnover_taxes.insert(sovereignty, 1000);
+    }
+    crate::sim::society::submit(
         &mut world,
         seller,
-        Id::new(),
-        MarketCommand::Limit {
-            instrument: instrument.clone(),
-            owner: Principal::Player(seller),
-            side: Side::Sell,
-            quantity: 80,
-            price: MONEY_SCALE,
-        },
+        crate::sim::society::Action::Market(
+            Id::new(),
+            MarketCommand::Limit {
+                instrument: instrument.clone(),
+                owner: Principal::Player(seller),
+                side: Side::Sell,
+                quantity: 80,
+                price: MONEY_SCALE,
+            },
+        ),
     )
     .unwrap();
+    assert_eq!(
+        world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy
+            .available(Principal::Sovereignty(sovereignty), Currency::Uec),
+        0
+    );
     assert!(
-        exchange::apply(
+        crate::sim::society::submit(
             &mut world,
             seller,
-            Id::new(),
-            MarketCommand::MoveStorage {
-                owner: Principal::Player(seller),
-                station,
-                ship: station,
-                item: item.clone(),
-                quantity: 21,
-                deposit: false,
-            }
+            crate::sim::society::Action::Market(
+                Id::new(),
+                MarketCommand::MoveStorage {
+                    owner: Principal::Player(seller),
+                    station,
+                    ship: station,
+                    item: item.clone(),
+                    quantity: 21,
+                    deposit: false,
+                }
+            )
         )
         .is_err()
     );
@@ -150,15 +172,41 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
         quantity: 60,
         price: MONEY_SCALE,
     };
-    exchange::apply(&mut world, buyer, receipt, purchase.clone()).unwrap();
-    exchange::apply(&mut world, buyer, receipt, purchase).unwrap();
+    crate::sim::society::submit(
+        &mut world,
+        buyer,
+        crate::sim::society::Action::Market(receipt, purchase.clone()),
+    )
+    .unwrap();
+    assert!(
+        crate::sim::society::submit(
+            &mut world,
+            buyer,
+            crate::sim::society::Action::Market(receipt, purchase)
+        )
+        .is_err()
+    );
     assert_eq!(
-        world.resource::<Economy>().storage[&(station, Principal::Player(buyer))][&item],
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
+            .storage[&(station, Principal::Player(buyer))][&item],
         60
     );
     assert_eq!(
-        world.resource::<Economy>().balances[&Principal::Player(seller)].uec,
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
+            .balances[&Principal::Player(seller)]
+            .uec,
         60 * MONEY_SCALE
+    );
+    assert_eq!(
+        world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy
+            .available(Principal::Sovereignty(sovereignty), Currency::Uec),
+        6 * MONEY_SCALE
     );
 
     let withdrawal = MarketCommand::MoveStorage {
@@ -169,9 +217,28 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
         quantity: 60,
         deposit: false,
     };
-    assert!(exchange::apply(&mut world, seller, Id::new(), withdrawal.clone()).is_err());
-    exchange::apply(&mut world, buyer, Id::new(), withdrawal.clone()).unwrap();
-    assert!(exchange::apply(&mut world, buyer, Id::new(), withdrawal).is_err());
+    assert!(
+        crate::sim::society::submit(
+            &mut world,
+            seller,
+            crate::sim::society::Action::Market(Id::new(), withdrawal.clone())
+        )
+        .is_err()
+    );
+    crate::sim::society::submit(
+        &mut world,
+        buyer,
+        crate::sim::society::Action::Market(Id::new(), withdrawal.clone()),
+    )
+    .unwrap();
+    assert!(
+        crate::sim::society::submit(
+            &mut world,
+            buyer,
+            crate::sim::society::Action::Market(Id::new(), withdrawal)
+        )
+        .is_err()
+    );
     assert_eq!(
         world
             .get::<hardware::ShipInventory>(ship_entity)
@@ -196,10 +263,10 @@ fn custody_cannot_be_withdrawn_twice_and_trades_deliver_physical_goods() {
             .unwrap()
             .0
             .custody,
-        world.resource::<Economy>().custody_totals(station).unwrap()
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
+            .custody_totals(station)
+            .unwrap()
     );
-    world
-        .resource::<Economy>()
-        .validate(&world.resource::<Directory>().0)
-        .unwrap();
 }

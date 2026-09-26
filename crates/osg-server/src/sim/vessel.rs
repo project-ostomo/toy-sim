@@ -13,7 +13,7 @@ use osg_ships::*;
 use smol_str::SmolStr;
 use std::{collections::BTreeMap, sync::Arc};
 mod program_services;
-pub(crate) use program_services::Services as ProgramServices;
+pub use program_services::Services as ProgramServices;
 #[derive(Component)]
 pub struct ControlledVessel;
 /// Wall-clock stages of the most recent ship update. Scan is included in callback.
@@ -43,7 +43,7 @@ pub struct ShipDesign(pub Arc<CompiledShipDesign>);
 pub struct ShipSoftware {
     observed_restart: u64,
     pub controller: Controller,
-    pub(crate) program_hash: [u8; 32],
+    pub program_hash: [u8; 32],
     pub reset: bool,
     /// Simulation time since the last observation delivered to the controller.
     pub callback_dt: f64,
@@ -51,12 +51,49 @@ pub struct ShipSoftware {
     pub last_input: Option<Input>,
 }
 
+impl ShipSoftware {
+    pub fn new(controller: Controller) -> Self {
+        let observed_restart = controller.restart_revision;
+        let program_hash = *blake3::hash(controller.program()).as_bytes();
+        Self {
+            controller,
+            program_hash,
+            reset: false,
+            callback_dt: 0.,
+            schedule: default(),
+            last_input: None,
+            observed_restart,
+        }
+    }
+}
+
 #[derive(Component, Default)]
 pub struct ShipMailbox {
     pub inbox: Vec<Request>,
     pub results: Vec<RequestReply>,
     pub request_id: u64,
-    pub(crate) last_weapon_request_id: u64,
+    pub last_weapon_request_id: u64,
+}
+
+impl ShipMailbox {
+    pub fn command(&mut self, command: Command) {
+        if self.inbox.len() < 255 {
+            self.request_id += 1;
+            if matches!(
+                command,
+                Command::MarkTarget { .. }
+                    | Command::StartFiring
+                    | Command::StopFiring
+                    | Command::UnmarkTarget
+            ) {
+                self.last_weapon_request_id = self.request_id;
+            }
+            self.inbox.push(Request {
+                id: self.request_id,
+                command,
+            });
+        }
+    }
 }
 
 #[derive(Component, Default)]
@@ -82,37 +119,8 @@ pub struct ComputerBudget {
     last_gas_used: u64,
     last_gas_limit: u64,
     gas_tick: Option<u64>,
-    gas_reservation: Option<super::gas::GasReservation>,
     display_priority: bool,
     display_limited: bool,
-}
-impl ShipSoftware {
-    pub fn new(controller: Controller) -> Self {
-        let observed_restart = controller.restart_revision;
-        let program_hash = *blake3::hash(controller.program()).as_bytes();
-        Self {
-            controller,
-            program_hash,
-            reset: false,
-            callback_dt: 0.,
-            schedule: default(),
-            last_input: None,
-            observed_restart,
-        }
-    }
-}
-
-impl Default for ComputerBudget {
-    fn default() -> Self {
-        Self {
-            last_gas_used: 0,
-            last_gas_limit: osg_ship_wasm::FUEL_PER_TICK,
-            gas_tick: None,
-            gas_reservation: None,
-            display_priority: false,
-            display_limited: false,
-        }
-    }
 }
 
 impl ComputerBudget {
@@ -132,7 +140,7 @@ impl ComputerBudget {
         self.display_limited
     }
 
-    pub(crate) fn charge_gas(&mut self, used: u64) {
+    pub fn charge_gas(&mut self, used: u64) {
         assert!(
             used <= self.remaining_gas(),
             "computer gas exceeds tick allowance"
@@ -140,9 +148,8 @@ impl ComputerBudget {
         self.last_gas_used += used;
     }
 
-    pub(crate) fn begin_gas_tick(&mut self, tick: u64) {
+    pub fn begin_gas_tick(&mut self, tick: u64) {
         if self.gas_tick != Some(tick) {
-            assert!(self.gas_reservation.is_none(), "unsettled flight gas");
             self.gas_tick = Some(tick);
             self.last_gas_used = 0;
             self.display_limited = false;
@@ -150,31 +157,23 @@ impl ComputerBudget {
         }
     }
 
-    pub(crate) fn remaining_gas(&self) -> u64 {
+    pub fn remaining_gas(&self) -> u64 {
         self.last_gas_limit - self.last_gas_used
     }
 }
 
-impl ShipMailbox {
-    pub fn command(&mut self, command: Command) {
-        if self.inbox.len() < 255 {
-            self.request_id += 1;
-            if matches!(
-                command,
-                Command::MarkTarget { .. }
-                    | Command::StartFiring
-                    | Command::StopFiring
-                    | Command::UnmarkTarget
-            ) {
-                self.last_weapon_request_id = self.request_id;
-            }
-            self.inbox.push(Request {
-                id: self.request_id,
-                command,
-            });
+impl Default for ComputerBudget {
+    fn default() -> Self {
+        Self {
+            last_gas_used: 0,
+            last_gas_limit: osg_ship_wasm::FUEL_PER_TICK,
+            gas_tick: None,
+            display_priority: false,
+            display_limited: false,
         }
     }
 }
+
 #[derive(Resource)]
 pub struct ShipCatalogue(pub Catalogue);
 #[derive(Resource, Default)]
@@ -199,12 +198,7 @@ impl Plugin for VesselsPlugin {
             )
             .add_systems(
                 FixedUpdate,
-                (
-                    allocate_gas,
-                    run,
-                    settle_gas,
-                    (super::sensors::flush, clear_computer_resets),
-                )
+                (run, (super::sensors::flush, clear_computer_resets))
                     .chain()
                     .in_set(SimulationSystems::PrepareBodies)
                     .run_if(in_state(GameState::Game)),
@@ -359,39 +353,59 @@ fn flight_allowance(
     if flight_minimum <= grant { grant } else { 0 }
 }
 
-pub(crate) fn allocate_gas(
-    ledger: Res<super::gas::GasLedger>,
+pub fn run(
+    mut society: ResMut<super::society::SocietyState>,
+    sensors: super::sensors::SensorAccess,
+    chat: Option<Res<super::chat::ChatService>>,
+    epoch: Res<super::identity::WorldEpoch>,
     time: Res<Time<Fixed>>,
+    parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
     mut ships: Query<(
         Entity,
-        &Hull,
-        &super::hardware::Avionics,
-        &HardwareClock,
-        &mut ShipSoftware,
-        &ShipMailbox,
-        &mut ComputerBudget,
+        &ShipDesign,
+        HardwareWrite,
+        (
+            &mut ShipSoftware,
+            &mut ShipMailbox,
+            &mut ComputerBudget,
+            &mut SoftwareDiagnostics,
+            &mut ProgramWorld,
+        ),
+        &mut super::displays::DisplayEnvironment,
         Option<&super::displays::Display>,
+        &PreciseTransform,
+        Option<&Velocity>,
+        Option<&AngularVelocity>,
+        &crate::sim::physics::AccelerometerState,
+        &MassProps,
         &super::identity::Identity,
         &super::ownership::AssetOwner,
         Has<super::travel::SystemsSuspended>,
     )>,
 ) {
+    let _profile = crate::sim::diagnostics::ProfileScope::new("vessel.run");
+    let ledger = &mut society.gas;
+    let mut grants = BTreeMap::new();
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
     let mut entities = BTreeMap::new();
     for (
         entity,
-        hull,
-        avionics,
-        clock,
-        mut software,
-        mailbox,
-        mut budget,
+        _,
+        h,
+        (mut software, mailbox, mut budget, _, _),
+        _,
         active_display,
+        _,
+        _,
+        _,
+        _,
+        _,
         identity,
         owner,
         dormant,
     ) in &mut ships
     {
+        let (hull, avionics, clock) = (h.hull, h.avionics, h.clock);
         budget.begin_gas_tick(clock.0);
         software.callback_dt += time.delta_secs_f64();
         software.schedule.advance(time.delta_secs_f64());
@@ -429,20 +443,35 @@ pub(crate) fn allocate_gas(
         }
     }
     for (owner, requests) in requests {
-        for (id, reservation) in ledger
-            .reserve_fair(owner, &requests)
+        for (id, granted) in ledger
+            .debit_fair(owner, &requests)
             .expect("valid flight gas requests")
         {
-            let (_, _, _, _, _, _, mut budget, ..) = ships.get_mut(entities[&id]).unwrap();
-            budget.gas_reservation = Some(reservation);
+            let entity = entities[&id];
+            let (_, _, _, (_, _, budget, _, _), ..) = ships.get(entity).unwrap();
+            grants.insert(entity, (owner, granted, budget.used_gas()));
         }
     }
     let mut starts = 0;
-    for (_, _, _, clock, software, _, mut budget, active_display, _, _, dormant) in &mut ships {
-        let grant = budget
-            .gas_reservation
-            .as_ref()
-            .map_or(0, |grant| grant.limit());
+    for (
+        entity,
+        _,
+        h,
+        (software, _, budget, _, _),
+        _,
+        active_display,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        dormant,
+    ) in &mut ships
+    {
+        let clock = h.clock;
+        let grant = grants.get(&entity).map_or(0, |(_, grant, _)| *grant);
         let grant = flight_allowance(
             grant,
             software.controller.minimum_to_progress(),
@@ -455,44 +484,15 @@ pub(crate) fn allocate_gas(
             && grant > software.controller.boot_remaining_gas()
         {
             if starts == osg_ship_wasm::MAX_BOOTS_PER_TICK {
-                drop(budget.gas_reservation.take());
+                if let Some((owner, granted, _)) = grants.remove(&entity) {
+                    ledger.refund(owner, granted, 0);
+                }
             } else {
                 starts += 1;
             }
         }
     }
-}
 
-pub(crate) fn run(
-    sensors: super::sensors::SensorAccess,
-    chat: Option<Res<super::chat::ChatService>>,
-    epoch: Res<super::identity::WorldEpoch>,
-    time: Res<Time<Fixed>>,
-    parts: Query<(&InstalledPart, &Device, Option<&Weapon>)>,
-    mut ships: Query<(
-        Entity,
-        &ShipDesign,
-        HardwareWrite,
-        (
-            &mut ShipSoftware,
-            &mut ShipMailbox,
-            &mut ComputerBudget,
-            &mut SoftwareDiagnostics,
-            &mut ProgramWorld,
-        ),
-        &mut super::displays::DisplayEnvironment,
-        Option<&super::displays::Display>,
-        &PreciseTransform,
-        Option<&Velocity>,
-        Option<&AngularVelocity>,
-        &crate::sim::physics::AccelerometerState,
-        &MassProps,
-        &super::identity::Identity,
-        &super::ownership::AssetOwner,
-        Has<super::travel::SystemsSuspended>,
-    )>,
-) {
-    let _profile = crate::sim::diagnostics::ProfileScope::new("vessel.run");
     ships.par_iter_mut().for_each(
         |(
             entity,
@@ -578,7 +578,7 @@ pub(crate) fn run(
             if ready {
                 let mut input = current_input.expect("ready computer observation");
                 input.commands = std::mem::take(&mut mailbox.inbox);
-                let reserved = budget.gas_reservation.as_ref().map_or(0, |r| r.limit());
+                let reserved = grants.get(&entity).map_or(0, |(_, grant, _)| *grant);
                 let minimum = software.controller.minimum_to_progress();
                 let display_minimum = active_display
                     .filter(|_| parent_running)
@@ -623,13 +623,7 @@ pub(crate) fn run(
                 let used = software.controller.last_gas_used;
                 budget.charge_gas(used);
                 timings.scan += software.controller.last_scan_seconds;
-                if let Some(reservation) = budget.gas_reservation.as_mut() {
-                    reservation
-                        .record_used(used)
-                        .expect("computer gas within allowance");
-                } else {
-                    assert_eq!(used, 0, "unfunded computer execution");
-                }
+                assert!(used <= grant, "computer gas within allowance");
 
                 if booting {
                     h.reset_settings(design);
@@ -676,11 +670,9 @@ pub(crate) fn run(
             diagnostics.last_seconds = start.elapsed().as_secs_f64();
         },
     );
-}
-
-pub(crate) fn settle_gas(mut budgets: Query<&mut ComputerBudget>) {
-    for mut budget in &mut budgets {
-        drop(budget.gas_reservation.take());
+    for (entity, (owner, granted, before)) in grants {
+        let (_, _, _, (_, _, budget, _, _), ..) = ships.get(entity).unwrap();
+        ledger.refund(owner, granted, budget.used_gas() - before);
     }
 }
 

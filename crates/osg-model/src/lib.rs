@@ -13,6 +13,7 @@ pub mod ownership;
 pub mod presentation;
 pub mod serial;
 pub mod slip_visual;
+pub mod society;
 pub mod transfer;
 pub mod travel;
 pub mod wasm_beacons;

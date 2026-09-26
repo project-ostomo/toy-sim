@@ -30,7 +30,7 @@ fn app() -> App {
     app.add_systems(
         Update,
         (|session: Res<GameSession>,
-          society: Res<SocietyState>,
+          society: Res<SocietyUiState>,
           calendar: Res<CalendarClock>,
           mut runs: ResMut<Runs>| {
             assert!(

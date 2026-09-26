@@ -20,7 +20,7 @@ Figma file: `kvxDvZDyEbkfgU25IDzyyd`.
 
 The current gallery draws these screen bodies directly into the full viewport. For example, `shell/tests.rs:618` calls `market::draw` inside `ctx.run_ui`. It does not show their floating window frame, navigation rail, scene, selected item, overview, or bottom status bar. Figma shows those elements around an approximately 1180 px wide window. Current screenshots therefore cannot establish full-screen visual parity. Their edge-to-edge presentation also changes all column widths and apparent density.
 
-The following user decisions are intentional and must survive visual fixes: Iosevka Charon and Charon Mono with Sarasa CJK, 20% annual demurrage charged daily, turnover tax on all transfers including FX, market LAT valuation, and the USE's unlimited UEC bid backstop for LAT. The earlier Figma demurrage and income-tax wording is obsolete. Different example names and numerical balances are not themselves defects.
+The following user decisions are intentional and must survive visual fixes: Iosevka Charon and Charon Mono with Sarasa CJK, 20% annual demurrage charged daily, turnover tax on ordinary transfer receipts and upfront buy orders, market LAT valuation, and the USE's unlimited UEC bid backstop for LAT. The earlier Figma demurrage and income-tax wording is obsolete. Different example names and numerical balances are not themselves defects.
 
 ## Priority 1: screen composition
 

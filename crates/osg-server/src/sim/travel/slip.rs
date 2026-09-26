@@ -1611,7 +1611,7 @@ mod tests {
         })
         .unwrap();
         world.insert_resource(universe);
-        world.init_resource::<crate::sim::ownership::Directory>();
+        world.init_resource::<crate::sim::society::SocietyState>();
         let owner =
             crate::sim::ownership::AssetOwner(osg_model::ownership::Principal::Player(Id::new()));
         world.entity_mut(ship).insert(owner);

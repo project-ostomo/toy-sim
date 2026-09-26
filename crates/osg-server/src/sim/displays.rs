@@ -75,7 +75,7 @@ fn prepare(
     clock: Res<SimulationCounters>,
     sessions: Query<&Session>,
     index: Res<super::identity::IdentityIndex>,
-    directory: Res<super::ownership::Directory>,
+    society: Res<super::society::SocietyState>,
     catalogue: Res<ShipCatalogue>,
     mut runtime: ResMut<WasmRuntime>,
     mut revisions: ResMut<Revisions>,
@@ -104,7 +104,7 @@ fn prepare(
             };
             let permits = |permission| {
                 super::ownership::permits_principal(
-                    &directory.0,
+                    &society.directory.0,
                     owner.0,
                     access.map(|access| &access.0),
                     Principal::Player(session.account),
@@ -161,7 +161,7 @@ fn execute(
     sensors: super::sensors::SensorAccess,
     ranges: Query<&super::hardware::SensorRange>,
     clock: Res<SimulationCounters>,
-    ledger: Res<super::gas::GasLedger>,
+    mut society: ResMut<super::society::SocietyState>,
     epoch: Res<super::identity::WorldEpoch>,
     chat: Option<Res<super::chat::ChatService>>,
     mut wanted: ResMut<WantedDisplays>,
@@ -176,6 +176,7 @@ fn execute(
     )>,
 ) {
     let tick = clock.ticks;
+    let ledger = &mut society.gas;
     let wanted = std::mem::take(&mut wanted.0);
     let mut work = Vec::new();
     let mut requests = BTreeMap::<_, Vec<super::gas::GasRequest>>::new();
@@ -234,21 +235,20 @@ fn execute(
 
     let mut grants = BTreeMap::new();
     for (owner, requests) in requests {
-        for (id, reservation) in ledger
-            .reserve_fair(owner, &requests)
+        for (id, granted) in ledger
+            .debit_fair(owner, &requests)
             .expect("valid display gas requests")
         {
-            grants.insert(entities[&id], reservation);
+            grants.insert(entities[&id], granted);
         }
     }
     let mut starts = 0;
     for (ship, id, input, source, origin, slots) in work {
         let (_, owner, mut display, mut budget, _, _, mut mailbox) = ships.get_mut(ship).unwrap();
-        let mut reservation = grants.remove(&ship);
-        let mut grant = reservation.as_ref().map_or(0, |grant| grant.limit());
+        let granted = grants.remove(&ship).unwrap_or(0);
+        let mut grant = granted;
         if display.program.needs_instance_start() && grant > display.program.boot_remaining_gas() {
             if starts == osg_ship_wasm::MAX_BOOTS_PER_TICK {
-                drop(reservation.take());
                 grant = 0;
             } else {
                 starts += 1;
@@ -276,15 +276,9 @@ fn execute(
             physical_limit,
         );
         let used = display.program.last_gas_used;
-        if let Some(reservation) = reservation.as_mut() {
-            reservation
-                .record_used(used)
-                .expect("display gas within granted allowance");
-        } else {
-            assert_eq!(used, 0, "unfunded display execution");
-        }
+        assert!(used <= grant, "display gas within allowance");
         budget.charge_gas(used);
-        drop(reservation);
+        ledger.refund(owner.0, granted, used);
 
         match result {
             Ok(slice) => {
@@ -554,10 +548,15 @@ mod tests {
             .screens
             .insert((id, 0), 10);
         let owner = crate::sim::gas::payer(world, ship).unwrap();
-        let ledger = world.resource::<crate::sim::gas::GasLedger>().clone();
         let mut first_frame = None;
         for tick in 0..200 {
-            let before = ledger.account(owner).unwrap().spent;
+            let before = app
+                .world()
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
+                .account(owner)
+                .unwrap()
+                .spent;
             app.update();
             let world = app.world_mut();
             update(world);
@@ -568,7 +567,13 @@ mod tests {
                 software.controller.fault
             );
             assert_eq!(
-                ledger.account(owner).unwrap().spent - before,
+                world
+                    .resource::<crate::sim::society::SocietyState>()
+                    .gas
+                    .account(owner)
+                    .unwrap()
+                    .spent
+                    - before,
                 world
                     .get::<crate::sim::vessel::ComputerBudget>(ship)
                     .unwrap()
@@ -923,7 +928,10 @@ mod tests {
     fn displays_spend_only_flight_leftovers_once_per_physical_tick() {
         let (mut world, ship, _, _, _) = fixture();
         let owner = crate::sim::gas::payer(&world, ship).unwrap();
-        let ledger = world.resource::<crate::sim::gas::GasLedger>().clone();
+        let ledger = world
+            .resource::<crate::sim::society::SocietyState>()
+            .gas
+            .clone();
         let before = ledger.account(owner).unwrap().available;
         world
             .get_mut::<crate::sim::hardware::HardwareClock>(ship)
@@ -944,7 +952,15 @@ mod tests {
                 .used_gas(),
             1_000_000
         );
-        assert_eq!(ledger.account(owner).unwrap().available, before - 100_000);
+        assert_eq!(
+            world
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
+                .account(owner)
+                .unwrap()
+                .available,
+            before - 100_000
+        );
         assert_eq!(
             world
                 .get::<Display>(ship)
@@ -953,17 +969,40 @@ mod tests {
                 .boot_remaining_gas(),
             osg_ship_wasm::BOOT_GAS - 100_000
         );
-        assert!(ledger.snapshot().is_ok());
 
         world.resource_mut::<SimulationCounters>().ticks = 10;
         update(&mut world);
-        assert_eq!(ledger.account(owner).unwrap().available, before - 100_000);
+        assert_eq!(
+            world
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
+                .account(owner)
+                .unwrap()
+                .available,
+            before - 100_000
+        );
         world
             .get_mut::<crate::sim::hardware::HardwareClock>(ship)
             .unwrap()
             .0 = 2;
         update(&mut world);
-        assert_eq!(ledger.account(owner).unwrap().available, before - 1_100_000);
-        assert_eq!(ledger.account(owner).unwrap().reserved, 0);
+        assert_eq!(
+            world
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
+                .account(owner)
+                .unwrap()
+                .available,
+            before - 1_100_000
+        );
+        assert_eq!(
+            world
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
+                .account(owner)
+                .unwrap()
+                .spent,
+            1_100_000
+        );
     }
 }

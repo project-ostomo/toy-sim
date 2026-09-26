@@ -1,7 +1,7 @@
 use ed25519_dalek::SigningKey;
 use osg_client::{HeadlessClient, OsgNetClient};
+use osg_model::ownership::*;
 use osg_model::*;
-use osg_model::{ownership::*, rpc::Operation};
 use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
@@ -32,13 +32,6 @@ fn initial_patrol(frame: &Frame, _account: Id) -> &ShipTelemetry {
     let ship = ships.next().expect("account has a patrol");
     assert!(ships.next().is_none());
     ship
-}
-
-fn operation(world: Id) -> Operation {
-    Operation {
-        world,
-        id: Id::new(),
-    }
 }
 
 async fn submit_action(client: &mut HeadlessClient, world: Id, action: Action) -> Arc<Frame> {
@@ -114,7 +107,7 @@ async fn authenticated_main_stream_and_rpc_share_authority_and_asset_transfers()
         note: "Trusted trading partner".into(),
     };
     a.client
-        .publish_declaration(operation(world), declaration.clone())
+        .publish_declaration(world, declaration.clone())
         .await
         .unwrap()
         .unwrap();
@@ -234,14 +227,14 @@ async fn rpc_inventory_queries_recheck_permissions_and_mutations_preserve_cargo_
     assert!(a.client.industry_catalogue(world).await.unwrap().is_ok());
     assert!(
         b.client
-            .set_asset_access(operation(world), own, AccessPolicy::default())
+            .set_asset_access(world, own, AccessPolicy::default())
             .await
             .unwrap()
             .is_err()
     );
     a.client
         .set_asset_access(
-            operation(world),
+            world,
             own,
             AccessPolicy {
                 public: Default::default(),
@@ -259,7 +252,7 @@ async fn rpc_inventory_queries_recheck_permissions_and_mutations_preserve_cargo_
     assert!(
         b.client
             .transfer_cargo(
-                operation(world),
+                world,
                 own,
                 other,
                 industry::CargoItem::Resource("water".into()),
@@ -270,7 +263,7 @@ async fn rpc_inventory_queries_recheck_permissions_and_mutations_preserve_cargo_
             .is_err()
     );
     a.client
-        .set_asset_access(operation(world), own, AccessPolicy::default())
+        .set_asset_access(world, own, AccessPolicy::default())
         .await
         .unwrap()
         .unwrap();
@@ -282,7 +275,7 @@ async fn rpc_inventory_queries_recheck_permissions_and_mutations_preserve_cargo_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn rpc_operation_results_and_ownership_survive_process_restart() {
+async fn rpc_ownership_is_observed_after_reconnect_and_process_restart() {
     let account = Id::new();
     let key = SigningKey::from_bytes(&[22; 32]);
     let server_key = SigningKey::from_bytes(&[21; 32]);
@@ -294,27 +287,12 @@ async fn rpc_operation_results_and_ownership_survive_process_restart() {
     let initial = first(&mut client).await;
     let world = initial.world;
     let ship = initial_patrol(&initial, account).ship;
-    let create = operation(world);
     client
         .client
-        .create_organization(create, "RPC persistence test".into())
+        .create_organization(world, "RPC persistence test".into())
         .await
         .unwrap()
         .unwrap();
-    client
-        .client
-        .create_organization(create, "RPC persistence test".into())
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        client
-            .client
-            .create_organization(create, "Different arguments".into())
-            .await
-            .unwrap()
-            .is_err()
-    );
     let entries = client
         .client
         .search_identities(world, "RPC persistence test".into())
@@ -324,10 +302,9 @@ async fn rpc_operation_results_and_ownership_survive_process_restart() {
     assert_eq!(entries.matches.len(), 1);
     let owner = entries.matches[0];
     assert!(matches!(owner, Principal::Organization(_)));
-    let transfer = operation(world);
     client
         .client
-        .transfer_asset(transfer, ship, owner)
+        .transfer_asset(world, ship, owner)
         .await
         .unwrap()
         .unwrap();
@@ -353,18 +330,26 @@ async fn rpc_operation_results_and_ownership_survive_process_restart() {
     assert_eq!(restored.world, world);
     assert!(restored.tick >= initial.tick);
     assert!(restored.calendar_unix_ms >= initial.calendar_unix_ms);
-    client
+    let view = client
         .client
-        .create_organization(create, "RPC persistence test".into())
+        .society_view(
+            world,
+            osg_model::society::SocietyQuery {
+                selected: Some(owner),
+                ..Default::default()
+            },
+        )
         .await
         .unwrap()
         .unwrap();
-    client
-        .client
-        .transfer_asset(transfer, ship, owner)
-        .await
-        .unwrap()
-        .unwrap();
+    assert_eq!(view.snapshot.account, account);
+    assert!(view.snapshot.directory.administers(account, owner));
+    assert!(
+        view.snapshot
+            .directory
+            .lineage(Principal::Player(account))
+            .contains(&owner)
+    );
     assert_eq!(
         client
             .client

@@ -56,37 +56,7 @@ pub fn install(app: &mut App) {
         );
 }
 
-#[derive(Clone, Default, PartialEq)]
-pub struct SocietyQuery {
-    pub declaration_history: Option<(
-        ownership::Principal,
-        osg_model::diplomacy::DeclarationCategory,
-        ownership::Principal,
-    )>,
-    pub history_before: Option<u64>,
-    pub directory: bool,
-    pub search: String,
-    pub branches: std::collections::BTreeSet<directory::Branch>,
-    pub selected: Option<ownership::Principal>,
-    pub asset: Option<Id>,
-    pub assets_after: Option<Id>,
-    pub assets: bool,
-    pub profiles: bool,
-    pub gas: bool,
-}
-
-pub struct SocietyView {
-    history_key: Option<(
-        ownership::Principal,
-        osg_model::diplomacy::DeclarationCategory,
-        ownership::Principal,
-    )>,
-    history: Vec<osg_model::diplomacy::Declaration>,
-    history_next: Option<u64>,
-    snapshot: SocietyData,
-    assets_next: Option<Id>,
-    loaded_asset: Option<Id>,
-}
+pub use osg_model::society::{SocietyQuery, SocietyView};
 
 struct Job {
     key: SessionKey,
@@ -241,7 +211,10 @@ fn update_services(
 }
 
 fn update_society(
-    mut state: ResMut<SocietyState>,
+    contacts: Query<&Contact>,
+    optical: Query<&Optical>,
+    chat: Res<ChatState>,
+    mut state: ResMut<SocietyUiState>,
     client: Res<NetworkClient>,
     session: Res<GameSession>,
     time: Res<Time<Real>>,
@@ -253,25 +226,28 @@ fn update_society(
     let current = context;
     let context_changed = state.context != current;
     state.context = current;
-    let mut detail_query = state.query.clone();
-    detail_query.branches.clear();
-    detail_query.search.clear();
-    detail_query.directory = false;
-    let wanted = context.map(|key| (key, detail_query));
+    let mut query = state.query.clone();
+    query.advertised = contacts
+        .iter()
+        .filter_map(|contact| contact.0.iff.as_ref())
+        .chain(optical.iter().filter_map(|object| object.0.iff.as_ref()))
+        .filter(|iff| iff.enabled)
+        .map(|iff| (Some(iff.owner), iff.faction))
+        .chain(
+            chat.messages
+                .iter()
+                .map(|message| (message.advertised_owner, message.advertised_organization)),
+        )
+        .take(512)
+        .collect();
+    let wanted = context.map(|key| (key, query));
     let net = client.0.clone();
-    let (_, result) = state
+    let (changed, result) = state
         .load
-        .update(wanted, now, move |world, query| society(net, world, query));
-    apply_society(&mut state, context_changed, result);
-    let state = &mut *state;
-    state.directory.update(
-        &client.0,
-        current,
-        &state.query,
-        now,
-        mutations.refresh_revision,
-        &mut state.society.directory,
-    );
+        .update(wanted, now, move |world, query| async move {
+            call(net.society_view(world, query)).await
+        });
+    apply_society(&mut state, context_changed || changed, result);
 }
 
 fn update_wallet(
@@ -345,11 +321,10 @@ fn update_industry(
 }
 
 fn apply_society(
-    session: &mut SocietyState,
+    session: &mut SocietyUiState,
     context_changed: bool,
     result: Option<Result<SocietyView, String>>,
 ) {
-    // Preserve cached public identities while refreshing a detail view.
     if context_changed {
         session.society = SocietyData {
             account: session.society.account,
@@ -366,21 +341,8 @@ fn apply_society(
     if let Some(result) = result {
         match result {
             Ok(view) => {
-                let mut snapshot = view.snapshot;
-                let previous = &mut session.society.directory;
-                snapshot.directory.sovereignties = std::mem::take(&mut previous.sovereignties)
-                    .into_iter()
-                    .chain(snapshot.directory.sovereignties)
-                    .collect();
-                snapshot.directory.organizations = std::mem::take(&mut previous.organizations)
-                    .into_iter()
-                    .chain(snapshot.directory.organizations)
-                    .collect();
-                snapshot.directory.players = std::mem::take(&mut previous.players)
-                    .into_iter()
-                    .chain(snapshot.directory.players)
-                    .collect();
-                session.society = snapshot;
+                session.directory.replace(&view.snapshot.directory);
+                session.society = view.snapshot;
                 session.society_assets_next = view.assets_next;
                 session.society_asset_loaded = view.loaded_asset;
                 session.declaration_history = view.history;
@@ -389,12 +351,12 @@ fn apply_society(
                 session.society_error = None;
             }
             Err(error) => {
+                session.society = SocietyData {
+                    account: session.society.account,
+                    ..Default::default()
+                };
+                session.directory = Default::default();
                 session.society_error = Some(error);
-                session.society.assets.clear();
-                session.society.gas_accounts.clear();
-                session.society.directory.access_profiles.clear();
-                session.society.directory.access_bindings.clear();
-                session.society.directory.diplomacy.trust.clear();
             }
         }
     }
@@ -455,14 +417,8 @@ async fn market(client: OsgNetClient, world: Id, query: MarketQuery) -> Result<M
         stations: stations.items,
         stations_next: stations.next,
         stock,
-        available_uec: account
-            .balance
-            .uec
-            .saturating_sub(account.balance.reserved_uec),
-        available_lat: account
-            .balance
-            .lat
-            .saturating_sub(account.balance.reserved_lat),
+        available_uec: account.balance.uec,
+        available_lat: account.balance.lat,
         reserved_uec: account.balance.reserved_uec,
         reserved_lat: account.balance.reserved_lat,
         lat_restricted: account.balance.lat_restricted,
@@ -517,174 +473,6 @@ async fn assets(client: OsgNetClient, world: Id, query: AssetsQuery) -> Result<A
         sources_next,
         total_assets: assets.total.unwrap_or(0),
         total_goods: goods.total.unwrap_or(0),
-    })
-}
-
-async fn society(
-    client: OsgNetClient,
-    world: Id,
-    query: SocietyQuery,
-) -> Result<SocietyView, String> {
-    use osg_model::rpc::IdentityRecord;
-    use ownership::{AssetAffiliation, Principal};
-    let me = call(client.my_affiliation(world)).await?;
-    let account = me.account;
-    let mut snapshot = SocietyData {
-        account,
-        ..Default::default()
-    };
-    snapshot.directory.players.insert(account, me);
-    let mut wanted = std::collections::BTreeSet::new();
-    wanted.extend(query.selected);
-    let (assets, gas, profiles, diplomacy, standings) = tokio::try_join!(
-        async {
-            if query.assets {
-                call(client.list_assets(world, String::new(), None, query.assets_after, 128)).await
-            } else {
-                Ok(osg_model::rpc::Page {
-                    items: Vec::new(),
-                    next: None,
-                    total: None,
-                })
-            }
-        },
-        async {
-            if query.gas {
-                call(client.gas_balances(world)).await
-            } else {
-                Ok(Vec::new())
-            }
-        },
-        async {
-            if query.profiles {
-                call(client.list_access_profiles(world)).await
-            } else {
-                Ok(Vec::new())
-            }
-        },
-        call(client.diplomacy(world, query.selected.unwrap_or(Principal::Player(account)))),
-        call(client.standings(world)),
-    )?;
-    snapshot.gas_accounts = gas;
-    wanted.extend(snapshot.gas_accounts.iter().map(|entry| entry.owner));
-    snapshot.directory.access_profiles = profiles
-        .into_iter()
-        .map(|profile| (profile.id, profile))
-        .collect();
-    snapshot.directory.diplomacy = diplomacy;
-    snapshot.directory.standings = standings;
-    if let Some(target) = query.selected {
-        let report = call(client.resolve_standing(world, target)).await?;
-        match report.source {
-            ownership::StandingSource::Declaration { source, .. }
-            | ownership::StandingSource::Override { source, .. } => {
-                wanted.insert(source);
-            }
-            ownership::StandingSource::MutualDefence { ally, .. } => {
-                wanted.insert(ally);
-            }
-            _ => {}
-        }
-        snapshot.standing_report = Some(report);
-    }
-    for &(source, target) in snapshot.directory.standings.keys() {
-        wanted.extend([source, target]);
-    }
-    for declaration in snapshot.directory.diplomacy.declarations.values() {
-        wanted.extend([declaration.source, declaration.target]);
-    }
-    for agreement in snapshot.directory.diplomacy.agreements.values() {
-        wanted.extend([agreement.from, agreement.to]);
-    }
-    for (&(source, _), trustees) in &snapshot.directory.diplomacy.trust {
-        wanted.insert(source);
-        wanted.extend(trustees);
-    }
-    for asset in assets.items {
-        wanted.insert(asset.owner);
-        snapshot.assets.push(AssetAffiliation {
-            entity: asset.id,
-            name: asset.name,
-            owner: asset.owner,
-            access: Default::default(),
-            can_manage: asset.can_manage,
-        });
-    }
-    if let Some(asset) = query.asset {
-        let detail = call(client.asset_access(world, asset)).await?;
-        wanted.insert(detail.asset.owner);
-        wanted.extend(
-            detail
-                .asset
-                .access
-                .grants
-                .iter()
-                .map(|grant| grant.principal),
-        );
-        snapshot.assets.retain(|entry| entry.entity != asset);
-        snapshot.assets.push(detail.asset);
-        if let Some(binding) = detail.binding {
-            snapshot.directory.access_bindings.insert(asset, binding);
-        }
-        if let Some(profile) = detail.profile {
-            snapshot
-                .directory
-                .access_profiles
-                .insert(profile.id, profile);
-        }
-    }
-    // Resolve the selected identities and their organization/sovereignty ancestry.
-    let mut resolved = std::collections::BTreeSet::new();
-    wanted.insert(Principal::Player(account));
-    for _ in 0..3 {
-        let unresolved: Vec<_> = wanted.difference(&resolved).copied().collect();
-        if unresolved.is_empty() {
-            break;
-        }
-        for chunk in unresolved.chunks(128) {
-            for entry in call(client.resolve_identities(world, chunk.to_vec())).await? {
-                resolved.insert(entry.principal());
-                match entry {
-                    IdentityRecord::Sovereignty(value) => {
-                        snapshot.directory.sovereignties.insert(value.id, value);
-                    }
-                    IdentityRecord::Organization(value) => {
-                        wanted.insert(Principal::Sovereignty(value.sovereignty));
-                        snapshot.directory.organizations.insert(value.id, value);
-                    }
-                    IdentityRecord::Player(value) => {
-                        wanted.extend(value.organization.map(Principal::Organization));
-                        snapshot.directory.players.insert(value.account, value);
-                    }
-                }
-            }
-            resolved.extend(chunk);
-        }
-    }
-    let history = if let Some((source, category, target)) = query.declaration_history {
-        Some(
-            call(client.declaration_history(
-                world,
-                source,
-                category,
-                target,
-                query.history_before,
-                32,
-            ))
-            .await?,
-        )
-    } else {
-        None
-    };
-    Ok(SocietyView {
-        history_key: query.declaration_history,
-        history: history
-            .as_ref()
-            .map_or_else(Vec::new, |page| page.items.clone()),
-        history_next: history.and_then(|page| page.next),
-        snapshot,
-        assets_next: assets.next,
-        loaded_asset: query.asset,
     })
 }
 
@@ -795,11 +583,11 @@ mod tests {
     }
 
     #[test]
-    fn directory_keeps_content_until_replacement_and_clears_on_session_change() {
+    fn society_results_replace_ui_state_and_clear_on_failure_or_session_change() {
         use ownership::PlayerAffiliation;
 
         let account = Id([1; 16]);
-        let mut session = SocietyState::default();
+        let mut session = SocietyUiState::default();
         session.society.account = account;
         session.society.directory.players.insert(
             account,
@@ -816,14 +604,11 @@ mod tests {
             "Current identity"
         );
 
+        let mut replacement = session.society.clone();
         apply_society(&mut session, false, Some(Err("Offline".into())));
-        assert_eq!(
-            session.society.directory.players[&account].name,
-            "Current identity"
-        );
+        assert!(session.society.directory.players.is_empty());
         assert_eq!(session.society_error.as_deref(), Some("Offline"));
 
-        let mut replacement = session.society.clone();
         replacement
             .directory
             .players

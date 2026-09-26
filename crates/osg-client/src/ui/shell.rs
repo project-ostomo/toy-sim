@@ -355,7 +355,7 @@ struct DomainViews<'w> {
     info: Res<'w, SessionInfo>,
     mfd: Res<'w, crate::ui::mfd::Mfd>,
     navigation: Res<'w, NavigationState>,
-    society: Res<'w, SocietyState>,
+    society: Res<'w, SocietyUiState>,
     wallet: Res<'w, WalletState>,
     market: Res<'w, MarketState>,
     assets: Res<'w, AssetsState>,
@@ -369,7 +369,7 @@ struct DomainViews<'w> {
 struct DomainQueries<'w> {
     mfd: ResMut<'w, crate::ui::mfd::Mfd>,
     navigation: Res<'w, NavigationState>,
-    society: ResMut<'w, SocietyState>,
+    society: ResMut<'w, SocietyUiState>,
     wallet: ResMut<'w, WalletState>,
     market: ResMut<'w, MarketState>,
     assets: ResMut<'w, AssetsState>,
@@ -801,10 +801,7 @@ fn dispatch(
             Intent::Service(action) => {
                 if model.connected {
                     let id = Id::new();
-                    let operation = osg_model::rpc::Operation {
-                        world: session.key.world,
-                        id,
-                    };
+                    let operation = session.key.world;
                     let net = client.0.clone();
                     requests.submit(session.key, id, async move {
                         industry::service::submit(net, operation, action).await

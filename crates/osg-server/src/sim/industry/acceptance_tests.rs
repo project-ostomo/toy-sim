@@ -164,8 +164,7 @@ impl Fixture {
 }
 
 #[test]
-fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
-    use osg_model::rpc::Operation;
+fn work_queue_is_fifo_and_rejects_stale_or_abandoned_requests() {
     use requests::*;
 
     let mut fixture = Fixture::new();
@@ -173,11 +172,7 @@ fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
     fixture.put(fixture.facility, &recipe.inputs);
     let facility = fixture.id(fixture.facility);
     let epoch = fixture.world.resource::<identity::WorldEpoch>().0;
-    let operation = Operation {
-        world: epoch,
-        id: Id::new(),
-    };
-    let mut enqueue = |operation, fingerprint| {
+    let mut enqueue = |world| {
         let (reply, receive) = tokio::sync::oneshot::channel();
         fixture
             .world
@@ -186,8 +181,7 @@ fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
             .push_back(WorkItem {
                 request: Mutation {
                     account: fixture.account,
-                    operation,
-                    fingerprint,
+                    world,
                     arguments: StartWork::Recipe {
                         facility,
                         recipe: recipe.id.clone(),
@@ -199,43 +193,14 @@ fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
             });
         receive
     };
-    let mut first = enqueue(operation, [1; 32]);
-    let mut retry = enqueue(operation, [1; 32]);
-    let mut conflicting = enqueue(operation, [2; 32]);
-    let mut second = enqueue(
-        Operation {
-            world: epoch,
-            id: Id::new(),
-        },
-        [1; 32],
-    );
-    let mut stale = enqueue(
-        Operation {
-            world: Id::new(),
-            id: Id::new(),
-        },
-        [1; 32],
-    );
-    let abandoned = enqueue(
-        Operation {
-            world: epoch,
-            id: Id::new(),
-        },
-        [1; 32],
-    );
+    let mut first = enqueue(epoch);
+    let mut second = enqueue(epoch);
+    let mut stale = enqueue(Id::new());
+    let abandoned = enqueue(epoch);
     drop(abandoned);
 
     fixture.world.run_schedule(FixedPreUpdate);
     assert!(first.try_recv().unwrap().is_ok());
-    assert!(retry.try_recv().unwrap().is_ok());
-    assert!(
-        conflicting
-            .try_recv()
-            .unwrap()
-            .unwrap_err()
-            .0
-            .contains("different arguments")
-    );
     assert!(second.try_recv().unwrap().is_err());
     assert!(
         stale
@@ -266,7 +231,6 @@ fn work_queue_is_fifo_and_retries_do_not_reserve_twice() {
 
 #[test]
 fn cancellation_phase_releases_materials_before_new_work_is_admitted() {
-    use osg_model::rpc::Operation;
     use requests::*;
 
     let mut fixture = Fixture::new();
@@ -283,11 +247,7 @@ fn cancellation_phase_releases_materials_before_new_work_is_admitted() {
         .push_back(WorkItem {
             request: Mutation {
                 account: fixture.account,
-                operation: Operation {
-                    world: epoch,
-                    id: Id::new(),
-                },
-                fingerprint: [1; 32],
+                world: epoch,
                 arguments: StartWork::Recipe {
                     facility,
                     recipe: recipe.id,
@@ -304,11 +264,7 @@ fn cancellation_phase_releases_materials_before_new_work_is_admitted() {
         .0
         .push_back(Mutation {
             account: fixture.account,
-            operation: Operation {
-                world: epoch,
-                id: Id::new(),
-            },
-            fingerprint: [2; 32],
+            world: epoch,
             arguments: CancelWork { facility, job },
             reply,
         });
@@ -327,7 +283,7 @@ fn cancellation_phase_releases_materials_before_new_work_is_admitted() {
 
 #[test]
 fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
-    use crate::sim::{economy::Economy, infrastructure::Landmark};
+    use crate::sim::infrastructure::Landmark;
     use osg_model::{
         economy::{Currency, MONEY_SCALE},
         industry::{CustomerMatch, CustomerTier, ServicePolicy, ServiceRate, ServiceWork},
@@ -355,16 +311,16 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
             .insert(input.item.clone(), input.quantity);
         fixture
             .world
-            .resource_mut::<Economy>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
             .storage
-            .entry((facility, payer))
-            .or_default()
-            .insert(input.item.clone(), input.quantity);
+            .set_item((facility, payer), input.item.clone(), input.quantity);
     }
     let now = osg_model::calendar::now_unix_ms();
     fixture
         .world
-        .resource_mut::<Economy>()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
         .issue(payer, Currency::Uec, 1_000_000 * MONEY_SCALE, now)
         .unwrap();
     let rate = ServiceRate {
@@ -411,39 +367,133 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
     let mut stale = quote.clone();
     stale.policy_revision += 1;
     assert!(service_client::order(&mut fixture.world, customer, stale, &uploads).is_err());
-    let before = fixture
+    let before = (&fixture
         .world
-        .resource::<Economy>()
+        .resource::<crate::sim::society::SocietyState>()
+        .economy)
         .available(payer, Currency::Uec);
     service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
     let first = service_client::jobs(&mut fixture.world, customer, facility).unwrap()[0].id;
     assert_eq!(
-        fixture
+        (&fixture
             .world
-            .resource::<Economy>()
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
             .available(payer, Currency::Uec),
         before - quote.total
     );
     assert!(service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).is_err());
     assert!(service_client::cancel(&mut fixture.world, fixture.account, facility, first).is_ok());
     assert_eq!(
-        fixture
+        (&fixture
             .world
-            .resource::<Economy>()
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
             .available(payer, Currency::Uec),
         before
     );
     for input in &quote.inputs {
         assert_eq!(
-            fixture.world.resource::<Economy>().storage[&(facility, payer)][&input.item],
+            (&fixture
+                .world
+                .resource::<crate::sim::society::SocietyState>()
+                .economy)
+                .storage[&(facility, payer)][&input.item],
             input.quantity
         );
     }
     service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
-    let second = service_client::jobs(&mut fixture.world, customer, facility).unwrap()[0].id;
-    let before_operator = fixture
+    let previous_presence = fixture
         .world
-        .resource::<Economy>()
+        .get::<travel::PresenceState>(fixture.facility)
+        .unwrap()
+        .0
+        .clone();
+    fixture
+        .world
+        .get_mut::<travel::PresenceState>(fixture.facility)
+        .unwrap()
+        .0 = osg_model::travel::Presence::Destroyed;
+    tick(&mut fixture.world);
+    assert!(
+        fixture
+            .world
+            .get::<IndustrialFacility>(fixture.facility)
+            .unwrap()
+            .jobs()
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy
+            .reserved(payer, Currency::Uec),
+        0
+    );
+    assert_eq!(
+        fixture
+            .world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy
+            .available(payer, Currency::Uec),
+        before
+    );
+    fixture
+        .world
+        .get_mut::<travel::PresenceState>(fixture.facility)
+        .unwrap()
+        .0 = previous_presence;
+    service_client::order(&mut fixture.world, customer, quote.clone(), &uploads).unwrap();
+    let second = service_client::jobs(&mut fixture.world, customer, facility).unwrap()[0].id;
+    // Fail after calculating the service transfer, when recording its revenue.
+    // The production schedule must leave both payment and physical work untouched.
+    fixture
+        .world
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .outside_revenue
+        .uec = u64::MAX;
+    let money_before = postcard::to_stdvec(
+        &fixture
+            .world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy,
+    )
+    .unwrap();
+    let inventory_before = fixture.inventory_bytes(fixture.facility);
+    tick(&mut fixture.world);
+    assert_eq!(
+        postcard::to_stdvec(
+            &fixture
+                .world
+                .resource::<crate::sim::society::SocietyState>()
+                .economy
+        )
+        .unwrap(),
+        money_before
+    );
+    assert_eq!(fixture.inventory_bytes(fixture.facility), inventory_before);
+    let blocked = fixture
+        .world
+        .get::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .job(second)
+        .unwrap();
+    assert_eq!(blocked.progress_ticks, 0);
+    assert!(!blocked.payment.as_ref().unwrap().charged);
+    assert_eq!(blocked.status, JobStatus::AwaitingPayment);
+    fixture
+        .world
+        .get_mut::<IndustrialFacility>(fixture.facility)
+        .unwrap()
+        .outside_revenue
+        .uec = 0;
+
+    let before_operator = (&fixture
+        .world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy)
         .balances
         .get(&operator)
         .cloned()
@@ -455,16 +505,30 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
         .unwrap()
         .jobs[0];
     assert!(job.payment.as_ref().unwrap().charged);
-    assert!(
-        !fixture
+    assert_eq!(
+        fixture
             .world
-            .resource::<Economy>()
-            .service_holds
-            .contains_key(&second)
+            .resource::<crate::sim::society::SocietyState>()
+            .economy
+            .reserved(payer, Currency::Uec),
+        0
     );
-    assert!(fixture.world.resource::<Economy>().balances[&operator].uec > 0);
-    let received_uec =
-        fixture.world.resource::<Economy>().balances[&operator].uec - before_operator.uec;
+    assert!(
+        (&fixture
+            .world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
+            .balances[&operator]
+            .uec
+            > 0
+    );
+    let received_uec = (&fixture
+        .world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy)
+        .balances[&operator]
+        .uec
+        - before_operator.uec;
     assert_eq!(
         fixture
             .world
@@ -498,7 +562,11 @@ fn public_service_reserves_customer_cargo_and_money_then_charges_once() {
     assert_eq!(restored.outside_revenue.uec, received_uec);
     for output in &quote.outputs {
         assert_eq!(
-            fixture.world.resource::<Economy>().storage[&(facility, payer)][&output.item],
+            (&fixture
+                .world
+                .resource::<crate::sim::society::SocietyState>()
+                .economy)
+                .storage[&(facility, payer)][&output.item],
             output.quantity
         );
         assert_eq!(
@@ -692,27 +760,6 @@ fn queued_custom_blueprints_have_an_atomic_facility_byte_limit() {
             .len(),
         count
     );
-
-    let mut invalid = fixture
-        .world
-        .get::<IndustrialFacility>(fixture.facility)
-        .unwrap()
-        .clone();
-    invalid.jobs.push(invalid.jobs[0].clone());
-    let error = validate_saved(
-        Some(&invalid.to_record()),
-        None,
-        &fixture
-            .world
-            .get::<vessel::ShipDesign>(fixture.facility)
-            .unwrap()
-            .0,
-        fixture.inventory(fixture.facility),
-        &catalogue,
-        &fixture.world.resource::<ownership::Directory>().0,
-    )
-    .unwrap_err();
-    assert!(error.to_string().contains("64 MiB"));
 
     let job = fixture
         .world

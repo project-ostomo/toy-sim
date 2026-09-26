@@ -2,7 +2,7 @@ use super::{Mutations, call};
 use crate::state::SessionKey;
 use osg_model::{
     Id, diplomacy::DiplomacyCommand, economy::WalletCommand, industry::IndustryCommand,
-    market::MarketCommand, ownership::SocietyCommand, rpc::Operation,
+    market::MarketCommand, ownership::SocietyCommand,
 };
 use osg_net::OsgNetClient;
 
@@ -14,15 +14,15 @@ macro_rules! submit {
             key: SessionKey,
             command: $command,
         ) -> Id {
-            let operation = Operation {
-                world: key.world,
-                id: Id::new(),
-            };
+            let id = Id::new();
+            let world = key.world;
             let client = client.clone();
-            requests.submit(key, operation.id, async move {
-                $perform(&client, operation, command).await
-            });
-            operation.id
+            requests.submit(
+                key,
+                id,
+                async move { $perform(&client, world, command).await },
+            );
+            id
         }
     };
 }
@@ -34,7 +34,7 @@ submit!(society, SocietyCommand, society_call);
 
 async fn wallet_call(
     client: &OsgNetClient,
-    operation: Operation,
+    world: Id,
     command: WalletCommand,
 ) -> Result<(), String> {
     match command {
@@ -43,20 +43,20 @@ async fn wallet_call(
             to,
             currency,
             amount,
-        } => call(client.transfer_money(operation, from, to, currency, amount)).await,
+        } => call(client.transfer_money(world, from, to, currency, amount)).await,
         WalletCommand::TransferGas { from, to, amount } => {
-            call(client.transfer_gas(operation, from, to, amount)).await
+            call(client.transfer_gas(world, from, to, amount)).await
         }
         WalletCommand::SetTurnoverTax {
             sovereignty,
             basis_points,
-        } => call(client.set_turnover_tax(operation, sovereignty, basis_points)).await,
+        } => call(client.set_turnover_tax(world, sovereignty, basis_points)).await,
     }
 }
 
 async fn market_call(
     client: &OsgNetClient,
-    operation: Operation,
+    world: Id,
     command: MarketCommand,
 ) -> Result<(), String> {
     match command {
@@ -66,10 +66,7 @@ async fn market_call(
             side,
             quantity,
             price,
-        } => {
-            call(client.place_limit_order(operation, owner, instrument, side, quantity, price))
-                .await
-        }
+        } => call(client.place_limit_order(world, owner, instrument, side, quantity, price)).await,
         MarketCommand::Immediate {
             instrument,
             owner,
@@ -77,10 +74,9 @@ async fn market_call(
             quantity,
             price,
         } => {
-            call(client.execute_market_order(operation, owner, instrument, side, quantity, price))
-                .await
+            call(client.execute_market_order(world, owner, instrument, side, quantity, price)).await
         }
-        MarketCommand::Cancel { order } => call(client.cancel_order(operation, order)).await,
+        MarketCommand::Cancel { order } => call(client.cancel_order(world, order)).await,
         MarketCommand::MoveStorage {
             owner,
             station,
@@ -90,9 +86,9 @@ async fn market_call(
             deposit,
         } => {
             if deposit {
-                call(client.deposit_storage(operation, owner, station, ship, item, quantity)).await
+                call(client.deposit_storage(world, owner, station, ship, item, quantity)).await
             } else {
-                call(client.withdraw_storage(operation, owner, station, ship, item, quantity)).await
+                call(client.withdraw_storage(world, owner, station, ship, item, quantity)).await
             }
         }
     }
@@ -100,7 +96,7 @@ async fn market_call(
 
 pub async fn industry_call(
     client: &OsgNetClient,
-    operation: Operation,
+    world: Id,
     command: IndustryCommand,
 ) -> Result<(), String> {
     match command {
@@ -109,147 +105,147 @@ pub async fn industry_call(
             target,
             item,
             quantity,
-        } => call(client.transfer_cargo(operation, source, target, item, quantity)).await,
+        } => call(client.transfer_cargo(world, source, target, item, quantity)).await,
         IndustryCommand::UnloadProduct {
             source,
             target,
             resource,
             quantity,
-        } => call(client.unload_product(operation, source, target, resource, quantity)).await,
+        } => call(client.unload_product(world, source, target, resource, quantity)).await,
         IndustryCommand::Refill {
             source,
             ship,
             resource,
             quantity,
-        } => call(client.refill_ship(operation, source, ship, resource, quantity)).await,
+        } => call(client.refill_ship(world, source, ship, resource, quantity)).await,
         IndustryCommand::StartRecipe {
             facility,
             recipe,
             batches,
-        } => call(client.start_recipe(operation, facility, recipe, batches)).await,
+        } => call(client.start_recipe(world, facility, recipe, batches)).await,
         IndustryCommand::BuildShip {
             facility,
             owner,
             blueprint_hash,
-        } => call(client.build_ship(operation, facility, owner, blueprint_hash)).await,
+        } => call(client.build_ship(world, facility, owner, blueprint_hash)).await,
         IndustryCommand::CancelJob { facility, job } => {
-            call(client.cancel_industry_job(operation, facility, job)).await
+            call(client.cancel_industry_job(world, facility, job)).await
         }
     }
 }
 
 async fn society_call(
     client: &OsgNetClient,
-    operation: Operation,
+    world: Id,
     command: SocietyCommand,
 ) -> Result<(), String> {
     match command {
         SocietyCommand::UnlinkAccessProfile { asset } => {
-            call(client.unlink_access_profile(operation, asset)).await
+            call(client.unlink_access_profile(world, asset)).await
         }
         SocietyCommand::SetAccessDenied { asset, denied } => {
-            call(client.set_access_denied(operation, asset, denied)).await
+            call(client.set_access_denied(world, asset, denied)).await
         }
         SocietyCommand::SaveAccessProfile(profile) => {
-            call(client.save_access_profile(operation, profile)).await
+            call(client.save_access_profile(world, profile)).await
         }
         SocietyCommand::DeleteAccessProfile { id } => {
-            call(client.delete_access_profile(operation, id)).await
+            call(client.delete_access_profile(world, id)).await
         }
         SocietyCommand::ApplyAccessProfile { asset, profile } => {
-            call(client.apply_access_profile(operation, asset, profile)).await
+            call(client.apply_access_profile(world, asset, profile)).await
         }
         SocietyCommand::CreateOrganization { name } => {
-            call(client.create_organization(operation, name)).await
+            call(client.create_organization(world, name)).await
         }
         SocietyCommand::SetOfficer {
             organization,
             account,
             officer,
-        } => call(client.set_organization_officer(operation, organization, account, officer)).await,
+        } => call(client.set_organization_officer(world, organization, account, officer)).await,
         SocietyCommand::SetStanding { target, standing } => {
-            call(client.set_personal_standing(operation, target, standing)).await
+            call(client.set_personal_standing(world, target, standing)).await
         }
         SocietyCommand::SetMembership {
             account,
             organization,
-        } => call(client.set_membership(operation, account, organization)).await,
+        } => call(client.set_membership(world, account, organization)).await,
         SocietyCommand::SetAssetAccess { asset, policy } => {
-            call(client.set_asset_access(operation, asset, policy)).await
+            call(client.set_asset_access(world, asset, policy)).await
         }
         SocietyCommand::TransferAsset { asset, owner } => {
-            call(client.transfer_asset(operation, asset, owner)).await
+            call(client.transfer_asset(world, asset, owner)).await
         }
-        SocietyCommand::Diplomacy(command) => diplomacy_call(client, operation, command).await,
+        SocietyCommand::Diplomacy(command) => diplomacy_call(client, world, command).await,
     }
 }
 
 async fn diplomacy_call(
     client: &OsgNetClient,
-    operation: Operation,
+    world: Id,
     command: DiplomacyCommand,
 ) -> Result<(), String> {
     match command {
         DiplomacyCommand::Publish(declaration) => {
-            call(client.publish_declaration(operation, declaration)).await
+            call(client.publish_declaration(world, declaration)).await
         }
         DiplomacyCommand::SetTrust {
             owner,
             category,
             sources,
-        } => call(client.set_trust(operation, owner, category, sources)).await,
+        } => call(client.set_trust(world, owner, category, sources)).await,
         DiplomacyCommand::ProposeAgreement {
             from,
             to,
             title,
             terms,
             note,
-        } => call(client.propose_agreement(operation, from, to, title, terms, note)).await,
+        } => call(client.propose_agreement(world, from, to, title, terms, note)).await,
         DiplomacyCommand::ChangeAgreement {
             id,
             expected_revision,
             status,
-        } => call(client.change_agreement(operation, id, expected_revision, status)).await,
+        } => call(client.change_agreement(world, id, expected_revision, status)).await,
         DiplomacyCommand::CreateBloc { name, founder } => {
-            call(client.create_bloc(operation, name, founder)).await
+            call(client.create_bloc(world, name, founder)).await
         }
         DiplomacyCommand::ApplyToBloc {
             bloc,
             polity,
             apply,
-        } => call(client.apply_to_bloc(operation, bloc, polity, apply)).await,
+        } => call(client.apply_to_bloc(world, bloc, polity, apply)).await,
         DiplomacyCommand::DecideApplication {
             bloc,
             polity,
             admit,
-        } => call(client.decide_bloc_application(operation, bloc, polity, admit)).await,
+        } => call(client.decide_bloc_application(world, bloc, polity, admit)).await,
         DiplomacyCommand::RequestBlocWithdrawal {
             bloc,
             polity,
             request,
-        } => call(client.request_bloc_withdrawal(operation, bloc, polity, request)).await,
+        } => call(client.request_bloc_withdrawal(world, bloc, polity, request)).await,
         DiplomacyCommand::DecideBlocWithdrawal {
             bloc,
             polity,
             grant,
-        } => call(client.decide_bloc_withdrawal(operation, bloc, polity, grant)).await,
+        } => call(client.decide_bloc_withdrawal(world, bloc, polity, grant)).await,
         DiplomacyCommand::RemoveBlocMember { bloc, polity } => {
-            call(client.remove_bloc_member(operation, bloc, polity)).await
+            call(client.remove_bloc_member(world, bloc, polity)).await
         }
         DiplomacyCommand::SetBlocOfficer {
             bloc,
             account,
             officer,
-        } => call(client.set_bloc_officer(operation, bloc, account, officer)).await,
+        } => call(client.set_bloc_officer(world, bloc, account, officer)).await,
         DiplomacyCommand::SetPosture {
             polity,
             target,
             standing,
-        } => call(client.set_political_posture(operation, polity, target, standing)).await,
+        } => call(client.set_political_posture(world, polity, target, standing)).await,
         DiplomacyCommand::SetBlocPosture {
             bloc,
             target,
             standing,
-        } => call(client.set_bloc_posture(operation, bloc, target, standing)).await,
+        } => call(client.set_bloc_posture(world, bloc, target, standing)).await,
     }
 }

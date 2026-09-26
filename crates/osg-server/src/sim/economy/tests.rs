@@ -5,6 +5,25 @@ fn owner(n: u8) -> Principal {
 }
 
 #[test]
+fn reserved_money_remains_releasable_at_the_wallet_limit() {
+    let mut economy = Economy::at(0);
+    let reference = Id([3; 16]);
+    economy.issue(owner(1), Currency::Uec, u64::MAX, 0).unwrap();
+    economy
+        .reserve(owner(1), Currency::Uec, 10, reference, 0)
+        .unwrap();
+    let before = postcard::to_stdvec(&economy).unwrap();
+    assert!(economy.issue(owner(1), Currency::Uec, 1, 0).is_err());
+    assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
+
+    economy
+        .release(owner(1), Currency::Uec, 10, reference, 0)
+        .unwrap();
+    assert_eq!(economy.available(owner(1), Currency::Uec), u64::MAX);
+    assert_eq!(economy.reserved(owner(1), Currency::Uec), 0);
+}
+
+#[test]
 fn daily_compounding_retains_eighty_percent_in_both_calendar_year_lengths() {
     // 1970 and leap year 1972; exemption is retained throughout compounding.
     for (start, days) in [(0, 365), (730, 366)] {
@@ -94,27 +113,22 @@ fn transfers_are_atomic_and_conversion_preserves_lat_in_reserve() {
 }
 
 #[test]
-fn failed_service_conversion_restores_reservation_and_ledger() {
+fn failed_service_conversion_leaves_reservation_and_ledger_unchanged() {
     let mut economy = Economy::at(0);
     economy
         .issue(owner(1), Currency::Lat, MONEY_SCALE, 0)
         .unwrap();
     economy.issue(owner(2), Currency::Uec, u64::MAX, 0).unwrap();
     let id = osg_model::Id::new();
-    economy.service_holds.insert(
-        id,
-        osg_model::industry::ServicePayment {
-            payer: owner(1),
-            operator: owner(2),
-            currency: Currency::Lat,
-            amount: MONEY_SCALE,
-            charged: false,
-        },
-    );
+    economy
+        .reserve(owner(1), Currency::Lat, MONEY_SCALE, id, 0)
+        .unwrap();
     let before = postcard::to_stdvec(&economy).unwrap();
-    let result = economy.transaction(|transaction| {
-        transaction.release_service_hold(id).unwrap();
-        transaction.transfer(
+    let mut draft = economy.clone();
+    let result = (|| {
+        let plan = &mut draft;
+        plan.release(owner(1), Currency::Lat, MONEY_SCALE, id, 0)?;
+        plan.transfer(
             None,
             owner(1),
             owner(2),
@@ -123,24 +137,24 @@ fn failed_service_conversion_restores_reservation_and_ledger() {
             true,
             0,
         )
-    });
+    })();
     assert!(result.is_err());
     assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
 }
 
 #[test]
-fn transaction_unwind_restores_successful_transfer() {
+fn calculated_transfer_is_published_only_when_applied() {
     let mut economy = Economy::at(0);
     economy.issue(owner(1), Currency::Uec, 100, 0).unwrap();
     let before = postcard::to_stdvec(&economy).unwrap();
-    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _: Result<()> = economy.transaction(|transaction| {
-            transaction.transfer(None, owner(1), owner(2), Currency::Uec, 100, false, 0)?;
-            panic!("interrupt settlement");
-        });
-    }));
-    assert!(result.is_err());
+    let mut draft = economy.clone();
+    draft
+        .transfer(None, owner(1), owner(2), Currency::Uec, 100, false, 0)
+        .unwrap();
     assert_eq!(postcard::to_stdvec(&economy).unwrap(), before);
+    economy = draft;
+    assert_eq!(economy.available(owner(1), Currency::Uec), 0);
+    assert_eq!(economy.available(owner(2), Currency::Uec), 100);
 }
 
 #[test]
@@ -165,20 +179,21 @@ fn membership_does_not_grant_wallet_control() {
     super::super::identity::initialize(&mut world, &[account, other]);
     let now = osg_model::calendar::now_unix_ms();
     world
-        .resource_mut::<Economy>()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
         .issue(owner(1), Currency::Uec, MONEY_SCALE, now)
         .unwrap();
     assert!(
-        apply(
+        crate::sim::society::submit(
             &mut world,
             other,
-            osg_model::Id::new(),
-            WalletCommand::Transfer {
+            (WalletCommand::Transfer {
                 from: owner(1),
                 to: owner(2),
                 currency: Currency::Uec,
                 amount: MONEY_SCALE,
-            }
+            })
+            .into()
         )
         .is_err()
     );
@@ -189,83 +204,116 @@ fn membership_does_not_grant_wallet_control() {
 }
 
 #[test]
-fn successful_transfer_receipts_survive_restart() {
+fn successful_transfer_balances_survive_restart() {
     let mut world = World::new();
     let account = osg_model::Id([1; 16]);
     super::super::identity::initialize(&mut world, &[account, osg_model::Id([2; 16])]);
     let now = osg_model::calendar::now_unix_ms();
     world
-        .resource_mut::<Economy>()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
         .issue(owner(1), Currency::Uec, 10 * MONEY_SCALE, now)
         .unwrap();
-    let id = osg_model::Id::new();
+    let _id = osg_model::Id::new();
     let command = WalletCommand::Transfer {
         from: owner(1),
         to: owner(2),
         currency: Currency::Uec,
         amount: MONEY_SCALE,
     };
-    apply(&mut world, account, id, command.clone()).unwrap();
-    let saved = postcard::to_stdvec(world.resource::<Economy>()).unwrap();
-    world.insert_resource(postcard::from_bytes::<Economy>(&saved).unwrap());
-    apply(&mut world, account, id, command).unwrap();
+    crate::sim::society::submit(&mut world, account, (command.clone()).into()).unwrap();
+    let saved = postcard::to_stdvec(
+        &world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy,
+    )
+    .unwrap();
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .economy = postcard::from_bytes::<Economy>(&saved).unwrap();
     assert_eq!(
-        world.resource::<Economy>().balances[&owner(2)].uec,
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
+            .balances[&owner(2)]
+            .uec,
         MONEY_SCALE
     );
     assert_eq!(
-        postcard::to_stdvec(world.resource::<Economy>()).unwrap(),
+        postcard::to_stdvec(
+            &world
+                .resource::<crate::sim::society::SocietyState>()
+                .economy
+        )
+        .unwrap(),
         saved
     );
 }
 
 #[test]
-fn world_checkpoint_restores_wallet_and_rejects_replayed_transfer() {
+fn world_checkpoint_restores_wallet_and_order_commitments() {
     let account = osg_model::Id([1; 16]);
     let other = osg_model::Id([2; 16]);
     let mut app = crate::scenario(&[account, other], Some(account), None).unwrap();
     let world = app.world_mut();
     let now = osg_model::calendar::now_unix_ms();
     world
-        .resource_mut::<Economy>()
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
         .issue(owner(1), Currency::Uec, 100_000 * MONEY_SCALE, now)
         .unwrap();
-    let id = osg_model::Id::new();
+    let _id = osg_model::Id::new();
     let command = WalletCommand::Transfer {
         from: owner(1),
         to: owner(2),
         currency: Currency::Uec,
         amount: MONEY_SCALE,
     };
-    apply(world, account, id, command.clone()).unwrap();
+    crate::sim::society::submit(world, account, (command.clone()).into()).unwrap();
     let order_id = osg_model::Id::new();
-    exchange::apply(
+    crate::sim::society::submit(
         world,
         account,
-        order_id,
-        osg_model::market::MarketCommand::Limit {
-            instrument: osg_model::market::Instrument::Fx,
-            owner: owner(1),
-            side: osg_model::market::Side::Buy,
-            quantity: MONEY_SCALE,
-            price: 4 * MONEY_SCALE,
-        },
+        crate::sim::society::Action::Market(
+            order_id,
+            osg_model::market::MarketCommand::Limit {
+                instrument: osg_model::market::Instrument::Fx,
+                owner: owner(1),
+                side: osg_model::market::Side::Buy,
+                quantity: MONEY_SCALE,
+                price: 4 * MONEY_SCALE,
+            },
+        ),
     )
     .unwrap();
-    let money = postcard::to_stdvec(world.resource::<Economy>()).unwrap();
+    let money = postcard::to_stdvec(
+        &world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy,
+    )
+    .unwrap();
     let checkpoint = crate::persistence::world::capture(world).unwrap();
-    world.resource_mut::<Economy>().balances.clear();
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.economy)
+        .balances
+        .clear();
     crate::persistence::world::restore(world, &checkpoint).unwrap();
-    apply(world, account, id, command).unwrap();
     assert!(
-        world
-            .resource::<Economy>()
+        (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .economy)
             .exchange
             .orders
             .contains_key(&order_id)
     );
     assert_eq!(
-        postcard::to_stdvec(world.resource::<Economy>()).unwrap(),
+        postcard::to_stdvec(
+            &world
+                .resource::<crate::sim::society::SocietyState>()
+                .economy
+        )
+        .unwrap(),
         money
     );
 }

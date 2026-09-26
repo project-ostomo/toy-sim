@@ -560,7 +560,7 @@ fn ticket(
             .filter(|(quantity, price)| *quantity > 0 && *price > 0);
 
         if let Some((quantity, price)) = values {
-            let value = u128::from(quantity) * u128::from(price) / u128::from(market.instrument.quantity_scale());
+            let value = (u128::from(quantity) * u128::from(price)).div_ceil(u128::from(market.instrument.quantity_scale()));
             if let Ok(value) = u64::try_from(value) {
                 ui.horizontal(|ui| {
                     ui.weak("Order value");
@@ -591,7 +591,10 @@ fn ticket(
             };
             intents.push(Intent::Market(command));
         }
-        ui.weak("Turnover tax applies to transfers. Open orders reserve funds or goods.");
+        ui.weak(format!(
+            "Buy orders pay tax upfront in {} on the full limit value. No refund for cancellation or unfilled quantity. Sell orders pay no tax.",
+            market.instrument.currency()
+        ));
     });
 }
 

@@ -1,3 +1,6 @@
+#[cfg(test)]
+use super::identity::Control;
+use crate::sim::society::{AccessRules, FIRST_ID, LAST_ID, OwnershipDirectory, SocialIndex};
 use anyhow::{Context, Result, ensure};
 use bevy::prelude::*;
 use osg_model::ownership::*;
@@ -5,9 +8,9 @@ use osg_model::{AccountId, Id};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
-use super::identity::{self, Control};
+use super::identity::{self};
 
-#[derive(Resource, Clone, Default)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Directory(pub OwnershipDirectory);
 
 #[derive(Component, Clone, Copy, Debug, Serialize, Deserialize)]
@@ -33,9 +36,11 @@ pub fn organization_id(name: &str) -> Id {
 }
 
 pub fn initialize(world: &mut World) {
-    world.init_resource::<super::gas::GasLedger>();
-    world.init_resource::<super::economy::Economy>();
-    if world.contains_resource::<Directory>() {
+    world.init_resource::<super::society::SocietyState>();
+    if world
+        .get_resource::<super::society::SocietyState>()
+        .is_some_and(|state| !state.directory.0.sovereignties.is_empty())
+    {
         return;
     }
     let mut directory = OwnershipDirectory::default();
@@ -64,19 +69,21 @@ pub fn initialize(world: &mut World) {
     }
     for system in &osg_universe::civilization::map().systems {
         let id = sovereignty_id(&system.sovereignty);
-        directory
-            .sovereignties
-            .entry(id)
-            .or_insert_with(|| Sovereignty {
+        if !directory.sovereignties.contains_key(&id) {
+            directory.sovereignties.insert(
                 id,
-                name: system.sovereignty.clone(),
-                bloc: match system.alignment {
-                    osg_universe::civilization::Alignment::Use => Bloc::Union,
-                    osg_universe::civilization::Alignment::Lfs => Bloc::League,
-                    osg_universe::civilization::Alignment::Independent => Bloc::NonAligned,
+                Sovereignty {
+                    id,
+                    name: system.sovereignty.clone(),
+                    bloc: match system.alignment {
+                        osg_universe::civilization::Alignment::Use => Bloc::Union,
+                        osg_universe::civilization::Alignment::Lfs => Bloc::League,
+                        osg_universe::civilization::Alignment::Independent => Bloc::NonAligned,
+                    },
+                    officers: BTreeSet::new(),
                 },
-                officers: BTreeSet::new(),
-            });
+            );
+        }
     }
     for profile in osg_universe::organizations::catalogue() {
         let id = Id(profile.id());
@@ -126,41 +133,66 @@ pub fn initialize(world: &mut World) {
             },
         );
     }
-    let ledger = world.resource::<super::gas::GasLedger>();
+    let mut state = world.resource_mut::<crate::sim::society::SocietyState>();
+    let ledger = &mut state.gas;
     for &id in directory.sovereignties.keys() {
         ledger.ensure_account(Principal::Sovereignty(id), super::gas::STARTING_GAS);
     }
     for &id in directory.organizations.keys() {
         ledger.ensure_account(Principal::Organization(id), super::gas::STARTING_GAS);
     }
-    world.insert_resource(Directory(directory));
+    state.directory = Directory(directory);
+    state.social_revision = state.social_revision.wrapping_add(1);
 }
 
 pub fn add_account(world: &mut World, account: AccountId) {
     initialize(world);
-    world
-        .resource::<super::gas::GasLedger>()
-        .ensure_account(Principal::Player(account), super::gas::STARTING_GAS);
-    world
-        .resource_mut::<Directory>()
+    if world
+        .resource::<super::society::SocietyState>()
+        .directory
         .0
         .players
-        .entry(account)
-        .or_insert_with(|| PlayerAffiliation {
+        .contains_key(&account)
+    {
+        return;
+    }
+    world
+        .resource_mut::<super::society::SocietyState>()
+        .social_revision += 1;
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .gas
+        .ensure_account(Principal::Player(account), super::gas::STARTING_GAS);
+    world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.directory)
+        .0
+        .players
+        .insert(
             account,
-            name: format!("Pilot {}", &account.to_string()[..8]),
-            organization: Some(organization_id("Helion Flight Cooperative")),
-        });
+            PlayerAffiliation {
+                account,
+                name: format!("Pilot {}", &account.to_string()[..8]),
+                organization: Some(organization_id("Helion Flight Cooperative")),
+            },
+        );
 }
 
 pub fn affiliate(world: &mut World, account: AccountId, organization: Option<Id>) -> Result<()> {
     add_account(world, account);
-    let mut directory = world.resource_mut::<Directory>();
+    world
+        .resource_mut::<super::society::SocietyState>()
+        .social_revision += 1;
+    let mut directory = world
+        .resource_mut::<crate::sim::society::SocietyState>()
+        .map_unchanged(|state| &mut state.directory);
     ensure!(
         organization.is_none_or(|id| directory.0.organizations.contains_key(&id)),
         "organization unavailable"
     );
-    directory.0.players.get_mut(&account).unwrap().organization = organization;
+    let mut player = directory.0.players.get(&account).unwrap().clone();
+    player.organization = organization;
+    directory.0.players.insert(account, player);
     Ok(())
 }
 
@@ -183,7 +215,9 @@ pub fn principal_access(
     permission: Permission,
 ) -> bool {
     let (Some(directory), Some(owner)) = (
-        world.get_resource::<Directory>(),
+        world
+            .get_resource::<super::society::SocietyState>()
+            .map(|state| &state.directory),
         world.get::<AssetOwner>(entity),
     ) else {
         return false;
@@ -256,6 +290,7 @@ pub fn authorize(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn set_access(
     world: &mut World,
     account: AccountId,
@@ -264,7 +299,10 @@ pub fn set_access(
 ) -> Result<()> {
     authorize(world, account, entity, Permission::ManageAccess)?;
     ensure!(policy.valid(), "invalid access grants");
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     ensure!(
         policy
             .grants
@@ -279,13 +317,17 @@ pub fn set_access(
     let binding = directory.access_bindings.get(&asset).cloned();
     let policy = if let Some(mut binding) = binding {
         binding.overrides = policy;
-        let effective = binding.effective(&directory.access_profiles[&binding.profile].policy);
+        let effective = crate::sim::society::effective_access(
+            &binding,
+            &directory.access_profiles[&binding.profile].policy,
+        );
         ensure!(
             effective.valid(),
             "combined access policy exceeds grant limit"
         );
         world
-            .resource_mut::<Directory>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
             .0
             .access_bindings
             .insert(asset, binding);
@@ -297,6 +339,7 @@ pub fn set_access(
     Ok(())
 }
 
+#[cfg(test)]
 pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) -> Result<()> {
     let player = identity::add_account(world, account, false);
     let revision = world
@@ -310,7 +353,8 @@ pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) ->
         .map(|identity| identity.0)
     {
         world
-            .resource_mut::<Directory>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
             .0
             .access_bindings
             .remove(&asset);
@@ -324,50 +368,61 @@ pub fn capture_control(world: &mut World, entity: Entity, account: AccountId) ->
     Ok(())
 }
 
-pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> Result<()> {
+pub struct AssetUpdate {
+    pub entity: Entity,
+    pub owner: Option<Principal>,
+    pub policy: AccessPolicy,
+}
+
+pub fn apply(
+    directory: &mut OwnershipDirectory,
+    index: &identity::IdentityIndex,
+    gas: &mut super::gas::GasState,
+    assets: &mut Query<(&mut AssetOwner, &mut AssetAccess)>,
+    account: AccountId,
+    command: SocietyCommand,
+) -> Result<Vec<AssetUpdate>> {
+    let mut changes = Vec::new();
     match command {
         SocietyCommand::UnlinkAccessProfile { asset } => {
-            let entity = identity::lookup(world, asset)?;
-            authorize(world, account, entity, Permission::ManageAccess)?;
-            world
-                .resource_mut::<Directory>()
-                .0
-                .access_bindings
-                .remove(&asset);
+            let entity = *index.entries().get(&asset).context("asset unavailable")?;
+            authorize_asset(directory, assets, account, entity)?;
+            directory.access_bindings.remove(&asset);
         }
         SocietyCommand::SetAccessDenied { asset, denied } => {
-            let entity = identity::lookup(world, asset)?;
-            authorize(world, account, entity, Permission::ManageAccess)?;
-            let directory = &world.resource::<Directory>().0;
+            let entity = *index.entries().get(&asset).context("asset unavailable")?;
+            authorize_asset(directory, assets, account, entity)?;
             let mut binding = directory
                 .access_bindings
                 .get(&asset)
                 .context("asset has no linked profile")?
                 .clone();
             binding.denied = denied;
-            let policy = binding.effective(&directory.access_profiles[&binding.profile].policy);
-            world
-                .resource_mut::<Directory>()
-                .0
-                .access_bindings
-                .insert(asset, binding);
-            world.entity_mut(entity).insert(AssetAccess(policy));
+            let policy = crate::sim::society::effective_access(
+                &binding,
+                &directory.access_profiles[&binding.profile].policy,
+            );
+            directory.access_bindings.insert(asset, binding);
+            changes.push(AssetUpdate {
+                entity,
+                owner: None,
+                policy,
+            });
         }
         SocietyCommand::SaveAccessProfile(profile) => {
-            let mut directory = world.resource_mut::<Directory>();
             ensure!(
-                directory.0.administers(account, profile.owner),
+                directory.administers(account, profile.owner),
                 "profile administration required"
             );
-            if let Some(previous) = directory.0.access_profiles.get(&profile.id) {
+            if let Some(previous) = directory.access_profiles.get(&profile.id) {
                 ensure!(
                     previous.owner == profile.owner,
                     "profile owner cannot change"
                 );
             }
             ensure!(
-                directory.0.access_profiles.contains_key(&profile.id)
-                    || directory.0.access_profiles.len() < 1024,
+                directory.access_profiles.contains_key(&profile.id)
+                    || directory.access_profiles.len() < 1024,
                 "access profile limit"
             );
             ensure!(
@@ -382,52 +437,47 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                         .policy
                         .grants
                         .iter()
-                        .all(|grant| directory.0.contains(grant.principal)),
+                        .all(|grant| directory.contains(grant.principal)),
                 "invalid profile policy"
             );
             let mut updates = Vec::new();
-            for (&asset, binding) in &directory.0.access_bindings {
-                if binding.profile == profile.id {
-                    let policy = binding.effective(&profile.policy);
+            for (asset, binding) in directory.access_bindings.by_profile(profile.id) {
+                {
+                    let policy = crate::sim::society::effective_access(&binding, &profile.policy);
                     ensure!(policy.valid(), "combined access policy exceeds grant limit");
                     updates.push((asset, policy));
                 }
             }
-            drop(directory);
             let updates: Vec<_> = updates
                 .into_iter()
                 .map(|(asset, policy)| {
-                    identity::lookup(world, asset).map(|entity| (entity, policy))
+                    let entity = *index.entries().get(&asset).context("asset unavailable")?;
+                    assets.get(entity)?;
+                    Ok((entity, policy))
                 })
                 .collect::<Result<_>>()?;
-            world
-                .resource_mut::<Directory>()
-                .0
-                .access_profiles
-                .insert(profile.id, profile);
+            directory.access_profiles.insert(profile.id, profile);
             for (entity, policy) in updates {
-                world.entity_mut(entity).insert(AssetAccess(policy));
+                changes.push(AssetUpdate {
+                    entity,
+                    owner: None,
+                    policy,
+                });
             }
         }
         SocietyCommand::DeleteAccessProfile { id } => {
-            let mut directory = world.resource_mut::<Directory>();
             let profile = directory
-                .0
                 .access_profiles
                 .get(&id)
                 .context("profile unavailable")?;
             ensure!(
-                directory.0.administers(account, profile.owner),
+                directory.administers(account, profile.owner),
                 "profile administration required"
             );
-            directory.0.access_profiles.remove(&id);
-            directory
-                .0
-                .access_bindings
-                .retain(|_, binding| binding.profile != id);
+            directory.access_profiles.remove(&id);
+            directory.access_bindings.remove_profile(id);
         }
         SocietyCommand::ApplyAccessProfile { asset, profile } => {
-            let directory = &world.resource::<Directory>().0;
             let profile = directory
                 .access_profiles
                 .get(&profile)
@@ -442,29 +492,32 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 denied: BTreeSet::new(),
             };
             let policy = profile.policy.clone();
-            let entity = identity::lookup(world, asset)?;
-            authorize(world, account, entity, Permission::ManageAccess)?;
-            world.entity_mut(entity).insert(AssetAccess(policy));
-            world
-                .resource_mut::<Directory>()
-                .0
-                .access_bindings
-                .insert(asset, binding);
+            let entity = *index.entries().get(&asset).context("asset unavailable")?;
+            authorize_asset(directory, assets, account, entity)?;
+            changes.push(AssetUpdate {
+                entity,
+                owner: None,
+                policy,
+            });
+            directory.access_bindings.insert(asset, binding);
         }
-        SocietyCommand::Diplomacy(command) => super::diplomacy::apply(world, account, command)?,
+        SocietyCommand::Diplomacy(command) => super::diplomacy::apply(directory, account, command)?,
         SocietyCommand::CreateOrganization { name } => {
             let name = name.trim();
             ensure!(
                 !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control),
                 "invalid organization name"
             );
-            let directory = &world.resource::<Directory>().0;
             ensure!(directory.organizations.len() < 16384, "organization limit");
             ensure!(
-                !directory
+                directory
                     .organizations
-                    .values()
-                    .any(|organization| organization.name.eq_ignore_ascii_case(name)),
+                    .query(
+                        SocialIndex::Name(name.to_lowercase(), FIRST_ID)
+                            ..=SocialIndex::Name(name.to_lowercase(), LAST_ID)
+                    )
+                    .next()
+                    .is_none(),
                 "organization name already registered"
             );
             let previous = directory
@@ -474,15 +527,10 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 .context("join a sovereign organization before founding one")?;
             let sovereignty = directory.organizations[&previous].sovereignty;
             let id = Id::new();
-            let mut directory = world.resource_mut::<Directory>();
-            directory
-                .0
-                .organizations
-                .get_mut(&previous)
-                .unwrap()
-                .officers
-                .remove(&account);
-            directory.0.organizations.insert(
+            let mut former = directory.organizations.get(&previous).unwrap().clone();
+            former.officers.remove(&account);
+            directory.organizations.insert(previous, former);
+            directory.organizations.insert(
                 id,
                 Organization {
                     id,
@@ -492,41 +540,39 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                     officers: BTreeSet::from([account]),
                 },
             );
-            directory.0.players.get_mut(&account).unwrap().organization = Some(id);
-            world
-                .resource::<super::gas::GasLedger>()
-                .ensure_account(Principal::Organization(id), super::gas::STARTING_GAS);
+            let mut player = directory.players.get(&account).unwrap().clone();
+            player.organization = Some(id);
+            directory.players.insert(account, player);
+            gas.ensure_account(Principal::Organization(id), super::gas::STARTING_GAS);
         }
         SocietyCommand::SetOfficer {
             organization,
             account: member,
             officer,
         } => {
-            let mut directory = world.resource_mut::<Directory>();
             ensure!(
-                directory
-                    .0
-                    .administers(account, Principal::Organization(organization)),
+                directory.administers(account, Principal::Organization(organization)),
                 "officer access denied"
             );
             ensure!(
                 directory
-                    .0
                     .players
                     .get(&member)
                     .is_some_and(|player| player.organization == Some(organization)),
                 "officer must be an organization member"
             );
-            let organization = directory.0.organizations.get_mut(&organization).unwrap();
+            let mut organization = directory.organizations.get(&organization).unwrap().clone();
             if officer {
                 organization.officers.insert(member);
             } else {
                 organization.officers.remove(&member);
             }
+            directory
+                .organizations
+                .insert(organization.id, organization);
         }
         SocietyCommand::SetStanding { target, standing } => {
-            let mut directory = world.resource_mut::<Directory>();
-            ensure!(directory.0.contains(target), "standing target unavailable");
+            ensure!(directory.contains(target), "standing target unavailable");
             ensure!(
                 target != Principal::Player(account),
                 "cannot change standing toward yourself"
@@ -534,9 +580,8 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
             let key = (Principal::Player(account), target);
             if let Some(standing) = standing {
                 ensure!(
-                    directory.0.standings.contains_key(&key)
+                    directory.standings.contains_key(&key)
                         || directory
-                            .0
                             .standings
                             .keys()
                             .filter(|(source, _)| *source == key.0)
@@ -544,16 +589,15 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                             < 256,
                     "personal standing limit"
                 );
-                directory.0.standings.insert(key, standing);
+                directory.standings.insert(key, standing);
             } else {
-                directory.0.standings.remove(&key);
+                directory.standings.remove(&key);
             }
         }
         SocietyCommand::SetMembership {
             account: member,
             organization,
         } => {
-            let directory = &world.resource::<Directory>().0;
             let current = directory
                 .players
                 .get(&member)
@@ -578,28 +622,53 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
             };
             ensure!(authorized, "membership access denied");
             if let Some(current) = current.filter(|current| Some(*current) != organization) {
-                world
-                    .resource_mut::<Directory>()
-                    .0
-                    .organizations
-                    .get_mut(&current)
-                    .unwrap()
-                    .officers
-                    .remove(&member);
+                let mut former = directory.organizations.get(&current).unwrap().clone();
+                former.officers.remove(&member);
+                directory.organizations.insert(current, former);
             }
-            affiliate(world, member, organization)?;
+            let mut player = directory.players.get(&member).unwrap().clone();
+            player.organization = organization;
+            directory.players.insert(member, player);
         }
         SocietyCommand::SetAssetAccess { asset, policy } => {
-            let entity = identity::lookup(world, asset)?;
-            set_access(world, account, entity, policy)?;
+            let entity = *index.entries().get(&asset).context("asset unavailable")?;
+            authorize_asset(directory, assets, account, entity)?;
+            ensure!(
+                policy.valid()
+                    && policy
+                        .grants
+                        .iter()
+                        .all(|grant| directory.contains(grant.principal)),
+                "invalid access policy"
+            );
+            let (effective, binding) = if let Some(binding) = directory.access_bindings.get(&asset)
+            {
+                let mut binding = binding.clone();
+                binding.overrides = policy;
+                let effective = crate::sim::society::effective_access(
+                    &binding,
+                    &directory.access_profiles[&binding.profile].policy,
+                );
+                ensure!(
+                    effective.valid(),
+                    "combined access policy exceeds grant limit"
+                );
+                (effective, Some(binding))
+            } else {
+                (policy, None)
+            };
+            changes.push(AssetUpdate {
+                entity,
+                owner: None,
+                policy: effective,
+            });
+            if let Some(binding) = binding {
+                directory.access_bindings.insert(asset, binding);
+            };
         }
         SocietyCommand::TransferAsset { asset, owner } => {
-            let entity = identity::lookup(world, asset)?;
-            let old_owner = world
-                .get::<AssetOwner>(entity)
-                .context("asset owner unavailable")?
-                .0;
-            let directory = &world.resource::<Directory>().0;
+            let entity = *index.entries().get(&asset).context("asset unavailable")?;
+            let old_owner = assets.get(entity)?.0.0;
             ensure!(
                 directory.administers(account, old_owner),
                 "ownership transfer access denied"
@@ -609,16 +678,34 @@ pub fn apply(world: &mut World, account: AccountId, command: SocietyCommand) -> 
                 directory.administers(account, owner),
                 "recipient must accept ownership"
             );
-            world
-                .entity_mut(entity)
-                .insert((AssetOwner(owner), AssetAccess::default()));
-            world
-                .resource_mut::<Directory>()
-                .0
-                .access_bindings
-                .remove(&asset);
+            changes.push(AssetUpdate {
+                entity,
+                owner: Some(owner),
+                policy: AccessPolicy::default(),
+            });
+            directory.access_bindings.remove(&asset);
         }
     }
+    Ok(changes)
+}
+
+fn authorize_asset(
+    directory: &OwnershipDirectory,
+    assets: &Query<(&mut AssetOwner, &mut AssetAccess)>,
+    account: AccountId,
+    entity: Entity,
+) -> Result<()> {
+    let (owner, access) = assets.get(entity)?;
+    ensure!(
+        permits_principal(
+            directory,
+            owner.0,
+            Some(&access.0),
+            Principal::Player(account),
+            Permission::ManageAccess
+        ),
+        "asset management access denied"
+    );
     Ok(())
 }
 
@@ -638,7 +725,10 @@ pub fn asset_access(
         "Asset access unavailable"
     );
 
-    let directory = &world.resource::<Directory>().0;
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
     let binding = can_manage
         .then(|| directory.access_bindings.get(&id).cloned())
         .flatten();
@@ -664,25 +754,14 @@ pub fn asset_access(
     })
 }
 
-pub(crate) fn gas_accounts(world: &World, account: AccountId) -> Vec<GasAccountSnapshot> {
-    let source = &world.resource::<Directory>().0;
-    let ledger = world.resource::<super::gas::GasLedger>();
-    std::iter::once(Principal::Player(account))
-        .chain(
-            source
-                .organizations
-                .keys()
-                .copied()
-                .map(Principal::Organization),
-        )
-        .chain(
-            source
-                .sovereignties
-                .keys()
-                .copied()
-                .map(Principal::Sovereignty),
-        )
-        .filter(|owner| source.administers(account, *owner))
+pub fn gas_accounts(world: &World, account: AccountId) -> Vec<GasAccountSnapshot> {
+    let source = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
+    let ledger = &world.resource::<crate::sim::society::SocietyState>().gas;
+    source
+        .administered(account)
         .filter_map(|owner| ledger.account(owner))
         .collect()
 }
@@ -711,22 +790,22 @@ mod tests {
                 grants: Vec::new(),
             },
         };
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::SaveAccessProfile(profile.clone()),
+            (SocietyCommand::SaveAccessProfile(profile.clone())).into(),
         )
         .unwrap();
         let command = SocietyCommand::ApplyAccessProfile {
             asset,
             profile: profile.id,
         };
-        assert!(apply(&mut world, owner, command.clone()).is_err());
-        assert!(apply(&mut world, other, command.clone()).is_err());
+        assert!(crate::sim::society::submit(&mut world, owner, (command.clone()).into()).is_err());
+        assert!(crate::sim::society::submit(&mut world, other, (command.clone()).into()).is_err());
         world
             .entity_mut(entity)
             .insert(AssetOwner(Principal::Player(owner)));
-        apply(&mut world, owner, command).unwrap();
+        crate::sim::society::submit(&mut world, owner, (command).into()).unwrap();
         assert_eq!(world.get::<AssetAccess>(entity).unwrap().0, profile.policy);
         assert!(
             crate::rpc::list_access_profiles(&world, other)
@@ -736,43 +815,44 @@ mod tests {
 
         let mut changed = profile.clone();
         changed.policy.public.insert(Permission::Dock);
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::SaveAccessProfile(changed.clone()),
+            (SocietyCommand::SaveAccessProfile(changed.clone())).into(),
         )
         .unwrap();
         assert!(can_access(&world, other, entity, Permission::Dock));
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::SetAccessDenied {
+            (SocietyCommand::SetAccessDenied {
                 asset,
                 denied: BTreeSet::from([Permission::Dock]),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert!(!can_access(&world, other, entity, Permission::Dock));
         changed.policy.public.insert(Permission::TransferCargo);
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::SaveAccessProfile(changed),
+            (SocietyCommand::SaveAccessProfile(changed)).into(),
         )
         .unwrap();
         assert!(!can_access(&world, other, entity, Permission::Dock));
         assert!(can_access(&world, other, entity, Permission::TransferCargo));
         assert!(can_access(&world, owner, entity, Permission::Dock));
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::UnlinkAccessProfile { asset },
+            (SocietyCommand::UnlinkAccessProfile { asset }).into(),
         )
         .unwrap();
-        apply(
+        crate::sim::society::submit(
             &mut world,
             owner,
-            SocietyCommand::SaveAccessProfile(profile),
+            (SocietyCommand::SaveAccessProfile(profile)).into(),
         )
         .unwrap();
         assert!(can_access(&world, other, entity, Permission::TransferCargo));
@@ -782,7 +862,10 @@ mod tests {
     fn public_organization_profiles_seed_exact_owners_and_directed_standings() {
         let mut world = World::new();
         initialize(&mut world);
-        let directory = &world.resource::<Directory>().0;
+        let directory = &(&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0;
         let profiles = osg_universe::organizations::catalogue();
         assert!(profiles.len() >= 100);
         assert_eq!(directory.organizations.len(), profiles.len());
@@ -823,14 +906,16 @@ mod tests {
         let member = Id([2; 16]);
         identity::initialize(&mut world, &[owner, member]);
         let organization = organization_id("Helion Flight Cooperative");
-        world
-            .resource_mut::<Directory>()
-            .0
-            .organizations
-            .get_mut(&organization)
-            .unwrap()
-            .officers
-            .insert(owner);
+        {
+            let records = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0
+                .organizations;
+            let mut record = records.get(&organization).unwrap().clone();
+            record.officers.insert(owner);
+            records.insert(organization, record);
+        }
 
         let owned = gas_accounts(&world, owner);
         assert!(owned.iter().all(GasAccountSnapshot::valid));
@@ -845,14 +930,16 @@ mod tests {
         assert_eq!(ordinary.len(), 1);
         assert_eq!(ordinary[0].owner, Principal::Player(member));
 
-        world
-            .resource_mut::<Directory>()
-            .0
-            .organizations
-            .get_mut(&organization)
-            .unwrap()
-            .officers
-            .remove(&owner);
+        {
+            let records = &mut world
+                .resource_mut::<crate::sim::society::SocietyState>()
+                .map_unchanged(|state| &mut state.directory)
+                .0
+                .organizations;
+            let mut record = records.get(&organization).unwrap().clone();
+            record.officers.remove(&owner);
+            records.insert(organization, record);
+        }
         assert_eq!(gas_accounts(&world, owner).len(), 1);
     }
 
@@ -889,9 +976,10 @@ mod tests {
         );
         assert!(!can_access(&world, old, ship, Permission::Industry));
         assert!(can_access(&world, new, ship, Permission::Industry));
-        assert!(crate::sim::assets::list(&world, old, "", None).is_empty());
+        crate::sim::society::publish_for_test(&mut world);
+        assert!(crate::sim::assets::list(&world, old, "", None, None, 128).is_empty());
         assert_eq!(
-            crate::sim::assets::list(&world, new, "", None)[0].owner,
+            crate::sim::assets::list(&world, new, "", None, None, 128)[0].owner,
             Principal::Player(new)
         );
     }
@@ -904,39 +992,47 @@ mod tests {
         identity::initialize(&mut world, &[account, stranger]);
         let defense = organization_id("Unifleet Defense");
         assert!(
-            apply(
+            crate::sim::society::submit(
                 &mut world,
                 account,
-                SocietyCommand::SetMembership {
+                (SocietyCommand::SetMembership {
                     account,
                     organization: Some(defense)
-                }
+                })
+                .into()
             )
             .is_err()
         );
         assert!(
-            apply(
+            crate::sim::society::submit(
                 &mut world,
                 account,
-                SocietyCommand::SetMembership {
+                (SocietyCommand::SetMembership {
                     account: stranger,
                     organization: None
-                }
+                })
+                .into()
             )
             .is_err()
         );
         let services = organization_id("Unifleet Station Services");
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetMembership {
+            (SocietyCommand::SetMembership {
                 account,
                 organization: Some(services),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert_eq!(
-            world.resource::<Directory>().0.players[&account].organization,
+            (&world
+                .resource::<crate::sim::society::SocietyState>()
+                .directory)
+                .0
+                .players[&account]
+                .organization,
             Some(services)
         );
 
@@ -944,6 +1040,7 @@ mod tests {
         let ship = world
             .spawn((
                 AssetOwner(Principal::Player(account)),
+                AssetAccess::default(),
                 Control {
                     account,
                     revision: 1,
@@ -969,13 +1066,14 @@ mod tests {
             Permission::ManageAccess
         ));
         assert!(
-            apply(
+            crate::sim::society::submit(
                 &mut world,
                 stranger,
-                SocietyCommand::TransferAsset {
+                (SocietyCommand::TransferAsset {
                     asset,
                     owner: Principal::Player(stranger)
-                }
+                })
+                .into()
             )
             .is_err()
         );
@@ -987,45 +1085,54 @@ mod tests {
         let account = Id([1; 16]);
         let recruit = Id([2; 16]);
         identity::initialize(&mut world, &[account, recruit]);
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::CreateOrganization {
+            (SocietyCommand::CreateOrganization {
                 name: "Neris Independent Haulers".into(),
-            },
+            })
+            .into(),
         )
         .unwrap();
-        let organization = world.resource::<Directory>().0.players[&account]
+        let organization = (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .players[&account]
             .organization
             .unwrap();
         assert!(
-            world
-                .resource::<Directory>()
+            (&world
+                .resource::<crate::sim::society::SocietyState>()
+                .directory)
                 .0
                 .administers(account, Principal::Organization(organization))
         );
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetMembership {
+            (SocietyCommand::SetMembership {
                 account,
                 organization: Some(organization),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert!(
-            world
-                .resource::<Directory>()
+            (&world
+                .resource::<crate::sim::society::SocietyState>()
+                .directory)
                 .0
                 .administers(account, Principal::Organization(organization))
         );
         assert!(
-            apply(
+            crate::sim::society::submit(
                 &mut world,
                 recruit,
-                SocietyCommand::CreateOrganization {
+                (SocietyCommand::CreateOrganization {
                     name: "neris independent haulers".into()
-                }
+                })
+                .into()
             )
             .is_err()
         );
@@ -1033,6 +1140,7 @@ mod tests {
         let ship = world
             .spawn((
                 AssetOwner(Principal::Player(account)),
+                AssetAccess::default(),
                 Control {
                     account,
                     revision: 1,
@@ -1040,13 +1148,14 @@ mod tests {
             ))
             .id();
         identity::register(&mut world, ship, asset).unwrap();
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::TransferAsset {
+            (SocietyCommand::TransferAsset {
                 asset,
                 owner: Principal::Organization(organization),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert_eq!(
@@ -1054,33 +1163,36 @@ mod tests {
             Principal::Organization(organization)
         );
         assert!(can_access(&world, account, ship, Permission::ManageAccess));
-        apply(
+        crate::sim::society::submit(
             &mut world,
             recruit,
-            SocietyCommand::SetMembership {
+            (SocietyCommand::SetMembership {
                 account: recruit,
                 organization: Some(organization),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert!(!can_access(&world, recruit, ship, Permission::ManageAccess));
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetOfficer {
+            (SocietyCommand::SetOfficer {
                 organization,
                 account: recruit,
                 officer: true,
-            },
+            })
+            .into(),
         )
         .unwrap();
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetMembership {
+            (SocietyCommand::SetMembership {
                 account,
                 organization: None,
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert!(!can_access(&world, account, ship, Permission::ManageAccess));
@@ -1092,42 +1204,53 @@ mod tests {
         let mut world = World::new();
         let account = Id([1; 16]);
         identity::initialize(&mut world, &[account]);
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::CreateOrganization {
+            (SocietyCommand::CreateOrganization {
                 name: "Independent Test Cooperative".into(),
-            },
+            })
+            .into(),
         )
         .unwrap();
-        let organization = world.resource::<Directory>().0.players[&account]
+        let organization = (&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0
+            .players[&account]
             .organization
             .unwrap();
         let owner = Principal::Organization(organization);
         let ship = world.spawn(AssetOwner(owner)).id();
         let balance = world
-            .resource::<super::super::gas::GasLedger>()
+            .resource::<crate::sim::society::SocietyState>()
+            .gas
             .account(owner)
             .unwrap();
 
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetMembership {
+            (SocietyCommand::SetMembership {
                 account,
                 organization: None,
-            },
+            })
+            .into(),
         )
         .unwrap();
 
-        let directory = &world.resource::<Directory>().0;
+        let directory = &(&world
+            .resource::<crate::sim::society::SocietyState>()
+            .directory)
+            .0;
         assert_eq!(directory.players[&account].organization, None);
         assert!(directory.organizations[&organization].officers.is_empty());
         assert_eq!(world.get::<AssetOwner>(ship).unwrap().0, owner);
         assert!(!can_access(&world, account, ship, Permission::ManageAccess));
         assert_eq!(
             world
-                .resource::<super::super::gas::GasLedger>()
+                .resource::<crate::sim::society::SocietyState>()
+                .gas
                 .account(owner),
             Some(balance)
         );
@@ -1146,19 +1269,21 @@ mod tests {
         identity::initialize(&mut world, &[account, other]);
         let target = Principal::Organization(organization_id("Terminus Privateers"));
         assert_eq!(
-            world
-                .resource::<Directory>()
+            (&world
+                .resource::<crate::sim::society::SocietyState>()
+                .directory)
                 .0
                 .standing(Principal::Player(account), target),
             Standing::Hostile
         );
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetStanding {
+            (SocietyCommand::SetStanding {
                 target,
                 standing: Some(Standing::Friendly),
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert_eq!(
@@ -1172,18 +1297,20 @@ mod tests {
                 .unwrap()
                 .contains_key(&(Principal::Player(account), target))
         );
-        apply(
+        crate::sim::society::submit(
             &mut world,
             account,
-            SocietyCommand::SetStanding {
+            (SocietyCommand::SetStanding {
                 target,
                 standing: None,
-            },
+            })
+            .into(),
         )
         .unwrap();
         assert_eq!(
-            world
-                .resource::<Directory>()
+            (&world
+                .resource::<crate::sim::society::SocietyState>()
+                .directory)
                 .0
                 .standing(Principal::Player(account), target),
             Standing::Hostile

@@ -1,4 +1,6 @@
 use super::*;
+use crate::sim::ownership::Directory;
+use crate::sim::society::OwnershipDirectory;
 
 fn id(value: u128) -> Id {
     Id(value.to_be_bytes())
@@ -68,7 +70,10 @@ fn hierarchy_queries_return_complete_scoped_lists_and_search_ancestry() {
             organization: None,
         },
     );
-    world.insert_resource(Directory(directory));
+    world.insert_resource(crate::sim::society::SocietyState {
+        directory: Directory(directory),
+        ..Default::default()
+    });
 
     assert_eq!(list_polities(&world, account).unwrap().len(), 141);
     assert_eq!(
@@ -129,8 +134,9 @@ fn scoped_account_lists_are_complete_and_recheck_authority() {
     let other = id(2);
     let mut world = World::new();
     identity::initialize(&mut world, &[account, other]);
-    let polity = *world
-        .resource::<Directory>()
+    let polity = *(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
         .0
         .sovereignties
         .keys()
@@ -140,7 +146,9 @@ fn scoped_account_lists_are_complete_and_recheck_authority() {
     for number in 0..140 {
         let org = id(1000 + number);
         let owner = Principal::Organization(org);
-        let mut directory = world.resource_mut::<Directory>();
+        let mut directory = world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory);
         directory.0.organizations.insert(
             org,
             Organization {
@@ -161,14 +169,18 @@ fn scoped_account_lists_are_complete_and_recheck_authority() {
             },
         );
         world
-            .resource::<sim::gas::GasLedger>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .gas
             .ensure_account(owner, 100);
         world
-            .resource_mut::<Economy>()
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.economy)
             .storage
-            .entry((station, Principal::Player(account)))
-            .or_default()
-            .insert(CargoItem::Resource(format!("resource-{number}")), 1);
+            .set_item(
+                (station, Principal::Player(account)),
+                CargoItem::Resource(format!("resource-{number}")),
+                1,
+            );
     }
 
     assert!(list_wallets(&world, account).unwrap().len() >= 140);
@@ -183,14 +195,16 @@ fn scoped_account_lists_are_complete_and_recheck_authority() {
     assert!(storage_stock(&world, other, Principal::Player(account), station).is_err());
 
     let org = id(1000);
-    world
-        .resource_mut::<Directory>()
-        .0
-        .organizations
-        .get_mut(&org)
-        .unwrap()
-        .officers
-        .clear();
+    {
+        let records = &mut world
+            .resource_mut::<crate::sim::society::SocietyState>()
+            .map_unchanged(|state| &mut state.directory)
+            .0
+            .organizations;
+        let mut record = records.get(&org).unwrap().clone();
+        record.officers.clear();
+        records.insert(org, record);
+    }
     assert!(
         !list_wallets(&world, account)
             .unwrap()

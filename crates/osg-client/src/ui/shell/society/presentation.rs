@@ -1,9 +1,10 @@
 use super::*;
 use osg_model::diplomacy::DeclarationCategory;
+use osg_model::society::SocietyPresentation;
 use osg_ui::components::badge;
 
 pub fn bloc_color(
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     bloc: &osg_model::diplomacy::PoliticalBloc,
 ) -> egui::Color32 {
     let affiliation = bloc
@@ -18,7 +19,7 @@ pub fn bloc_color(
 }
 
 fn identity_icon(
-    directory: &OwnershipDirectory,
+    directory: &SocietyPresentation,
     principal: Principal,
     size: f32,
 ) -> egui::RichText {
@@ -352,6 +353,15 @@ mod tests {
         };
 
         snapshot.account = account;
+        snapshot.directory.viewer = account;
+        snapshot
+            .directory
+            .administered
+            .insert(Principal::Player(account));
+        snapshot
+            .directory
+            .ancestry
+            .insert(Principal::Player(account), vec![Principal::Player(account)]);
         snapshot.directory.players.insert(
             account,
             ownership::PlayerAffiliation {

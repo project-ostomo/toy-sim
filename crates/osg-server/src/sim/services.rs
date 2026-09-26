@@ -4,6 +4,7 @@ use super::precision::PreciseTransform;
 use super::sensors::{ObservationSnapshot, Observations};
 use super::simulation::SimulationCounters;
 use super::vessel::ProgramWorld;
+use crate::sim::society::OwnershipDirectory;
 use anyhow::{Result, ensure};
 use bevy::math::{DQuat, DVec3};
 use bevy::prelude::*;
@@ -22,7 +23,8 @@ pub struct PublishedWorld {
     apertures: Arc<ApertureIndex>,
     public_apertures: Arc<ApertureIndex>,
     universe: Option<Arc<UniverseApertures>>,
-    directory: Arc<ownership::OwnershipDirectory>,
+    directory: Arc<OwnershipDirectory>,
+    social_revision: Option<u64>,
     navigation_access: std::sync::Mutex<BTreeMap<ownership::Principal, [u8; 32]>>,
 }
 
@@ -87,7 +89,7 @@ pub(crate) struct ShipScan<'a> {
     epoch: hifitime::Epoch,
     publication_tick: u64,
     owner: ownership::Principal,
-    directory: Arc<ownership::OwnershipDirectory>,
+    directory: Arc<OwnershipDirectory>,
     radius: f64,
     mass: f64,
     physical: Entity,
@@ -710,10 +712,10 @@ pub struct BeaconData {
 }
 
 pub fn publish_indexes(
+    society: Res<crate::sim::society::SocietyState>,
     navigation: Option<Res<super::infrastructure::NavigationPublication>>,
     clock: Res<SimulationCounters>,
     scene: Res<super::spatial::SpatialIndex>,
-    directory: Res<super::ownership::Directory>,
     mut publication: ResMut<PublishedWorld>,
     registry: Option<Res<super::registry::UniverseRegistry>>,
     locations: Query<&super::location::SpatialLocation>,
@@ -738,6 +740,9 @@ pub fn publish_indexes(
         ),
     >,
 ) {
+    let state = &*society;
+    let directory = &state.directory;
+
     let _profile = super::diagnostics::ProfileScope::new("publish_indexes");
     publication.tick = clock.ticks;
     if publication.universe.is_none() {
@@ -775,9 +780,10 @@ pub fn publish_indexes(
         publication.apertures = Arc::new(ApertureIndex::new(apertures, age_seconds));
         publication.public_apertures = Arc::new(ApertureIndex::new(public_apertures, age_seconds));
     }
-    if *publication.directory != directory.0 {
+    if publication.social_revision != Some(state.social_revision) {
         publication.navigation_access.get_mut().unwrap().clear();
         publication.directory = Arc::new(directory.0.clone());
+        publication.social_revision = Some(state.social_revision);
     }
     let previous_beacons = publication.beacons.clone();
     publication.beacons = Arc::new(

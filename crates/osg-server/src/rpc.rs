@@ -1,12 +1,7 @@
 //! Network handlers enqueue work onto the authoritative simulation thread.
 use crate::{blueprint_uploads::BlueprintUploads, sim};
 use bevy::prelude::*;
-use osg_model::{
-    AccountId, Id,
-    rpc::{GameError, Operation},
-};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::BTreeMap;
+use osg_model::{AccountId, Id, rpc::GameError};
 use tokio::sync::{mpsc, oneshot};
 
 mod methods;
@@ -18,8 +13,9 @@ pub use queries::{
 };
 
 pub enum Request {
-    Direct(Box<dyn FnOnce(&mut World, AccountId, &BlueprintUploads) + Send>),
+    Direct(Box<dyn FnOnce(&World, AccountId, &BlueprintUploads) + Send>),
     Industry(sim::industry::Incoming),
+    Society(sim::industry::Mutation<sim::society::Action>),
 }
 
 #[derive(Clone)]
@@ -28,6 +24,26 @@ pub struct Handler {
 }
 
 impl Handler {
+    async fn queue_society<A: Into<sim::society::Action>>(
+        &self,
+        world: Id,
+        command: A,
+    ) -> Result<(), GameError> {
+        let (reply, receive) = oneshot::channel();
+        self.requests
+            .send(Request::Society(sim::industry::Mutation {
+                account: Id([0; 16]),
+                world,
+                arguments: command.into(),
+                reply,
+            }))
+            .await
+            .map_err(|_| GameError("Session closed".into()))?;
+        receive
+            .await
+            .map_err(|_| GameError("Session closed".into()))?
+    }
+
     async fn enqueue_industry<T>(
         &self,
         build: impl FnOnce(oneshot::Sender<Result<T, GameError>>) -> sim::industry::Incoming,
@@ -42,22 +58,16 @@ impl Handler {
             .map_err(|_| GameError("Session closed".into()))?
     }
 
-    async fn queue_mutation<A: Serialize, B>(
+    async fn queue_mutation<A>(
         &self,
-        operation: Operation,
-        method: &str,
-        wire: A,
-        arguments: B,
-        wrap: impl FnOnce(sim::industry::Mutation<B>) -> sim::industry::Incoming,
+        world: Id,
+        arguments: A,
+        wrap: impl FnOnce(sim::industry::Mutation<A>) -> sim::industry::Incoming,
     ) -> Result<(), GameError> {
-        let bytes =
-            postcard::to_allocvec(&(method, wire)).map_err(|error| GameError(error.to_string()))?;
-        let fingerprint = *blake3::hash(&bytes).as_bytes();
         self.enqueue_industry(|reply| {
             wrap(sim::industry::Mutation {
                 account: Id([0; 16]),
-                operation,
-                fingerprint,
+                world,
                 arguments,
                 reply,
             })
@@ -68,7 +78,7 @@ impl Handler {
     async fn call<T, F>(&self, epoch: Id, function: F) -> Result<T, GameError>
     where
         T: Send + 'static,
-        F: FnOnce(&mut World, AccountId, &BlueprintUploads) -> anyhow::Result<T> + Send + 'static,
+        F: FnOnce(&World, AccountId, &BlueprintUploads) -> anyhow::Result<T> + Send + 'static,
     {
         let (send, receive) = oneshot::channel();
         self.requests
@@ -77,7 +87,7 @@ impl Handler {
                     return;
                 }
                 let result = if world.resource::<sim::identity::WorldEpoch>().0 != epoch {
-                    Err(GameError("World changed; reload before retrying".into()))
+                    Err(GameError("World changed; refresh state".into()))
                 } else {
                     function(world, account, uploads).map_err(|error| GameError(error.to_string()))
                 };
@@ -88,50 +98,6 @@ impl Handler {
         receive
             .await
             .map_err(|_| GameError("Session closed".into()))?
-    }
-
-    async fn mutate<A, T, F>(
-        &self,
-        operation: Operation,
-        method: &'static str,
-        arguments: A,
-        function: F,
-    ) -> Result<T, GameError>
-    where
-        A: Serialize + Send + 'static,
-        T: Serialize + DeserializeOwned + Send + 'static,
-        F: FnOnce(&mut World, AccountId, &BlueprintUploads, A) -> anyhow::Result<T>
-            + Send
-            + 'static,
-    {
-        let bytes = postcard::to_allocvec(&(method, &arguments))
-            .map_err(|error| GameError(error.to_string()))?;
-        let fingerprint = *blake3::hash(&bytes).as_bytes();
-        self.call(operation.world, move |world, account, uploads| {
-            world.init_resource::<OperationHistory>();
-            let key = (account, operation.id);
-            if let Some(previous) = world.resource::<OperationHistory>().0.get(&key) {
-                anyhow::ensure!(
-                    previous.fingerprint == fingerprint,
-                    "Operation ID already used for different arguments"
-                );
-                return Ok(postcard::from_bytes::<Result<T, GameError>>(
-                    &previous.result,
-                )?);
-            }
-            let result = function(world, account, uploads, arguments)
-                .map_err(|error| GameError(error.to_string()));
-            let encoded = postcard::to_allocvec(&result)?;
-            world.resource_mut::<OperationHistory>().0.insert(
-                key,
-                StoredResult {
-                    fingerprint,
-                    result: encoded,
-                },
-            );
-            Ok(result)
-        })
-        .await?
     }
 }
 
@@ -192,48 +158,5 @@ pub fn enqueue_industry(
                     request,
                 });
         }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-struct StoredResult {
-    fingerprint: [u8; 32],
-    result: Vec<u8>,
-}
-
-#[derive(Resource, Clone, Default, Serialize, Deserialize)]
-pub struct OperationHistory(BTreeMap<(AccountId, Id), StoredResult>);
-
-impl OperationHistory {
-    pub fn replay<T: DeserializeOwned>(
-        &self,
-        account: AccountId,
-        operation: Id,
-        fingerprint: [u8; 32],
-    ) -> anyhow::Result<Option<Result<T, GameError>>> {
-        let Some(previous) = self.0.get(&(account, operation)) else {
-            return Ok(None);
-        };
-        anyhow::ensure!(
-            previous.fingerprint == fingerprint,
-            "Operation ID already used for different arguments"
-        );
-        Ok(Some(postcard::from_bytes(&previous.result)?))
-    }
-
-    pub fn record<T: Serialize>(
-        &mut self,
-        account: AccountId,
-        operation: Id,
-        fingerprint: [u8; 32],
-        result: &Result<T, GameError>,
-    ) {
-        self.0.insert(
-            (account, operation),
-            StoredResult {
-                fingerprint,
-                result: postcard::to_allocvec(result).expect("RPC result serialization"),
-            },
-        );
     }
 }

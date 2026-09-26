@@ -1,4 +1,4 @@
-use super::{economy::Economy, hardware, identity, ownership, travel, vessel};
+use super::{hardware, identity, ownership, travel, vessel};
 use bevy::prelude::*;
 use osg_model::{
     AccountId, Id, assets::*, industry::CargoItem, ownership::Permission, travel::Presence,
@@ -74,30 +74,34 @@ fn accessible(
     world: &World,
     account: AccountId,
     owner_filter: Option<osg_model::ownership::Principal>,
-) -> Vec<(Id, Entity, osg_model::ownership::Principal, bool, bool)> {
-    let mut entries = Vec::new();
-    for (&id, &entity) in world.resource::<identity::IdentityIndex>().entries() {
-        let Some(owner) = world
-            .get::<ownership::AssetOwner>(entity)
-            .map(|owner| owner.0)
-        else {
-            continue;
-        };
-        if owner_filter.is_some_and(|selected| selected != owner) {
-            continue;
-        }
-        let permits = |permission| ownership::can_access(world, account, entity, permission);
-        let can_manage = permits(Permission::ManageAccess);
-        let can_open = permits(Permission::View)
-            || permits(Permission::TransferCargo)
-            || permits(Permission::Industry);
-        if !can_manage && !can_open {
-            continue;
-        }
+    after: Option<Id>,
+) -> impl Iterator<Item = (Id, Entity, osg_model::ownership::Principal, bool, bool)> + '_ {
+    let society = world.resource::<super::society::SocietyState>();
+    world
+        .resource::<super::society::AssetRecords>()
+        .visible(&society.directory.0, account, owner_filter, after)
+        .filter_map(move |record| {
+            let (id, entity) = (record.id, record.entity);
+            let Some(owner) = world
+                .get::<ownership::AssetOwner>(entity)
+                .map(|owner| owner.0)
+            else {
+                return None;
+            };
+            if owner_filter.is_some_and(|selected| selected != owner) {
+                return None;
+            }
+            let permits = |permission| ownership::can_access(world, account, entity, permission);
+            let can_manage = permits(Permission::ManageAccess);
+            let can_open = permits(Permission::View)
+                || permits(Permission::TransferCargo)
+                || permits(Permission::Industry);
+            if !can_manage && !can_open {
+                return None;
+            }
 
-        entries.push((id, entity, owner, can_manage, can_open));
-    }
-    entries
+            Some((id, entity, owner, can_manage, can_open))
+        })
 }
 
 pub fn list(
@@ -105,10 +109,16 @@ pub fn list(
     account: AccountId,
     search: &str,
     owner_filter: Option<osg_model::ownership::Principal>,
+    after: Option<Id>,
+    limit: usize,
 ) -> Vec<AssetSummary> {
     let search = search.to_lowercase();
     let mut assets = Vec::new();
-    for (id, entity, owner, can_manage, can_open) in accessible(world, account, owner_filter) {
+    for (id, entity, owner, can_manage, can_open) in accessible(world, account, owner_filter, after)
+    {
+        if assets.len() >= limit {
+            break;
+        }
         let permits = |permission| ownership::can_access(world, account, entity, permission);
         let presence = world
             .get::<travel::PresenceState>(entity)
@@ -165,7 +175,6 @@ pub fn list(
             });
         }
     }
-    assets.sort_by_key(|asset| asset.id);
     assets
 }
 
@@ -175,27 +184,34 @@ fn visit_stock(
     owner_filter: Option<osg_model::ownership::Principal>,
     mut add_stock: impl FnMut(CargoItem, String, StockLocation),
 ) {
-    let directory = &world.resource::<ownership::Directory>().0;
-    let economy = world.resource::<Economy>();
+    let directory = &(&world
+        .resource::<crate::sim::society::SocietyState>()
+        .directory)
+        .0;
+    let economy = &world
+        .resource::<crate::sim::society::SocietyState>()
+        .economy;
     let catalogue = world.get_resource::<vessel::ShipCatalogue>();
     let mut public_reserved =
         BTreeMap::<(Id, osg_model::ownership::Principal, CargoItem), u64>::new();
-    for (&station, &entity) in world.resource::<identity::IdentityIndex>().entries() {
-        if let Some(facility) = world.get::<super::industry::IndustrialFacility>(entity) {
-            for job in facility.jobs() {
-                if let Some(payment) = &job.payment {
-                    for stack in &job.work.inputs {
-                        let amount = public_reserved
-                            .entry((station, payment.payer, stack.item.clone()))
-                            .or_default();
-                        *amount = amount.saturating_add(stack.quantity);
-                    }
-                }
-            }
+    let assets = world.resource::<super::society::AssetRecords>();
+    let visible = assets.visible(directory, account, owner_filter, None);
+    let relevant: BTreeMap<_, _> = visible
+        .into_iter()
+        .chain(
+            directory
+                .administered(account)
+                .flat_map(|owner| assets.customers(owner)),
+        )
+        .map(|record| (record.id, record))
+        .collect();
+    for (station, record) in relevant {
+        for ((owner, item), quantity) in &record.inputs {
+            public_reserved.insert((station, *owner, item.clone()), *quantity);
         }
     }
 
-    for (id, entity, owner, _, can_open) in accessible(world, account, owner_filter) {
+    for (id, entity, owner, _, can_open) in accessible(world, account, owner_filter, None) {
         if can_open {
             if let (Some(inventory), Some(catalogue)) =
                 (world.get::<hardware::ShipInventory>(entity), catalogue)
@@ -235,7 +251,12 @@ fn visit_stock(
         }
     }
 
-    let mut storage = economy.storage.clone();
+    let mut storage: BTreeMap<_, _> = directory
+        .administered(account)
+        .filter(|owner| owner_filter.is_none_or(|selected| *owner == selected))
+        .flat_map(|owner| economy.storage.by_owner(owner, None))
+        .map(|(key, items)| (*key, items.clone()))
+        .collect();
     for ((station, owner, item), quantity) in &public_reserved {
         *storage
             .entry((*station, *owner))

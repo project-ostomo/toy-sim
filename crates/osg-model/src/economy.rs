@@ -3,9 +3,7 @@ use crate::{Id, ownership::Principal};
 use serde::{Deserialize, Serialize};
 
 pub const MONEY_SCALE: u64 = 1_000_000;
-pub const DEMURRAGE_EXEMPTION: u64 = 50_000 * MONEY_SCALE;
 pub const DAY_MS: i64 = 86_400_000;
-pub const RATE_SCALE: u128 = 1_000_000_000_000_000_000;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum Currency {
@@ -58,24 +56,6 @@ pub fn format_amount(amount: u64) -> String {
     }
 }
 
-/// Rate for the UTC day being charged, rounded down at 18 decimal places.
-/// Compounding over the calendar year retains 80% of the taxable balance,
-/// within the fixed point rounding precision.
-pub fn daily_rate(day: i64) -> u128 {
-    let z = day + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let month = (5 * doy + 2) / 153;
-    let year = yoe + era * 400 + i64::from(month >= 10);
-    if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-        609_496_015_987_604
-    } else {
-        611_165_357_704_478
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WalletCommand {
     SetTurnoverTax {
@@ -115,12 +95,19 @@ pub struct LedgerEntry {
     pub time_ms: i64,
     pub owner: Principal,
     pub currency: Currency,
+    pub bucket: BalanceBucket,
     pub kind: EntryKind,
     pub credit: bool,
     pub amount: u64,
     pub balance: u64,
     pub counterparty: Option<Principal>,
     pub reference: Option<Id>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum BalanceBucket {
+    Available,
+    Reserved,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

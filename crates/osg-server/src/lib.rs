@@ -19,7 +19,6 @@ use blueprint_uploads::{BlueprintUploadBudget, BlueprintUploads};
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use osg_model::*;
 use osg_protocol::Message;
-pub use rpc::OperationHistory;
 pub use sim::identity::AppearanceAssets;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -205,6 +204,18 @@ fn run_loop(
                     match request {
                         rpc::Request::Direct(request) => {
                             request(app.world_mut(), connection.account, &connection.uploads)
+                        }
+                        rpc::Request::Society(mut request) => {
+                            request.account = connection.account;
+                            let mut queue =
+                                app.world_mut().resource_mut::<sim::society::SocietyQueue>();
+                            if queue.0.len() < sim::industry::MAX_QUEUED_REQUESTS {
+                                queue.0.push_back(request);
+                            } else {
+                                let _ = request.reply.send(Err(osg_model::rpc::GameError(
+                                    "Society request queue is full".into(),
+                                )));
+                            }
                         }
                         rpc::Request::Industry(request) => {
                             rpc::enqueue_industry(

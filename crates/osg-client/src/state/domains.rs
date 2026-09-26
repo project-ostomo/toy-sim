@@ -12,7 +12,7 @@ pub struct NavigationState {
 }
 
 #[derive(Resource, Default)]
-pub struct SocietyState {
+pub struct SocietyUiState {
     pub society: SocietyData,
     pub directory: requests::directory::State,
     pub society_assets_next: Option<Id>,

@@ -336,8 +336,8 @@ fn list(ui: &mut egui::Ui, state: &mut super::State, model: &FrameModel, snapsho
     ui.colored_label(
         ACCENT,
         format!(
-            "Goods · {} kinds across authorized holdings",
-            snapshot.total_goods
+            "Goods · {} kinds shown across authorized holdings",
+            snapshot.goods.len()
         ),
     );
     ui.weak("Totals include ship holds and principal station storage.");

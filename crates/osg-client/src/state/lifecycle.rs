@@ -275,7 +275,7 @@ pub fn advance_bootstrap(
         );
         return;
     }
-    let mut society = SocietyState::default();
+    let mut society = SocietyUiState::default();
     society.context = Some(key);
     society.society.account = player.account;
     society

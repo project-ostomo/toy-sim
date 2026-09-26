@@ -7,6 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[osg_net_macros::rpc]
 pub trait GameRpc {
+    async fn society_view(
+        &self,
+        world: Id,
+        query: osg_model::society::SocietyQuery,
+    ) -> Result<osg_model::society::SocietyView, GameError>;
     async fn my_affiliation(&self, world: Id) -> Result<PlayerAffiliation, GameError>;
     async fn list_blocs(&self, world: Id) -> Result<Vec<PoliticalBloc>, GameError>;
     async fn list_polities(&self, world: Id) -> Result<Vec<Sovereignty>, GameError>;
@@ -32,7 +37,7 @@ pub trait GameRpc {
     ) -> Result<Vec<IdentityRecord>, GameError>;
     async fn asset_access(&self, world: Id, asset: Id) -> Result<AssetAccessDetails, GameError>;
     async fn list_access_profiles(&self, world: Id) -> Result<Vec<AccessProfile>, GameError>;
-    async fn diplomacy(&self, world: Id, principal: Principal) -> Result<Diplomacy, GameError>;
+    async fn diplomacy(&self, world: Id, principal: Principal) -> Result<DiplomacyView, GameError>;
     async fn resolve_standing(
         &self,
         world: Id,
@@ -159,25 +164,16 @@ pub trait GameRpc {
     ) -> Result<ServiceQuote, GameError>;
     async fn publish_service_prices(
         &self,
-        operation: Operation,
+        world: Id,
         facility: Id,
         policy: ServicePolicy,
     ) -> Result<(), GameError>;
-    async fn order_industry_job(
-        &self,
-        operation: Operation,
-        quote: ServiceQuote,
-    ) -> Result<(), GameError>;
-    async fn cancel_service_job(
-        &self,
-        operation: Operation,
-        facility: Id,
-        job: Id,
-    ) -> Result<(), GameError>;
+    async fn order_industry_job(&self, world: Id, quote: ServiceQuote) -> Result<(), GameError>;
+    async fn cancel_service_job(&self, world: Id, facility: Id, job: Id) -> Result<(), GameError>;
 
     async fn transfer_money(
         &self,
-        operation: Operation,
+        world: Id,
         from: Principal,
         to: Principal,
         currency: Currency,
@@ -185,21 +181,21 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn transfer_gas(
         &self,
-        operation: Operation,
+        world: Id,
         from: Principal,
         to: Principal,
         amount: u64,
     ) -> Result<(), GameError>;
     async fn set_turnover_tax(
         &self,
-        operation: Operation,
+        world: Id,
         sovereignty: Id,
         basis_points: u16,
     ) -> Result<(), GameError>;
 
     async fn place_limit_order(
         &self,
-        operation: Operation,
+        world: Id,
         owner: Principal,
         instrument: Instrument,
         side: Side,
@@ -208,17 +204,17 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn execute_market_order(
         &self,
-        operation: Operation,
+        world: Id,
         owner: Principal,
         instrument: Instrument,
         side: Side,
         quantity: u64,
         worst_price: u64,
     ) -> Result<(), GameError>;
-    async fn cancel_order(&self, operation: Operation, order: Id) -> Result<(), GameError>;
+    async fn cancel_order(&self, world: Id, order: Id) -> Result<(), GameError>;
     async fn deposit_storage(
         &self,
-        operation: Operation,
+        world: Id,
         owner: Principal,
         station: Id,
         ship: Id,
@@ -227,7 +223,7 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn withdraw_storage(
         &self,
-        operation: Operation,
+        world: Id,
         owner: Principal,
         station: Id,
         ship: Id,
@@ -237,7 +233,7 @@ pub trait GameRpc {
 
     async fn transfer_cargo(
         &self,
-        operation: Operation,
+        world: Id,
         source: Id,
         target: Id,
         item: CargoItem,
@@ -245,7 +241,7 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn unload_product(
         &self,
-        operation: Operation,
+        world: Id,
         source: Id,
         target: Id,
         resource: String,
@@ -253,7 +249,7 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn refill_ship(
         &self,
-        operation: Operation,
+        world: Id,
         source: Id,
         ship: Id,
         resource: String,
@@ -261,101 +257,80 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn start_recipe(
         &self,
-        operation: Operation,
+        world: Id,
         facility: Id,
         recipe: String,
         batches: u32,
     ) -> Result<(), GameError>;
     async fn build_ship(
         &self,
-        operation: Operation,
+        world: Id,
         facility: Id,
         owner: Principal,
         blueprint_hash: [u8; 32],
     ) -> Result<(), GameError>;
-    async fn cancel_industry_job(
-        &self,
-        operation: Operation,
-        facility: Id,
-        job: Id,
-    ) -> Result<(), GameError>;
+    async fn cancel_industry_job(&self, world: Id, facility: Id, job: Id) -> Result<(), GameError>;
 
-    async fn create_organization(
-        &self,
-        operation: Operation,
-        name: String,
-    ) -> Result<(), GameError>;
+    async fn create_organization(&self, world: Id, name: String) -> Result<(), GameError>;
     async fn set_organization_officer(
         &self,
-        operation: Operation,
+        world: Id,
         organization: Id,
         account: AccountId,
         officer: bool,
     ) -> Result<(), GameError>;
     async fn set_membership(
         &self,
-        operation: Operation,
+        world: Id,
         account: AccountId,
         organization: Option<Id>,
     ) -> Result<(), GameError>;
     async fn set_personal_standing(
         &self,
-        operation: Operation,
+        world: Id,
         target: Principal,
         standing: Option<Standing>,
     ) -> Result<(), GameError>;
-    async fn transfer_asset(
-        &self,
-        operation: Operation,
-        asset: Id,
-        owner: Principal,
-    ) -> Result<(), GameError>;
+    async fn transfer_asset(&self, world: Id, asset: Id, owner: Principal)
+    -> Result<(), GameError>;
     async fn set_asset_access(
         &self,
-        operation: Operation,
+        world: Id,
         asset: Id,
         policy: AccessPolicy,
     ) -> Result<(), GameError>;
     async fn set_access_denied(
         &self,
-        operation: Operation,
+        world: Id,
         asset: Id,
         denied: BTreeSet<Permission>,
     ) -> Result<(), GameError>;
-    async fn save_access_profile(
-        &self,
-        operation: Operation,
-        profile: AccessProfile,
-    ) -> Result<(), GameError>;
-    async fn delete_access_profile(
-        &self,
-        operation: Operation,
-        profile: Id,
-    ) -> Result<(), GameError>;
+    async fn save_access_profile(&self, world: Id, profile: AccessProfile)
+    -> Result<(), GameError>;
+    async fn delete_access_profile(&self, world: Id, profile: Id) -> Result<(), GameError>;
     async fn apply_access_profile(
         &self,
-        operation: Operation,
+        world: Id,
         asset: Id,
         profile: Id,
     ) -> Result<(), GameError>;
-    async fn unlink_access_profile(&self, operation: Operation, asset: Id)
-    -> Result<(), GameError>;
+    async fn unlink_access_profile(&self, world: Id, asset: Id) -> Result<(), GameError>;
 
     async fn publish_declaration(
         &self,
-        operation: Operation,
+        world: Id,
         declaration: Declaration,
     ) -> Result<(), GameError>;
     async fn set_trust(
         &self,
-        operation: Operation,
+        world: Id,
         owner: Principal,
         category: DeclarationCategory,
         sources: Vec<Principal>,
     ) -> Result<(), GameError>;
     async fn propose_agreement(
         &self,
-        operation: Operation,
+        world: Id,
         from: Principal,
         to: Principal,
         title: String,
@@ -364,68 +339,58 @@ pub trait GameRpc {
     ) -> Result<(), GameError>;
     async fn change_agreement(
         &self,
-        operation: Operation,
+        world: Id,
         agreement: Id,
         expected_revision: u64,
         status: AgreementStatus,
     ) -> Result<(), GameError>;
-    async fn create_bloc(
-        &self,
-        operation: Operation,
-        name: String,
-        founder: Id,
-    ) -> Result<(), GameError>;
+    async fn create_bloc(&self, world: Id, name: String, founder: Id) -> Result<(), GameError>;
     async fn apply_to_bloc(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         polity: Id,
         apply: bool,
     ) -> Result<(), GameError>;
     async fn decide_bloc_application(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         polity: Id,
         admit: bool,
     ) -> Result<(), GameError>;
     async fn request_bloc_withdrawal(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         polity: Id,
         request: bool,
     ) -> Result<(), GameError>;
     async fn decide_bloc_withdrawal(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         polity: Id,
         grant: bool,
     ) -> Result<(), GameError>;
-    async fn remove_bloc_member(
-        &self,
-        operation: Operation,
-        bloc: Id,
-        polity: Id,
-    ) -> Result<(), GameError>;
+    async fn remove_bloc_member(&self, world: Id, bloc: Id, polity: Id) -> Result<(), GameError>;
     async fn set_bloc_officer(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         account: AccountId,
         officer: bool,
     ) -> Result<(), GameError>;
     async fn set_political_posture(
         &self,
-        operation: Operation,
+        world: Id,
         polity: Id,
         target: Id,
         standing: Standing,
     ) -> Result<(), GameError>;
     async fn set_bloc_posture(
         &self,
-        operation: Operation,
+        world: Id,
         bloc: Id,
         target: Id,
         standing: Standing,

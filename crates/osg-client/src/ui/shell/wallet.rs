@@ -111,10 +111,7 @@ pub fn draw(
                     }
                     ui.separator();
                     if let Some(gas) = model.society.gas_accounts.iter().find(|b| b.owner == owner) {
-                        let total = gas.available.saturating_add(gas.reserved).max(1);
-                        ui.weak("Reserved / current allocation");
-                        ui.add(egui::ProgressBar::new(gas.reserved as f32 / total as f32).fill(ACCENT).desired_height(4.));
-                        account_row(ui, "Reserved", &grouped(&gas.reserved.to_string()), MUTED);
+                        account_row(ui, "Lifetime spent", &grouped(&gas.spent.to_string()), MUTED);
                     }
                     ui.weak("Movable between accounts; not exchangeable.");
                 } else {
@@ -126,12 +123,17 @@ pub fn draw(
                             let amount = if index == 0 { account.uec } else { account.lat };
                             account_row(ui, &society::name(&model.society.directory, account.owner), &grouped(&format_amount(amount)), TEXT);
                         }
+                        ui.weak("Available to spend");
+                        if let Some(balance) = balance {
+                            let reserved = if index == 0 { balance.reserved_uec } else { balance.reserved_lat };
+                            account_row(ui, "Reserved", &grouped(&format_amount(reserved)), MUTED);
+                        }
                     }
                     ui.separator();
                     if index == 0 {
                         ui.weak("Official currency of the Union State of Earth");
                         account_row(ui, "Demurrage", "20% / year · daily", WARNING);
-                        ui.weak("Above 50,000 UEC per account");
+                        ui.weak("Above 50,000 available UEC per account");
                         account_row(ui, "Next charge", &format!("{} UEC", grouped(&format_amount(next))), WARNING);
                     } else {
                         ui.weak("De-facto standard cross-border currency");
@@ -152,11 +154,14 @@ pub fn draw(
             ui.set_width(ui.available_width());
             ui.horizontal_wrapped(|ui| {
                 ui.colored_label(ACCENT, "TURNOVER TAX");
-                ui.colored_label(WARNING, format!(
-            "Turnover tax: {}.{:02}% on receipts, including transfers and FX conversions",
-            tax_rate / 100,
-            tax_rate % 100,
-            ));
+                ui.colored_label(
+                    WARNING,
+                    format!(
+                        "Turnover tax: {}.{:02}% on transfer receipts and upfront buy order value",
+                        tax_rate / 100,
+                        tax_rate % 100,
+                    ),
+                );
             });
         });
     if let Principal::Sovereignty(sovereignty) = owner {
@@ -321,9 +326,10 @@ pub fn draw(
                     .monospace()
                     .color(if entry.credit { POSITIVE } else { WARNING }),
                     egui::RichText::new(format!(
-                        "{} {}",
+                        "{} {} · {:?}",
                         grouped(&format_amount(entry.balance)),
-                        entry.currency
+                        entry.currency,
+                        entry.bucket
                     ))
                     .monospace()
                     .color(MUTED),
@@ -371,7 +377,7 @@ pub fn draw(
                                     }
                                     economy::EntryKind::Demurrage => "Daily charge above exemption",
                                     economy::EntryKind::Conversion => "LAT / UEC conversion",
-                                    economy::EntryKind::Reserve => "Order reservation",
+                                    economy::EntryKind::Reserve => "Funds reserved",
                                     economy::EntryKind::Release => "Reservation released",
                                     economy::EntryKind::Market => "Market settlement",
                                     economy::EntryKind::Industry => "Industry service payment",
